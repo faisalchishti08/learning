@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HTTP/2 (multiplexing, header compression, server push) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../webdev.html">Web Development</a> › 2. HTTP & Networking</div>
+  <div class="htitle">
+    <h1>HTTP/2 (multiplexing, header compression, server push)</h1>
+    <a class="back" href="../../webdev.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>HTTP/2</strong> (RFC 7540, 2015) is a complete reimplementation of HTTP&#x27;s wire format that keeps the same semantics (methods, headers, status codes) but changes how bytes travel between client and server. Three headline features:</p>
+<ul><li><strong>Multiplexing:</strong> many independent requests and responses travel concurrently over a *single* TCP connection on numbered *streams*. No more one-at-a-time queuing or multiple parallel connections.</li><li><strong>Header compression (HPACK):</strong> headers are compressed using a shared dynamic table and Huffman coding. Sending <code>Cookie: &lt;large-token&gt;</code> once; subsequent requests reference the table entry instead of repeating the whole string.</li><li><strong>Server push:</strong> the server can proactively send resources the client hasn&#x27;t asked for yet (e.g., send <code>style.css</code> at the same time as <code>index.html</code>, before the browser parses the <code>&lt;link&gt;</code> tag).</li></ul>
+<p>HTTP/2 is <strong>binary</strong>, not text. The readable <code>GET /path HTTP/1.1</code> format is replaced by binary frames.</p>
+<h2>2. Why &amp; when</h2>
+<p>HTTP/1.1 has three expensive habits:</p>
+<ol><li>Requests block each other on one connection (HOL blocking).</li><li>Each request repeats the same large headers — <code>User-Agent</code>, <code>Cookie</code>, <code>Accept-Encoding</code> are sent verbatim every time.</li><li>The client can&#x27;t receive a resource until it discovers it needs it (parse HTML → find <code>&lt;link&gt;</code> → request CSS).</li></ol>
+<p>HTTP/2 fixes all three. Adoption crossed 50% of web traffic around 2020. All major CDNs and browsers support it. You typically enable it by configuring your web server (Nginx, Caddy, etc.) — Node&#x27;s <code>node:http2</code> module also supports it natively.</p>
+<p>Use it when you want better performance without changing application code. HTTP/1.1 optimisations like domain sharding and CSS sprites *hurt* performance on HTTP/2.</p>
+<h2>3. Core concept</h2>
+<p>Think of HTTP/1.1 as a single-lane highway where each car (request) must wait for the car ahead. HTTP/2 builds a multi-lane highway on the same physical road: each lane is a <strong>stream</strong>, independently numbered (1, 3, 5… odd numbers for client-initiated). All streams share one TCP connection.</p>
+<p><strong>Frames:</strong> data is split into binary frames, each tagged with a stream ID. The server interleaves frames from different streams:</p>
+<pre><code>[stream 1: HEADERS frame] [stream 3: HEADERS frame] [stream 5: HEADERS frame]
+[stream 3: DATA frame]    [stream 1: DATA frame]     [stream 5: DATA frame]</code></pre>
+<p><strong>HPACK compression:</strong> client and server each maintain an identical header table. Instead of <code>User-Agent: Mozilla/5.0 (compatible...)</code> on every request, the client sends a one-byte index like <code>62</code> meaning &quot;use table entry 62.&quot; Headers added in one request can be referenced in the next.</p>
+<p><strong>Server push:</strong> the server sends a <code>PUSH_PROMISE</code> frame naming a resource it&#x27;s about to push, then sends the resource data on a new stream. The client can reject pushes it doesn&#x27;t want with a <code>RST_STREAM</code>.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 310" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HTTP/2 multiplexing: multiple streams interleaved on one TCP connection, plus HPACK header table and server push">
+  <defs>
+    <marker id="a47" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="b47" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="c47" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#d29922"/></marker>
+  </defs>
+
+  <!-- TCP pipe background -->
+  <rect x="160" y="20" width="340" height="260" rx="10" fill="#1c2430" stroke="#8b949e" stroke-width="1" stroke-dasharray="5,3"/>
+  <text x="330" y="15" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">one TCP connection</text>
+
+  <!-- Client box -->
+  <rect x="20" y="110" width="130" height="80" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="85" y="148" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif">Client</text>
+  <text x="85" y="165" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">HPACK table</text>
+
+  <!-- Server box -->
+  <rect x="530" y="110" width="130" height="80" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="595" y="148" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif">Server</text>
+  <text x="595" y="165" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">HPACK table</text>
+
+  <!-- Streams (requests going right) -->
+  <line x1="150" y1="130" x2="528" y2="130" stroke="#6db33f" stroke-width="2" marker-end="url(#a47)"/>
+  <text x="340" y="124" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">stream 1: GET /index.html</text>
+  <line x1="150" y1="148" x2="528" y2="148" stroke="#6db33f" stroke-width="2" marker-end="url(#a47)"/>
+  <text x="340" y="143" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">stream 3: GET /app.js</text>
+  <line x1="150" y1="166" x2="528" y2="166" stroke="#6db33f" stroke-width="2" marker-end="url(#a47)"/>
+  <text x="340" y="161" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">stream 5: GET /logo.png</text>
+
+  <!-- Responses (going left) interleaved -->
+  <line x1="530" y1="185" x2="152" y2="185" stroke="#79c0ff" stroke-width="2" marker-end="url(#b47)"/>
+  <text x="340" y="180" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">stream 3 response (app.js, fast)</text>
+  <line x1="530" y1="200" x2="152" y2="200" stroke="#79c0ff" stroke-width="2" marker-end="url(#b47)"/>
+  <text x="340" y="195" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">stream 5 response (logo, fast)</text>
+  <line x1="530" y1="215" x2="152" y2="215" stroke="#79c0ff" stroke-width="2" marker-end="url(#b47)"/>
+  <text x="340" y="210" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">stream 1 response (index, slow)</text>
+
+  <!-- Server push -->
+  <line x1="530" y1="240" x2="152" y2="240" stroke="#d29922" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#c47)"/>
+  <text x="340" y="235" fill="#d29922" font-size="10" text-anchor="middle" font-family="sans-serif">PUSH stream 2: style.css (unsolicited)</text>
+
+  <!-- HPACK annotation -->
+  <rect x="20" y="215" width="130" height="50" rx="5" fill="#0d1117" stroke="#8b949e" stroke-width="1"/>
+  <text x="85" y="233" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">HPACK: headers compressed</text>
+  <text x="85" y="248" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Cookie: (sent once → idx)</text>
+  <text x="85" y="263" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">~30-40% savings typical</text>
+</svg>
+<p>Three streams travel concurrently in both directions; a server push (gold, dashed) delivers <code>style.css</code> before the client knew it needed it.</p>
+<h2>5. Runnable example</h2>
+<p>Node&#x27;s built-in <code>node:http2</code> module lets you run an HTTP/2 server and client locally.</p>
+<pre><code class="lang-js">// save as http2-demo.js  —  node http2-demo.js  (no installs; Node 10+)
+const http2 = require(&quot;node:http2&quot;);
+
+// HTTP/2 cleartext (h2c) server — no TLS needed for localhost testing
+const server = http2.createServer();
+
+server.on(&quot;stream&quot;, (stream, headers) =&gt; {
+  const path = headers[&quot;:path&quot;];
+  console.log(`Server: stream ${stream.id}  path=${path}`);
+
+  if (path === &quot;/index.html&quot;) {
+    // Server push style.css before client asks
+    stream.pushStream({ &quot;:path&quot;: &quot;/style.css&quot; }, (err, pushStream) =&gt; {
+      if (!err) {
+        pushStream.respond({ &quot;:status&quot;: 200, &quot;content-type&quot;: &quot;text/css&quot; });
+        pushStream.end(&quot;body { margin: 0 }&quot;);
+        console.log(&quot;Server: pushed /style.css on stream&quot;, pushStream.id);
+      }
+    });
+  }
+
+  stream.respond({ &quot;:status&quot;: 200, &quot;content-type&quot;: &quot;text/plain&quot; });
+  stream.end(`Hello from ${path}`);
+});
+
+server.listen(3400, () =&gt; {
+  const client = http2.connect(&quot;http://localhost:3400&quot;);
+
+  // Request 3 resources concurrently — all on one TCP connection
+  const paths = [&quot;/index.html&quot;, &quot;/app.js&quot;, &quot;/logo.png&quot;];
+  let done = 0;
+
+  // Listen for server pushes
+  client.on(&quot;stream&quot;, (pushStream, headers) =&gt; {
+    let body = &quot;&quot;;
+    pushStream.on(&quot;data&quot;, (c) =&gt; (body += c));
+    pushStream.on(&quot;end&quot;, () =&gt;
+      console.log(`Client: received PUSH ${headers[&quot;:path&quot;]}: &quot;${body}&quot;`)
+    );
+  });
+
+  paths.forEach((p) =&gt; {
+    const req = client.request({ &quot;:path&quot;: p });
+    let body = &quot;&quot;;
+    req.on(&quot;data&quot;, (c) =&gt; (body += c));
+    req.on(&quot;end&quot;, () =&gt; {
+      console.log(`Client: ${p} → &quot;${body}&quot;`);
+      if (++done === paths.length) {
+        setTimeout(() =&gt; { client.close(); server.close(); }, 100);
+      }
+    });
+    req.end();
+  });
+});</code></pre>
+<p><strong>How to run:</strong> <code>node http2-demo.js</code> — all requests share one connection; observe the pushed stream arriving.</p>
+<h2>6. Walkthrough</h2>
+<ul><li><code>http2.createServer()</code> — creates an h2c (cleartext) HTTP/2 server. Browsers require TLS (<code>createSecureServer</code>), but h2c works fine for Node-to-Node demos.</li><li><code>server.on(&quot;stream&quot;, ...)</code> — fires for each new stream (each request). <code>headers[&quot;:path&quot;]</code> is the pseudo-header HTTP/2 uses instead of the HTTP/1.1 request line.</li><li><code>stream.pushStream({&quot;:path&quot;: &quot;/style.css&quot;}, ...)</code> — initiates a server push. The client receives this as a new <code>stream</code> event on its session *before* the main response finishes.</li><li><code>http2.connect(&quot;http://localhost:3400&quot;)</code> — opens one HTTP/2 session (one TCP connection). All three <code>client.request()</code> calls share it — no new connections.</li><li><code>client.on(&quot;stream&quot;, ...)</code> — the push arrives here; the client receives <code>/style.css</code> without having requested it.</li><li><code>req.end()</code> in client code — signals &quot;no request body&quot;; required even for GET requests in the http2 API.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Server push is largely deprecated.</strong> Chrome removed it in 2022. The <code>103 Early Hints</code> response code is the modern replacement for preloading critical resources. Don&#x27;t build new features that rely on server push.</blockquote>
+<blockquote><strong>Multiplexing helps most when there are many small resources.</strong> For a single large download (video, large binary) HTTP/2 multiplexing buys nothing over HTTP/1.1.</blockquote>
+<blockquote>HTTP/2 still uses TCP, which means TCP head-of-line blocking remains. On high-packet-loss mobile networks HTTP/2 can be slower than many parallel HTTP/1.1 connections. HTTP/3 fixes this.</blockquote>
+<ul><li>HTTP/2 is binary on the wire — you can&#x27;t <code>telnet</code> or <code>curl -v</code> and read it. Use <code>curl --http2 -v</code> which decodes frames for you.</li><li>HPACK saves the most on repetitive headers like <code>Cookie</code>, <code>Authorization</code>, and custom headers sent on every request.</li><li>Domain sharding and CSS sprites hurt HTTP/2 performance — they were HTTP/1.1 workarounds for HOL blocking and parallel connection limits that no longer apply.</li><li>Stream priorities (<code>PRIORITY</code> frame) let the client hint which resources are most important, but browser implementations vary.</li><li>Node&#x27;s <code>http2</code> module is built-in — <code>require(&quot;node:http2&quot;)</code>, no npm package needed.</li></ul>
+  <div class="nav"><a class="prv" href="0046-head-of-line-blocking.html"><span class="mini">← Previous</span>Head-of-line blocking</a><a class="nxt" href="0048-http-3-quic-udp-based.html"><span class="mini">Next →</span>HTTP/3 & QUIC (UDP-based)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:webdev.html", ID = "t47";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

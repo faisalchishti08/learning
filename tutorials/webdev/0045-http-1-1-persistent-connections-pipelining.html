@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HTTP/1.1 persistent connections & pipelining — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../webdev.html">Web Development</a> › 2. HTTP & Networking</div>
+  <div class="htitle">
+    <h1>HTTP/1.1 persistent connections & pipelining</h1>
+    <a class="back" href="../../webdev.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>HTTP/1.1 introduced two performance features that let clients squeeze more work out of a single TCP connection:</p>
+<p><strong>Persistent connections</strong> (also called keep-alive): after the server sends a response, the TCP connection *stays open*. The client can send the next request immediately without a new TCP handshake. This is the <strong>default</strong> in HTTP/1.1 — you have to explicitly opt out with <code>Connection: close</code>.</p>
+<p><strong>Pipelining</strong>: instead of waiting for response 1 before sending request 2, the client fires several requests in a row down the same connection *without waiting*. The server processes them and sends responses *in the same order*. This further reduces idle time.</p>
+<p>Both features target the same enemy: <strong>latency wasted on connection setup</strong>. A TCP handshake costs at minimum one round-trip (client→server→client); a TLS handshake adds one or two more. On a page with 50 assets that penalty adds up fast.</p>
+<h2>2. Why &amp; when</h2>
+<p>Before HTTP/1.1, every request opened a brand-new TCP connection. Browsers worked around this with <strong>parallel connections</strong> — opening 6–8 sockets to the same host simultaneously. That worked but wastes server file descriptors and amplifies congestion.</p>
+<p>Persistent connections remove the need for as many parallel sockets. Pipelining takes the next step: instead of the classic stop-and-wait rhythm:</p>
+<pre><code>send req1 → wait → recv res1 → send req2 → wait → recv res2 ...</code></pre>
+<p>Pipelining makes it:</p>
+<pre><code>send req1, req2, req3 → recv res1, res2, res3</code></pre>
+<p>In practice, <strong>pipelining is disabled in most browsers</strong> because many proxies and servers don&#x27;t implement the response-ordering requirement correctly — they silently reorder or drop responses. HTTP/2 multiplexing (the next topic) solves the same problem properly.</p>
+<h2>3. Core concept</h2>
+<p>Analogy: imagine ordering at a coffee bar. Without persistent connections you walk in, order, get your coffee, leave, and come back in through the queue for each additional item. With persistent connections you stay at the counter. With pipelining you shout &quot;latte, then croissant, then sparkling water&quot; all at once; the barista still makes them in order and slides them to you one by one.</p>
+<p>The key constraint: <strong>responses must be returned in the same order as requests</strong>. The server can&#x27;t mix them up. This serial ordering is what causes the head-of-line blocking problem (covered in the next tutorial).</p>
+<pre><code>Client                  Server
+  |-- GET /style.css --&gt;  |
+  |-- GET /app.js   --&gt;   |   (pipelined, no wait)
+  |-- GET /logo.png --&gt;   |
+  |                       | [processes in order]
+  |&lt;-- 200 style.css ---  |
+  |&lt;-- 200 app.js ------  |
+  |&lt;-- 200 logo.png ----  |</code></pre>
+<p><strong>Connection management headers:</strong></p>
+<table><thead><tr><th>Header</th><th>Meaning</th></tr></thead><tbody><tr><td><code>Connection: keep-alive</code></td><td>HTTP/1.0 opt-in (1.1 default)</td></tr><tr><td><code>Connection: close</code></td><td>close after this response</td></tr><tr><td><code>Keep-Alive: timeout=5, max=100</code></td><td>optional idle timeout &amp; request limit</td></tr></tbody></table>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Comparison of serial requests versus pipelined requests on a persistent connection">
+  <defs>
+    <marker id="a45" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="b45" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+  </defs>
+
+  <!-- Serial (left) -->
+  <text x="20" y="22" fill="#e6edf3" font-size="13" font-family="sans-serif" font-weight="bold">Serial (no pipeline)</text>
+  <rect x="20" y="30" width="60" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="50" y="45" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Client</text>
+  <rect x="180" y="30" width="60" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="210" y="45" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Server</text>
+
+  <!-- req1 -->
+  <line x1="80" y1="62" x2="178" y2="62" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a45)"/>
+  <text x="128" y="57" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">req 1</text>
+  <!-- res1 -->
+  <line x1="180" y1="80" x2="82" y2="80" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#b45)"/>
+  <text x="130" y="95" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">res 1</text>
+  <!-- req2 -->
+  <line x1="80" y1="110" x2="178" y2="110" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a45)"/>
+  <text x="128" y="105" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">req 2 (waited)</text>
+  <!-- res2 -->
+  <line x1="180" y1="128" x2="82" y2="128" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#b45)"/>
+  <text x="130" y="143" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">res 2</text>
+  <!-- req3 -->
+  <line x1="80" y1="158" x2="178" y2="158" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a45)"/>
+  <text x="128" y="153" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">req 3 (waited)</text>
+  <!-- res3 -->
+  <line x1="180" y1="176" x2="82" y2="176" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#b45)"/>
+  <text x="130" y="191" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">res 3</text>
+  <!-- idle annotation -->
+  <rect x="82" y="82" width="96" height="26" rx="3" fill="#1c2430" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="130" y="99" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">idle (waiting)</text>
+
+  <!-- Pipelined (right) -->
+  <text x="380" y="22" fill="#e6edf3" font-size="13" font-family="sans-serif" font-weight="bold">Pipelined</text>
+  <rect x="380" y="30" width="60" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="410" y="45" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Client</text>
+  <rect x="560" y="30" width="60" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="590" y="45" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Server</text>
+
+  <!-- 3 requests back-to-back -->
+  <line x1="440" y1="58" x2="558" y2="58" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a45)"/>
+  <text x="498" y="53" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">req 1</text>
+  <line x1="440" y1="72" x2="558" y2="72" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a45)"/>
+  <text x="498" y="68" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">req 2</text>
+  <line x1="440" y1="86" x2="558" y2="86" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a45)"/>
+  <text x="498" y="82" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">req 3</text>
+
+  <!-- responses in order -->
+  <line x1="560" y1="110" x2="442" y2="110" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#b45)"/>
+  <text x="500" y="106" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">res 1</text>
+  <line x1="560" y1="126" x2="442" y2="126" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#b45)"/>
+  <text x="500" y="122" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">res 2</text>
+  <line x1="560" y1="142" x2="442" y2="142" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#b45)"/>
+  <text x="500" y="138" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">res 3</text>
+  <text x="490" y="175" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">no idle gaps between requests</text>
+</svg>
+<p>Pipelining (right) fires all three requests before any response arrives, eliminating the idle gaps that serial requests (left) waste on waiting.</p>
+<h2>5. Runnable example</h2>
+<p>This Node.js demo creates a server and two clients: one serial, one that sends pipelined requests over a raw TCP socket.</p>
+<pre><code class="lang-js">// save as pipeline.js  —  node pipeline.js  (no installs)
+const http = require(&quot;http&quot;);
+const net  = require(&quot;net&quot;);
+
+const server = http.createServer((req, res) =&gt; {
+  const delay = req.url === &quot;/slow&quot; ? 80 : 0;
+  setTimeout(() =&gt; {
+    res.writeHead(200, { &quot;Content-Type&quot;: &quot;text/plain&quot; });
+    res.end(`Response for ${req.url}`);
+  }, delay);
+});
+
+server.listen(3200, () =&gt; {
+  console.log(&quot;--- Persistent connection (serial) ---&quot;);
+  makeSerialRequests(() =&gt; {
+    console.log(&quot;\n--- Pipelined requests (raw TCP) ---&quot;);
+    makePipelinedRequests(() =&gt; server.close());
+  });
+});
+
+function makeSerialRequests(done) {
+  const options = { hostname: &quot;localhost&quot;, port: 3200, path: &quot;/first&quot;, method: &quot;GET&quot;,
+                    headers: { Connection: &quot;keep-alive&quot; } };
+  const t0 = Date.now();
+  const req1 = http.request(options, (res1) =&gt; {
+    res1.resume();
+    res1.on(&quot;end&quot;, () =&gt; {
+      console.log(`req /first done at ${Date.now() - t0}ms`);
+      // second request on same connection
+      const req2 = http.request({ ...options, path: &quot;/second&quot; }, (res2) =&gt; {
+        res2.resume();
+        res2.on(&quot;end&quot;, () =&gt; {
+          console.log(`req /second done at ${Date.now() - t0}ms`);
+          done();
+        });
+      });
+      req2.end();
+    });
+  });
+  req1.end();
+}
+
+function makePipelinedRequests(done) {
+  const t0 = Date.now();
+  const socket = net.connect(3200, &quot;localhost&quot;, () =&gt; {
+    // Fire two requests without waiting for responses
+    socket.write(&quot;GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n&quot;);
+    socket.write(&quot;GET /fast HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n&quot;);
+    console.log(`Both requests sent at ${Date.now() - t0}ms`);
+  });
+
+  let buf = &quot;&quot;, count = 0;
+  socket.on(&quot;data&quot;, (chunk) =&gt; {
+    buf += chunk.toString();
+    const parts = buf.split(&quot;\r\n\r\n&quot;);
+    while (parts.length &gt; 1) {
+      count++;
+      const body = parts[1].split(&quot;\r\n&quot;)[0];
+      console.log(`response ${count} body: &quot;${body}&quot; at ${Date.now() - t0}ms`);
+      buf = parts.slice(2).join(&quot;\r\n\r\n&quot;);
+      parts.splice(0, 2);
+    }
+  });
+  socket.on(&quot;end&quot;, done);
+}</code></pre>
+<p><strong>How to run:</strong> <code>node pipeline.js</code> — compare the timing of serial vs pipelined requests.</p>
+<h2>6. Walkthrough</h2>
+<ul><li><code>makeSerialRequests</code>: uses Node&#x27;s <code>http.request</code> with <code>Connection: keep-alive</code>. After <code>res1</code> ends, a second <code>http.request</code> reuses the underlying socket transparently — the library manages the pool. This is persistent connections in action.</li><li><code>makePipelinedRequests</code>: drops to <code>net.connect</code> to write raw HTTP text, sending both requests before waiting for any response. This is pipelining: the server receives <code>/slow</code> and <code>/fast</code> in one TCP read.</li><li><code>delay</code> in the server handler: <code>/slow</code> takes 80ms while <code>/fast</code> is instant. Despite <code>/fast</code> finishing first, the pipelined responses still arrive *in request order* (<code>/slow</code> first, <code>/fast</code> second) because the server must not reorder them.</li><li>The <code>parts.split(&quot;\r\n\r\n&quot;)</code> parsing splits headers from body. A robust parser would check <code>Content-Length</code> instead; this works here because both bodies are short and arrive in separate segments.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Pipelining requires responses <strong>in the same order as requests</strong>. If your slow request is first (e.g. <code>/slow</code> before <code>/fast</code>), the fast response is stuck waiting behind the slow one. This is <strong>head-of-line blocking</strong> — the next tutorial goes deep on it.</blockquote>
+<blockquote>Most browsers <strong>never enable pipelining</strong> because buggy proxy servers silently drop or reorder pipelined responses. HTTP/2 solves this properly with multiplexing; don&#x27;t try to use HTTP/1.1 pipelining in production.</blockquote>
+<ul><li>HTTP/1.1 persistent connections are on by default — you opt *out* with <code>Connection: close</code>.</li><li>Node&#x27;s <code>http</code> module manages connection pooling automatically; you usually don&#x27;t write the raw socket code shown above.</li><li>The <code>Keep-Alive: timeout=N</code> header hints at how long to keep an idle socket alive — servers close idle connections to free resources.</li><li>Each HTTP/1.1 connection still only carries one response at a time in practice; HTTP/2 is the real solution to concurrency.</li></ul>
+  <div class="nav"><a class="prv" href="0044-http-0-9-1-0-1-1.html"><span class="mini">← Previous</span>HTTP/0.9, 1.0, 1.1</a><a class="nxt" href="0046-head-of-line-blocking.html"><span class="mini">Next →</span>Head-of-line blocking</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:webdev.html", ID = "t45";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

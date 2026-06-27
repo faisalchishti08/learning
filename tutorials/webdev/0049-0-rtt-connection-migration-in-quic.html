@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>0-RTT & connection migration in QUIC — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../webdev.html">Web Development</a> › 2. HTTP & Networking</div>
+  <div class="htitle">
+    <h1>0-RTT & connection migration in QUIC</h1>
+    <a class="back" href="../../webdev.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>QUIC offers two capabilities that go beyond what TCP can do:</p>
+<p><strong>0-RTT (zero round-trip time resumption):</strong> when a client reconnects to a server it has talked to before, it can send application data (an HTTP request) in the very first packet — before any handshake response arrives. The latency for the first byte drops from 1 RTT to 0 RTT.</p>
+<p><strong>Connection migration:</strong> a QUIC connection is identified by a <strong>Connection ID</strong> chosen by each endpoint, not by the IP-address:port 4-tuple that TCP uses. If the client&#x27;s IP changes (e.g., phone switches from Wi-Fi to cellular mid-session), the QUIC connection keeps working without interruption. The client sends a path validation probe on the new network path, and the server updates which address it sends to.</p>
+<h2>2. Why &amp; when</h2>
+<p><strong>0-RTT matters for repeat visitors.</strong> The first ever visit to a server still costs 1 RTT for the QUIC+TLS handshake. But 90%+ of requests are to hosts the client has seen before (CDNs, APIs, first-party servers). 0-RTT turns those repeat connections into zero-latency starts.</p>
+<p><strong>Connection migration matters for mobile users.</strong> A phone moving between Wi-Fi and cellular used to break HTTP/2 connections (TCP sees a new IP, tears down the socket). With QUIC, the same connection continues — important for streaming, in-progress API calls, and download resumption.</p>
+<p>You won&#x27;t configure these explicitly as a developer — they&#x27;re enabled automatically by QUIC-capable clients and servers. But knowing the limits is important:</p>
+<ul><li>0-RTT data is <strong>replay-vulnerable</strong>: an attacker who captures a 0-RTT packet can replay it (safe for GET; potentially dangerous for POST/PUT with side effects).</li><li>Connection migration requires the server&#x27;s load balancer to route by Connection ID, not by IP.</li></ul>
+<h2>3. Core concept</h2>
+<p><strong>0-RTT explained with session tickets:</strong></p>
+<p>Think of a hotel key card. The first time you check in, staff verify your ID (1 RTT handshake). On checkout you keep the key card (session ticket). Next visit you swipe the card before the desk agent even looks up — you&#x27;re already inside (0 RTT). The catch: if someone steals your key card and swipes it first, the front desk can&#x27;t tell the difference (replay attack).</p>
+<p>Technically: after a successful QUIC+TLS 1.3 handshake, the server sends the client a <strong>session ticket</strong> (an encrypted blob of session keys). On the next connection, the client sends this ticket in the first flight and can include HTTP requests in the same datagram. The server decrypts the ticket, verifies it hasn&#x27;t expired, and processes the requests — all before sending its own handshake response.</p>
+<p><strong>Connection migration explained:</strong></p>
+<pre><code>TCP: connection = (src IP, src port, dst IP, dst port)
+     IP changes → TCP tears down, reconnects from zero
+
+QUIC: connection = (Connection ID)
+     IP changes → client sends PATH_CHALLENGE on new path
+                  server responds PATH_RESPONSE
+                  connection continues, no data lost</code></pre>
+<p>The Connection ID is random bytes chosen by each endpoint. Servers may issue multiple Connection IDs to a client so it can rotate them when migrating (helps prevent linkability — a new path gets a new CID).</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 310" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="0-RTT resumption: client sends request in first packet using stored session ticket; connection migration: Connection ID stays stable across IP change">
+  <defs>
+    <marker id="a49" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="b49" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="c49" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#d29922"/></marker>
+  </defs>
+
+  <!-- 0-RTT section -->
+  <text x="20" y="22" fill="#e6edf3" font-size="13" font-family="sans-serif" font-weight="bold">0-RTT resumption</text>
+  <rect x="20" y="32" width="70" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="55" y="47" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Client</text>
+  <rect x="210" y="32" width="70" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="245" y="47" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Server</text>
+
+  <!-- First visit: 1-RTT -->
+  <text x="20" y="75" fill="#8b949e" font-size="10" font-family="sans-serif">First visit (1-RTT):</text>
+  <line x1="90" y1="85" x2="208" y2="85" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a49)"/>
+  <text x="148" y="80" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">ClientHello + QUIC init</text>
+  <line x1="210" y1="100" x2="92" y2="100" stroke="#8b949e" stroke-width="1.5" marker-end="url(#b49)"/>
+  <text x="150" y="114" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">ServerHello + session ticket</text>
+  <line x1="90" y1="125" x2="208" y2="125" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a49)"/>
+  <text x="148" y="120" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">GET /page (1-RTT)</text>
+
+  <!-- Second visit: 0-RTT -->
+  <text x="20" y="155" fill="#e6edf3" font-size="10" font-family="sans-serif">Resume visit (0-RTT):</text>
+  <line x1="90" y1="165" x2="208" y2="165" stroke="#d29922" stroke-width="2" marker-end="url(#c49)"/>
+  <text x="148" y="160" fill="#d29922" font-size="10" text-anchor="middle" font-family="sans-serif">ticket + GET /page (0-RTT data!)</text>
+  <line x1="210" y1="180" x2="92" y2="180" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#b49)"/>
+  <text x="150" y="194" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">200 OK (server accepted 0-RTT)</text>
+
+  <!-- Connection migration section -->
+  <text x="360" y="22" fill="#e6edf3" font-size="13" font-family="sans-serif" font-weight="bold">Connection migration</text>
+  <rect x="360" y="32" width="100" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="410" y="47" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Phone</text>
+  <rect x="580" y="32" width="80" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="620" y="47" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Server</text>
+
+  <!-- On Wi-Fi -->
+  <text x="360" y="72" fill="#8b949e" font-size="10" font-family="sans-serif">On Wi-Fi (IP: 192.168.1.5):</text>
+  <line x1="460" y1="82" x2="578" y2="82" stroke="#6db33f" stroke-width="2" marker-end="url(#a49)"/>
+  <text x="518" y="77" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">CID=a1b2 streaming</text>
+  <line x1="580" y1="96" x2="462" y2="96" stroke="#79c0ff" stroke-width="2" marker-end="url(#b49)"/>
+
+  <!-- Network change -->
+  <rect x="360" y="112" width="300" height="18" rx="3" fill="#d29922" opacity="0.15" stroke="#d29922" stroke-width="1"/>
+  <text x="510" y="125" fill="#d29922" font-size="10" text-anchor="middle" font-family="sans-serif">📶 switches to cellular (IP: 10.0.0.5)</text>
+
+  <!-- On cellular — same CID -->
+  <text x="360" y="150" fill="#8b949e" font-size="10" font-family="sans-serif">On cellular (new IP, same CID):</text>
+  <line x1="460" y1="160" x2="578" y2="160" stroke="#6db33f" stroke-width="2" marker-end="url(#a49)"/>
+  <text x="518" y="155" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">CID=a1b2 PATH_CHALLENGE</text>
+  <line x1="580" y1="174" x2="462" y2="174" stroke="#79c0ff" stroke-width="2" marker-end="url(#b49)"/>
+  <text x="518" y="188" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">PATH_RESPONSE → continue</text>
+  <line x1="460" y1="200" x2="578" y2="200" stroke="#6db33f" stroke-width="2" marker-end="url(#a49)"/>
+  <text x="518" y="216" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">CID=a1b2 streaming continues</text>
+
+  <!-- TCP comparison -->
+  <text x="360" y="250" fill="#f85149" font-size="11" font-family="sans-serif">TCP: IP change = connection reset = reload</text>
+  <text x="360" y="268" fill="#6db33f" font-size="11" font-family="sans-serif">QUIC: IP change = PATH_CHALLENGE = seamless</text>
+</svg>
+<p>0-RTT sends the HTTP request in the first packet (no wait); connection migration validates the new path with <code>PATH_CHALLENGE</code> and continues the same connection after an IP change.</p>
+<h2>5. Runnable example</h2>
+<p>We can&#x27;t run QUIC in plain Node without a library, but we can simulate the conceptual logic: session ticket storage and path validation signalling.</p>
+<pre><code class="lang-js">// save as quic-concepts.js  —  node quic-concepts.js  (no installs)
+
+// Simulates what QUIC + TLS 1.3 session tickets do conceptually.
+// Real QUIC uses ngtcp2/quiche libraries; this illustrates the state machine.
+
+const crypto = require(&quot;crypto&quot;);
+
+// --- Session ticket store (server side) ---
+const SESSION_KEY = crypto.randomBytes(32);
+
+function issueSessionTicket(clientId) {
+  const payload = JSON.stringify({ clientId, issued: Date.now() });
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(&quot;aes-256-gcm&quot;, SESSION_KEY, iv);
+  const enc = Buffer.concat([cipher.update(payload, &quot;utf8&quot;), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return { enc: enc.toString(&quot;base64&quot;), iv: iv.toString(&quot;base64&quot;), tag: tag.toString(&quot;base64&quot;) };
+}
+
+function verifySessionTicket(ticket) {
+  try {
+    const decipher = crypto.createDecipheriv(
+      &quot;aes-256-gcm&quot;,
+      SESSION_KEY,
+      Buffer.from(ticket.iv, &quot;base64&quot;)
+    );
+    decipher.setAuthTag(Buffer.from(ticket.tag, &quot;base64&quot;));
+    const payload = decipher.update(Buffer.from(ticket.enc, &quot;base64&quot;)) + decipher.final(&quot;utf8&quot;);
+    const { clientId, issued } = JSON.parse(payload);
+    const age = Date.now() - issued;
+    if (age &gt; 7 * 24 * 60 * 60 * 1000) throw new Error(&quot;ticket expired&quot;);
+    return { valid: true, clientId, ageMs: age };
+  } catch (e) {
+    return { valid: false, reason: e.message };
+  }
+}
+
+// --- Simulate 0-RTT flow ---
+console.log(&quot;=== First connection (1-RTT) ===&quot;);
+console.log(&quot;Client → Server: ClientHello&quot;);
+console.log(&quot;Server → Client: ServerHello + handshake&quot;);
+const ticket = issueSessionTicket(&quot;phone-abc&quot;);
+console.log(&quot;Server → Client: session ticket issued&quot;);
+console.log(&quot;Client: stores ticket for next visit\n&quot;);
+
+console.log(&quot;=== Second connection (0-RTT) ===&quot;);
+console.log(&quot;Client → Server: [ticket + GET /page] in first packet — no RTT wait&quot;);
+const result = verifySessionTicket(ticket);
+console.log(&quot;Server: ticket verification →&quot;, result);
+console.log(&quot;Server → Client: 200 OK (accepted 0-RTT data)\n&quot;);
+
+// --- Simulate connection migration ---
+console.log(&quot;=== Connection migration ===&quot;);
+const connectionId = crypto.randomBytes(8).toString(&quot;hex&quot;);
+console.log(`Connection established, CID=${connectionId}, src=192.168.1.5:50000`);
+console.log(&quot;... streaming 50% done ...\n&quot;);
+console.log(&quot;📶 Network change: Wi-Fi → Cellular (new src IP: 10.0.0.5)&quot;);
+console.log(`Client → Server: [CID=${connectionId}] PATH_CHALLENGE on 10.0.0.5`);
+console.log(`Server → Client: [CID=${connectionId}] PATH_RESPONSE — new path validated`);
+console.log(`Streaming continues on 10.0.0.5 with same CID=${connectionId}`);
+console.log(&quot;TCP would have reset; QUIC continues seamlessly.&quot;);</code></pre>
+<p><strong>How to run:</strong> <code>node quic-concepts.js</code> — observe the 0-RTT ticket flow and migration signalling.</p>
+<h2>6. Walkthrough</h2>
+<ul><li><code>issueSessionTicket</code>: encrypts a payload with AES-256-GCM (authenticated encryption). Real QUIC uses TLS 1.3 session tickets with negotiated cipher suites — same idea. The server keeps the key; the client keeps the encrypted blob.</li><li><code>verifySessionTicket</code>: decrypts and authenticates the ticket. The GCM auth tag ensures tampering is detected. Age check prevents very old tickets.</li><li><code>0-RTT</code> simulation prints the timing: after the first connection the client has a ticket. On the second, it sends the ticket *and* the HTTP request together — the server can respond without a handshake round trip.</li><li><code>connectionId = crypto.randomBytes(8).toString(&quot;hex&quot;)</code> — QUIC Connection IDs are typically 4–20 bytes of random. They don&#x27;t encode any routing info, so load balancers must use a consistent hashing scheme or store CID→server mappings.</li><li><code>PATH_CHALLENGE</code> / <code>PATH_RESPONSE</code>: the real QUIC frame names (RFC 9000 §8.2). After detecting a path change, the client sends a challenge frame with a random 8-byte payload; the server echoes it back to prove the new path is two-way reachable.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>0-RTT data is replay-vulnerable.</strong> A network attacker who records a 0-RTT packet can replay it later. TLS 1.3 makes idempotent requests (GET, HEAD) safe for 0-RTT; the spec recommends servers reject non-idempotent 0-RTT (POST, PUT) unless they have anti-replay protection in place.</blockquote>
+<blockquote><strong>Connection migration doesn&#x27;t work through symmetric NAT.</strong> Many NATs change the external port on every packet, breaking the CID routing assumption. QUIC connection migration works best on networks that preserve the client&#x27;s external address (most cellular networks, direct IPv6).</blockquote>
+<ul><li>0-RTT saves exactly 1 RTT on reconnections — meaningful on latency-sensitive mobile connections.</li><li>Connection IDs (CIDs) are what make QUIC connections portable across IP changes.</li><li>Servers should offer multiple CIDs per connection so clients can rotate them on path migration (preventing CID-based tracking).</li><li>Session ticket lifetime matters: shorter = more secure, longer = more 0-RTT hits. TLS 1.3 recommends ≤7 days.</li><li>Real QUIC in production requires a library: ngtcp2, quiche (Cloudflare/Mozilla), MsQuic (Microsoft), or lsquic (LiteSpeed).</li></ul>
+  <div class="nav"><a class="prv" href="0048-http-3-quic-udp-based.html"><span class="mini">← Previous</span>HTTP/3 & QUIC (UDP-based)</a><a class="nxt" href="0050-cache-control-directives-max-age-no-store-no-cache-private-p.html"><span class="mini">Next →</span>Cache-Control directives (max-age, no-store, no-cache, private, public)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:webdev.html", ID = "t49";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
