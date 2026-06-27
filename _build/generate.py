@@ -8,14 +8,14 @@ import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from shell import render
-import data_microservices, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps
+import data_microservices, data_genai, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps
 
 OUT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 # Ordered registry of every project (mirrors spring.io/projects active list).
-# data_microservices is an architecture area (not a spring.io project) — listed first.
+# data_microservices & data_genai are knowledge areas (not spring.io projects) — listed first.
 PROJECTS = []
-for mod in (data_microservices, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps):
+for mod in (data_microservices, data_genai, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps):
     PROJECTS.extend(mod.PROJECTS)
 
 
