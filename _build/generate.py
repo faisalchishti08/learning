@@ -7,7 +7,13 @@ Output: writes *.html into the parent (Learning/) directory.
 import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 
+import json
 from shell import render
+import topics as topicmod
+import md as mdmod
+import tutorial as tut
+import tutorial_shell
+import manifest as manifestmod
 import data_microservices, data_genai, data_webdev, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps
 
 OUT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -27,13 +33,72 @@ def total_topics(sections):
     return n
 
 
-def write_project(p):
+def write_project(p, links=None):
     storage_key = "spring-checklist:" + p["file"]
-    html = render(p["title"], p["logo"], p["subtitle"], storage_key, p["sections"])
+    html = render(p["title"], p["logo"], p["subtitle"], storage_key, p["sections"], links=links)
     path = os.path.join(OUT, p["file"])
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
     return total_topics(p["sections"])
+
+
+def build_tutorials():
+    """Build content/<card>/*.md -> tutorials/<card>/*.html. Returns {stem:{gi:relurl}}."""
+    content_root = os.path.join(OUT, "content")
+    linkmap = {}
+    lint_errors = []
+    for p in PROJECTS:
+        stem = topicmod.card_stem(p)
+        enum = {t["gi"]: t for t in topicmod.enumerate_topics(p)}
+        src_dir = os.path.join(content_root, stem)
+        if not os.path.isdir(src_dir):
+            continue
+        # collect built pages for this card (by gi) to compute prev/next
+        built = []
+        for fn in sorted(os.listdir(src_dir)):
+            if not fn.endswith(".md"):
+                continue
+            gi = int(fn.split("-", 1)[0])
+            text = open(os.path.join(src_dir, fn), encoding="utf-8").read()
+            fm, body = tut.parse(text)
+            errs = tut.lint(fm, body)
+            if errs:
+                lint_errors.append("%s/%s: %s" % (stem, fn, "; ".join(errs)))
+                continue
+            built.append((gi, fm, body))
+        built.sort(key=lambda x: x[0])
+        out_dir = os.path.join(OUT, "tutorials", stem)
+        os.makedirs(out_dir, exist_ok=True)
+        for idx, (gi, fm, body) in enumerate(built):
+            t = enum[gi]
+            slug = t["slug"]
+            fname = "%04d-%s.html" % (gi, slug)
+            relurl = "tutorials/%s/%s" % (stem, fname)
+            prev = None
+            nxt = None
+            if idx > 0:
+                pg = built[idx - 1][0]
+                prev = {"href": "%04d-%s.html" % (pg, enum[pg]["slug"]),
+                        "title": enum[pg]["text"]}
+            if idx < len(built) - 1:
+                ng = built[idx + 1][0]
+                nxt = {"href": "%04d-%s.html" % (ng, enum[ng]["slug"]),
+                       "title": enum[ng]["text"]}
+            meta = {
+                "title": fm.get("title", t["text"]),
+                "area": p.get("title", stem),
+                "section": t["section"],
+                "gi": gi,
+                "storage_key": "spring-checklist:%s.html" % stem,
+                "back_href": "../../%s.html" % stem,
+            }
+            page = tutorial_shell.render(meta, mdmod.convert(body), prev, nxt)
+            with open(os.path.join(out_dir, fname), "w", encoding="utf-8") as f:
+                f.write(page)
+            linkmap.setdefault(stem, {})[gi] = relurl
+    if lint_errors:
+        raise SystemExit("Tutorial lint failed:\n  " + "\n  ".join(lint_errors))
+    return linkmap
 
 
 INDEX_SHELL = r"""<!DOCTYPE html>
@@ -144,14 +209,27 @@ def main():
         grand += jn
         print(f"  {'java.html':<34} {jn:>4} topics")
 
+    linkmap = build_tutorials()
+    n_pages = sum(len(v) for v in linkmap.values())
+
     for p in PROJECTS:
-        n = write_project(p)
+        stem = topicmod.card_stem(p)
+        n = write_project(p, links=linkmap.get(stem))
         grand += n
         rows.append((p, n))
         print(f"  {p['file']:<34} {n:>4} topics")
 
     build_index(rows, grand)
+
+    def _exists(relpath):
+        return os.path.exists(os.path.join(OUT, relpath))
+    man = manifestmod.build(PROJECTS, _exists, pilot="webdev")
+    os.makedirs(os.path.join(OUT, "content"), exist_ok=True)
+    with open(os.path.join(OUT, "content", "_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(man, f, ensure_ascii=False, indent=1)
+
     print(f"\nindex.html written. {len(rows)} projects, {grand} total micro-topics.")
+    print(f"tutorial pages: {n_pages} built. next_phase: {man['next_phase']}")
 
 
 if __name__ == "__main__":

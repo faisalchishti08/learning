@@ -41,5 +41,14 @@ class TestManifest(unittest.TestCase):
         m = manifest.build([proj], lambda p: True)
         self.assertIsNone(m["next_phase"])
 
+    def test_pilot_card_takes_priority(self):
+        other = {"file": "other.html", "title": "Other", "sections": [
+            {"name": "X", "tag": "x", "groups": [{"g": "G", "items": ["o0"]}]}]}
+        web = make_project(1, 0)   # webdev with 1 HTML topic
+        # 'other' is listed first but webdev is the pilot -> webdev wins
+        m = manifest.build([other, web], lambda p: False, pilot="webdev")
+        self.assertEqual(m["next_phase"], "webdev/html#1")
+        self.assertEqual(m["pilot"], "webdev")
+
 if __name__ == "__main__":
     unittest.main()

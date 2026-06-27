@@ -91,6 +91,10 @@ SHELL = r"""<!DOCTYPE html>
   li.topic .idx{color:var(--muted); font-variant-numeric:tabular-nums; font-size:13px; min-width:52px; flex:none}
   li.topic label{cursor:pointer; font-size:14.5px}
   li.topic.done label{color:var(--muted); text-decoration:line-through}
+  li.topic .tlink{color:var(--text);text-decoration:none;border-bottom:1px dotted var(--accent);font-size:14.5px}
+  li.topic .tlink:hover{color:var(--accent)}
+  li.topic .pin{font-size:11px;opacity:.55;flex:none}
+  li.topic.done .tlink{color:var(--muted);text-decoration:line-through}
   code{background:var(--bar-bg); padding:1px 5px; border-radius:5px; font-size:13px; color:#79c0ff}
   .hidden{display:none !important}
   footer{text-align:center; color:var(--muted); font-size:12px; padding:24px}
@@ -134,6 +138,7 @@ SHELL = r"""<!DOCTYPE html>
 <script>
 const STORAGE_KEY = "__STORAGE_KEY__";
 const DATA = __DATA_JSON__;
+const LINKS = __LINKS_JSON__;
 
 const $ = (s,el=document)=>el.querySelector(s);
 const content = $("#content");
@@ -195,10 +200,14 @@ DATA.forEach((sec, si)=>{
       li.dataset.search = text.toLowerCase();
       const checked = state[id] ? "checked" : "";
       if (state[id]) li.classList.add("done");
+      const turl = LINKS[gi];
+      const labelHtml = turl
+        ? `<a class="tlink" href="${turl}">${text}</a> <span class="pin" title="Open tutorial">📖</span>`
+        : `<label for="${id}">${text}</label>`;
       li.innerHTML = `
         <input type="checkbox" id="${id}" ${checked}>
         <span class="idx">${gi}.</span>
-        <label for="${id}">${text}</label>`;
+        ${labelHtml}`;
       ul.appendChild(li);
     });
     body.appendChild(ul);
@@ -273,11 +282,12 @@ refresh();
 """
 
 
-def render(title, logo, subtitle, storage_key, data):
+def render(title, logo, subtitle, storage_key, data, links=None):
     html = SHELL
     html = html.replace("__TITLE__", title)
     html = html.replace("__LOGO__", logo)
     html = html.replace("__SUBTITLE__", subtitle)
     html = html.replace("__STORAGE_KEY__", storage_key)
     html = html.replace("__DATA_JSON__", json.dumps(data, ensure_ascii=False, indent=0))
+    html = html.replace("__LINKS_JSON__", json.dumps(links or {}, ensure_ascii=False))
     return html
