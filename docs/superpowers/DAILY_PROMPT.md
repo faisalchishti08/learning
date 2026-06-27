@@ -66,6 +66,10 @@ The gold-standard quality bar is `content/webdev/0001-clientserver-model.md` —
    ```bash
    python3 -m unittest discover -s _build/tests -p 'test_*.py' -v
    ```
+   Then the phase gate — must print `CHECK PASS` (exit 0). Do NOT commit if it fails:
+   ```bash
+   python3 _build/check_phase.py
+   ```
 
 5. Verify the phase landed:
    - The generator's printed `next_phase` advanced past the phase you just built.
