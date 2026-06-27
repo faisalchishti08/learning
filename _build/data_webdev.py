@@ -610,7 +610,307 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"9. State Management","tag":"state","groups":[
+    {"name":"9. React (In Depth)","tag":"react","groups":[
+      {"g":"Core & JSX","items":[
+        "What React is & its mental model",
+        "Declarative UI & describing UI as a function of state",
+        "JSX syntax & how it compiles (React.createElement / jsx runtime)",
+        "Expressions in JSX & embedding values",
+        "JSX attributes vs HTML attributes (className, htmlFor)",
+        "Fragments (<></>) & avoiding wrapper divs",
+        "Conditional rendering (ternary, &&, early return)",
+        "Rendering lists & the importance of keys",
+        "Keys: stable identity, anti-pattern of index keys",
+        "Spreading props in JSX",
+        "Children & composition",
+        "React elements vs components vs instances",
+        "The React tree & element type identity",
+        "StrictMode & its double-invocation in dev",
+        "Importing & the React 17+ automatic JSX transform",
+      ]},
+      {"g":"Components & Props","items":[
+        "Function components vs class components",
+        "Defining & exporting components",
+        "Props as read-only inputs",
+        "Default props & prop defaults via destructuring",
+        "PropTypes (runtime validation)",
+        "Children prop & render props",
+        "Component composition over inheritance",
+        "Container vs presentational components",
+        "Controlled vs uncontrolled components",
+        "Lifting state up",
+        "Prop drilling & its mitigation",
+        "Pure components & rendering purity rules",
+        "Component naming & file conventions",
+      ]},
+      {"g":"State & Events","items":[
+        "State concept & local component state",
+        "useState hook",
+        "State as a snapshot (state is read during render)",
+        "Functional updates (prev => next)",
+        "Batching of state updates",
+        "Updating objects & arrays immutably in state",
+        "Avoiding direct state mutation",
+        "Derived state & avoiding redundant state",
+        "Event handling (onClick, onChange, etc.)",
+        "Synthetic events & event pooling history",
+        "Passing event handlers as props",
+        "Preventing default & stopping propagation in React",
+        "Lazy initial state",
+      ]},
+      {"g":"Built-in Hooks","items":[
+        "Rules of hooks (top level, only in components/hooks)",
+        "useState",
+        "useEffect & the effect lifecycle",
+        "Effect dependency array semantics",
+        "Cleanup functions in effects",
+        "useLayoutEffect vs useEffect",
+        "useInsertionEffect",
+        "useRef for mutable values & DOM refs",
+        "useContext",
+        "useReducer",
+        "useMemo for memoized values",
+        "useCallback for memoized functions",
+        "useImperativeHandle",
+        "useId for stable unique IDs",
+        "useSyncExternalStore",
+        "useTransition",
+        "useDeferredValue",
+        "useDebugValue",
+        "use() for reading promises/context (React 19)",
+        "useActionState & useFormStatus (React 19)",
+        "useOptimistic (React 19)",
+      ]},
+      {"g":"Effects & Side Effects","items":[
+        "What counts as a side effect",
+        "When you might not need an effect",
+        "Synchronizing with external systems",
+        "Fetching data in effects (and pitfalls)",
+        "Race conditions & cleanup with AbortController",
+        "Dependency array exhaustiveness (eslint-plugin-react-hooks)",
+        "Stale closures in effects",
+        "Object/function dependencies & referential stability",
+        "Effects running on mount/update/unmount",
+        "Avoiding infinite effect loops",
+        "Reacting to props/state vs events",
+        "Custom hooks to extract effect logic",
+      ]},
+      {"g":"Hooks Patterns & Custom Hooks","items":[
+        "Writing custom hooks",
+        "Sharing stateful logic between components",
+        "Naming convention (use*)",
+        "Composing hooks",
+        "Common hooks (useToggle, useLocalStorage, useDebounce, useFetch)",
+        "Returning tuples vs objects from hooks",
+        "Encapsulating subscriptions",
+        "Testing custom hooks",
+      ]},
+      {"g":"Rendering & Reconciliation","items":[
+        "Render phase vs commit phase",
+        "Reconciliation algorithm & the diffing heuristics",
+        "The Fiber architecture",
+        "Why & when components re-render",
+        "Parent re-render cascading to children",
+        "Keys & list reconciliation",
+        "Bailing out of re-renders",
+        "React.memo & shallow prop comparison",
+        "Reset state via key prop",
+        "Render props pattern",
+        "Higher-order components (HOCs)",
+        "Avoiding unnecessary renders",
+      ]},
+      {"g":"Context & State Sharing","items":[
+        "createContext & Provider",
+        "Consuming context with useContext",
+        "Context default values",
+        "Context performance pitfalls (provider re-renders)",
+        "Splitting contexts to limit re-renders",
+        "Context + useReducer pattern",
+        "When context is the wrong tool",
+        "Selector pattern over context",
+      ]},
+      {"g":"Performance Optimization","items":[
+        "React.memo",
+        "useMemo & useCallback (when to use / overuse)",
+        "Referential equality & dependency stability",
+        "Code splitting with React.lazy",
+        "List virtualization (react-window / react-virtual)",
+        "Avoiding inline object/function props when costly",
+        "Lifting expensive computation out of render",
+        "Profiler API & React DevTools Profiler",
+        "Concurrent rendering & interruptibility",
+        "useTransition for non-urgent updates",
+        "useDeferredValue for deferring expensive renders",
+        "The React Compiler (auto-memoization)",
+        "Measuring before optimizing",
+      ]},
+      {"g":"Refs & DOM Access","items":[
+        "useRef for DOM nodes",
+        "Accessing & focusing DOM elements",
+        "Forwarding refs (forwardRef)",
+        "useImperativeHandle for exposing methods",
+        "Ref callbacks",
+        "Refs vs state (non-rendering mutable values)",
+        "Measuring DOM with refs & layout effects",
+        "Integrating non-React libraries via refs",
+        "ref as a prop (React 19)",
+      ]},
+      {"g":"Forms & Inputs","items":[
+        "Controlled inputs",
+        "Uncontrolled inputs & defaultValue",
+        "Handling multiple inputs",
+        "Form submission & preventDefault",
+        "Form libraries (React Hook Form, Formik)",
+        "Validation strategies",
+        "Form actions & useActionState (React 19)",
+        "useFormStatus for pending state",
+        "File inputs & uncontrolled patterns",
+        "Debounced & throttled inputs",
+      ]},
+      {"g":"Error Handling","items":[
+        "Error boundaries (class components)",
+        "componentDidCatch & getDerivedStateFromError",
+        "Fallback UI",
+        "react-error-boundary library",
+        "Errors in event handlers (not caught by boundaries)",
+        "Async errors & Suspense error handling",
+        "Resetting error boundaries",
+      ]},
+      {"g":"Suspense & Code Splitting","items":[
+        "React.lazy & dynamic import",
+        "Suspense & fallback UI",
+        "Suspense for data fetching",
+        "Streaming & SuspenseList concepts",
+        "Route-based code splitting",
+        "Preloading lazy components",
+        "Loading & skeleton states",
+      ]},
+      {"g":"Concurrent React","items":[
+        "Concurrent rendering model",
+        "Interruptible rendering",
+        "Automatic batching (React 18)",
+        "startTransition & useTransition",
+        "useDeferredValue",
+        "Transitions vs urgent updates",
+        "createRoot & the new root API",
+        "Strict effects & double mounting in dev",
+      ]},
+      {"g":"Server-Side & RSC","items":[
+        "Client-side rendering with React",
+        "Server-side rendering (renderToString / renderToPipeableStream)",
+        "Hydration & hydration mismatches",
+        "Selective & progressive hydration",
+        "Streaming SSR with Suspense",
+        "React Server Components (RSC)",
+        "Server vs Client components ('use client' / 'use server')",
+        "Server Actions",
+        "Data fetching in Server Components",
+        "Serialization boundaries & passing props to client",
+        "Static vs dynamic rendering",
+      ]},
+      {"g":"Routing (React Router)","items":[
+        "Client-side routing concepts",
+        "BrowserRouter vs HashRouter",
+        "Routes & Route definitions",
+        "Nested routes & layouts (Outlet)",
+        "Dynamic segments & useParams",
+        "Links & NavLink",
+        "Programmatic navigation (useNavigate)",
+        "Search params (useSearchParams)",
+        "Loaders & actions (data router)",
+        "Route protection & redirects",
+        "Lazy routes & code splitting",
+        "Scroll restoration",
+      ]},
+      {"g":"Styling in React","items":[
+        "Inline styles & the style object",
+        "CSS classes & className",
+        "CSS Modules",
+        "CSS-in-JS (styled-components, Emotion)",
+        "Utility CSS (Tailwind) with React",
+        "Conditional classes (clsx / classnames)",
+        "Theming & design tokens",
+        "Scoped & co-located styles",
+        "Zero-runtime CSS-in-JS",
+      ]},
+      {"g":"State Management Ecosystem","items":[
+        "Local state vs global state in React",
+        "Context API for global state",
+        "Redux & Redux Toolkit",
+        "Zustand",
+        "Jotai & atomic state",
+        "Recoil",
+        "MobX",
+        "XState for state machines",
+        "Server state with TanStack Query / SWR",
+        "Choosing the right state solution",
+      ]},
+      {"g":"Data Fetching","items":[
+        "Fetching in effects vs frameworks",
+        "Loading, error & success states",
+        "Race conditions & cancellation",
+        "Caching & deduplication",
+        "TanStack Query (queries, mutations, invalidation)",
+        "SWR (stale-while-revalidate)",
+        "Optimistic updates",
+        "Pagination & infinite scroll",
+        "Suspense-based data fetching",
+        "use() with promises (React 19)",
+      ]},
+      {"g":"TypeScript with React","items":[
+        "Typing props & component types",
+        "FC vs explicit return typing",
+        "Typing useState & generics",
+        "Typing useRef (DOM vs mutable)",
+        "Typing event handlers",
+        "Typing children (ReactNode)",
+        "Typing context",
+        "Typing reducers & actions",
+        "Generic components",
+        "Typing custom hooks",
+        "Discriminated unions for component variants",
+      ]},
+      {"g":"Testing React","items":[
+        "React Testing Library philosophy",
+        "Rendering components in tests",
+        "Querying by role/text/label",
+        "Firing events (userEvent)",
+        "Testing hooks (renderHook)",
+        "Mocking modules & network (MSW)",
+        "Async assertions (findBy, waitFor)",
+        "Snapshot testing",
+        "Component testing (Cypress/Playwright)",
+        "Jest vs Vitest with React",
+      ]},
+      {"g":"Ecosystem & Meta-Frameworks","items":[
+        "Create React App (legacy) & Vite for React",
+        "Next.js (App Router & Pages Router)",
+        "Remix / React Router framework",
+        "Gatsby",
+        "React Native (cross-platform overview)",
+        "Component libraries (MUI, Ant, Chakra, shadcn/ui)",
+        "Headless UI & Radix primitives",
+        "Storybook for component development",
+        "React DevTools",
+        "ESLint plugin for React & hooks",
+      ]},
+      {"g":"Patterns & Best Practices","items":[
+        "Composition patterns (compound components)",
+        "Render props vs hooks",
+        "Higher-order components (legacy pattern)",
+        "Provider pattern",
+        "Container/presentational split",
+        "Custom hooks for logic reuse",
+        "Colocating state with usage",
+        "Avoiding prop drilling",
+        "Keeping components small & focused",
+        "Folder structure & feature-based organization",
+        "Accessibility in React components",
+        "Common anti-patterns & pitfalls",
+      ]},
+    ]},
+
+    {"name":"10. State Management","tag":"state","groups":[
       {"g":"Concepts","items":[
         "Local vs global state",
         "UI state vs server state vs URL state",
@@ -646,7 +946,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"10. Build Tools & Tooling","tag":"build","groups":[
+    {"name":"11. Build Tools & Tooling","tag":"build","groups":[
       {"g":"Module Bundlers","items":[
         "What a bundler does",
         "Webpack (entry, output, loaders, plugins)",
@@ -692,7 +992,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"11. Backend Web Development","tag":"backend","groups":[
+    {"name":"12. Backend Web Development","tag":"backend","groups":[
       {"g":"Server Fundamentals","items":[
         "What a web server does",
         "Application server vs web server",
@@ -737,7 +1037,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"12. APIs & Communication","tag":"apis","groups":[
+    {"name":"13. APIs & Communication","tag":"apis","groups":[
       {"g":"REST","items":[
         "REST principles & constraints",
         "Resources & URIs",
@@ -790,7 +1090,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"13. Data & Persistence","tag":"data","groups":[
+    {"name":"14. Data & Persistence","tag":"data","groups":[
       {"g":"Databases","items":[
         "Relational databases (SQL)",
         "NoSQL (document, key-value, column, graph)",
@@ -823,7 +1123,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"14. Authentication & Authorization","tag":"auth","groups":[
+    {"name":"15. Authentication & Authorization","tag":"auth","groups":[
       {"g":"Authentication","items":[
         "Authentication vs authorization",
         "Password-based auth & hashing (bcrypt, argon2)",
@@ -851,7 +1151,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"15. Web Security","tag":"security","groups":[
+    {"name":"16. Web Security","tag":"security","groups":[
       {"g":"Common Vulnerabilities","items":[
         "OWASP Top 10 overview",
         "Cross-Site Scripting (XSS) — stored, reflected, DOM",
@@ -883,7 +1183,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"16. Performance & Optimization","tag":"performance","groups":[
+    {"name":"17. Performance & Optimization","tag":"performance","groups":[
       {"g":"Loading Performance","items":[
         "Critical rendering path optimization",
         "Minification & compression (gzip, brotli)",
@@ -920,7 +1220,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"17. Accessibility (a11y)","tag":"a11y","groups":[
+    {"name":"18. Accessibility (a11y)","tag":"a11y","groups":[
       {"g":"Foundations","items":[
         "Why accessibility matters",
         "WCAG principles (Perceivable, Operable, Understandable, Robust)",
@@ -952,7 +1252,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"18. SEO & Discoverability","tag":"seo","groups":[
+    {"name":"19. SEO & Discoverability","tag":"seo","groups":[
       {"g":"Technical SEO","items":[
         "How search engines crawl & index",
         "robots.txt",
@@ -970,7 +1270,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"19. Rendering Strategies","tag":"rendering","groups":[
+    {"name":"20. Rendering Strategies","tag":"rendering","groups":[
       {"g":"Approaches","items":[
         "Client-Side Rendering (CSR)",
         "Server-Side Rendering (SSR)",
@@ -986,7 +1286,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"20. Progressive Web Apps","tag":"pwa","groups":[
+    {"name":"21. Progressive Web Apps","tag":"pwa","groups":[
       {"g":"PWA","items":[
         "What makes an app a PWA",
         "Web App Manifest",
@@ -1002,7 +1302,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"21. Testing","tag":"testing","groups":[
+    {"name":"22. Testing","tag":"testing","groups":[
       {"g":"Types","items":[
         "Testing pyramid",
         "Unit testing",
@@ -1029,7 +1329,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"22. DevOps, Deployment & Hosting","tag":"devops","groups":[
+    {"name":"23. DevOps, Deployment & Hosting","tag":"devops","groups":[
       {"g":"Version Control & CI/CD","items":[
         "Git fundamentals & branching strategies",
         "Pull requests & code review",
@@ -1063,7 +1363,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"23. Web Standards & Compatibility","tag":"standards","groups":[
+    {"name":"24. Web Standards & Compatibility","tag":"standards","groups":[
       {"g":"Standards & Browsers","items":[
         "W3C, WHATWG & TC39",
         "ECMAScript proposal process (stages)",
@@ -1081,7 +1381,7 @@ WEBDEV = {
       ]},
     ]},
 
-    {"name":"24. Spring — How Spring Helps","tag":"spring","groups":[
+    {"name":"25. Spring — How Spring Helps","tag":"spring","groups":[
       {"g":"Serving the Web Layer","items":[
         "Spring MVC for server-rendered & REST endpoints",
         "@Controller vs @RestController",
