@@ -1,6 +1,6 @@
 # MPSC Rajyaseva — Master Syllabus Tracker
 
-A pure-HTML study tracker for the **MPSC Rajyaseva (Maharashtra State Services) Examination** — Prelims + Mains + Interview. English medium. **1,488 micro-topics** across 16 subjects, mapped to the new descriptive Mains pattern (2025+).
+A pure-HTML study tracker for the **MPSC Rajyaseva (Maharashtra State Services) Examination** — Prelims + Mains + Interview. English medium. **1,711 micro-topics** across 17 subjects (incl. a dedicated Maharashtra Static GK page — ~45% of MPSC is state-specific), mapped to the new descriptive Mains pattern (2025+) and enriched against past-paper trends.
 
 ## Use it
 
@@ -16,7 +16,7 @@ Progress is per-browser. Clearing browser data clears progress.
 ## Subjects
 
 General Studies (Prelims + Mains): History & Indian Culture · Geography · Polity & Governance · Economy · Environment & Ecology · Science & Technology · Indian Society & Social Justice · International Relations · Internal Security · Ethics (GS-4).
-Prelims: CSAT / Aptitude. Mains: Language Papers (Marathi + English) · Essay · Geography Optional (Papers 8 & 9). Cross-cutting: Current Affairs. Final: Interview / Personality Test.
+Prelims: CSAT / Aptitude. Mains: Language Papers (Marathi + English) · Essay · Geography Optional (Papers 8 & 9). Cross-cutting: Current Affairs. State-specific: Maharashtra (Static GK). Final: Interview / Personality Test.
 
 ## Rebuild
 
