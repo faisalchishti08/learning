@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Custom HealthIndicator — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-boot.html">Spring Boot</a> › 8. Production-Ready (Actuator)</div>
+  <div class="htitle">
+    <h1>Custom HealthIndicator</h1>
+    <a class="back" href="../../spring-boot.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>custom <code>HealthIndicator</code></strong> is a Spring bean you write to add application-specific health checks to <code>/actuator/health</code>. Implement the <code>HealthIndicator</code> interface (or <code>ReactiveHealthIndicator</code> for WebFlux), override <code>health()</code>, and return a <code>Health</code> object. Spring Boot auto-detects it, names it from the class name (strips the <code>HealthIndicator</code> suffix), and includes it in the aggregated health response.</p>
+<h2>2. Why &amp; when</h2>
+<p>Auto-configured indicators cover infrastructure (DB, Redis, Kafka). Custom indicators cover <strong>application-specific dependencies</strong> that Spring doesn&#x27;t know about:</p>
+<ul><li>A downstream REST API your service calls.</li><li>A third-party payment or email provider SDK.</li><li>A license or quota check (e.g., &quot;API rate limit is not exhausted&quot;).</li><li>A custom connection pool or resource handle.</li></ul>
+<p>Write a custom indicator whenever you want a failing external dependency to surface in the health endpoint automatically.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">@Component
+public class PaymentGatewayHealthIndicator implements HealthIndicator {
+
+    private final PaymentClient client;
+
+    public PaymentGatewayHealthIndicator(PaymentClient client) {
+        this.client = client;
+    }
+
+    @Override
+    public Health health() {
+        try {
+            long start = System.currentTimeMillis();
+            boolean ok = client.ping();
+            long ms = System.currentTimeMillis() - start;
+
+            return ok
+                ? Health.up().withDetail(&quot;responseTimeMs&quot;, ms).build()
+                : Health.down().withDetail(&quot;reason&quot;, &quot;ping returned false&quot;).build();
+
+        } catch (Exception ex) {
+            return Health.down(ex).build();  // includes exception message in details
+        }
+    }
+}</code></pre>
+<p><code>Health</code> builder methods:</p>
+<ul><li><code>Health.up()</code> — status <code>UP</code>.</li><li><code>Health.down()</code> — status <code>DOWN</code>.</li><li><code>Health.down(exception)</code> — status <code>DOWN</code> + exception message in details.</li><li><code>Health.outOfService()</code> — status <code>OUT_OF_SERVICE</code> (maintenance, not a failure).</li><li><code>Health.unknown()</code> — status <code>UNKNOWN</code> (check inconclusive).</li><li><code>.withDetail(key, value)</code> — add a detail entry.</li><li><code>.withDetails(map)</code> — add multiple detail entries.</li><li><code>.build()</code> — create the <code>Health</code> object.</li></ul>
+<p>The component name in the JSON response: <code>PaymentGatewayHealthIndicator</code> → <code>paymentGateway</code>.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Custom HealthIndicator bean checks external API and returns Health object; aggregator includes it in /actuator/health">
+  <!-- Bean -->
+  <rect x="10" y="55" width="240" height="100" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="130" y="78" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif" font-weight="bold">@Component</text>
+  <text x="130" y="94" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">PaymentGatewayHealthIndicator</text>
+  <text x="130" y="110" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">implements HealthIndicator</text>
+  <text x="130" y="128" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">Health health() {</text>
+  <text x="130" y="142" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">  client.ping() → UP/DOWN</text>
+
+  <!-- Arrow to external dep -->
+  <line x1="253" y1="105" x2="328" y2="90" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#chia)"/>
+  <rect x="332" y="60" width="130" height="60" rx="6" fill="#0d1117" stroke="#8b949e" stroke-width="1"/>
+  <text x="397" y="85" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Payment API</text>
+  <text x="397" y="100" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">external dependency</text>
+
+  <!-- Arrow to aggregator -->
+  <line x1="253" y1="118" x2="490" y2="100" stroke="#6db33f" stroke-width="2" marker-end="url(#chib)"/>
+  <text x="375" y="132" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">Health.up() / Health.down()</text>
+
+  <!-- Aggregator -->
+  <rect x="495" y="65" width="175" height="80" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="582" y="86" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif" font-weight="bold">/actuator/health</text>
+  <text x="582" y="103" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">paymentGateway: UP</text>
+  <text x="582" y="118" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">  responseTimeMs: 42</text>
+  <text x="582" y="133" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">(auto-included)</text>
+
+  <defs>
+    <marker id="chia" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="chib" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>The bean is auto-detected; <code>health()</code> is called on each GET of <code>/actuator/health</code>, and the result appears under <code>components.paymentGateway</code>.</p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// CustomHealthIndicatorDemo.java — full custom HealthIndicator implementation
+// How to run: java CustomHealthIndicatorDemo.java  (JDK 17+, no dependencies)
+// Real Spring Boot: @Component class implementing HealthIndicator auto-appears in /actuator/health
+
+import java.util.*;
+
+public class CustomHealthIndicatorDemo {
+
+    // Mirrors Spring&#x27;s Health class
+    record Health(String status, Map&lt;String, Object&gt; details) {
+        static Builder status(String s) { return new Builder(s); }
+        static Builder up()           { return new Builder(&quot;UP&quot;); }
+        static Builder down()         { return new Builder(&quot;DOWN&quot;); }
+        static Builder outOfService() { return new Builder(&quot;OUT_OF_SERVICE&quot;); }
+        static Builder unknown()      { return new Builder(&quot;UNKNOWN&quot;); }
+        static Health down(Exception e) {
+            return new Health(&quot;DOWN&quot;, Map.of(&quot;error&quot;, e.getMessage()));
+        }
+
+        static class Builder {
+            final String status;
+            final Map&lt;String, Object&gt; details = new LinkedHashMap&lt;&gt;();
+            Builder(String s) { this.status = s; }
+            Builder withDetail(String k, Object v) { details.put(k, v); return this; }
+            Health build() { return new Health(status, Map.copyOf(details)); }
+        }
+    }
+
+    // === Custom HealthIndicator 1: external HTTP API ===
+    static Health paymentGatewayHealth(boolean reachable, long responseMs) {
+        if (!reachable) return Health.down().withDetail(&quot;error&quot;, &quot;connection refused&quot;).build();
+        if (responseMs &gt; 5000) return Health.unknown().withDetail(&quot;responseMs&quot;, responseMs).build();
+        return Health.up().withDetail(&quot;responseMs&quot;, responseMs).build();
+    }
+
+    // === Custom HealthIndicator 2: license check ===
+    static Health licenseHealth(int usedSeats, int maxSeats) {
+        int pct = usedSeats * 100 / maxSeats;
+        Health.Builder b = pct &lt; 90 ? Health.up() : pct &lt; 100 ? Health.unknown() : Health.outOfService();
+        return b.withDetail(&quot;usedSeats&quot;, usedSeats)
+                .withDetail(&quot;maxSeats&quot;, maxSeats)
+                .withDetail(&quot;usagePercent&quot;, pct)
+                .build();
+    }
+
+    // === Custom HealthIndicator 3: downstream queue depth ===
+    static Health queueHealth(int depth, int maxDepth) {
+        return depth &lt; maxDepth
+            ? Health.up().withDetail(&quot;queueDepth&quot;, depth).build()
+            : Health.down().withDetail(&quot;queueDepth&quot;, depth)
+                           .withDetail(&quot;maxDepth&quot;, maxDepth)
+                           .withDetail(&quot;reason&quot;, &quot;queue full — consumers lagging&quot;).build();
+    }
+
+    static void printHealth(String component, Health h) {
+        System.out.printf(&quot;  %-20s status=%-12s details=%s%n&quot;, component, h.status(), h.details());
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;=== Custom HealthIndicator Demo ===\n&quot;);
+
+        // Scenario 1: all healthy
+        System.out.println(&quot;--- Scenario 1: Healthy system ---&quot;);
+        printHealth(&quot;paymentGateway&quot;, paymentGatewayHealth(true, 42));
+        printHealth(&quot;license&quot;,        licenseHealth(80, 100));
+        printHealth(&quot;orderQueue&quot;,     queueHealth(150, 1000));
+
+        // Scenario 2: payment gateway down
+        System.out.println(&quot;\n--- Scenario 2: Payment gateway unreachable ---&quot;);
+        printHealth(&quot;paymentGateway&quot;, paymentGatewayHealth(false, -1));
+        printHealth(&quot;license&quot;,        licenseHealth(80, 100));
+        printHealth(&quot;orderQueue&quot;,     queueHealth(150, 1000));
+
+        // Scenario 3: license approaching limit
+        System.out.println(&quot;\n--- Scenario 3: License at 95%, queue backing up ---&quot;);
+        printHealth(&quot;paymentGateway&quot;, paymentGatewayHealth(true, 150));
+        printHealth(&quot;license&quot;,        licenseHealth(95, 100));
+        printHealth(&quot;orderQueue&quot;,     queueHealth(1000, 1000));
+
+        // Scenario 4: exception during health check
+        System.out.println(&quot;\n--- Scenario 4: Health check throws ---&quot;);
+        try {
+            throw new RuntimeException(&quot;NullPointerException in payment client&quot;);
+        } catch (Exception e) {
+            printHealth(&quot;paymentGateway&quot;, Health.down(e));
+        }
+
+        System.out.println(&quot;\n--- Class naming convention ---&quot;);
+        System.out.println(&quot;PaymentGatewayHealthIndicator → component name: &#x27;paymentGateway&#x27;&quot;);
+        System.out.println(&quot;LicenseHealthIndicator        → component name: &#x27;license&#x27;&quot;);
+        System.out.println(&quot;OrderQueueHealthIndicator     → component name: &#x27;orderQueue&#x27;&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java CustomHealthIndicatorDemo.java</code></p>
+<h2>6. Walkthrough</h2>
+<ul><li><strong><code>paymentGatewayHealth</code></strong>: three states: DOWN (unreachable), UNKNOWN (too slow), UP (fast response). The response-time detail is visible to ops in the health response when <code>show-details=always</code>.</li><li><strong><code>licenseHealth</code></strong>: uses <code>outOfService()</code> for 100% seat usage — this signals &quot;stop sending traffic&quot; without implying a failure that needs restarting.</li><li><strong><code>queueHealth</code></strong>: a full queue means consumers are lagging. <code>down()</code> with a descriptive <code>reason</code> detail makes the alert actionable.</li><li><strong>Exception scenario</strong>: <code>Health.down(exception)</code> captures the exception message automatically — avoids losing the root cause in the health detail.</li><li><strong>Naming</strong>: Spring strips the <code>HealthIndicator</code> suffix from the class name and camelCases the remainder. <code>OrderQueueHealthIndicator</code> → <code>orderQueue</code>. No configuration needed.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Every call to <code>GET /actuator/health</code> runs <strong>all <code>health()</code> methods synchronously</strong>. If your payment gateway has a 30-second timeout, the health endpoint will take 30 seconds to respond. Always set short timeouts (&lt; 2 s) inside health checks and return <code>UNKNOWN</code> on timeout.</blockquote>
+<blockquote><code>Health.down(exception)</code> includes the <strong>exception message and stack trace in the details</strong> — visible to anyone who can see health details. Sanitise sensitive messages in the catch block before adding them.</blockquote>
+<ul><li>For WebFlux: implement <code>ReactiveHealthIndicator</code> returning <code>Mono&lt;Health&gt;</code> — Spring calls <code>health()</code> non-blockingly.</li><li><code>CompositeHealthContributor.fromMap(...)</code> groups multiple related checks under one component with sub-indicators.</li><li><code>@ConditionalOnProperty(&quot;myapp.payments.health.enabled&quot;)</code> on the <code>@Component</code> lets ops disable a slow health check without redeploying.</li><li>Test: inject a mock <code>PaymentClient</code>, call <code>indicator.health()</code>, assert the <code>status</code> and detail values — no Spring context needed.</li></ul>
+  <div class="nav"><a class="prv" href="0188-auto-configured-healthindicators.html"><span class="mini">← Previous</span>Auto-configured HealthIndicators</a><a class="nxt" href="0190-liveness-readiness-probes-kubernetes.html"><span class="mini">Next →</span>Liveness & readiness probes (Kubernetes)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-boot.html", ID = "t189";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

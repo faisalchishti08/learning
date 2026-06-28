@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Liveness & readiness probes (Kubernetes) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-boot.html">Spring Boot</a> › 8. Production-Ready (Actuator)</div>
+  <div class="htitle">
+    <h1>Liveness & readiness probes (Kubernetes)</h1>
+    <a class="back" href="../../spring-boot.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>When a Spring Boot application runs in <strong>Kubernetes</strong>, the platform polls two HTTP paths to decide what to do with a pod:</p>
+<ul><li><strong>Liveness probe</strong> (<code>/actuator/health/liveness</code>): &quot;Is this process alive?&quot; Failure → pod restarts.</li><li><strong>Readiness probe</strong> (<code>/actuator/health/readiness</code>): &quot;Is this pod ready to receive traffic?&quot; Failure → pod removed from the Service, traffic stops — no restart.</li></ul>
+<p>Enable both with one property: <code>management.endpoint.health.probes.enabled=true</code>. Spring Boot then registers the <code>liveness</code> and <code>readiness</code> health groups automatically.</p>
+<h2>2. Why &amp; when</h2>
+<p><strong>Without proper probes:</strong> Kubernetes starts routing traffic as soon as the container starts, before Spring context is fully initialized — users get 503s. Or, a deadlocked pod keeps receiving traffic because k8s doesn&#x27;t know it&#x27;s broken.</p>
+<p><strong>Liveness</strong> should only test JVM/process liveness — not external dependencies. A DB outage should <strong>not</strong> restart the pod (all pods would restart simultaneously, turning a recoverable outage into a cascading failure).</p>
+<p><strong>Readiness</strong> should test everything needed to serve traffic — DB, caches, downstream APIs. A DOWN readiness removes the pod from the load balancer, stopping traffic without a restart.</p>
+<h2>3. Core concept</h2>
+<p>Spring Boot 2.3+ tracks two availability states:</p>
+<ul><li><strong><code>LivenessState</code></strong>: <code>CORRECT</code> (normal) or <code>BROKEN</code> (application detected an unrecoverable error).</li><li><strong><code>ReadinessState</code></strong>: <code>ACCEPTING_TRAFFIC</code> (normal) or <code>REFUSING_TRAFFIC</code> (startup/shutdown/maintenance).</li></ul>
+<p><code>ApplicationAvailability</code> bean manages these states. Health groups map to them:</p>
+<ul><li><code>liveness</code> group → checks <code>livenessState</code> indicator.</li><li><code>readiness</code> group → checks <code>readinessState</code> + all other <code>HealthIndicator</code>s by default.</li></ul>
+<p>Application events automatically update readiness state:</p>
+<ul><li>Context refresh complete → <code>ACCEPTING_TRAFFIC</code>.</li><li><code>ApplicationContext.close()</code> called → <code>REFUSING_TRAFFIC</code> (before shutdown hooks run).</li></ul>
+<p>Kubernetes pod spec:</p>
+<pre><code class="lang-yaml">livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8080
+  initialDelaySeconds: 30
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8080
+  initialDelaySeconds: 10</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 700 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kubernetes polls liveness and readiness probes; liveness failure triggers restart, readiness failure removes pod from service">
+  <!-- Kubernetes -->
+  <rect x="10" y="35" width="130" height="140" rx="8" fill="#0d1117" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="75" y="58" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif" font-weight="bold">Kubernetes</text>
+  <text x="75" y="76" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">livenessProbe</text>
+  <text x="75" y="90" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">fail → restart pod</text>
+  <rect x="20" y="100" width="100" height="1" fill="#8b949e"/>
+  <text x="75" y="120" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">readinessProbe</text>
+  <text x="75" y="135" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">fail → remove from</text>
+  <text x="75" y="148" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Service endpoints</text>
+
+  <!-- Arrows to app -->
+  <line x1="143" y1="83" x2="240" y2="83" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#kpa)"/>
+  <text x="192" y="76" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">GET /health/liveness</text>
+
+  <line x1="143" y1="120" x2="240" y2="120" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#kpa)"/>
+  <text x="192" y="113" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">GET /health/readiness</text>
+
+  <!-- Spring Boot Pod -->
+  <rect x="245" y="30" width="240" height="155" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="365" y="52" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif" font-weight="bold">Spring Boot Pod</text>
+
+  <!-- Liveness -->
+  <rect x="260" y="60" width="210" height="44" rx="5" fill="#0d1117" stroke="#6db33f" stroke-width="1"/>
+  <text x="365" y="77" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">/actuator/health/liveness</text>
+  <text x="365" y="92" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">livenessState: CORRECT → UP → 200</text>
+
+  <!-- Readiness -->
+  <rect x="260" y="112" width="210" height="60" rx="5" fill="#0d1117" stroke="#6db33f" stroke-width="1"/>
+  <text x="365" y="129" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">/actuator/health/readiness</text>
+  <text x="365" y="144" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">readinessState + db + redis</text>
+  <text x="365" y="159" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">any DOWN → 503 → removed from LB</text>
+
+  <!-- Outcomes -->
+  <rect x="520" y="55" width="155" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="597" y="73" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">200 → pod alive</text>
+  <text x="597" y="86" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">503 → pod restarted</text>
+
+  <rect x="520" y="110" width="155" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="597" y="128" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">200 → serves traffic</text>
+  <text x="597" y="141" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">503 → no traffic, no restart</text>
+
+  <line x1="488" y1="83" x2="518" y2="75" stroke="#6db33f" stroke-width="1.5" marker-end="url(#kpb)"/>
+  <line x1="488" y1="130" x2="518" y2="130" stroke="#6db33f" stroke-width="1.5" marker-end="url(#kpb)"/>
+
+  <text x="350" y="198" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">management.endpoint.health.probes.enabled=true creates both groups automatically</text>
+
+  <defs>
+    <marker id="kpa" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="kpb" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>Liveness restart on JVM failure; readiness traffic-removal on dependency failure — different responses, one property enables both.</p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// LivenessReadinessDemo.java — simulates liveness/readiness lifecycle during startup, operation, failure
+// How to run: java LivenessReadinessDemo.java  (JDK 17+, no dependencies)
+// Real Spring Boot: management.endpoint.health.probes.enabled=true  (auto-wires these probes)
+
+import java.util.*;
+
+public class LivenessReadinessDemo {
+
+    enum LivenessState  { CORRECT, BROKEN }
+    enum ReadinessState { ACCEPTING_TRAFFIC, REFUSING_TRAFFIC }
+
+    static LivenessState  liveness  = LivenessState.CORRECT;
+    static ReadinessState readiness = ReadinessState.REFUSING_TRAFFIC; // starts refusing during startup
+    static boolean        dbUp      = true;
+
+    static Map&lt;String, Object&gt; getLivenessHealth() {
+        String status = liveness == LivenessState.CORRECT ? &quot;UP&quot; : &quot;DOWN&quot;;
+        return Map.of(&quot;status&quot;, status, &quot;livenessState&quot;, liveness);
+    }
+
+    static Map&lt;String, Object&gt; getReadinessHealth() {
+        String stateStatus = readiness == ReadinessState.ACCEPTING_TRAFFIC ? &quot;UP&quot; : &quot;OUT_OF_SERVICE&quot;;
+        String dbStatus    = dbUp ? &quot;UP&quot; : &quot;DOWN&quot;;
+        String overall     = (stateStatus.equals(&quot;UP&quot;) &amp;&amp; dbStatus.equals(&quot;UP&quot;)) ? &quot;UP&quot; : &quot;DOWN&quot;;
+        return Map.of(&quot;status&quot;, overall, &quot;readinessState&quot;, readiness, &quot;db&quot;, dbStatus);
+    }
+
+    static void checkProbes(String phase) {
+        var live  = getLivenessHealth();
+        var ready = getReadinessHealth();
+        System.out.printf(&quot;[%s]%n&quot;, phase);
+        System.out.printf(&quot;  /health/liveness  → %s  %s%n&quot;, live.get(&quot;status&quot;),
+                live.get(&quot;status&quot;).equals(&quot;UP&quot;) ? &quot;(pod alive)&quot; : &quot;(k8s will RESTART)&quot;);
+        System.out.printf(&quot;  /health/readiness → %s  %s%n&quot;, ready.get(&quot;status&quot;),
+                ready.get(&quot;status&quot;).equals(&quot;UP&quot;) ? &quot;(traffic flows)&quot; : &quot;(pod REMOVED from Service)&quot;);
+        System.out.println();
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(&quot;=== Liveness &amp; Readiness Probes (Kubernetes) Demo ===\n&quot;);
+
+        // 1. Pod starting: liveness=UP but readiness=OUT_OF_SERVICE (no traffic yet)
+        checkProbes(&quot;Phase 1: Startup — context loading&quot;);
+
+        // 2. Context fully loaded (ApplicationContext refresh event → ACCEPTING_TRAFFIC)
+        readiness = ReadinessState.ACCEPTING_TRAFFIC;
+        checkProbes(&quot;Phase 2: Ready — context fully loaded&quot;);
+
+        // 3. Database goes down
+        dbUp = false;
+        checkProbes(&quot;Phase 3: DB outage — readiness DOWN, liveness still UP&quot;);
+        System.out.println(&quot;  ✓ Kubernetes removes pod from load balancer (traffic stops)&quot;);
+        System.out.println(&quot;  ✓ Pod is NOT restarted (liveness is still UP)&quot;);
+        System.out.println(&quot;  ✓ When DB recovers, readiness → UP → pod rejoins Service\n&quot;);
+
+        // 4. DB recovers
+        dbUp = true;
+        checkProbes(&quot;Phase 4: DB recovered — back to serving traffic&quot;);
+
+        // 5. Application detects unrecoverable state
+        liveness = LivenessState.BROKEN;
+        checkProbes(&quot;Phase 5: Unrecoverable error — liveness BROKEN&quot;);
+        System.out.println(&quot;  ✓ Kubernetes restarts the pod (liveness failed)&quot;);
+        System.out.println(&quot;  ✓ Both probes fail now: pod is removed AND restarted\n&quot;);
+
+        // 6. Graceful shutdown
+        liveness  = LivenessState.CORRECT;
+        readiness = ReadinessState.REFUSING_TRAFFIC; // set before shutdown hooks
+        dbUp      = true;
+        checkProbes(&quot;Phase 6: Graceful shutdown — readiness REFUSING before stop&quot;);
+        System.out.println(&quot;  ✓ Traffic drained before process exits&quot;);
+        System.out.println(&quot;  ✓ Set via: ApplicationAvailability.publishEvent(ReadinessState.REFUSING_TRAFFIC)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java LivenessReadinessDemo.java</code></p>
+<h2>6. Walkthrough</h2>
+<ul><li><strong>Phase 1</strong>: readiness starts as <code>REFUSING_TRAFFIC</code> — Spring Boot sets this on startup before the context finishes loading. K8s won&#x27;t send traffic until the pod is ready.</li><li><strong>Phase 2</strong>: the context refresh event fires → <code>ACCEPTING_TRAFFIC</code> → readiness becomes UP → k8s adds pod to Service endpoints.</li><li><strong>Phase 3</strong>: DB goes down → readiness DOWN → pod removed from Service. But liveness is still UP (JVM is fine) → no restart. When DB recovers (Phase 4), readiness recovers automatically.</li><li><strong>Phase 5</strong>: application calls <code>availability.publishEvent(LivenessState.BROKEN)</code> (or throws an unhandled exception in a background thread) → liveness DOWN → k8s restarts the pod.</li><li><strong>Phase 6</strong>: before <code>SIGTERM</code>, set readiness to <code>REFUSING_TRAFFIC</code> → k8s stops routing traffic → shutdown hooks drain in-flight requests → process exits cleanly.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Never include external dependencies (DB, Redis) in the <strong>liveness</strong> group. Their outage should cause readiness failure (traffic removal), not liveness failure (pod restart) — which would restart all pods simultaneously during an outage.</blockquote>
+<blockquote><code>initialDelaySeconds</code> on the k8s probe must be long enough for Spring Boot to start (typically 20-60 seconds). Under-tuned values cause liveness failures during slow startup, creating a restart loop.</blockquote>
+<ul><li><code>management.endpoint.health.probes.enabled=true</code> — one property enables both groups.</li><li>Spring Boot auto-sets readiness to <code>REFUSING_TRAFFIC</code> during context close (graceful shutdown) if <code>spring.lifecycle.timeout-per-shutdown-phase</code> is configured.</li><li>Signal BROKEN liveness: inject <code>ApplicationEventPublisher</code> and publish <code>AvailabilityChangeEvent.publish(publisher, this, LivenessState.BROKEN)</code>.</li><li>Customise readiness group: <code>management.endpoint.health.group.readiness.include=readinessState,db</code> to explicitly control which indicators affect readiness.</li><li>Kubernetes deployment example: set <code>failureThreshold: 3, periodSeconds: 10</code> — three consecutive failures before restarting. Single transient failure doesn&#x27;t trigger a restart.</li></ul>
+  <div class="nav"><a class="prv" href="0189-custom-healthindicator.html"><span class="mini">← Previous</span>Custom HealthIndicator</a><a class="nxt" href="0191-info-endpoint-infocontributor.html"><span class="mini">Next →</span>Info endpoint & InfoContributor</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-boot.html", ID = "t190";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
