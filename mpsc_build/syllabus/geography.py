@@ -200,6 +200,10 @@ SUBJECT = {
                 _t("geo-world-latlong", "Latitudes, longitudes, time zones"),
                 _t("geo-world-motions", "Earth's motions, seasons, eclipses"),
                 _t("geo-world-straits", "Important straits, canals and water bodies"),
+                _t("geo-world-mountains", "Major mountain ranges and peaks of the world"),
+                _t("geo-world-rivers", "Major rivers and river basins of the world"),
+                _t("geo-world-deserts", "Major deserts and grasslands of the world"),
+                _t("geo-world-volcanoes", "Major volcanoes and earthquake zones"),
             ]},
         ]},
         {"name": "Geophysical Phenomena & Hazards", "groups": [
@@ -216,6 +220,18 @@ SUBJECT = {
             ]},
         ]},
         {"name": "Economic & Resource Geography (Concepts)", "groups": [
+            {"name": "Agro-climatic & Planning Regions", "topics": [
+                _t("geo-acz-india", "Agro-climatic zones of India"),
+                _t("geo-acz-cropzones", "Crop-climate regions and farming systems"),
+                _t("geo-acz-mh", "Agro-climatic zones of Maharashtra", ("PRE", "MAINS"), True),
+                _t("geo-acz-droughtindia", "Drought and flood-prone regions of India"),
+            ]},
+            {"name": "Settlement & Cultural Geography", "topics": [
+                _t("geo-cul-tribes", "Major tribes and their distribution"),
+                _t("geo-cul-languages", "Linguistic regions of India"),
+                _t("geo-cul-religion", "Religious composition and distribution"),
+                _t("geo-cul-megacities", "Million-plus cities and metropolitan regions"),
+            ]},
             {"name": "Location & Resources", "topics": [
                 _t("geo-conc-primary", "Primary, secondary, tertiary, quaternary activities", ("MAINS",)),
                 _t("geo-conc-factors", "Factors of industrial location", ("MAINS",)),

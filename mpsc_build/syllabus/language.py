@@ -88,5 +88,13 @@ SUBJECT = {
                 _t("lang-ec-confusable", "Commonly confused words"),
             ]},
         ]},
+        {"name": "Translation & Precis Practice", "groups": [
+            {"name": "Practice Detail", "topics": [
+                _t("lang-tp-translationtech", "Translation techniques and pitfalls", ("MAINS",), True),
+                _t("lang-tp-precissteps", "Precis writing — step-by-step method"),
+                _t("lang-tp-officialvocab", "Official and administrative vocabulary", ("MAINS",), True),
+                _t("lang-tp-reportwriting", "Report and application writing"),
+            ]},
+        ]},
     ],
 }

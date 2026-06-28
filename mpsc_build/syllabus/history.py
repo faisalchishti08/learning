@@ -180,6 +180,15 @@ SUBJECT = {
                 _t("hist-music-carnatic", "Carnatic music — trinity, forms"),
                 _t("hist-music-folk", "Folk music traditions of India"),
                 _t("hist-lang-classical", "Classical languages of India (incl. Marathi)", ("PRE", "MAINS"), True),
+                _t("hist-music-instruments", "Musical instruments — string, wind, percussion"),
+            ]},
+            {"name": "Religious & Cultural Movements", "topics": [
+                _t("hist-cult-buddhistart", "Buddhist art — Gandhara, Mathura, Amaravati schools"),
+                _t("hist-cult-temples", "Temple styles — Nagara, Dravida, Vesara with examples"),
+                _t("hist-cult-painting", "Painting schools — Rajput, Pahari, Mughal, Deccan"),
+                _t("hist-cult-puppetry", "Puppetry, handicrafts and folk theatre"),
+                _t("hist-cult-fairs", "Religious fairs and pilgrimage traditions"),
+                _t("hist-cult-coins", "Numismatics — coinage through ages"),
             ]},
         ]},
         {"name": "Bhakti & Sufi Movements", "groups": [
@@ -297,6 +306,10 @@ SUBJECT = {
                 _t("hist-press-women", "Women in the freedom struggle"),
                 _t("hist-press-moderate-leaders", "Moderate leaders — Naoroji, Gokhale, Mehta"),
                 _t("hist-press-gandhi-ideas", "Gandhian ideas — Satyagraha, Sarvodaya, Trusteeship"),
+                _t("hist-press-womenfreedom", "Women freedom fighters — Rani Lakshmibai, Sarojini Naidu, Aruna Asaf Ali"),
+                _t("hist-press-dalitmovement", "Dalit movement and Ambedkar's role", ("PRE", "MAINS"), True),
+                _t("hist-press-leftmovement", "Communist and socialist movements"),
+                _t("hist-press-princely", "Princely states and people's movements"),
             ]},
         ]},
         {"name": "Maharashtra Modern History", "groups": [
@@ -336,6 +349,15 @@ SUBJECT = {
                 _t("hist-wh-colonization", "Colonization and decolonization", ("MAINS",)),
                 _t("hist-wh-coldwar", "Cold War and its end", ("MAINS",)),
                 _t("hist-wh-un", "Formation of the UN and world order", ("MAINS",)),
+            ]},
+            {"name": "Modern Indian Thinkers & Movements", "topics": [
+                _t("hist-tk-rammohan", "Raja Ram Mohan Roy and the renaissance"),
+                _t("hist-tk-vidyasagar", "Ishwar Chandra Vidyasagar and reforms"),
+                _t("hist-tk-syedahmed", "Sir Syed Ahmed Khan and Aligarh movement"),
+                _t("hist-tk-naoroji", "Dadabhai Naoroji — drain theory"),
+                _t("hist-tk-savarkar", "V.D. Savarkar and Hindu Mahasabha", ("PRE", "MAINS"), True),
+                _t("hist-tk-tagore", "Rabindranath Tagore and cultural nationalism"),
+                _t("hist-tk-tribalrevolts", "Kol, Khasi, Bhil and Ramosi revolts", ("PRE", "MAINS"), True),
             ]},
             {"name": "Political Philosophies", "topics": [
                 _t("hist-wh-capitalism", "Capitalism — ideas and impact", ("MAINS",)),

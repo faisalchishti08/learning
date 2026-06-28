@@ -91,5 +91,13 @@ SUBJECT = {
                 _t("int-ka-history", "History and culture quick awareness"),
             ]},
         ]},
+        {"name": "Maharashtra Deep-Dive Detail", "groups": [
+            {"name": "State Detail", "topics": [
+                _t("int-md-geography", "Maharashtra geography quick facts", ("INT",), True),
+                _t("int-md-economy", "Maharashtra economy and key sectors", ("INT",), True),
+                _t("int-md-leaders", "Maharashtra leaders and historical figures", ("INT",), True),
+                _t("int-md-issues", "Current state issues — agrarian, urban, water", ("INT",), True),
+            ]},
+        ]},
     ],
 }

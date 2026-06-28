@@ -110,5 +110,15 @@ SUBJECT = {
                 {"id": "eth-ap-discretion", "text": "Use of discretion and accountability in administration", "stages": ["MAINS"]},
             ]},
         ]},
+        {"name": "Ethics Toolkit & Terminology", "groups": [
+            {"name": "Toolkit", "topics": [
+                {"id": "eth-tk-terms", "text": "Key terminology — values, ethics, morals, attitude, integrity", "stages": ["MAINS"]},
+                {"id": "eth-tk-quotes", "text": "Famous ethical quotes and their application", "stages": ["MAINS"]},
+                {"id": "eth-tk-thinkers-applied", "text": "Applying moral thinkers to case studies", "stages": ["MAINS"]},
+                {"id": "eth-tk-codes-india", "text": "Administrative ethics and codes of conduct in India", "stages": ["MAINS"]},
+                {"id": "eth-tk-nolan", "text": "Nolan Committee principles of public life", "stages": ["MAINS"]},
+                {"id": "eth-tk-rti-probity", "text": "Transparency, RTI and probity linkage", "stages": ["MAINS"]},
+            ]},
+        ]},
     ],
 }

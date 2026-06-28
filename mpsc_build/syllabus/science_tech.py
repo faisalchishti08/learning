@@ -147,6 +147,23 @@ SUBJECT = {
                 _t("sci-ap-dailylife", "Science in everyday phenomena"),
             ]},
         ]},
+        {"name": "Health, Disease & Biology Detail", "groups": [
+            {"name": "Health Science", "topics": [
+                _t("sci-hd-vectorborne", "Vector-borne diseases (malaria, dengue)"),
+                _t("sci-hd-lifestyle", "Lifestyle and non-communicable diseases"),
+                _t("sci-hd-vaccines", "Vaccines, immunization and pandemics"),
+                _t("sci-hd-bloodgroups", "Blood groups, organs and human systems"),
+                _t("sci-hd-hormones", "Hormones, enzymes and deficiency diseases"),
+            ]},
+        ]},
+        {"name": "Computers & Data Science", "groups": [
+            {"name": "Computing Detail", "topics": [
+                _t("sci-cd-hardware", "Computer hardware and software basics"),
+                _t("sci-cd-programming", "Programming and operating systems"),
+                _t("sci-cd-datatypes", "Data, databases and analytics"),
+                _t("sci-cd-cybercrime", "Cyber crime types and prevention"),
+            ]},
+        ]},
         {"name": "S&T Policy & IPR", "groups": [
             {"name": "Policy", "topics": [
                 _t("sci-pol-policy", "Science and technology policy of India", ("MAINS",)),

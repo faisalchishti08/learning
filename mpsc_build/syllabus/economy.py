@@ -162,6 +162,27 @@ SUBJECT = {
                 _t("eco-mh-services", "Services and IT sector in Maharashtra", ("PRE", "MAINS"), True),
             ]},
         ]},
+        {"name": "Government Schemes & Programmes", "groups": [
+            {"name": "Flagship Schemes", "topics": [
+                _t("eco-gs-mgnrega", "MGNREGA and rural employment"),
+                _t("eco-gs-pmkisan", "PM-KISAN and farmer income support"),
+                _t("eco-gs-jandhan", "PM Jan Dhan Yojana and financial inclusion"),
+                _t("eco-gs-mudra", "MUDRA, Stand-Up and Start-Up India"),
+                _t("eco-gs-pmay", "PM Awas Yojana (housing)"),
+                _t("eco-gs-ujjwala", "Ujjwala, Saubhagya and energy access"),
+                _t("eco-gs-skill", "Skill India and PMKVY"),
+                _t("eco-gs-insurance", "Social security and insurance schemes"),
+            ]},
+        ]},
+        {"name": "Statistical & Macro Indicators", "groups": [
+            {"name": "Indicators", "topics": [
+                _t("eco-st-nso", "National statistical system (NSO, MOSPI)"),
+                _t("eco-st-indices", "Key indices — IIP, CPI, WPI"),
+                _t("eco-st-surveys", "Economic Survey and budget documents"),
+                _t("eco-st-census", "Census and sample surveys"),
+                _t("eco-st-niti-indices", "NITI Aayog indices (SDG, Aspirational Districts)"),
+            ]},
+        ]},
         {"name": "Contemporary Economic Issues", "groups": [
             {"name": "Current Themes", "topics": [
                 _t("eco-ci-digital", "Digital economy and fintech", ("MAINS",)),

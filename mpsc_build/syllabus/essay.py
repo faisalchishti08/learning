@@ -92,5 +92,15 @@ SUBJECT = {
                 _t("essay-pr-pyqs", "Previous year essay topics analysis"),
             ]},
         ]},
+        {"name": "Additional Theme Banks", "groups": [
+            {"name": "More Themes", "topics": [
+                _t("essay-at-health", "Health, pandemic and public welfare themes"),
+                _t("essay-at-education", "Education and knowledge society themes"),
+                _t("essay-at-internalsecurity", "Security and nationalism themes"),
+                _t("essay-at-agriculture", "Agriculture and rural India themes"),
+                _t("essay-at-international", "Globalization and world order themes"),
+                _t("essay-at-governance", "Reforms and good governance themes"),
+            ]},
+        ]},
     ],
 }

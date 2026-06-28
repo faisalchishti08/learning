@@ -6,7 +6,7 @@ _MODULES = [
     "history", "geography", "polity", "economy", "environment",
     "science_tech", "society", "international_relations", "internal_security",
     "ethics", "csat", "language", "essay", "current_affairs",
-    "interview", "geography_optional",
+    "interview", "geography_optional", "maharashtra",
 ]
 
 

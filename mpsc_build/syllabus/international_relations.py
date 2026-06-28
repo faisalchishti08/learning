@@ -105,5 +105,15 @@ SUBJECT = {
                 _t("ir-bd-defence", "Defence cooperation and arms imports"),
             ]},
         ]},
+        {"name": "Treaties, Conventions & Concepts", "groups": [
+            {"name": "IR Concepts", "topics": [
+                _t("ir-tc-treaties", "Major treaties and conventions India is party to"),
+                _t("ir-tc-disarmament", "Disarmament and non-proliferation (NPT, CTBT, NSG)"),
+                _t("ir-tc-humanrights", "International human rights instruments"),
+                _t("ir-tc-sovereignty", "Sovereignty, intervention and R2P", ("MAINS",)),
+                _t("ir-tc-balanceofpower", "Balance of power and multipolarity", ("MAINS",)),
+                _t("ir-tc-indoocean", "Indo-Pacific strategy and Indian Ocean security", ("MAINS",)),
+            ]},
+        ]},
     ],
 }

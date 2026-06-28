@@ -142,6 +142,24 @@ SUBJECT = {
                 _t("env-mh-drought", "Drought and water management", ("PRE", "MAINS"), True),
             ]},
         ]},
+        {"name": "Wildlife & Conservation Detail", "groups": [
+            {"name": "Conservation Programs", "topics": [
+                _t("env-wc-tigerreserves", "Tiger reserves and Project Tiger detail"),
+                _t("env-wc-elephant", "Elephant reserves and corridors"),
+                _t("env-wc-flagship", "Flagship and umbrella species"),
+                _t("env-wc-migratory", "Migratory species and CMS"),
+                _t("env-wc-redlist", "IUCN status of Indian species"),
+                _t("env-wc-zoos", "Zoos, botanical gardens and gene banks"),
+            ]},
+        ]},
+        {"name": "Energy & Environment", "groups": [
+            {"name": "Energy-Environment", "topics": [
+                _t("env-ee-renewabletargets", "Renewable energy targets and policy", ("MAINS",)),
+                _t("env-ee-energyefficiency", "Energy efficiency and conservation"),
+                _t("env-ee-cleanenergy", "Clean energy missions (solar, hydrogen)"),
+                _t("env-ee-carbonsink", "Carbon sinks and afforestation"),
+            ]},
+        ]},
         {"name": "Disaster Management", "groups": [
             {"name": "Disaster Concepts", "topics": [
                 _t("env-dm-types", "Types of disasters — natural and man-made"),

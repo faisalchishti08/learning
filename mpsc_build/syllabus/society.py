@@ -164,5 +164,23 @@ SUBJECT = {
                 _t("soc-he-mortality", "Maternal and child health indicators"),
             ]},
         ]},
+        {"name": "Sociological Concepts", "groups": [
+            {"name": "Concepts", "topics": [
+                _t("soc-co-socialization", "Socialization and social institutions", ("MAINS",)),
+                _t("soc-co-socialcontrol", "Social control and deviance", ("MAINS",)),
+                _t("soc-co-secularization", "Secularization and modernization"),
+                _t("soc-co-culture", "Culture, ethnocentrism and cultural lag"),
+                _t("soc-co-socialcapital", "Social capital and community", ("MAINS",)),
+            ]},
+        ]},
+        {"name": "Demographic & Welfare Detail", "groups": [
+            {"name": "Detail", "topics": [
+                _t("soc-dw-povertyline", "Poverty line estimation committees", ("MAINS",)),
+                _t("soc-dw-foodsecurity", "National Food Security Act"),
+                _t("soc-dw-rightsbased", "Rights-based laws (MGNREGA, RTE, RTI)", ("MAINS",)),
+                _t("soc-dw-tribalrights", "Tribal rights and PESA/FRA", ("PRE", "MAINS"), True),
+                _t("soc-dw-migrationissues", "Migrant labour and informal sector issues", ("MAINS",)),
+            ]},
+        ]},
     ],
 }

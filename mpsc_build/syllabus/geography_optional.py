@@ -244,5 +244,15 @@ SUBJECT = {
                 _t("geoopt-in-maharashtra", "Geography of Maharashtra — regional study", ("MAINS",), True),
             ]},
         ]},
+        {"name": "P2 · Techniques & Field Study", "groups": [
+            {"name": "Geographical Techniques", "topics": [
+                _t("geoopt-tech-maps", "Map projections and cartography"),
+                _t("geoopt-tech-statistics", "Statistical methods in geography"),
+                _t("geoopt-tech-remote", "Remote sensing and aerial photography"),
+                _t("geoopt-tech-gis", "GIS and spatial analysis"),
+                _t("geoopt-tech-fieldwork", "Field study and survey techniques"),
+                _t("geoopt-tech-diagrams", "Diagrams, graphs and thematic mapping"),
+            ]},
+        ]},
     ],
 }

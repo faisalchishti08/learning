@@ -114,5 +114,13 @@ SUBJECT = {
                 _t("is-sg-community", "Community policing and public cooperation"),
             ]},
         ]},
+        {"name": "Maharashtra & Regional Security", "groups": [
+            {"name": "State Security", "topics": [
+                _t("is-mh-naxal", "Naxalism in Gadchiroli and Maharashtra", ("MAINS", "INT"), True),
+                _t("is-mh-coastal", "Mumbai coastal security (post-26/11)", ("MAINS", "INT"), True),
+                _t("is-mh-police", "Maharashtra police and ATS", ("MAINS", "INT"), True),
+                _t("is-mh-communal", "Communal harmony and law & order", ("MAINS", "INT"), True),
+            ]},
+        ]},
     ],
 }

@@ -111,5 +111,23 @@ SUBJECT = {
                 _t("ca-in-economy", "Global economic developments"),
             ]},
         ]},
+        {"name": "Days, Themes & Misc", "groups": [
+            {"name": "Misc Trackers", "topics": [
+                _t("ca-mc-days", "Important national and international days"),
+                _t("ca-mc-themes", "Year/day themes and observances"),
+                _t("ca-mc-firstevents", "First/biggest/longest in news"),
+                _t("ca-mc-books", "Books and authors in news"),
+                _t("ca-mc-defence-exercises", "Defence exercises and operations"),
+                _t("ca-mc-apps", "Government apps, portals and initiatives"),
+            ]},
+        ]},
+        {"name": "Geographical Indications & Heritage", "groups": [
+            {"name": "GI & Heritage", "topics": [
+                _t("ca-gi-tags", "Geographical Indication (GI) tags"),
+                _t("ca-gi-mh", "GI tags and heritage of Maharashtra", ("PRE", "MAINS", "INT"), True),
+                _t("ca-gi-unesco", "New UNESCO sites and recognitions"),
+                _t("ca-gi-ramsar", "New Ramsar sites and protected areas"),
+            ]},
+        ]},
     ],
 }

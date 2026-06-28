@@ -104,6 +104,16 @@ SUBJECT = {
                 _t("csat-di-comparison", "Comparison and growth-rate problems"),
             ]},
         ]},
+        {"name": "Verbal & Non-Verbal Reasoning", "groups": [
+            {"name": "Reasoning Detail", "topics": [
+                _t("csat-vr-statementconclusion", "Statement and conclusion"),
+                _t("csat-vr-assumptions", "Statement and assumptions"),
+                _t("csat-vr-strongweak", "Strong and weak arguments"),
+                _t("csat-vr-courseofaction", "Course of action"),
+                _t("csat-vr-figureseries", "Figure series and pattern completion"),
+                _t("csat-vr-embedded", "Embedded and hidden figures"),
+            ]},
+        ]},
         {"name": "Exam Strategy", "groups": [
             {"name": "Strategy", "topics": [
                 _t("csat-st-timemanagement", "Time management in CSAT"),

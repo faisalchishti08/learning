@@ -182,6 +182,11 @@ SUBJECT = {
                 _t("pol-am-101st", "101st Amendment — GST"),
                 _t("pol-am-103rd", "103rd Amendment — EWS reservation"),
                 _t("pol-am-recent", "Recent amendments and significance"),
+                _t("pol-am-91st", "91st Amendment — size of council of ministers"),
+                _t("pol-am-97th", "97th Amendment — cooperative societies", ("PRE", "MAINS"), True),
+                _t("pol-am-100th", "100th Amendment — land boundary agreement"),
+                _t("pol-am-102nd", "102nd Amendment — National Commission for BC"),
+                _t("pol-am-105th", "105th Amendment — states' power on OBC list"),
             ]},
         ]},
         {"name": "Governance", "groups": [
@@ -230,6 +235,27 @@ SUBJECT = {
                 _t("pol-ob-ngt", "National Green Tribunal"),
                 _t("pol-ob-cat", "Central Administrative Tribunal"),
                 _t("pol-ob-statehrc", "State Human Rights Commissions and Lokayukta (Maharashtra)", ("PRE", "MAINS"), True),
+            ]},
+        ]},
+        {"name": "Public Administration & Civil Services", "groups": [
+            {"name": "Administration", "topics": [
+                _t("pol-pa-structure", "Structure of Indian administration — Union, State, district", ("MAINS",)),
+                _t("pol-pa-allindia", "All India Services and Central Services"),
+                _t("pol-pa-district", "District administration — Collector and DM", ("MAINS",), True),
+                _t("pol-pa-recruitment", "Recruitment, training and conduct rules"),
+                _t("pol-pa-generalist", "Generalist vs specialist debate", ("MAINS",)),
+                _t("pol-pa-neutrality", "Political neutrality and accountability", ("MAINS",)),
+                _t("pol-pa-arc", "Administrative Reforms Commission recommendations", ("MAINS",)),
+            ]},
+        ]},
+        {"name": "Rights & Social Justice Provisions", "groups": [
+            {"name": "Rights Framework", "topics": [
+                _t("pol-rj-humanrights", "Human rights framework in India", ("MAINS",)),
+                _t("pol-rj-childrights", "Child rights and protection laws"),
+                _t("pol-rj-disability", "Rights of persons with disabilities"),
+                _t("pol-rj-minorityrights", "Minority rights and safeguards"),
+                _t("pol-rj-rti-detail", "RTI — provisions, exemptions, amendments"),
+                _t("pol-rj-cpc", "Consumer Protection and citizen rights"),
             ]},
         ]},
         {"name": "International & Cooperative Polity", "groups": [
