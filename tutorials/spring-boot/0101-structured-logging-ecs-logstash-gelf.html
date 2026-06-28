@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Structured logging (ECS, Logstash, GELF) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-boot.html">Spring Boot</a> › 5. Logging</div>
+  <div class="htitle">
+    <h1>Structured logging (ECS, Logstash, GELF)</h1>
+    <a class="back" href="../../spring-boot.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Structured logging</strong> means emitting log events as machine-parseable documents (typically JSON) rather than human-readable text strings. Instead of:</p>
+<pre><code>2026-06-28T10:15:30.123Z  INFO 12345 --- [main] c.e.OrderService : Order 42 processed in 52ms</code></pre>
+<p>you emit:</p>
+<pre><code class="lang-json">{&quot;@timestamp&quot;:&quot;2026-06-28T10:15:30.123Z&quot;,&quot;log.level&quot;:&quot;INFO&quot;,&quot;process.pid&quot;:12345,&quot;message&quot;:&quot;Order 42 processed in 52ms&quot;,&quot;logger_name&quot;:&quot;c.e.OrderService&quot;,&quot;thread_name&quot;:&quot;main&quot;,&quot;order.id&quot;:42,&quot;duration_ms&quot;:52}</code></pre>
+<p>Spring Boot 3.4+ has native support for three structured logging formats controlled by a single property:</p>
+<pre><code class="lang-properties">logging.structured.format.console=ecs          # Elastic Common Schema (ECS)
+logging.structured.format.console=logstash     # Logstash JSON
+logging.structured.format.console=gelf         # Graylog Extended Log Format
+logging.structured.format.file=ecs             # independent setting for file output</code></pre>
+<p>Before Spring Boot 3.4, structured logging required third-party Logback encoders (<code>logstash-logback-encoder</code>, <code>logback-gelf</code>).</p>
+<h2>2. Why &amp; when</h2>
+<p>Human-readable text logs are designed for eyeballs. Log aggregators (Elasticsearch, Splunk, CloudWatch, Loki) work far better with structured data:</p>
+<ul><li><strong>Indexable fields</strong> — search <code>order.id:42</code> instead of <code>grep &quot;Order 42&quot;</code>.</li><li><strong>No parsing needed</strong> — the aggregator ingests JSON directly; regex fragility disappears.</li><li><strong>MDC fields become first-class</strong> — <code>traceId</code>, <code>userId</code>, <code>orderId</code> added to the Mapped Diagnostic Context appear as queryable JSON fields, not buried in a message string.</li><li><strong>Consistent schema</strong> — ECS defines a standard field vocabulary (e.g. <code>log.level</code>, not <code>severity</code>), so queries work across services.</li></ul>
+<p>Use structured logging when logs are consumed by a log aggregation platform. Keep human-readable format in local development (or use both: structured to file, human-readable to console).</p>
+<h2>3. Core concept</h2>
+<p><strong>ECS (Elastic Common Schema)</strong> output example:</p>
+<pre><code class="lang-json">{
+  &quot;@timestamp&quot;: &quot;2026-06-28T10:15:30.123Z&quot;,
+  &quot;log.level&quot;: &quot;INFO&quot;,
+  &quot;process.pid&quot;: 12345,
+  &quot;process.thread.name&quot;: &quot;main&quot;,
+  &quot;log.logger&quot;: &quot;com.example.OrderService&quot;,
+  &quot;message&quot;: &quot;Order 42 processed&quot;,
+  &quot;service.name&quot;: &quot;order-service&quot;,
+  &quot;ecs.version&quot;: &quot;8.11&quot;
+}</code></pre>
+<p><strong>Logstash JSON</strong> output example:</p>
+<pre><code class="lang-json">{
+  &quot;@timestamp&quot;: &quot;2026-06-28T10:15:30.123Z&quot;,
+  &quot;@version&quot;: &quot;1&quot;,
+  &quot;message&quot;: &quot;Order 42 processed&quot;,
+  &quot;logger_name&quot;: &quot;com.example.OrderService&quot;,
+  &quot;thread_name&quot;: &quot;main&quot;,
+  &quot;level&quot;: &quot;INFO&quot;,
+  &quot;level_value&quot;: 20000
+}</code></pre>
+<p><strong>GELF (Graylog Extended Log Format)</strong> output example:</p>
+<pre><code class="lang-json">{
+  &quot;version&quot;: &quot;1.1&quot;,
+  &quot;timestamp&quot;: 1719569730.123,
+  &quot;short_message&quot;: &quot;Order 42 processed&quot;,
+  &quot;level&quot;: 6,
+  &quot;host&quot;: &quot;app-server-1&quot;,
+  &quot;_logger&quot;: &quot;com.example.OrderService&quot;,
+  &quot;_thread&quot;: &quot;main&quot;
+}</code></pre>
+<p><strong>MDC integration:</strong> fields added to <code>org.slf4j.MDC</code> automatically appear as extra JSON fields in all three formats:</p>
+<pre><code class="lang-java">MDC.put(&quot;orderId&quot;, &quot;42&quot;);
+MDC.put(&quot;customerId&quot;, &quot;alice&quot;);
+log.info(&quot;Order processed&quot;);
+// JSON output includes: &quot;orderId&quot;: &quot;42&quot;, &quot;customerId&quot;: &quot;alice&quot;</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 270" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Structured vs text logging: text goes to console for humans; structured JSON goes to log aggregator for machines">
+  <rect x="8" y="8" width="664" height="254" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text x="340" y="33" fill="#e6edf3" font-size="14" text-anchor="middle" font-family="sans-serif" font-weight="bold">Structured vs. Text Logging</text>
+
+  <!-- Application -->
+  <rect x="260" y="50" width="160" height="36" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="340" y="73" fill="#6db33f" font-size="11" text-anchor="middle" font-family="monospace">log.info("…")</text>
+
+  <defs><marker id="sl" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <line x1="280" y1="87" x2="160" y2="115" stroke="#8b949e" stroke-width="1" marker-end="url(#sl)"/>
+  <line x1="400" y1="87" x2="520" y2="115" stroke="#8b949e" stroke-width="1" marker-end="url(#sl)"/>
+
+  <!-- Text console -->
+  <rect x="30" y="117" width="270" height="56" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="165" y="135" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Console (text, for humans)</text>
+  <text x="165" y="151" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">logging.pattern.console=…</text>
+  <text x="165" y="165" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">→ terminal, local dev</text>
+
+  <!-- Structured file -->
+  <rect x="380" y="117" width="270" height="56" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="515" y="135" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">File (JSON, for machines)</text>
+  <text x="515" y="151" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">logging.structured.format.file=ecs</text>
+  <text x="515" y="165" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">→ Filebeat → Elasticsearch</text>
+
+  <!-- Aggregator -->
+  <line x1="515" y1="174" x2="515" y2="194" stroke="#8b949e" stroke-width="1.5" marker-end="url(#sl)"/>
+  <rect x="380" y="196" width="270" height="44" rx="6" fill="#0d1117" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="515" y="215" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="sans-serif">Log aggregator</text>
+  <text x="515" y="231" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Kibana dashboard | Grafana Loki | Splunk</text>
+
+  <!-- Example JSON snippet -->
+  <rect x="30" y="192" width="270" height="54" rx="5" fill="#0d1117" stroke="#6db33f" stroke-width="1"/>
+  <text x="165" y="208" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">ECS field example</text>
+  <text x="40"  y="222" fill="#e6edf3" font-size="8.5" font-family="monospace">"log.level":"INFO","message":"…"</text>
+  <text x="40"  y="236" fill="#e6edf3" font-size="8.5" font-family="monospace">"orderId":"42","customerId":"alice"</text>
+</svg>
+<p>Text to console for humans; structured JSON to file for aggregators — controlled by two independent properties.</p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// StructuredLogging.java — run: java StructuredLogging.java  (JDK 17+)
+// Simulates ECS, Logstash, and GELF structured log output formats.
+
+import java.time.*;
+import java.time.format.*;
+import java.util.*;
+
+public class StructuredLogging {
+
+    enum Format { ECS, LOGSTASH, GELF }
+
+    static final DateTimeFormatter ISO = DateTimeFormatter.ofPattern(&quot;yyyy-MM-dd&#x27;T&#x27;HH:mm:ss.SSSXXX&quot;)
+            .withZone(ZoneOffset.UTC);
+
+    record LogEvent(String level, String logger, String thread, String message,
+                    Map&lt;String, String&gt; mdcFields) {}
+
+    static String formatEcs(LogEvent e, long pid) {
+        Instant now = Instant.now();
+        String ts = ISO.format(now);
+        StringBuilder sb = new StringBuilder(&quot;{&quot;);
+        sb.append(&quot;\&quot;@timestamp\&quot;:\&quot;&quot;).append(ts).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;log.level\&quot;:\&quot;&quot;).append(e.level()).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;process.pid\&quot;:&quot;).append(pid);
+        sb.append(&quot;,\&quot;process.thread.name\&quot;:\&quot;&quot;).append(e.thread()).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;log.logger\&quot;:\&quot;&quot;).append(e.logger()).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;message\&quot;:\&quot;&quot;).append(e.message()).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;ecs.version\&quot;:\&quot;8.11\&quot;&quot;);
+        e.mdcFields().forEach((k, v) -&gt; sb.append(&quot;,\&quot;&quot;).append(k).append(&quot;\&quot;:\&quot;&quot;).append(v).append(&quot;\&quot;&quot;));
+        sb.append(&quot;}&quot;);
+        return sb.toString();
+    }
+
+    static String formatLogstash(LogEvent e) {
+        Instant now = Instant.now();
+        StringBuilder sb = new StringBuilder(&quot;{&quot;);
+        sb.append(&quot;\&quot;@timestamp\&quot;:\&quot;&quot;).append(ISO.format(now)).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;@version\&quot;:\&quot;1\&quot;&quot;);
+        sb.append(&quot;,\&quot;message\&quot;:\&quot;&quot;).append(e.message()).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;logger_name\&quot;:\&quot;&quot;).append(e.logger()).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;thread_name\&quot;:\&quot;&quot;).append(e.thread()).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;level\&quot;:\&quot;&quot;).append(e.level()).append(&quot;\&quot;&quot;);
+        int levelValue = Map.of(&quot;ERROR&quot;,40000,&quot;WARN&quot;,30000,&quot;INFO&quot;,20000,&quot;DEBUG&quot;,10000,&quot;TRACE&quot;,5000)
+                .getOrDefault(e.level(), 0);
+        sb.append(&quot;,\&quot;level_value\&quot;:&quot;).append(levelValue);
+        e.mdcFields().forEach((k, v) -&gt; sb.append(&quot;,\&quot;&quot;).append(k).append(&quot;\&quot;:\&quot;&quot;).append(v).append(&quot;\&quot;&quot;));
+        sb.append(&quot;}&quot;);
+        return sb.toString();
+    }
+
+    static String formatGelf(LogEvent e, String host) {
+        double ts = Instant.now().toEpochMilli() / 1000.0;
+        int syslogLevel = Map.of(&quot;ERROR&quot;,3,&quot;WARN&quot;,4,&quot;INFO&quot;,6,&quot;DEBUG&quot;,7,&quot;TRACE&quot;,7)
+                .getOrDefault(e.level(), 6);
+        StringBuilder sb = new StringBuilder(&quot;{&quot;);
+        sb.append(&quot;\&quot;version\&quot;:\&quot;1.1\&quot;&quot;);
+        sb.append(&quot;,\&quot;timestamp\&quot;:&quot;).append(String.format(&quot;%.3f&quot;, ts));
+        sb.append(&quot;,\&quot;short_message\&quot;:\&quot;&quot;).append(e.message()).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;level\&quot;:&quot;).append(syslogLevel);
+        sb.append(&quot;,\&quot;host\&quot;:\&quot;&quot;).append(host).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;_logger\&quot;:\&quot;&quot;).append(e.logger()).append(&quot;\&quot;&quot;);
+        sb.append(&quot;,\&quot;_thread\&quot;:\&quot;&quot;).append(e.thread()).append(&quot;\&quot;&quot;);
+        e.mdcFields().forEach((k, v) -&gt; sb.append(&quot;,\&quot;_&quot;).append(k).append(&quot;\&quot;:\&quot;&quot;).append(v).append(&quot;\&quot;&quot;));
+        sb.append(&quot;}&quot;);
+        return sb.toString();
+    }
+
+    public static void main(String[] args) {
+        long pid = ProcessHandle.current().pid();
+        Map&lt;String, String&gt; mdc = Map.of(&quot;orderId&quot;, &quot;42&quot;, &quot;customerId&quot;, &quot;alice&quot;);
+        LogEvent e = new LogEvent(&quot;INFO&quot;, &quot;com.example.OrderService&quot;,
+                &quot;main&quot;, &quot;Order 42 processed in 52ms&quot;, mdc);
+
+        System.out.println(&quot;=== ECS (Elastic Common Schema) ===&quot;);
+        System.out.println(formatEcs(e, pid));
+
+        System.out.println(&quot;\n=== Logstash JSON ===&quot;);
+        System.out.println(formatLogstash(e));
+
+        System.out.println(&quot;\n=== GELF (Graylog Extended Log Format) ===&quot;);
+        System.out.println(formatGelf(e, &quot;app-server-1&quot;));
+
+        System.out.println(&quot;\n=== Spring Boot 3.4+ property to enable ===&quot;);
+        System.out.println(&quot;logging.structured.format.console=ecs   # or logstash or gelf&quot;);
+        System.out.println(&quot;logging.structured.format.file=ecs       # independent from console&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java StructuredLogging.java</code></p>
+<h2>6. Walkthrough</h2>
+<ul><li><code>formatEcs</code> produces the Elastic Common Schema format. Key ECS field names use dot notation (<code>log.level</code>, <code>process.pid</code>, <code>log.logger</code>) rather than underscores — these map to Elasticsearch nested objects in the <code>log.*</code> and <code>process.*</code> namespaces defined by ECS.</li><li><code>formatLogstash</code> mirrors the <code>logstash-logback-encoder</code> library&#x27;s default output — historically the most common way to get structured logging before Spring Boot 3.4 native support. <code>level_value</code> is a numeric priority used for ordering.</li><li><code>formatGelf</code> produces Graylog&#x27;s input format. Note: <code>timestamp</code> is Unix epoch in seconds (double), not ISO-8601 — GELF has its own timestamp convention. Custom fields are prefixed with <code>_</code> (mandatory in GELF spec). <code>level</code> is a syslog numeric level (0=EMERG, 3=ERROR, 6=INFO).</li><li><strong>MDC fields</strong> (<code>orderId</code>, <code>customerId</code>) appear in all three formats — in ECS as top-level fields, in GELF as <code>_orderId</code>. This is the primary reason to use structured logging: <code>orderId</code> is an indexed field in Kibana, not buried in a message string.</li><li>In real Spring Boot 3.4+, the property <code>logging.structured.format.console=ecs</code> replaces the text <code>ConsoleAppender</code> with a JSON-producing one. The application code is unchanged — MDC fields are automatically included.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong><code>logging.structured.format.console=ecs</code> disables ANSI colour and the human-readable pattern.</strong> The console emits one JSON object per line. In local development, consider keeping <code>console</code> as text and setting <code>logging.structured.format.file=ecs</code> so the aggregated file is structured while your terminal remains readable.</blockquote>
+<blockquote><strong>GELF&#x27;s custom field <code>_</code> prefix is mandatory in the spec but differs from ECS and Logstash.</strong> If you later switch from GELF to ECS, MDC field names in Kibana queries change (<code>_orderId</code> → <code>orderId</code>). Standardise on one format early.</blockquote>
+<ul><li>In Spring Boot &lt; 3.4, structured logging requires <code>logstash-logback-encoder</code> as a dependency and a custom <code>logback-spring.xml</code> with a JSON encoder.</li><li>MDC fields (<code>MDC.put(key, value)</code>) appear automatically in structured output — no changes to logger call sites needed. Always clean up with <code>MDC.remove(key)</code> or <code>MDC.clear()</code> at request end (typically in a servlet filter or WebFlux filter).</li><li><code>spring.application.name</code> is included in ECS output as <code>service.name</code> automatically — set this property in every service for clear identification in multi-service Kibana views.</li><li>Structured log lines are longer than text lines. At very high log volume, JSON overhead (key repetition, quotes) increases storage cost — weigh against the query benefits.</li><li>Test structured logging with <code>spring.output.ansi.enabled=NEVER</code> and <code>logging.structured.format.console=ecs</code> in your test <code>application.properties</code> to validate MDC fields are present before deploying.</li></ul>
+  <div class="nav"><a class="prv" href="0100-color-coded-output.html"><span class="mini">← Previous</span>Color-coded output</a><a class="nxt" href="0102-profile-specific-logging-configuration.html"><span class="mini">Next →</span>Profile-specific logging configuration</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-boot.html", ID = "t101";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

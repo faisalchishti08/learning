@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Using a log shutdown hook — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-boot.html">Spring Boot</a> › 5. Logging</div>
+  <div class="htitle">
+    <h1>Using a log shutdown hook</h1>
+    <a class="back" href="../../spring-boot.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>log shutdown hook</strong> is a JVM shutdown hook that tells the logging system to flush its buffers and cleanly shut down when the JVM exits. Without it, asynchronous log appenders may not write their last few messages before the process terminates, resulting in <strong>lost log lines</strong> at shutdown.</p>
+<p>Spring Boot automatically registers a Logback shutdown hook unless the application context provides its own lifecycle management or an incompatible JVM setup is detected. The feature is controlled by:</p>
+<pre><code class="lang-properties">logging.register-shutdown-hook=true   # default</code></pre>
+<p>The hook calls <code>LogbackLoggingSystem.cleanUp()</code>, which invokes Logback&#x27;s <code>LoggerContext.stop()</code>, draining any async appender queues and releasing file handles before the JVM exits.</p>
+<h2>2. Why &amp; when</h2>
+<p>Logback&#x27;s <code>AsyncAppender</code> writes log events to a background queue and a dedicated worker thread flushes the queue to the underlying appender (file, socket, etc.) asynchronously. This improves throughput because the application thread doesn&#x27;t wait for disk I/O. The tradeoff: when the JVM exits abruptly, the worker thread may not have flushed the queue.</p>
+<p>Symptoms of missing shutdown hook:</p>
+<ul><li>The last N log lines (typically the shutdown sequence) are absent from the log file.</li><li>File handles are not released, causing issues when the log file is rotated externally.</li><li>Socket appenders (Logstash TCP) lose buffered events.</li></ul>
+<p>The shutdown hook solves all three. It is essential when:</p>
+<ul><li>You use an <code>AsyncAppender</code> (default in Spring Boot 2.x file appender; opt-in in 3.x).</li><li>You use a socket/network appender to a log aggregator.</li><li>You care about the shutdown log lines appearing (e.g. <code>APPLICATION STOPPED</code> for audit trails).</li></ul>
+<h2>3. Core concept</h2>
+<p>JVM shutdown hooks are threads registered with <code>Runtime.getRuntime().addShutdownHook(Thread)</code>. They run in parallel when the JVM begins shutdown (triggered by <code>System.exit()</code>, SIGTERM, or process end). Logback&#x27;s shutdown hook drains the async queue sequentially before the thread ends.</p>
+<p>Spring Boot&#x27;s auto-registration:</p>
+<pre><code>SpringApplication starts
+  → prepareEnvironment()
+  → LoggingApplicationListener.onApplicationStartingEvent()
+  → LogbackLoggingSystem.initialize(…)
+  → if (logging.register-shutdown-hook=true)
+     Runtime.getRuntime().addShutdownHook(new LogbackShutdownHook())</code></pre>
+<p>The hook is NOT registered when:</p>
+<ul><li><code>logging.register-shutdown-hook=false</code>.</li><li>The application runs inside a servlet container (Tomcat/Jetty manage shutdown hooks themselves).</li><li>A <code>logback-spring.xml</code> configures its own <code>&lt;shutdownHook&gt;</code> element (Spring Boot detects this and skips auto-registration to avoid duplicates).</li></ul>
+<p>Logback also provides its own <code>&lt;shutdownHook&gt;</code> XML element as an alternative:</p>
+<pre><code class="lang-xml">&lt;configuration&gt;
+  &lt;shutdownHook class=&quot;ch.qos.logback.core.hook.DelayingShutdownHook&quot;&gt;
+    &lt;delay&gt;2000&lt;/delay&gt;
+  &lt;/shutdownHook&gt;
+  …
+&lt;/configuration&gt;</code></pre>
+<p>The <code>DelayingShutdownHook</code> waits a fixed delay before stopping — useful when other shutdown hooks (Spring context, datasource) need to log during their own teardown.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 270" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Shutdown sequence: SIGTERM triggers JVM shutdown hooks including the Logback hook that drains the async queue before process exit">
+  <rect x="8" y="8" width="664" height="254" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+  <text x="340" y="33" fill="#e6edf3" font-size="14" text-anchor="middle" font-family="sans-serif" font-weight="bold">Log Shutdown Hook — JVM Termination Sequence</text>
+
+  <!-- SIGTERM / System.exit -->
+  <rect x="30" y="50" width="150" height="36" rx="5" fill="#1c2430" stroke="#f85149" stroke-width="2"/>
+  <text x="105" y="64" fill="#f85149" font-size="10" text-anchor="middle" font-family="monospace">SIGTERM</text>
+  <text x="105" y="78" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">or System.exit()</text>
+
+  <defs><marker id="sha" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <line x1="182" y1="68" x2="218" y2="68" stroke="#8b949e" stroke-width="1.5" marker-end="url(#sha)"/>
+
+  <!-- JVM shutdown hooks (parallel) -->
+  <rect x="220" y="40" width="180" height="56" rx="5" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="310" y="58" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif" font-weight="bold">JVM shutdown hooks</text>
+  <text x="310" y="73" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">Spring context hook</text>
+  <text x="310" y="87" fill="#6db33f" font-size="9" text-anchor="middle" font-family="monospace">Logback shutdown hook ←</text>
+
+  <line x1="402" y1="68" x2="438" y2="68" stroke="#8b949e" stroke-width="1.5" marker-end="url(#sha)"/>
+
+  <!-- Logback shutdown detail -->
+  <rect x="440" y="40" width="210" height="56" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="545" y="58" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif" font-weight="bold">LoggerContext.stop()</text>
+  <text x="545" y="73" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">drain AsyncAppender queue</text>
+  <text x="545" y="87" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">flush &amp; close file handles</text>
+
+  <!-- Without hook -->
+  <rect x="30" y="135" width="300" height="70" rx="6" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+  <text x="180" y="153" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif" font-weight="bold">Without shutdown hook</text>
+  <text x="180" y="168" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">async queue not drained</text>
+  <text x="180" y="182" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">last N log lines lost</text>
+  <text x="180" y="196" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">file handles not released</text>
+
+  <!-- With hook -->
+  <rect x="350" y="135" width="300" height="70" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="500" y="153" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif" font-weight="bold">With shutdown hook (default)</text>
+  <text x="500" y="168" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">queue drained before exit</text>
+  <text x="500" y="182" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">all buffered events written</text>
+  <text x="500" y="196" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">clean file handle release</text>
+
+  <rect x="30" y="224" width="620" height="24" rx="5" fill="#0d1117" stroke="#8b949e" stroke-width="1"/>
+  <text x="340" y="240" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">logging.register-shutdown-hook=true (default) — set false only if another mechanism handles Logback cleanup</text>
+</svg>
+<p>The shutdown hook ensures buffered log events reach the underlying appender before the JVM exits.</p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// LogShutdownHook.java — run: java LogShutdownHook.java  (JDK 17+)
+// Demonstrates JVM shutdown hooks and simulates async log buffer draining.
+
+import java.util.*;
+import java.util.concurrent.*;
+
+public class LogShutdownHook {
+
+    // Simulated async log buffer (represents AsyncAppender queue)
+    static final Queue&lt;String&gt; asyncQueue = new ConcurrentLinkedQueue&lt;&gt;();
+    static volatile boolean hookRegistered = false;
+
+    static void enqueueLogEvent(String event) {
+        asyncQueue.offer(event);
+        // In real Logback, a background thread drains this queue to the appender.
+        // On immediate JVM exit without a shutdown hook, unflushed events are lost.
+    }
+
+    static void registerLogbackShutdownHook() {
+        hookRegistered = true;
+        Runtime.getRuntime().addShutdownHook(new Thread(() -&gt; {
+            System.out.println(&quot;[ShutdownHook] Logback shutdown hook triggered&quot;);
+            System.out.println(&quot;[ShutdownHook] Draining &quot; + asyncQueue.size() + &quot; buffered events...&quot;);
+            String event;
+            while ((event = asyncQueue.poll()) != null) {
+                System.out.println(&quot;[FLUSHED]      &quot; + event);
+            }
+            System.out.println(&quot;[ShutdownHook] Logback context stopped. File handles released.&quot;);
+        }, &quot;logback-shutdown-hook&quot;));
+        System.out.println(&quot;Shutdown hook registered (logging.register-shutdown-hook=true)&quot;);
+    }
+
+    public static void main(String[] args) throws Exception {
+        registerLogbackShutdownHook();
+
+        // Normal application log events (synchronous — always written)
+        System.out.println(&quot;[SYNC-LOG]  Application started&quot;);
+        System.out.println(&quot;[SYNC-LOG]  Processing 3 orders...&quot;);
+
+        // Async log events enqueued but not yet flushed to disk
+        enqueueLogEvent(&quot;INFO  c.e.OrderService - Order 101 accepted&quot;);
+        enqueueLogEvent(&quot;INFO  c.e.OrderService - Order 102 accepted&quot;);
+        enqueueLogEvent(&quot;INFO  c.e.OrderService - Order 103 accepted&quot;);
+
+        // Shutdown starts — without hook these 3 events would be lost
+        System.out.println(&quot;[SYNC-LOG]  Application shutting down (SIGTERM received)&quot;);
+        enqueueLogEvent(&quot;INFO  c.e.App         - Spring context closing&quot;);
+        enqueueLogEvent(&quot;INFO  c.e.App         - DataSource pool closed&quot;);
+        enqueueLogEvent(&quot;INFO  c.e.App         - APPLICATION STOPPED&quot;);
+
+        System.out.println(&quot;[SYNC-LOG]  JVM exit — shutdown hooks will run now...&quot;);
+        // System.exit() triggers the hook; normal main() end also triggers it
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java LogShutdownHook.java</code></p>
+<h2>6. Walkthrough</h2>
+<ul><li><code>asyncQueue</code> represents Logback&#x27;s <code>AsyncAppender</code> queue — a <code>BlockingQueue</code> holding <code>ILoggingEvent</code> objects. The background <code>Worker</code> thread continuously polls this queue and writes to the wrapped appender (file, socket, etc.).</li><li><code>registerLogbackShutdownHook()</code> simulates <code>LogbackLoggingSystem</code> registering a JVM shutdown hook via <code>Runtime.getRuntime().addShutdownHook</code>. The thread name <code>&quot;logback-shutdown-hook&quot;</code> is the actual name Spring Boot uses.</li><li>The three async log events representing order acceptance are enqueued but not yet written when the main thread begins shutdown. Without the hook, the JVM exits before the background worker flushes them.</li><li>The shutdown hook thread runs during JVM teardown, drains the entire queue, and prints <code>[FLUSHED]</code> for each event. In real Logback, <code>LoggerContext.stop()</code> calls <code>AsyncAppender.stop()</code> which joins the worker thread, waiting up to <code>maxFlushTime</code> milliseconds (default 1000 ms).</li><li>The three <code>APPLICATION STOPPED</code>, <code>DataSource pool closed</code>, and context-closing events are the ones most likely to be lost in practice — they are emitted by Spring&#x27;s own shutdown listeners, which run just before <code>System.exit</code>.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Disable the auto-registered hook (<code>logging.register-shutdown-hook=false</code>) only if you manage Logback lifecycle yourself</strong> — for example, via a custom <code>logback-spring.xml</code> with a <code>&lt;shutdownHook&gt;</code> element. If you disable it without a replacement, you will lose log events at shutdown, which is often invisible in tests and surfaces only under load in production.</blockquote>
+<blockquote><strong>The shutdown hook does not guarantee all events are written.</strong> The default <code>maxFlushTime</code> for <code>AsyncAppender</code> is 1000 ms. If the queue has more events than can be written in 1 second (high load during shutdown), remaining events are dropped. Increase <code>maxFlushTime</code> in your <code>logback-spring.xml</code> if this is a concern.</blockquote>
+<ul><li>The hook is most important when using <code>AsyncAppender</code>, a socket appender, or any network-based log sink (Logstash, Graylog).</li><li>In servlet-container deployments (WAR in Tomcat), the container manages shutdown hooks; Spring Boot skips auto-registration to avoid conflicts.</li><li>For <code>DelayingShutdownHook</code> (Logback XML), set the delay long enough for all Spring shutdown listeners to finish logging — typically 500–2000 ms.</li><li>On containerized deployments, <code>SIGTERM</code> is the normal shutdown signal from Kubernetes. The hook runs in response to <code>SIGTERM</code> unless the pod&#x27;s <code>terminationGracePeriodSeconds</code> expires and the kernel sends <code>SIGKILL</code> — <code>SIGKILL</code> cannot be caught and skips all hooks.</li><li>Check your shutdown logs (search for &quot;APPLICATION STOPPED&quot; or the Spring banner shutdown message) — their presence confirms the hook ran successfully.</li></ul>
+  <div class="nav"><a class="prv" href="0095-log-groups.html"><span class="mini">← Previous</span>Log groups</a><a class="nxt" href="0097-custom-log-configuration-logback-spring-xml-log4j2.html"><span class="mini">Next →</span>Custom log configuration (logback-spring.xml, log4j2)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-boot.html", ID = "t96";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
