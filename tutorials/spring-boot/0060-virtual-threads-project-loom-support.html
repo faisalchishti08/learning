@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Virtual threads (Project Loom) support — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-boot.html">Spring Boot</a> › 3. Auto-Configuration & SpringApplication</div>
+  <div class="htitle">
+    <h1>Virtual threads (Project Loom) support</h1>
+    <a class="back" href="../../spring-boot.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Virtual threads</strong> are ultra-lightweight threads introduced as a stable feature in Java 21 (Project Loom). Spring Boot 3.2 added first-class support: one property switches the entire servlet container and <code>@Async</code> executor to use virtual threads instead of platform (OS) threads.</p>
+<p>A <strong>platform thread</strong> is a thin Java wrapper around an actual OS thread — expensive to create, memory-hungry (~1 MB stack), and limited in number (typically thousands per machine). A <strong>virtual thread</strong> is managed entirely by the JVM, costs a few hundred bytes, and you can run <strong>millions</strong> concurrently on the same hardware.</p>
+<p>In a Spring Boot web application, each HTTP request normally occupies a platform thread for its full duration. With virtual threads enabled, each request still gets its own thread (same programming model), but that thread is cheap enough that blocking on a database query or an HTTP call wastes nothing.</p>
+<h2>2. Why &amp; when</h2>
+<p>Traditional blocking I/O on platform threads causes <strong>thread starvation</strong>: while a thread waits for a database row, it does nothing yet holds an OS thread — a scarce, expensive resource. The two classic escape routes are:</p>
+<ul><li><strong>Reactive / async code</strong> (Reactor, CompletableFuture) — solves the problem but forces a completely different, harder-to-read programming model.</li><li><strong>Scale horizontally</strong> — throw more servers at the problem.</li></ul>
+<p>Virtual threads offer a third path: <strong>keep the simple, sequential, blocking code you already know</strong> and gain reactive-level throughput automatically.</p>
+<p>Enable virtual threads when:</p>
+<ul><li>Your app is I/O-bound (database, HTTP, file).</li><li>You want higher request throughput without rewriting to reactive.</li><li>You are on Java 21+ and Spring Boot 3.2+.</li></ul>
+<p>Skip or be cautious when:</p>
+<ul><li>Your code uses <code>synchronized</code> blocks heavily (they pin carrier threads; use <code>ReentrantLock</code> instead).</li><li>You are already using Reactive (WebFlux) — virtual threads add no benefit there.</li></ul>
+<h2>3. Core concept</h2>
+<p>Virtual threads <strong>mount onto carrier threads</strong> (a small pool of real OS threads) when they have work to do, and <strong>unmount</strong> the instant they block on I/O. The JVM scheduler sees the block, parks the virtual thread, and immediately gives the carrier thread to another virtual thread that is ready to run.</p>
+<pre><code>Virtual thread A (waiting for DB) ──unmounts──▶ carrier freed
+Virtual thread B (computing)      ──mounts────▶ runs on same carrier
+Virtual thread A (DB result back)  ──mounts────▶ resumes</code></pre>
+<p>From the application code&#x27;s perspective nothing changes: you still call <code>Thread.sleep()</code>, JDBC, or <code>RestTemplate</code> and it just works. The JVM handles the juggling invisibly.</p>
+<p>Spring Boot&#x27;s auto-configuration:</p>
+<ol><li>Detects <code>spring.threads.virtual.enabled=true</code> in <code>application.properties</code>.</li><li>Creates a <code>VirtualThreadTaskExecutor</code> (backed by <code>Thread.ofVirtual().factory()</code>).</li><li>Replaces the default Tomcat/Jetty thread pool and the <code>@Async</code> executor with that factory.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Virtual threads mount and unmount from carrier threads during blocking I/O">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/>
+    </marker>
+    <marker id="arrB" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/>
+    </marker>
+  </defs>
+
+  <!-- Carrier thread row -->
+  <rect x="20" y="40" width="640" height="44" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="34" y="67" fill="#6db33f" font-size="12" font-family="sans-serif" font-weight="bold">Carrier thread (OS thread × 2)</text>
+  <rect x="190" y="48" width="110" height="28" rx="5" fill="#6db33f" fill-opacity="0.25" stroke="#6db33f" stroke-width="1"/>
+  <text x="245" y="67" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Carrier-1</text>
+  <rect x="315" y="48" width="110" height="28" rx="5" fill="#6db33f" fill-opacity="0.25" stroke="#6db33f" stroke-width="1"/>
+  <text x="370" y="67" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Carrier-2</text>
+
+  <!-- Virtual thread A -->
+  <rect x="20" y="120" width="200" height="36" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="120" y="143" fill="#79c0ff" font-size="12" text-anchor="middle" font-family="sans-serif">VT-A: handles request</text>
+
+  <!-- Arrow: VT-A mounts Carrier-1 -->
+  <line x1="160" y1="120" x2="245" y2="76" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <text x="175" y="102" fill="#8b949e" font-size="10" font-family="sans-serif">mounts</text>
+
+  <!-- VT-A blocks on DB -->
+  <rect x="240" y="120" width="200" height="36" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="340" y="138" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">VT-A: waiting for DB</text>
+  <text x="340" y="152" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">(parked — carrier freed)</text>
+
+  <!-- VT-B runs on freed carrier -->
+  <rect x="460" y="120" width="200" height="36" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="560" y="143" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">VT-B: runs on Carrier-1</text>
+  <line x1="500" y1="120" x2="245" y2="76" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="370" y="102" fill="#8b949e" font-size="10" font-family="sans-serif">mounts freed carrier</text>
+
+  <!-- Timeline label -->
+  <line x1="20" y1="210" x2="660" y2="210" stroke="#8b949e" stroke-width="1" marker-end="url(#arr)"/>
+  <text x="340" y="228" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">time →</text>
+  <text x="340" y="245" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Carrier thread never idles — another virtual thread gets it the instant VT-A parks</text>
+</svg>
+<p>While VT-A blocks on a database query it unmounts from the carrier; VT-B immediately uses that same carrier thread — no OS thread ever sits idle.</p>
+<h2>5. Runnable example</h2>
+<p>The snippet below is a self-contained Spring Boot 3.2 application. It exposes a <code>/hello</code> endpoint, enables virtual threads, then shows at startup which thread type is being used.</p>
+<pre><code class="lang-java">// VirtualThreadsDemo.java — run with: java -cp &quot;spring-boot-starter-web.jar:.&quot; VirtualThreadsDemo.java
+// Or paste into a Spring Initializr project (Spring Boot 3.2+, Java 21+)
+// and set spring.threads.virtual.enabled=true in application.properties.
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@SpringBootApplication
+@RestController
+public class VirtualThreadsDemo {
+
+    public static void main(String[] args) {
+        // Enable virtual threads programmatically (alternative to application.properties)
+        System.setProperty(&quot;spring.threads.virtual.enabled&quot;, &quot;true&quot;);
+        SpringApplication.run(VirtualThreadsDemo.class, args);
+    }
+
+    @GetMapping(&quot;/hello&quot;)
+    public String hello() throws InterruptedException {
+        Thread current = Thread.currentThread();
+        // Virtual threads report isVirtual() == true
+        String threadType = current.isVirtual() ? &quot;virtual&quot; : &quot;platform&quot;;
+        // Simulate a blocking I/O call — costs nothing on a virtual thread
+        Thread.sleep(50);
+        return &quot;Hello from a &quot; + threadType + &quot; thread: &quot; + current;
+    }
+}</code></pre>
+<p><strong>application.properties</strong> (place next to the source or in <code>src/main/resources/</code>):</p>
+<pre><code class="lang-properties">spring.threads.virtual.enabled=true</code></pre>
+<p><strong>How to run:</strong> Create a Spring Boot 3.2+ project via <a href="https://start.spring.io">start.spring.io</a> with Java 21 and the <strong>Spring Web</strong> dependency. Drop this class in and run <code>./mvnw spring-boot:run</code>. Then <code>curl http://localhost:8080/hello</code>.</p>
+<p>Expected output fragment:</p>
+<pre><code>Hello from a virtual thread: VirtualThread[#xx]/runnable@ForkJoinPool-1-worker-1</code></pre>
+<h2>6. Walkthrough</h2>
+<ul><li><code>System.setProperty(&quot;spring.threads.virtual.enabled&quot;, &quot;true&quot;)</code> — sets the property before the context starts, equivalent to putting it in <code>application.properties</code>. Spring Boot&#x27;s <code>TomcatVirtualThreadsWebServerFactoryCustomizer</code> picks this up and replaces Tomcat&#x27;s executor.</li><li><code>@SpringBootApplication</code> — triggers auto-configuration; no extra <code>@Bean</code> needed for virtual threads when the property is set.</li><li><code>Thread.currentThread().isVirtual()</code> — available since Java 21; returns <code>true</code> for virtual threads. This line proves the auto-config actually switched the executor.</li><li><code>Thread.sleep(50)</code> — on a platform thread this would block the OS thread for 50 ms. On a virtual thread the JVM parks it immediately, freeing the carrier for other work. No change in code; massive difference in resource use under load.</li><li>The thread name (<code>VirtualThread[#xx]/runnable@ForkJoinPool-1-worker-1</code>) shows: thread id #xx is a virtual thread currently carried by a ForkJoinPool worker — the default carrier pool.</li><li>Under concurrent load (e.g. 10 000 simultaneous requests), all 10 000 get their own virtual thread. With platform threads, Tomcat&#x27;s default pool of 200 would force the remaining 9 800 to queue.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong><code>synchronized</code> blocks pin the carrier thread.</strong> If your code (or a library) uses <code>synchronized</code> for anything that can block (e.g. JDBC drivers before Java 23, old Hibernate versions), the virtual thread cannot unmount and the carrier is stuck for the full duration — negating the benefit. Replace <code>synchronized</code> with <code>java.util.concurrent.locks.ReentrantLock</code> or upgrade to JDBC drivers that use <code>ReentrantLock</code> internally.</blockquote>
+<blockquote><strong>ThreadLocal works but can leak.</strong> Virtual threads still support <code>ThreadLocal</code>, but because millions of them can exist, storing large objects in <code>ThreadLocal</code> causes massive memory pressure. Prefer <code>ScopedValue</code> (Java 21 preview, stable in 23) for propagating context in virtual-thread-heavy code.</blockquote>
+<ul><li>Requires <strong>Java 21+</strong> and <strong>Spring Boot 3.2+</strong>; the single property <code>spring.threads.virtual.enabled=true</code> is enough.</li><li>Virtual threads shine for <strong>I/O-bound</strong> workloads; CPU-bound work sees no benefit (the CPU is busy either way).</li><li>No code changes needed: your blocking <code>RestTemplate</code>, JDBC, and <code>Thread.sleep()</code> calls all benefit automatically.</li><li>Do <strong>not</strong> mix with WebFlux (Reactor) — they solve the same problem differently; enabling virtual threads on a reactive stack wastes configuration effort.</li><li>Monitor with <code>jcmd &lt;pid&gt; Thread.dump_to_file -format=json threads.json</code> to inspect virtual thread state in production; standard thread dumps now include virtual threads.</li><li>Pool sizes (e.g. database connection pool) still matter — virtual threads can create thousands of DB connections if unbounded; configure HikariCP&#x27;s <code>maximum-pool-size</code> appropriately.</li></ul>
+  <div class="nav"><a class="prv" href="0059-application-startup-tracking-applicationstartup-bufferingapp.html"><span class="mini">← Previous</span>Application startup tracking (ApplicationStartup / BufferingApplicationStartup)</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-boot.html", ID = "t60";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
