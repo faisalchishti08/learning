@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebSockets DevTools considerations — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-boot.html">Spring Boot</a> › 11. CLI, DevTools & Extras</div>
+  <div class="htitle">
+    <h1>WebSockets DevTools considerations</h1>
+    <a class="back" href="../../spring-boot.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>When your Spring Boot application uses <strong>WebSockets</strong> alongside <strong>DevTools</strong>, there are several important interactions to be aware of:</p>
+<ol><li><strong>DevTools&#x27; own LiveReload uses WebSockets</strong> on port 35729. This is separate from your application WebSocket endpoint, but both coexist in the same process.</li><li><strong>DevTools restart drops all active WebSocket connections</strong> — since the application context is recreated, all <code>WebSocketSession</code> objects are closed. Connected browser clients see <code>onclose</code> events.</li><li><strong>SockJS / STOMP clients may reconnect automatically</strong> — Spring&#x27;s STOMP-over-SockJS client has built-in reconnection logic; raw <code>WebSocket</code> clients do not.</li><li><strong>During active WebSocket sessions, DevTools restart can appear to hang</strong> — the restart waits for Tomcat to close, but WebSocket connections hold Tomcat threads. DevTools has a quiet period that normally handles this, but a stalled long-lived WebSocket can delay restart.</li></ol>
+<h2>2. Why &amp; when</h2>
+<p>You encounter these issues when:</p>
+<ul><li>Building a real-time feature (chat, live notifications, collaborative editing) and also using DevTools for fast iteration.</li><li>Adding WebSocket integration to an existing DevTools-enabled app.</li><li>Debugging why the browser&#x27;s WebSocket connection drops every time you save a Java file.</li></ul>
+<p>Understanding the interaction helps you configure DevTools and your WebSocket client to work together smoothly during development, while knowing what to expect at restart time.</p>
+<h2>3. Core concept</h2>
+<p>A Spring Boot DevTools restart is *not* a JVM restart — it recreates the Spring <code>ApplicationContext</code>. But from a WebSocket perspective:</p>
+<ul><li>The embedded Tomcat (or Netty/Undertow) is stopped and restarted.</li><li>All WebSocket upgrade connections are severed when Tomcat stops.</li><li>The <code>WebSocketSession.close()</code> callback fires on the server side.</li><li>The browser WebSocket&#x27;s <code>onclose</code> event fires on the client side.</li></ul>
+<p>For <strong>STOMP over SockJS</strong> (<code>@MessageMapping</code>, <code>SimpMessagingTemplate</code>):</p>
+<ul><li>Spring&#x27;s <code>WebSocketStompClient</code> has reconnect logic built in.</li><li>SockJS clients automatically reconnect after a few seconds.</li><li>Subscriptions must be re-established after reconnect.</li></ul>
+<p>For <strong>raw WebSocket</strong> (<code>@ServerEndpoint</code> or <code>WebSocketHandler</code>):</p>
+<ul><li>The browser&#x27;s native <code>WebSocket</code> does not auto-reconnect.</li><li>The client must implement reconnection manually.</li></ul>
+<p>The <strong>LiveReload WebSocket</strong> (port 35729) is managed by DevTools separately — it also drops on restart but reconnects when the new server instance starts. The browser extension handles this transparently.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="DevTools restart dropping WebSocket connections and SockJS auto-reconnect behavior">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="arrr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#ff7b72"/></marker>
+  </defs>
+
+  <!-- Timeline -->
+  <line x1="30" y1="120" x2="670" y2="120" stroke="#8b949e" stroke-width="1.5"/>
+
+  <!-- Connected -->
+  <circle cx="80" cy="120" r="6" fill="#6db33f"/>
+  <text x="80" y="105" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">WS open</text>
+
+  <!-- Restart -->
+  <circle cx="250" cy="120" r="8" fill="#ff7b72"/>
+  <text x="250" y="105" fill="#ff7b72" font-size="11" text-anchor="middle" font-family="sans-serif">DevTools restart</text>
+  <text x="250" y="148" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Tomcat stops</text>
+
+  <!-- Connection drop -->
+  <line x1="250" y1="135" x2="250" y2="165" stroke="#ff7b72" stroke-width="2"/>
+  <text x="250" y="178" fill="#ff7b72" font-size="9" text-anchor="middle" font-family="sans-serif">onclose fires</text>
+
+  <!-- Context recreated -->
+  <rect x="250" y="125" width="130" height="20" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="315" y="139" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">context restart (~1s)</text>
+
+  <!-- SockJS reconnect -->
+  <circle cx="400" cy="120" r="6" fill="#79c0ff"/>
+  <text x="400" y="105" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">Tomcat up</text>
+
+  <!-- Auto-reconnect arrow -->
+  <line x1="420" y1="175" x2="500" y2="125" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="460" y="190" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">SockJS auto-reconnects</text>
+
+  <circle cx="530" cy="120" r="6" fill="#6db33f"/>
+  <text x="530" y="105" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">WS restored</text>
+
+  <!-- Raw WS note -->
+  <text x="580" y="170" fill="#ff7b72" font-size="9" text-anchor="middle" font-family="sans-serif">Raw WebSocket:</text>
+  <text x="580" y="185" fill="#ff7b72" font-size="9" text-anchor="middle" font-family="sans-serif">no auto-reconnect</text>
+  <text x="580" y="200" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">(manual logic needed)</text>
+</svg>
+<p>DevTools restart severs all WebSocket connections; SockJS clients reconnect automatically, raw WebSocket clients must reconnect manually.</p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// WebSocketDevToolsDemo.java — run with: java WebSocketDevToolsDemo.java
+// Demonstrates key configuration and client-side patterns for handling
+// WebSocket connections alongside DevTools automatic restart.
+
+public class WebSocketDevToolsDemo {
+
+    public static void main(String[] args) {
+        System.out.println(&quot;=== WebSockets + DevTools Considerations ===\n&quot;);
+        printServerConfig();
+        printClientPatterns();
+        printDevToolsConfig();
+        printTroubleshooting();
+    }
+
+    static void printServerConfig() {
+        System.out.println(&quot;--- Spring WebSocket server config (normal, no changes for DevTools) ---&quot;);
+        System.out.println(&quot;&quot;&quot;
+            @Configuration
+            @EnableWebSocketMessageBroker
+            public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+
+                @Override
+                public void registerStompEndpoints(StompEndpointRegistry registry) {
+                    registry.addEndpoint(&quot;/ws&quot;)
+                            .withSockJS();   // SockJS fallback — auto-reconnects on restart
+                }
+
+                @Override
+                public void configureMessageBroker(MessageBrokerRegistry registry) {
+                    registry.enableSimpleBroker(&quot;/topic&quot;, &quot;/queue&quot;);
+                    registry.setApplicationDestinationPrefixes(&quot;/app&quot;);
+                }
+            }
+            &quot;&quot;&quot;);
+    }
+
+    static void printClientPatterns() {
+        System.out.println(&quot;--- JavaScript client patterns ---\n&quot;);
+
+        System.out.println(&quot;  Pattern 1: SockJS + STOMP (auto-reconnects after DevTools restart)&quot;);
+        System.out.println(&quot;&quot;&quot;
+            const socket  = new SockJS(&#x27;/ws&#x27;);   // SockJS endpoint
+            const stomp   = Stomp.over(socket);
+            let connected = false;
+
+            function connect() {
+                stomp.connect({}, (frame) =&gt; {
+                    connected = true;
+                    console.log(&#x27;Connected:&#x27;, frame);
+                    stomp.subscribe(&#x27;/topic/updates&#x27;, (msg) =&gt; {
+                        console.log(&#x27;Update:&#x27;, msg.body);
+                    });
+                }, (error) =&gt; {
+                    connected = false;
+                    console.log(&#x27;Disconnected, retrying in 5s...&#x27;);
+                    setTimeout(connect, 5000);  // manual reconnect for STOMP error
+                });
+            }
+            connect();
+            // SockJS transparently handles the connection drop from DevTools restart.
+            &quot;&quot;&quot;);
+
+        System.out.println(&quot;  Pattern 2: Raw WebSocket with manual reconnect&quot;);
+        System.out.println(&quot;&quot;&quot;
+            function connect() {
+                const ws = new WebSocket(&#x27;ws://localhost:8080/raw-ws&#x27;);
+
+                ws.onopen  = () =&gt; console.log(&#x27;WebSocket open&#x27;);
+                ws.onmessage = (e) =&gt; console.log(&#x27;Message:&#x27;, e.data);
+                ws.onerror = (e) =&gt; console.error(&#x27;Error:&#x27;, e);
+
+                // REQUIRED with DevTools: raw WebSocket does not auto-reconnect
+                ws.onclose = (e) =&gt; {
+                    console.log(&#x27;Closed (DevTools restart?), reconnecting in 2s...&#x27;);
+                    setTimeout(connect, 2000);
+                };
+            }
+            connect();
+            &quot;&quot;&quot;);
+    }
+
+    static void printDevToolsConfig() {
+        System.out.println(&quot;--- DevTools config to reduce WebSocket disruption ---&quot;);
+        System.out.println(&quot;&quot;&quot;
+            # application.properties (DevTools settings)
+
+            # Slow down restart detection — gives in-flight WS messages time to settle:
+            spring.devtools.restart.quiet-period=1s
+
+            # Use trigger file so restart only happens when YOU decide:
+            spring.devtools.restart.trigger-file=.restart
+            # (touch .restart to trigger restart manually)
+
+            # Exclude paths that don&#x27;t affect WS behavior from triggering restart:
+            spring.devtools.restart.exclude=static/**,templates/**,public/**
+            &quot;&quot;&quot;);
+    }
+
+    static void printTroubleshooting() {
+        System.out.println(&quot;--- Troubleshooting ---&quot;);
+        String[][] issues = {
+            {
+                &quot;Restart appears to hang (never completes)&quot;,
+                &quot;A WebSocket connection is holding a Tomcat thread. Increase quiet-period,\n&quot;
+                + &quot;    or check if a client is sending continuous messages. Also check\n&quot;
+                + &quot;    spring.lifecycle.timeout-per-shutdown-phase (increase to 10s during dev).&quot;
+            },
+            {
+                &quot;LiveReload not firing after WebSocket code change&quot;,
+                &quot;LiveReload fires after DevTools restart completes. If restart hangs (see above),\n&quot;
+                + &quot;    LiveReload also stalls. Fix the restart hang first.&quot;
+            },
+            {
+                &quot;SockJS subscription lost after restart&quot;,
+                &quot;SockJS reconnects the transport layer but doesn&#x27;t re-send SUBSCRIBE frames.\n&quot;
+                + &quot;    In the STOMP connect callback, always re-subscribe — don&#x27;t assume subs persist.&quot;
+            },
+            {
+                &quot;Port 35729 conflicts with custom WebSocket server&quot;,
+                &quot;Change LiveReload port: spring.devtools.livereload.port=35730&quot;
+            },
+        };
+        for (var issue : issues) {
+            System.out.printf(&quot;  PROBLEM : %s%n  FIX     : %s%n%n&quot;, issue[0], issue[1]);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java WebSocketDevToolsDemo.java</code></p>
+<h2>6. Walkthrough</h2>
+<ul><li><strong>SockJS auto-reconnect</strong> — SockJS is a JavaScript library that wraps WebSocket with fallback transports (long-polling, SSE). When the underlying connection closes, SockJS automatically tries to reconnect. This is why <code>registry.addEndpoint(&quot;/ws&quot;).withSockJS()</code> is recommended for apps that use DevTools — the client recovers from DevTools restarts transparently.</li><li><strong>STOMP <code>onerror</code> callback</strong> — even with SockJS, STOMP-level disconnects (session timeout, server-side close) require a manual reconnect in the <code>onerror</code>/<code>onclose</code> handler. The pattern in <code>connect()</code> uses <code>setTimeout(connect, 5000)</code> — production apps should add backoff (2s, 4s, 8s, ...) to avoid hammering a recovering server.</li><li><strong>Raw WebSocket <code>onclose</code></strong> — browsers close raw WebSockets without reconnecting. Every raw WebSocket implementation needs an <code>onclose</code> handler that schedules a reconnect. DevTools restarts trigger this close every time you save a Java file.</li><li><strong><code>trigger-file</code></strong> — the most productive setting when developing real-time features. Without it, every Java file save triggers a restart (and a WebSocket drop). With it, you control restarts explicitly, so you can make several changes and then restart once — reducing client disconnects to once per logical change instead of once per file.</li><li><strong>Shutdown timeout</strong> — <code>spring.lifecycle.timeout-per-shutdown-phase</code> during development should be short (5 s) so DevTools restarts quickly. Long-lived WebSocket connections that don&#x27;t close themselves will cause the restart to wait until this timeout.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>WebSocket sessions are not migrated across DevTools restarts.</strong> Any session state stored in <code>WebSocketSession.getAttributes()</code> or <code>simpSessionAttributes</code> is lost on restart. If you&#x27;re developing stateful chat or game features, use <code>trigger-file</code> to restart only when you choose — not on every edit.</blockquote>
+<blockquote><strong>The Security context is re-evaluated after a restart.</strong> If your WebSocket endpoint uses <code>@PreAuthorize</code> or Spring Security&#x27;s WebSocket CSRF protection, the client may need to re-authenticate after a DevTools restart — this is normal. In development, consider relaxing WebSocket CSRF (<code>.csrf().disable()</code> in the WS config) to avoid authentication friction during rapid iteration.</blockquote>
+<ul><li>Use <code>.withSockJS()</code> on your endpoint during development — it makes your life easier when DevTools restarts.</li><li>Always re-subscribe to STOMP destinations in the <code>connect()</code> callback, not just on first connection.</li><li><code>spring.devtools.restart.trigger-file=.restart</code> is your best friend when developing real-time features.</li><li>Port 35729 (LiveReload) and your app&#x27;s WebSocket port are independent — they don&#x27;t conflict.</li><li>In production, WebSocket connections don&#x27;t encounter DevTools issues (DevTools is disabled); these are development-only concerns.</li></ul>
+  <div class="nav"><a class="prv" href="0265-hot-swapping.html"><span class="mini">← Previous</span>Hot swapping</a><a class="nxt" href="0267-internationalization-messagesource-auto-config.html"><span class="mini">Next →</span>Internationalization (MessageSource auto-config)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-boot.html", ID = "t266";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
