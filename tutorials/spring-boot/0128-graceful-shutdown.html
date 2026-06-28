@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graceful shutdown — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-boot.html">Spring Boot</a> › 6. Web Applications</div>
+  <div class="htitle">
+    <h1>Graceful shutdown</h1>
+    <a class="back" href="../../spring-boot.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Graceful shutdown</strong> lets an embedded server finish processing in-flight requests before it actually stops, instead of dropping connections immediately. Spring Boot 2.3+ supports it for all four embedded containers (Tomcat, Jetty, Undertow, Reactor Netty) via a single property: <code>server.shutdown=graceful</code>.</p>
+<h2>2. Why &amp; when</h2>
+<p>When a rolling deployment restarts a pod or instance, any in-flight requests are abruptly terminated without graceful shutdown — the client sees a connection reset or incomplete response. This is especially painful for long-running requests (file uploads, report generation, batch-like API calls).</p>
+<p>Enable graceful shutdown whenever:</p>
+<ul><li>You run in Kubernetes, ECS, or any orchestrator that issues <code>SIGTERM</code> before killing the process.</li><li>Your API handles requests that take more than a few hundred milliseconds.</li><li>You care about zero-error rolling deployments.</li></ul>
+<p>Pair it with <code>spring.lifecycle.timeout-per-shutdown-phase</code> to cap the wait time.</p>
+<h2>3. Core concept</h2>
+<p>On shutdown (SIGTERM, <code>actuator/shutdown</code>, or <code>SpringApplication.exit()</code>):</p>
+<ol><li>Spring Boot stops accepting <strong>new</strong> requests immediately (the port closes).</li><li>It waits for <strong>in-flight</strong> requests to complete.</li><li>After all complete (or the timeout elapses), it proceeds with bean destruction.</li></ol>
+<p>The wait timeout is configured with:</p>
+<pre><code class="lang-properties">server.shutdown=graceful
+spring.lifecycle.timeout-per-shutdown-phase=30s</code></pre>
+<p>The timeout is per *phase* in the <code>SmartLifecycle</code> shutdown sequence. Requests still running after the timeout are abandoned and the shutdown continues.</p>
+<p>Analogy: a restaurant that says &quot;we&#x27;re closing — no new orders — but we&#x27;ll finish cooking what&#x27;s already on the grill.&quot;</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 210" xmlns="http://www.w3.org/2000/svg">
+  <rect x="20" y="80" width="130" height="50" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="85" y="110" text-anchor="middle" fill="#6db33f" font-size="12" font-family="sans-serif">SIGTERM received</text>
+  <rect x="225" y="60" width="160" height="45" rx="6" fill="#1c2430" stroke="#e05252" stroke-width="1.5"/>
+  <text x="305" y="87" text-anchor="middle" fill="#e05252" font-size="12" font-family="sans-serif">Reject NEW requests</text>
+  <rect x="225" y="125" width="160" height="45" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="305" y="145" text-anchor="middle" fill="#79c0ff" font-size="12" font-family="sans-serif">Wait for in-flight</text>
+  <text x="305" y="162" text-anchor="middle" fill="#8b949e" font-size="11" font-family="sans-serif">(up to timeout)</text>
+  <rect x="470" y="90" width="180" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="560" y="115" text-anchor="middle" fill="#6db33f" font-size="12" font-family="sans-serif">Bean destroy / JVM exit</text>
+  <line x1="152" y1="105" x2="221" y2="85" stroke="#6db33f" stroke-width="1.5" marker-end="url(#gs)"/>
+  <line x1="152" y1="105" x2="221" y2="148" stroke="#6db33f" stroke-width="1.5" marker-end="url(#gs)"/>
+  <line x1="387" y1="148" x2="466" y2="113" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#gs2)"/>
+  <line x1="387" y1="82" x2="466" y2="107" stroke="#e05252" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#gs3)"/>
+  <defs>
+    <marker id="gs" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="gs2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="gs3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#e05252"/></marker>
+  </defs>
+</svg>
+<p>On SIGTERM: new requests rejected immediately, in-flight requests drain up to the timeout, then JVM exits cleanly.</p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// GracefulShutdownApp.java  —  Spring Boot 2.3+ project with spring-boot-starter-web
+// application.properties:
+//   server.shutdown=graceful
+//   spring.lifecycle.timeout-per-shutdown-phase=20s
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@SpringBootApplication
+public class GracefulShutdownApp {
+    public static void main(String[] args) {
+        SpringApplication.run(GracefulShutdownApp.class, args);
+    }
+}
+
+@RestController
+class SlowController {
+
+    // Simulates a slow request (e.g. report generation)
+    @GetMapping(&quot;/slow&quot;)
+    public String slow(@RequestParam(defaultValue = &quot;5&quot;) int seconds)
+            throws InterruptedException {
+        System.out.println(&quot;Request started, will take &quot; + seconds + &quot;s&quot;);
+        Thread.sleep(seconds * 1000L);
+        System.out.println(&quot;Request completed&quot;);
+        return &quot;Done after &quot; + seconds + &quot;s&quot;;
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<ol><li>Add <code>server.shutdown=graceful</code> and <code>spring.lifecycle.timeout-per-shutdown-phase=20s</code> to <code>application.properties</code>.</li><li>Start the app.</li><li>In terminal A: <code>curl http://localhost:8080/slow?seconds=8</code></li><li>Immediately in terminal B: send <code>SIGTERM</code> — <code>kill -TERM &lt;pid&gt;</code> or <code>Ctrl+C</code> if running in foreground.</li><li>Observe: terminal A gets a response after 8 seconds; the process then exits cleanly.</li></ol>
+<h2>6. Walkthrough</h2>
+<ul><li><code>server.shutdown=graceful</code> switches the embedded server&#x27;s shutdown mode. Default is <code>immediate</code> — the server closes the port and kills all connections at once.</li><li>With <code>graceful</code>, when SIGTERM arrives Spring Boot calls <code>WebServer.shutDownGracefully()</code>. The server stops accepting new connections (the OS-level listener closes) but keeps processing active threads.</li><li><code>spring.lifecycle.timeout-per-shutdown-phase=20s</code> caps how long Spring waits in each lifecycle phase. If a request takes longer than 20 seconds it is abandoned and shutdown continues anyway — preventing an app from hanging forever.</li><li><code>Thread.sleep(seconds * 1000L)</code> in <code>SlowController</code> simulates work. In production this would be a database query or file operation.</li><li>Log output confirms the order: &quot;Request completed&quot; appears *before* the Spring shutdown log lines, proving the graceful wait worked.</li><li>For Kubernetes: pair with a <code>preStop</code> hook (<code>sleep 5</code>) to give the load balancer time to remove the pod from rotation before SIGTERM arrives; otherwise, new requests arrive during the drain window.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Graceful shutdown waits for <strong>request threads</strong> to finish, not for async tasks (<code>@Async</code>, CompletableFutures, scheduled jobs). If those need draining too, implement <code>DisposableBean</code> or <code>SmartLifecycle</code> on those components.</blockquote>
+<blockquote>The timeout is per *shutdown phase*, not total. If you have multiple <code>SmartLifecycle</code> components, each phase gets its own <code>timeout-per-shutdown-phase</code> budget.</blockquote>
+<ul><li>Default timeout is 30 seconds when <code>spring.lifecycle.timeout-per-shutdown-phase</code> is not set.</li><li>Kubernetes <code>terminationGracePeriodSeconds</code> must be longer than your Spring timeout, or the kubelet force-kills the pod before Spring finishes draining.</li><li><code>server.shutdown=graceful</code> works with all four embedded containers — no extra configuration per container.</li><li>Clients hitting the closed port during drain see connection refused immediately; only the already-connected in-flight requests are given time to complete.</li><li>Test graceful shutdown with <code>SpringApplication.exit(context)</code> in integration tests using <code>@SpringBootTest(webEnvironment = RANDOM_PORT)</code>.</li></ul>
+  <div class="nav"><a class="prv" href="0127-ssl-tls-configuration-ssl-bundles.html"><span class="mini">← Previous</span>SSL/TLS configuration & SSL bundles</a><a class="nxt" href="0129-spring-webflux-auto-configuration.html"><span class="mini">Next →</span>Spring WebFlux auto-configuration</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-boot.html", ID = "t128";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
