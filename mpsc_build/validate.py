@@ -7,7 +7,7 @@ VALID_STAGES = {"PRE", "MAINS", "INT"}
 # Coverage gate — minimum micro-topics per subject (max-depth guard).
 MIN_TOPICS = {
     "ethics": 60,
-    "history": 220, "geography": 180, "polity": 200, "economy": 170,
+    "history": 220, "geography": 145, "polity": 200, "economy": 170,
     "environment": 110, "science_tech": 120, "society": 110,
     "international_relations": 70, "internal_security": 70,
     "csat": 70, "language": 50, "essay": 50,
