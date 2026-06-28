@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dockerfiles & layered images — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-boot.html">Spring Boot</a> › 10. Packaging, Deployment & Native</div>
+  <div class="htitle">
+    <h1>Dockerfiles & layered images</h1>
+    <a class="back" href="../../spring-boot.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A Dockerfile is a text recipe that defines the steps for building a Docker container image. Combined with Spring Boot&#x27;s layered JAR format, a multi-stage Dockerfile produces an optimally cached image: a builder stage extracts layers from the fat JAR, and a minimal runtime stage copies each extracted directory as its own Docker layer.</p>
+<h2>2. Why &amp; when</h2>
+<p>Use a hand-crafted Dockerfile when you need fine-grained control over the build — custom JVM arguments, non-root users, specific base image versions, additional native tools, or bespoke startup scripts. If full control is not needed, <code>spring-boot:build-image</code> (Buildpacks) is simpler. Choose a Dockerfile when Buildpacks cannot accommodate your requirements.</p>
+<h2>3. Core concept</h2>
+<p>Multi-stage Dockerfile flow for Spring Boot:</p>
+<ol><li><strong>Stage 1 (builder)</strong> — JRE image, copy fat JAR, run <code>layertools extract</code>.</li><li><strong>Stage 2 (runtime)</strong> — minimal JRE image, <code>COPY --from=builder</code> each layer directory, set <code>ENTRYPOINT</code>.</li></ol>
+<p>Only Stage 2 ends up in the final image; the builder stage is discarded. Each <code>COPY</code> instruction in Stage 2 becomes an independent Docker layer:</p>
+<pre><code>Image layer 1: base JRE (eclipse-temurin:21-jre-alpine) — never changes
+Image layer 2: COPY dependencies/     — changes when pom.xml changes
+Image layer 3: COPY spring-boot-loader/ — changes on Boot version bump
+Image layer 4: COPY snapshot-dependencies/ — changes for SNAPSHOT deps
+Image layer 5: COPY application/      — changes on every code commit</code></pre>
+<p>On a typical code commit, only layer 5 (~100 KB) needs pushing to the registry.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 290" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="13">
+  <rect width="640" height="290" fill="#1c2430" rx="10"/>
+  <!-- Stage 1 -->
+  <rect x="20" y="30" width="240" height="130" rx="8" fill="#2d3748" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="140" y="56" text-anchor="middle" fill="#8b949e">Stage 1 (builder)</text>
+  <rect x="35" y="68" width="210" height="28" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="140" y="87" text-anchor="middle" fill="#e6edf3" font-size="12">eclipse-temurin:21-jre</text>
+  <rect x="35" y="102" width="210" height="28" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="140" y="121" text-anchor="middle" fill="#8b949e" font-size="12">COPY myapp.jar</text>
+  <rect x="35" y="136" width="210" height="20" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="140" y="151" text-anchor="middle" fill="#6db33f" font-size="12">layertools extract</text>
+  <!-- Arrow -->
+  <line x1="260" y1="145" x2="295" y2="145" stroke="#6db33f" stroke-width="2" marker-end="url(#ac)"/>
+  <text x="277" y="138" text-anchor="middle" fill="#8b949e" font-size="11">discarded</text>
+  <!-- Stage 2 -->
+  <rect x="300" y="30" width="320" height="245" rx="8" fill="#2d3748" stroke="#6db33f" stroke-width="2"/>
+  <text x="460" y="56" text-anchor="middle" fill="#6db33f">Stage 2 (runtime image)</text>
+  <rect x="315" y="68" width="290" height="28" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="460" y="87" text-anchor="middle" fill="#8b949e" font-size="12">eclipse-temurin:21-jre-alpine  ← base layer</text>
+  <rect x="315" y="102" width="290" height="22" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="460" y="118" text-anchor="middle" fill="#8b949e" font-size="12">COPY dependencies/   ✓ cached</text>
+  <rect x="315" y="130" width="290" height="22" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="460" y="146" text-anchor="middle" fill="#8b949e" font-size="12">COPY spring-boot-loader/  ✓ cached</text>
+  <rect x="315" y="158" width="290" height="22" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="460" y="174" text-anchor="middle" fill="#8b949e" font-size="12">COPY snapshot-dependencies/  (sometimes)</text>
+  <rect x="315" y="186" width="290" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="460" y="202" text-anchor="middle" fill="#6db33f" font-size="12">COPY application/  ← rebuilt every commit</text>
+  <rect x="315" y="214" width="290" height="22" rx="4" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="460" y="230" text-anchor="middle" fill="#79c0ff" font-size="12">ENTRYPOINT [java, JarLauncher]</text>
+  <text x="460" y="262" text-anchor="middle" fill="#8b949e" font-size="11">only application layer is pushed per commit</text>
+  <defs>
+    <marker id="ac" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6db33f"/>
+    </marker>
+  </defs>
+</svg>
+<p><em>Multi-stage Dockerfile: builder extracts layers, runtime image caches all but <code>application/</code>.</em></p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// File: DockerfileGenerator.java
+// How to run: java DockerfileGenerator.java [app-name] [java-version]
+// Example:    java DockerfileGenerator.java myservice 21
+// Prints an optimised multi-stage Dockerfile for a Spring Boot app.
+
+public class DockerfileGenerator {
+
+    public static void main(String[] args) {
+        String appName = args.length &gt; 0 ? args[0] : &quot;myapp&quot;;
+        String javaVersion = args.length &gt; 1 ? args[1] : &quot;21&quot;;
+        String baseImage = &quot;eclipse-temurin:&quot; + javaVersion + &quot;-jre-alpine&quot;;
+
+        String dockerfile = &quot;&quot;&quot;
+                # ======================================================
+                # Multi-stage Spring Boot Dockerfile
+                # Generated for: %s (Java %s)
+                # ======================================================
+
+                # ---- Stage 1: Layer extraction ----
+                FROM eclipse-temurin:%s-jre AS builder
+                WORKDIR /app
+                COPY target/%s.jar app.jar
+                RUN java -Djarmode=layertools -jar app.jar extract --destination /extracted
+
+                # ---- Stage 2: Minimal runtime image ----
+                FROM %s
+                WORKDIR /app
+
+                # Non-root user
+                RUN addgroup -S spring &amp;&amp; adduser -S spring -G spring
+                USER spring:spring
+
+                # Layers from least to most frequently changed
+                COPY --from=builder /extracted/dependencies/ ./
+                COPY --from=builder /extracted/spring-boot-loader/ ./
+                COPY --from=builder /extracted/snapshot-dependencies/ ./
+                COPY --from=builder /extracted/application/ ./
+
+                ENV JAVA_TOOL_OPTIONS=&quot;-XX:+UseContainerSupport -XX:MaxRAMPercentage=75&quot;
+                EXPOSE 8080
+                ENTRYPOINT [&quot;java&quot;, &quot;org.springframework.boot.loader.launch.JarLauncher&quot;]
+                &quot;&quot;&quot;.formatted(appName, javaVersion, javaVersion, appName, baseImage);
+
+        System.out.println(dockerfile);
+        System.out.println(&quot;# Build:  docker build -t &quot; + appName + &quot; .&quot;);
+        System.out.println(&quot;# Run:    docker run -p 8080:8080 &quot; + appName);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java DockerfileGenerator.java myservice 21</code> — generates an optimised Dockerfile for <code>myservice</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Stage 1 (<code>builder</code>)</strong> — uses <code>eclipse-temurin:21-jre</code> (doesn&#x27;t need JDK for extraction). Copies the fat JAR and runs <code>layertools extract --destination /extracted</code>, placing each layer in a subdirectory.</li><li><strong>Stage 2 (<code>runtime</code>)</strong> — starts from <code>eclipse-temurin:21-jre-alpine</code> (smaller). The builder stage is not included in the final image.</li><li><strong>Non-root user</strong> — <code>addgroup/adduser</code> creates a dedicated <code>spring</code> user. <code>USER spring:spring</code> drops privileges before any <code>COPY</code> or <code>ENTRYPOINT</code>.</li><li><strong>Four <code>COPY --from=builder</code></strong> — each maps to a Docker image layer. Docker computes a hash of each layer&#x27;s content; unchanged layers are cache hits and never re-uploaded.</li><li><strong><code>JAVA_TOOL_OPTIONS</code></strong> — applies JVM flags globally (also caught by JVM launched by scripts inside the container). <code>UseContainerSupport</code> reads cgroup limits; <code>MaxRAMPercentage=75</code> prevents OOM.</li><li><strong><code>ENTRYPOINT</code></strong> — exec-form (JSON array) avoids a shell wrapper, so signals like <code>SIGTERM</code> reach the JVM directly for graceful shutdown.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Exec-form <code>ENTRYPOINT [&quot;java&quot;, &quot;...&quot;]</code> vs. shell-form <code>ENTRYPOINT java ...</code>: shell-form wraps in <code>/bin/sh -c</code>, which becomes the PID 1 — Docker <code>stop</code> sends <code>SIGTERM</code> to the shell, not the JVM, and graceful shutdown may not trigger. Always use exec-form.</blockquote>
+<blockquote>The order of <code>COPY</code> instructions determines Docker cache invalidation. Putting the most-stable layer first (dependencies) and least-stable last (application) is critical — reversing the order defeats the cache.</blockquote>
+<blockquote><code>--destination /extracted</code> in <code>layertools extract</code> writes to an explicit path, avoiding working-directory confusion in complex multi-stage builds.</blockquote>
+<ul><li><code>docker build --progress=plain .</code> shows which layers hit the cache (<code>CACHED</code>) vs. rebuild.</li><li><code>.dockerignore</code> should exclude <code>target/*.jar.original</code>, <code>src/</code>, <code>.git/</code>, etc. to keep the build context small.</li><li>For secrets in build steps, use Docker BuildKit&#x27;s <code>--secret</code> flag — never <code>ARG</code>/<code>ENV</code> for credentials.</li><li>Combine with <code>HEALTHCHECK</code> instruction so Kubernetes readiness probes align with Docker&#x27;s built-in health reporting.</li></ul>
+  <div class="nav"><a class="prv" href="0238-efficient-container-images.html"><span class="mini">← Previous</span>Efficient container images</a><a class="nxt" href="0240-buildpacks-cloud-native-buildpacks-paketo.html"><span class="mini">Next →</span>Buildpacks (Cloud Native Buildpacks / Paketo)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-boot.html", ID = "t239";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
