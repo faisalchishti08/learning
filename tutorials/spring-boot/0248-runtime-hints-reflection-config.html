@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Runtime hints & reflection config — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-boot.html">Spring Boot</a> › 10. Packaging, Deployment & Native</div>
+  <div class="htitle">
+    <h1>Runtime hints & reflection config</h1>
+    <a class="back" href="../../spring-boot.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Runtime hints</strong> are metadata registered at build time to tell GraalVM&#x27;s <code>native-image</code> about code that is used *dynamically* — through reflection, resource loading, serialisation, or JNI — that the static analyser cannot see on its own.</p>
+<p>Spring provides two ways to supply hints:</p>
+<ol><li><strong><code>RuntimeHintsRegistrar</code></strong> — a Java interface you implement and register via <code>@ImportRuntimeHints</code>. Spring&#x27;s AOT phase calls it to collect hints programmatically.</li><li><strong><code>META-INF/native-image/*.json</code> files</strong> — raw GraalVM configuration files (<code>reflect-config.json</code>, <code>resource-config.json</code>, <code>serialization-config.json</code>, <code>proxy-config.json</code>, <code>jni-config.json</code>). Spring AOT generates these automatically for its own beans; you add your own when needed.</li></ol>
+<p>Without correct hints, code that works on the JVM silently fails in a native image: <code>Class.forName(...)</code> returns <code>null</code>, <code>getDeclaredMethods()</code> returns an empty array, or resources return <code>null</code> streams.</p>
+<h2>2. Why &amp; when</h2>
+<p>GraalVM native images use a <strong>closed-world assumption</strong>: only code reachable from <code>main()</code> at build time is included. Reflection, resource loading, and dynamic proxies punch holes in this assumption — the analyser can&#x27;t follow <code>Class.forName(&quot;com.example.Foo&quot;)</code> at build time.</p>
+<p>You need runtime hints when:</p>
+<ul><li>You use reflection (custom serialisers, <code>Class.forName</code>, <code>getDeclaredFields</code>).</li><li>You load classpath resources with <code>ClassLoader.getResourceAsStream</code>.</li><li>You use JDK dynamic proxies (<code>java.lang.reflect.Proxy</code>).</li><li>You deserialise objects (Java serialisation or Kryo).</li><li>A dependency does any of the above and hasn&#x27;t shipped its own hints.</li></ul>
+<p>Spring Boot ships hints for its own auto-configurations; you write hints for your own dynamic code or for third-party libraries that haven&#x27;t added native support yet.</p>
+<h2>3. Core concept</h2>
+<p>Think of runtime hints as a <strong>shopping list</strong> you hand the compiler before the store closes. The compiler (native-image) can only pack items on the list; anything you forgot is gone. Your job during AOT is to make that list complete.</p>
+<p>The hint API surface:</p>
+<table><thead><tr><th>Hint type</th><th>API</th><th>JSON file</th></tr></thead><tbody><tr><td>Reflection</td><td><code>hints.reflection().registerType(Foo.class, ...)</code></td><td><code>reflect-config.json</code></td></tr><tr><td>Resources</td><td><code>hints.resources().registerPattern(&quot;templates/*.html&quot;)</code></td><td><code>resource-config.json</code></td></tr><tr><td>Dynamic proxies</td><td><code>hints.proxies().registerJdkProxy(Iface.class)</code></td><td><code>proxy-config.json</code></td></tr><tr><td>Serialisation</td><td><code>hints.serialization().registerType(Dto.class)</code></td><td><code>serialization-config.json</code></td></tr><tr><td>JNI</td><td><code>hints.jni().registerType(NativeClass.class)</code></td><td><code>jni-config.json</code></td></tr></tbody></table>
+<p>Hints are additive: Spring AOT generates a base set, your <code>RuntimeHintsRegistrar</code> adds more, and any JSON files in <code>META-INF/native-image/</code> merge in as well.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Runtime hints flow from registrar to native-image configuration files">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+
+  <!-- Sources of hints -->
+  <rect x="10" y="30" width="150" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="85" y="55" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Spring Boot AOT</text>
+
+  <rect x="10" y="90" width="150" height="40" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="85" y="115" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Your RuntimeHints</text>
+  <text x="85" y="128" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">Registrar</text>
+
+  <rect x="10" y="150" width="150" height="40" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="85" y="170" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Library hints</text>
+  <text x="85" y="183" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">GraalVM metadata repo</text>
+
+  <!-- Merge box -->
+  <rect x="210" y="90" width="140" height="50" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="280" y="110" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">AOT Processor</text>
+  <text x="280" y="128" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">merges all hints</text>
+
+  <!-- JSON files -->
+  <rect x="400" y="50" width="140" height="30" rx="5" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="470" y="70" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">reflect-config.json</text>
+
+  <rect x="400" y="92" width="140" height="30" rx="5" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="470" y="112" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">resource-config.json</text>
+
+  <rect x="400" y="134" width="140" height="30" rx="5" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="470" y="154" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">proxy-config.json</text>
+
+  <!-- native-image -->
+  <rect x="590" y="90" width="100" height="50" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="640" y="110" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif">native-image</text>
+  <text x="640" y="127" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">uses all JSONs</text>
+
+  <!-- arrows -->
+  <line x1="160" y1="50" x2="208" y2="105" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="160" y1="115" x2="208" y2="115" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="160" y1="170" x2="208" y2="125" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="350" y1="100" x2="398" y2="70" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="350" y1="115" x2="398" y2="115" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="350" y1="128" x2="398" y2="148" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="540" y1="115" x2="588" y2="115" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+</svg>
+<p>All hint sources merge during the AOT phase; the resulting JSON files feed <code>native-image</code> at compile time.</p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// RuntimeHintsDemo.java — run with: java RuntimeHintsDemo.java
+// Demonstrates writing a RuntimeHintsRegistrar and shows the equivalent
+// JSON entries that Spring AOT produces in META-INF/native-image/.
+
+import java.lang.reflect.Method;
+
+public class RuntimeHintsDemo {
+
+    // --- The class we need to access via reflection at runtime ---
+    static class ReportGenerator {
+        public String generate(String format) {
+            return &quot;Report in format: &quot; + format;
+        }
+    }
+
+    // --- Simulated hint registrar (real one implements RuntimeHintsRegistrar) ---
+    // In a Spring app:
+    //   @ImportRuntimeHints(MyHints.class)
+    //   @SpringBootApplication
+    //   public class App { ... }
+    //
+    //   class MyHints implements RuntimeHintsRegistrar {
+    //     public void registerHints(RuntimeHints hints, ClassLoader cl) {
+    //       hints.reflection()
+    //            .registerType(ReportGenerator.class,
+    //                MemberCategory.INVOKE_PUBLIC_METHODS);
+    //       hints.resources()
+    //            .registerPattern(&quot;reports/*.xml&quot;);
+    //     }
+    //   }
+
+    // --- Equivalent reflect-config.json entry ---
+    static final String REFLECT_JSON = &quot;&quot;&quot;
+        [
+          {
+            &quot;name&quot;: &quot;com.example.ReportGenerator&quot;,
+            &quot;methods&quot;: [
+              { &quot;name&quot;: &quot;generate&quot;, &quot;parameterTypes&quot;: [&quot;java.lang.String&quot;] }
+            ]
+          }
+        ]
+        &quot;&quot;&quot;;
+
+    // --- Equivalent resource-config.json entry ---
+    static final String RESOURCE_JSON = &quot;&quot;&quot;
+        {
+          &quot;resources&quot;: {
+            &quot;includes&quot;: [
+              { &quot;pattern&quot;: &quot;\\\\Qreports/\\\\E.*\\\\.xml&quot; }
+            ]
+          }
+        }
+        &quot;&quot;&quot;;
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;=== RuntimeHints Demo ===\n&quot;);
+
+        // Simulate what happens at native runtime after hints are correctly registered:
+        // reflection access that would fail WITHOUT hints is available WITH them.
+        Class&lt;?&gt; cls = Class.forName(&quot;RuntimeHintsDemo$ReportGenerator&quot;);
+        Method m = cls.getDeclaredMethod(&quot;generate&quot;, String.class);
+        Object instance = cls.getDeclaredConstructor().newInstance();
+        String result = (String) m.invoke(instance, &quot;PDF&quot;);
+        System.out.println(&quot;Reflection call succeeded: &quot; + result);
+
+        System.out.println(&quot;\n--- reflect-config.json entry this class needs ---&quot;);
+        System.out.println(REFLECT_JSON);
+
+        System.out.println(&quot;--- resource-config.json for reports/*.xml ---&quot;);
+        System.out.println(RESOURCE_JSON);
+
+        System.out.println(&quot;--- Discovery: use the GraalVM agent to generate hints ---&quot;);
+        System.out.println(&quot;  java -agentlib:native-image-agent=config-output-dir=src/main/resources/META-INF/native-image \\&quot;);
+        System.out.println(&quot;       -jar myapp.jar&quot;);
+        System.out.println(&quot;  # Exercise all code paths, then commit the generated JSON files.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java RuntimeHintsDemo.java</code></p>
+<h2>6. Walkthrough</h2>
+<ul><li><strong><code>Class.forName(...)</code> + <code>getDeclaredMethod(...)</code> + <code>newInstance()</code></strong> — the three reflection operations most likely to fail in a native image without hints. Each must appear in <code>reflect-config.json</code> to survive native compilation.</li><li><strong><code>REFLECT_JSON</code></strong> — shows the exact JSON format. <code>&quot;name&quot;</code> is the fully qualified class name. <code>&quot;methods&quot;</code> lists method signatures. The <code>MemberCategory.INVOKE_PUBLIC_METHODS</code> enum in the Spring Hints API expands to all public method entries automatically.</li><li><strong><code>RESOURCE_JSON</code></strong> — resource patterns use regex. <code>\\Q...\\E</code> is regex &quot;literal&quot; quoting, so <code>\\Qreports/\\E.*\\.xml</code> matches <code>reports/anything.xml</code> without treating <code>/</code> specially.</li><li><strong>GraalVM tracing agent</strong> — the most practical way to discover missing hints: run the app with <code>-agentlib:native-image-agent=...</code>, exercise every feature (including test cases), and the agent writes complete JSON configs. Then copy them to <code>src/main/resources/META-INF/native-image/</code> and commit.</li><li><strong><code>@ImportRuntimeHints</code></strong> — Spring&#x27;s annotation wires your <code>RuntimeHintsRegistrar</code> into the AOT phase. Spring calls <code>registerHints()</code> during <code>spring-boot:process-aot</code>, and the hints end up in the generated JSON files automatically.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Missing hints fail silently on JVM, loudly on native.</strong> A <code>NullPointerException</code> from <code>Class.forName</code> returning <code>null</code>, or a <code>MethodNotFoundException</code> you never saw on JVM, is almost always a missing reflection hint. Use <code>nativeTest</code> to catch these before production.</blockquote>
+<blockquote><strong>The GraalVM agent only records what it observes during that run.</strong> If a code path is exercised only in production (e.g., an error handler, a rarely used API endpoint), the agent misses it. Supplement agent-generated hints with manual hints for critical paths.</blockquote>
+<ul><li>Check generated hints: <code>target/spring-aot/main/resources/META-INF/native-image/</code>.</li><li><code>MemberCategory</code> enum values: <code>INVOKE_PUBLIC_METHODS</code>, <code>DECLARED_FIELDS</code>, <code>INTROSPECT_DECLARED_CONSTRUCTORS</code> — pick the minimal set needed.</li><li>Third-party hints ship via the GraalVM reachability metadata repo — add the <code>add-reachability-metadata</code> plugin goal to pull them automatically.</li><li>Use <code>@Reflective</code> on your own classes (Spring 6.x) to register reflection hints without a registrar.</li><li>Never delete Spring Boot&#x27;s generated hint JSONs from <code>target/spring-aot/</code> — they&#x27;re regenerated; if you need to override, write your own registrar or add JSON to <code>src/main/resources/META-INF/native-image/</code>.</li></ul>
+  <div class="nav"><a class="prv" href="0247-building-with-graalvm-native-build-tools.html"><span class="mini">← Previous</span>Building with GraalVM Native Build Tools</a><a class="nxt" href="0249-testing-aot-native.html"><span class="mini">Next →</span>Testing AOT / native</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-boot.html", ID = "t248";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
