@@ -111,7 +111,7 @@ def _badges(t):
     return out
 
 
-def render_page(subject):
+def render_page(subject, content_ids=frozenset()):
     key = subject["key"]
     secs_html = []
     for i, sec in enumerate(subject["sections"]):
@@ -120,9 +120,15 @@ def render_page(subject):
             items = []
             for t in g["topics"]:
                 st = ",".join(t["stages"])
+                if t["id"] in content_ids:
+                    label = (f'<label><a class="tlink" target="_blank" '
+                             f'href="topics/{t["id"]}.html">{t["text"]}</a> '
+                             f'<span class="pin" title="Study notes available">📖</span>{_badges(t)}</label>')
+                else:
+                    label = f'<label>{t["text"]}{_badges(t)}</label>'
                 items.append(
                     f'<li class="topic" data-stages="{st}"><input type="checkbox" '
-                    f'data-id="{t["id"]}"><label>{t["text"]}{_badges(t)}</label></li>'
+                    f'data-id="{t["id"]}">{label}</li>'
                 )
             groups_html.append(
                 f'<div class="grp">{g["name"]}</div><ul class="topics">{"".join(items)}</ul>'
@@ -155,6 +161,40 @@ def render_page(subject):
 <button class="danger" id="reset">Reset</button></div></header>
 <main>{''.join(secs_html)}<footer>{subject['blurb']}</footer></main>
 <script>{js}</script></body></html>"""
+
+
+TOPIC_CSS = CSS + """
+.content{max-width:820px;margin:0 auto;padding:8px 20px 60px}
+.content h2{font-size:20px;margin:26px 0 8px;color:var(--accent);border-bottom:1px solid var(--border);padding-bottom:5px}
+.content h3{font-size:16px;margin:18px 0 6px}
+.content p{margin:8px 0}
+.content ul,.content ol{margin:8px 0 8px 4px;padding-left:22px}
+.content li{margin:4px 0}
+.content code{background:var(--bar-bg);padding:1px 5px;border-radius:5px;color:#79c0ff;font-size:13px}
+.content blockquote{border-left:3px solid var(--accent);margin:10px 0;padding:4px 14px;color:var(--muted)}
+.content table{border-collapse:collapse;margin:12px 0;width:100%;font-size:14px}
+.content th,.content td{border:1px solid var(--border);padding:6px 10px;text-align:left}
+.content th{background:var(--panel2)}
+.content hr{border:none;border-top:1px solid var(--border);margin:18px 0}
+.crumb{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);padding:5px 10px;border-radius:8px}
+.crumb:hover{border-color:var(--accent);color:var(--text)}
+.disclaimer{margin-top:30px;padding:12px 16px;background:var(--panel);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-size:12.5px}
+"""
+
+
+def render_topic_page(subject, topic, content_html):
+    badges = "".join(f'<span class="badge b-{s}">{s}</span>' for s in topic["stages"])
+    if topic.get("mh"):
+        badges += '<span class="badge b-MH">MH</span>'
+    return f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{topic['text']} — MPSC</title><style>{TOPIC_CSS}</style></head><body>
+<header><div class="title"><a class="crumb" href="../{subject['key']}.html">← {subject['title']}</a>
+<div class="logo">{subject['icon']}</div></div>
+<h1 style="font-size:21px;margin:10px 0 4px">{topic['text']} {badges}</h1></header>
+<main class="content">{content_html}
+<div class="disclaimer">Study notes generated for MPSC preparation. Cross-check current schemes,
+latest data and exact dates before the exam.</div></main></body></html>"""
 
 
 def render_hub(subjects):
