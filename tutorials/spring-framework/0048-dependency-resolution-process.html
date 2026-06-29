@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dependency resolution process — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 2. IoC Container & Beans</div>
+  <div class="htitle">
+    <h1>Dependency resolution process</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>dependency resolution process</strong> is the multi-step algorithm Spring runs during container startup to wire all beans together. It happens as part of <code>AbstractApplicationContext.refresh()</code> and consists of:</p>
+<ol><li><strong>Load and parse <code>BeanDefinition</code> objects</strong> from all config sources (XML, annotations, Java config).</li><li><strong>Build a complete dependency graph</strong> — for each bean, determine what it needs before it can be created.</li><li><strong>Detect potential problems</strong> — circular constructor dependencies, missing required beans, ambiguous matches.</li><li><strong>Instantiate beans in dependency order</strong> — dependencies first, then the bean that needs them.</li><li><strong>Inject</strong> via constructor, setter, or field.</li></ol>
+<pre><code>BeanDefinitionReader → BeanDefinition registry
+                     → dependency graph
+                     → topological sort
+                     → instantiation in order
+                     → injection
+                     → @PostConstruct
+                     → ready</code></pre>
+<p>In one sentence: <strong>The dependency resolution process is how Spring parses configuration, builds a dependency graph, and instantiates beans in the correct order so that every injected dependency is ready before the bean that needs it is created.</strong></p>
+<h2>2. Why &amp; when</h2>
+<p>Understanding resolution helps when:</p>
+<ul><li>Debugging <code>UnsatisfiedDependencyException</code> — which bean is missing and why.</li><li>Diagnosing slow context startup — many beans with deep dependency chains.</li><li>Understanding why <code>@Lazy</code> or <code>@DependsOn</code> exists — some dependencies are not inferrable from injection points alone.</li><li>Reasoning about <code>BeanPostProcessor</code> and <code>BeanFactoryPostProcessor</code> — they must be created early, before regular beans.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code>Resolution pipeline (simplified):
+
+  Step 1: Parse config
+    @ComponentScan → find @Component classes → register BeanDefinitions
+    @Configuration → find @Bean methods → register BeanDefinitions
+    (All defs registered BEFORE any bean is created)
+
+  Step 2: Resolve BeanFactoryPostProcessors first
+    Process @PropertySource, ${...} expressions, etc.
+
+  Step 3: Register BeanPostProcessors
+    AutowiredAnnotationBeanPostProcessor (handles @Autowired)
+    etc.
+
+  Step 4: Pre-instantiate singletons (eager)
+    For each non-lazy singleton BeanDefinition:
+      a. Find all its injection points (constructor params, @Autowired fields, setters)
+      b. For each injection point, find a matching bean:
+           type match → 1 candidate → use it
+                      → 0 → NoSuchBeanDefinitionException
+                      → &gt;1 → check @Primary, @Qualifier → or NoUniqueBeanDefinitionException
+      c. Ensure the dependency bean is created first (recursive)
+      d. Create this bean, inject deps, run @PostConstruct</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Dependency resolution pipeline: parse config, build dependency graph, instantiate in topological order">
+  <defs>
+    <marker id="a48" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+
+  <!-- 5 pipeline steps -->
+  <rect x="10"  y="60" width="110" height="88" rx="5" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="65"  y="84" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">1. Parse</text>
+  <text x="65"  y="100" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">BeanDefinitions</text>
+  <text x="65"  y="116" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">from XML /</text>
+  <text x="65"  y="132" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">annotations</text>
+
+  <rect x="140" y="60" width="110" height="88" rx="5" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="195" y="84" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">2. BeanFactory</text>
+  <text x="195" y="100" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">PostProcessors</text>
+  <text x="195" y="116" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">${...} resolved</text>
+  <text x="195" y="132" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">profiles applied</text>
+
+  <rect x="270" y="60" width="110" height="88" rx="5" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="325" y="84" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">3. BeanPost</text>
+  <text x="325" y="100" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">Processors reg.</text>
+  <text x="325" y="116" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">@Autowired</text>
+  <text x="325" y="132" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">processor ready</text>
+
+  <rect x="400" y="60" width="110" height="88" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="455" y="84" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">4. Resolve deps</text>
+  <text x="455" y="100" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">type/name/qual</text>
+  <text x="455" y="116" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">dep order</text>
+  <text x="455" y="132" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">detect circular</text>
+
+  <rect x="530" y="60" width="140" height="88" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="600" y="84" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">5. Instantiate</text>
+  <text x="600" y="100" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">new Bean(deps)</text>
+  <text x="600" y="116" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">inject setters</text>
+  <text x="600" y="132" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">@PostConstruct</text>
+
+  <line x1="120" y1="104" x2="137" y2="104" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a48)"/>
+  <line x1="250" y1="104" x2="267" y2="104" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a48)"/>
+  <line x1="380" y1="104" x2="397" y2="104" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a48)"/>
+  <line x1="510" y1="104" x2="527" y2="104" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a48)"/>
+
+  <text x="340" y="30" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">AbstractApplicationContext.refresh() — all 5 steps run at startup</text>
+  <text x="340" y="175" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Beans are created in dependency order: leaf deps first, their consumers second.</text>
+</svg>
+<p>Steps 1–3 happen before any application bean is instantiated. Step 4 resolves the dependency graph. Step 5 creates beans in topological order.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a three-tier application (<code>Repository → Service → Controller</code>). Show the dependency graph, resolution order, and what happens when a dependency is missing.</p>
+<h3>Level 1 — Basic</h3>
+<p>Linear three-tier dependency chain: Repository → Service → Controller.</p>
+<pre><code class="lang-java">// DepResolutionDemo.java — run with: java DepResolutionDemo.java
+import java.util.*;
+
+public class DepResolutionDemo {
+
+    // --- Beans ---
+    static class OrderRepository {
+        OrderRepository() { System.out.println(&quot;  [CREATED] OrderRepository&quot;); }
+        List&lt;String&gt; findAll() { return List.of(&quot;ORD-001&quot;, &quot;ORD-002&quot;, &quot;ORD-003&quot;); }
+    }
+
+    static class OrderService {
+        private final OrderRepository repository;
+        OrderService(OrderRepository repository) {
+            System.out.println(&quot;  [CREATED] OrderService ← OrderRepository&quot;);
+            this.repository = repository;
+        }
+        List&lt;String&gt; listOrders() { return repository.findAll(); }
+    }
+
+    static class OrderController {
+        private final OrderService service;
+        OrderController(OrderService service) {
+            System.out.println(&quot;  [CREATED] OrderController ← OrderService&quot;);
+            this.service = service;
+        }
+        String handleRequest() { return &quot;Orders: &quot; + service.listOrders(); }
+    }
+
+    // --- Container with dependency graph ---
+    static class BeanDef {
+        final String name;
+        final Class&lt;?&gt; type;
+        final List&lt;String&gt; dependsOn;  // bean names it needs
+
+        BeanDef(String name, Class&lt;?&gt; type, String... deps) {
+            this.name = name; this.type = type; this.dependsOn = List.of(deps);
+        }
+    }
+
+    static class Ctx {
+        private final Map&lt;String, BeanDef&gt;  defs  = new LinkedHashMap&lt;&gt;();
+        private final Map&lt;String, Object&gt;   beans = new LinkedHashMap&lt;&gt;();
+        private final List&lt;String&gt;          order = new ArrayList&lt;&gt;();
+
+        void define(BeanDef def) { defs.put(def.name, def); }
+
+        void refresh() throws Exception {
+            System.out.println(&quot;  [CTX] Building dependency graph...&quot;);
+            // Topological sort: for each bean, ensure its deps are created first
+            Set&lt;String&gt; visited  = new LinkedHashSet&lt;&gt;();
+            Set&lt;String&gt; creating = new LinkedHashSet&lt;&gt;();
+            for (String name : defs.keySet()) {
+                instantiate(name, visited, creating);
+            }
+        }
+
+        private void instantiate(String name, Set&lt;String&gt; visited, Set&lt;String&gt; creating) throws Exception {
+            if (visited.contains(name)) return;
+            if (creating.contains(name))
+                throw new RuntimeException(&quot;Circular dependency detected: &quot; + creating + &quot; → &quot; + name);
+
+            BeanDef def = defs.get(name);
+            if (def == null) throw new RuntimeException(&quot;No bean defined: &quot; + name);
+
+            creating.add(name);
+            // Recurse: ensure all deps created first
+            for (String dep : def.dependsOn) {
+                instantiate(dep, visited, creating);
+            }
+            creating.remove(name);
+
+            // All deps are ready — create this bean
+            Object[] depBeans = def.dependsOn.stream().map(beans::get).toArray();
+            Object bean = createBean(def.type, depBeans);
+            beans.put(name, bean);
+            visited.add(name);
+            order.add(name);
+        }
+
+        private Object createBean(Class&lt;?&gt; type, Object... args) throws Exception {
+            if (args.length == 0) return type.getDeclaredConstructors()[0].newInstance();
+            return type.getDeclaredConstructors()[0].newInstance(args);
+        }
+
+        @SuppressWarnings(&quot;unchecked&quot;)
+        &lt;T&gt; T getBean(String name) { return (T) beans.get(name); }
+        List&lt;String&gt; getCreationOrder() { return order; }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Ctx ctx = new Ctx();
+        System.out.println(&quot;=== Phase 1: Register BeanDefinitions ===&quot;);
+        ctx.define(new BeanDef(&quot;orderController&quot;, OrderController.class, &quot;orderService&quot;));
+        ctx.define(new BeanDef(&quot;orderService&quot;,    OrderService.class,    &quot;orderRepository&quot;));
+        ctx.define(new BeanDef(&quot;orderRepository&quot;, OrderRepository.class));
+        System.out.println(&quot;  Defined: orderController, orderService, orderRepository&quot;);
+
+        System.out.println(&quot;\n=== Phase 2: Refresh (dependency resolution + instantiation) ===&quot;);
+        ctx.refresh();
+
+        System.out.println(&quot;\n=== Creation order ===&quot;);
+        System.out.println(&quot;  &quot; + ctx.getCreationOrder());
+
+        System.out.println(&quot;\n=== Application running ===&quot;);
+        OrderController ctrl = ctx.getBean(&quot;orderController&quot;);
+        System.out.println(&quot;  &quot; + ctrl.handleRequest());
+    }
+}</code></pre>
+<p>How to run: <code>java DepResolutionDemo.java</code></p>
+<p>The definitions are registered in reverse dependency order (controller first), but the container resolves them in the correct order: <code>orderRepository</code> → <code>orderService</code> → <code>orderController</code>. The topological sort ensures each bean&#x27;s dependencies are created before the bean itself.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Missing dependency detection and <code>@Primary</code>-style disambiguation for multiple candidates.</p>
+<pre><code class="lang-java">// DepResolutionDemo2.java — run with: java DepResolutionDemo2.java
+import java.util.*;
+
+public class DepResolutionDemo2 {
+
+    interface NotificationChannel { void send(String msg); }
+
+    static class EmailChannel implements NotificationChannel {
+        final boolean isPrimary;
+        EmailChannel(boolean isPrimary) {
+            System.out.println(&quot;  [CREATED] EmailChannel(primary=&quot; + isPrimary + &quot;)&quot;);
+            this.isPrimary = isPrimary;
+        }
+        @Override public void send(String msg) { System.out.println(&quot;  [EMAIL] &quot; + msg); }
+    }
+
+    static class SmsChannel implements NotificationChannel {
+        SmsChannel() { System.out.println(&quot;  [CREATED] SmsChannel&quot;); }
+        @Override public void send(String msg) { System.out.println(&quot;  [SMS] &quot; + msg); }
+    }
+
+    static class AlertService {
+        private final NotificationChannel channel;
+        AlertService(NotificationChannel channel) {
+            System.out.println(&quot;  [CREATED] AlertService ← &quot; + channel.getClass().getSimpleName());
+            this.channel = channel;
+        }
+        void alert(String msg) { channel.send(&quot;[ALERT] &quot; + msg); }
+    }
+
+    static class BeanDef {
+        final String   name;
+        final Object   instance;
+        final Class&lt;?&gt; type;
+        final boolean  primary;
+        BeanDef(String n, Object inst, Class&lt;?&gt; type, boolean primary) {
+            this.name = n; this.instance = inst; this.type = type; this.primary = primary;
+        }
+    }
+
+    static class Ctx {
+        final List&lt;BeanDef&gt;      defs  = new ArrayList&lt;&gt;();
+        final Map&lt;String,Object&gt; beans = new LinkedHashMap&lt;&gt;();
+
+        void register(BeanDef d) { defs.add(d); beans.put(d.name, d.instance); }
+
+        &lt;T&gt; T resolveByType(Class&lt;T&gt; type) {
+            List&lt;BeanDef&gt; candidates = defs.stream()
+                .filter(d -&gt; type.isAssignableFrom(d.type)).toList();
+            if (candidates.isEmpty())
+                throw new RuntimeException(&quot;NoSuchBeanDefinitionException: no bean of type &quot; + type.getSimpleName());
+            if (candidates.size() == 1)
+                return type.cast(candidates.get(0).instance);
+            // Multiple candidates — check @Primary
+            var primary = candidates.stream().filter(d -&gt; d.primary).toList();
+            if (primary.size() == 1) {
+                System.out.println(&quot;  [CTX] type ambiguity resolved via @Primary → &quot; + primary.get(0).name);
+                return type.cast(primary.get(0).instance);
+            }
+            throw new RuntimeException(&quot;NoUniqueBeanDefinitionException: &quot; + candidates.size()
+                + &quot; beans of type &quot; + type.getSimpleName() + &quot; (none/multiple @Primary)&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;=== Scenario 1: no candidates → NoSuchBeanDefinitionException ===&quot;);
+        Ctx c1 = new Ctx();
+        try {
+            c1.resolveByType(NotificationChannel.class);
+        } catch (RuntimeException e) {
+            System.out.println(&quot;  &quot; + e.getMessage());
+        }
+
+        System.out.println(&quot;\n=== Scenario 2: multiple candidates, no @Primary → ambiguous ===&quot;);
+        Ctx c2 = new Ctx();
+        c2.register(new BeanDef(&quot;emailChannel&quot;, new EmailChannel(false), EmailChannel.class, false));
+        c2.register(new BeanDef(&quot;smsChannel&quot;,   new SmsChannel(),        SmsChannel.class,   false));
+        try {
+            c2.resolveByType(NotificationChannel.class);
+        } catch (RuntimeException e) {
+            System.out.println(&quot;  &quot; + e.getMessage());
+        }
+
+        System.out.println(&quot;\n=== Scenario 3: multiple candidates, one @Primary → resolved ===&quot;);
+        Ctx c3 = new Ctx();
+        c3.register(new BeanDef(&quot;emailChannel&quot;, new EmailChannel(true),  EmailChannel.class, true));
+        c3.register(new BeanDef(&quot;smsChannel&quot;,   new SmsChannel(),        SmsChannel.class,   false));
+
+        NotificationChannel ch = c3.resolveByType(NotificationChannel.class);
+        AlertService svc = new AlertService(ch);
+        svc.alert(&quot;Server CPU &gt; 90%&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java DepResolutionDemo2.java</code></p>
+<p>Three scenarios: no bean (throws), ambiguous (throws), one primary (resolved). The container uses <code>@Primary</code> as the tiebreaker when type alone is ambiguous. Scenario 3 resolves to <code>EmailChannel</code> and the alert is sent.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Full resolution pipeline with <code>BeanFactoryPostProcessor</code> pre-processing and <code>BeanPostProcessor</code> wrapping.</p>
+<pre><code class="lang-java">// DepResolutionDemo3.java — run with: java DepResolutionDemo3.java
+import java.util.*;
+
+public class DepResolutionDemo3 {
+
+    // BeanDefinition
+    record Def(String name, Map&lt;String, String&gt; props, List&lt;String&gt; deps) {}
+
+    // Interfaces for pipeline hooks
+    interface BeanFactoryPostProcessor { void postProcess(Map&lt;String, Def&gt; defs, Map&lt;String, String&gt; props); }
+    interface BeanPostProcessor        { Object wrapBean(String name, Object bean); }
+
+    // --- Beans ---
+    static class DataSource {
+        final String url; final int maxConn;
+        DataSource(String url, int maxConn) {
+            System.out.println(&quot;  [CREATED] DataSource(url=&quot; + url + &quot; maxConn=&quot; + maxConn + &quot;)&quot;);
+            this.url = url; this.maxConn = maxConn;
+        }
+    }
+
+    static class UserRepository {
+        final DataSource ds;
+        UserRepository(DataSource ds) {
+            System.out.println(&quot;  [CREATED] UserRepository ← DataSource&quot;);
+            this.ds = ds;
+        }
+        String findUser(String id) { return &quot;User{id=&quot; + id + &quot; via=&quot; + ds.url + &quot;}&quot;; }
+    }
+
+    static class UserService {
+        final UserRepository repo;
+        UserService(UserRepository repo) {
+            System.out.println(&quot;  [CREATED] UserService ← UserRepository&quot;);
+            this.repo = repo;
+        }
+        String getUser(String id) { return repo.findUser(id); }
+    }
+
+    // --- Pipeline hooks ---
+    static class PropertyResolvingBFPP implements BeanFactoryPostProcessor {
+        private final Map&lt;String, String&gt; envProps;
+        PropertyResolvingBFPP(Map&lt;String, String&gt; envProps) { this.envProps = envProps; }
+        @Override
+        public void postProcess(Map&lt;String, Def&gt; defs, Map&lt;String, String&gt; props) {
+            System.out.println(&quot;  [BFPP] Resolving ${...} variables&quot;);
+            props.replaceAll((k, v) -&gt; {
+                for (var e : envProps.entrySet()) {
+                    v = v.replace(&quot;${&quot; + e.getKey() + &quot;}&quot;, e.getValue());
+                }
+                return v;
+            });
+        }
+    }
+
+    static class TimingBPP implements BeanPostProcessor {
+        @Override
+        public Object wrapBean(String name, Object bean) {
+            System.out.println(&quot;  [BPP] TimingBPP applied to &#x27;&quot; + name + &quot;&#x27;&quot;);
+            return bean;  // in real Spring, returns a proxy; simplified here
+        }
+    }
+
+    // --- Minimal container with resolution pipeline ---
+    static class Ctx {
+        final Map&lt;String, Def&gt;    defs    = new LinkedHashMap&lt;&gt;();
+        final Map&lt;String, String&gt; props   = new HashMap&lt;&gt;();
+        final List&lt;BeanFactoryPostProcessor&gt; bfpps = new ArrayList&lt;&gt;();
+        final List&lt;BeanPostProcessor&gt;        bpps  = new ArrayList&lt;&gt;();
+        final Map&lt;String, Object&gt;            beans = new LinkedHashMap&lt;&gt;();
+        final List&lt;String&gt;                   order = new ArrayList&lt;&gt;();
+
+        void define(Def d)  { defs.put(d.name(), d); }
+        void property(String k, String v) { props.put(k, v); }
+        void addBFPP(BeanFactoryPostProcessor p) { bfpps.add(p); }
+        void addBPP(BeanPostProcessor p)          { bpps.add(p); }
+
+        void refresh() throws Exception {
+            System.out.println(&quot;\n  [PHASE 1] BeanFactoryPostProcessors&quot;);
+            for (var p : bfpps) p.postProcess(defs, props);
+
+            System.out.println(&quot;\n  [PHASE 2] Register BeanPostProcessors (ready)&quot;);
+
+            System.out.println(&quot;\n  [PHASE 3] Pre-instantiate singletons&quot;);
+            Set&lt;String&gt; done = new LinkedHashSet&lt;&gt;();
+            Set&lt;String&gt; seen = new LinkedHashSet&lt;&gt;();
+            for (String name : defs.keySet()) instantiate(name, done, seen);
+        }
+
+        private void instantiate(String name, Set&lt;String&gt; done, Set&lt;String&gt; seen) throws Exception {
+            if (done.contains(name)) return;
+            if (seen.contains(name)) throw new RuntimeException(&quot;Circular: &quot; + seen + &quot; → &quot; + name);
+            seen.add(name);
+            Def d = defs.get(name);
+            for (String dep : d.deps()) instantiate(dep, done, seen);
+            seen.remove(name);
+
+            // Resolve ${...} in props for this bean
+            Map&lt;String, String&gt; resolved = new HashMap&lt;&gt;();
+            d.props().forEach((k, v) -&gt; resolved.put(k, resolveValue(v)));
+
+            Object bean = createBean(name, resolved);
+
+            // Apply BeanPostProcessors
+            for (var bpp : bpps) bean = bpp.wrapBean(name, bean);
+
+            beans.put(name, bean);
+            done.add(name);
+            order.add(name);
+        }
+
+        private String resolveValue(String v) {
+            return props.getOrDefault(v, v.replace(&quot;${&quot;, &quot;&quot;).replace(&quot;}&quot;, &quot;&quot;));
+        }
+
+        private Object createBean(String name, Map&lt;String, String&gt; p) throws Exception {
+            Def d = defs.get(name);
+            Object[] depBeans = d.deps().stream().map(beans::get).toArray();
+            return switch (name) {
+                case &quot;dataSource&quot; -&gt; new DataSource(p.get(&quot;url&quot;), Integer.parseInt(p.get(&quot;maxConn&quot;)));
+                case &quot;userRepository&quot; -&gt; new UserRepository((DataSource) depBeans[0]);
+                case &quot;userService&quot;    -&gt; new UserService((UserRepository) depBeans[0]);
+                default -&gt; throw new RuntimeException(&quot;Unknown bean: &quot; + name);
+            };
+        }
+
+        @SuppressWarnings(&quot;unchecked&quot;)
+        &lt;T&gt; T getBean(String name) { return (T) beans.get(name); }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Ctx ctx = new Ctx();
+
+        System.out.println(&quot;=== Phase 0: Register defs + properties ===&quot;);
+        // Properties with ${...} variables
+        ctx.property(&quot;db.url&quot;,     &quot;${env.DB_HOST}:5432/app&quot;);
+        ctx.property(&quot;db.maxConn&quot;, &quot;20&quot;);
+
+        ctx.define(new Def(&quot;userService&quot;,    Map.of(), List.of(&quot;userRepository&quot;)));
+        ctx.define(new Def(&quot;userRepository&quot;, Map.of(), List.of(&quot;dataSource&quot;)));
+        ctx.define(new Def(&quot;dataSource&quot;,
+            Map.of(&quot;url&quot;, &quot;jdbc:postgresql://${env.DB_HOST}:5432/app&quot;, &quot;maxConn&quot;, &quot;20&quot;),
+            List.of()));
+
+        // BFPP resolves ${env.DB_HOST} → actual value
+        ctx.addBFPP(new PropertyResolvingBFPP(Map.of(&quot;env.DB_HOST&quot;, &quot;prod-db-01.internal&quot;)));
+        ctx.addBPP(new TimingBPP());
+
+        System.out.println(&quot;=== Refresh ===&quot;);
+        ctx.refresh();
+
+        System.out.println(&quot;\n=== Creation order ===&quot;);
+        System.out.println(&quot;  &quot; + ctx.order);
+
+        System.out.println(&quot;\n=== Application running ===&quot;);
+        UserService svc = ctx.getBean(&quot;userService&quot;);
+        System.out.println(&quot;  &quot; + svc.getUser(&quot;alice&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java DepResolutionDemo3.java</code></p>
+<p>Three phases: (1) <code>BeanFactoryPostProcessor</code> resolves <code>${env.DB_HOST}</code> before any bean is created, (2) <code>BeanPostProcessor</code> wraps each bean after creation, (3) beans are created in dependency order: <code>dataSource</code> → <code>userRepository</code> → <code>userService</code>. The resolved URL <code>jdbc:postgresql://prod-db-01.internal:5432/app</code> is injected into <code>DataSource</code>.</p>
+<h2>6. Walkthrough</h2>
+<p><strong>Level 3 — resolution order:</strong></p>
+<pre><code>Phase 1 (BFPP):
+  props[&quot;db.url&quot;] = &quot;${env.DB_HOST}:5432/app&quot; → not directly used
+  dataSource props[&quot;url&quot;] = &quot;jdbc:postgresql://${env.DB_HOST}:5432/app&quot;
+    → resolves to &quot;jdbc:postgresql://prod-db-01.internal:5432/app&quot;
+
+Phase 3 (pre-instantiate singletons):
+  instantiate(&quot;userService&quot;):
+    dep=&quot;userRepository&quot; → not done → recurse
+    instantiate(&quot;userRepository&quot;):
+      dep=&quot;dataSource&quot; → not done → recurse
+      instantiate(&quot;dataSource&quot;):
+        no deps → create DataSource(&quot;jdbc:...prod-db-01...&quot;, 20)
+        BPP.wrapBean(&quot;dataSource&quot;, bean) → TimingBPP logged
+        done[&quot;dataSource&quot;] = bean
+      create UserRepository(dataSource)
+      done[&quot;userRepository&quot;] = bean
+    create UserService(userRepository)
+    done[&quot;userService&quot;] = bean
+
+Order: [dataSource, userRepository, userService]</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong><code>BeanDefinition</code> objects are parsed eagerly but beans are created lazily by default in XML, or eagerly for <code>@Component</code> singletons.</strong> Adding <code>@Lazy</code> to a bean delays creation until first <code>getBean()</code> call — missing deps are then detected at request time, not startup time.</blockquote>
+<blockquote><strong><code>BeanFactoryPostProcessor</code> beans are created before regular beans.</strong> If a <code>BeanFactoryPostProcessor</code> has a dependency on a regular bean, that regular bean is also created early — it escapes normal lifecycle ordering. Avoid injecting non-infrastructure beans into <code>BeanFactoryPostProcessor</code> implementations.</blockquote>
+<ul><li>Spring&#x27;s actual resolution uses <code>DefaultListableBeanFactory.preInstantiateSingletons()</code> which iterates the definition map and calls <code>getBean(name)</code> for each non-lazy singleton.</li><li><code>@DependsOn(&quot;beanA&quot;)</code> is a signal to Spring that this bean needs <code>beanA</code> to be initialized first, even if there&#x27;s no injection relationship — useful for initializing shared resources (e.g., a database migration bean that must run before any repository).</li><li><code>UnsatisfiedDependencyException</code> is the most common resolution failure: it wraps the actual <code>NoSuchBeanDefinitionException</code> and names both the failing bean and the injection point.</li></ul>
+  <div class="nav"><a class="prv" href="0047-arbitrary-method-replacement.html"><span class="mini">← Previous</span>Arbitrary method replacement</a><a class="nxt" href="0049-circular-dependencies-how-to-resolve-them.html"><span class="mini">Next →</span>Circular dependencies & how to resolve them</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t48";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

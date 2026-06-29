@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Circular dependencies — how to resolve them — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 2. IoC Container & Beans</div>
+  <div class="htitle">
+    <h1>Circular dependencies — how to resolve them</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>circular dependency</strong> occurs when bean A depends on bean B, and bean B also depends on bean A (directly or through a chain). Spring cannot satisfy both constructor arguments simultaneously — to create A it needs B, but to create B it needs A.</p>
+<pre><code>Constructor circular (fails at startup):
+  A(B b) and B(A a)
+  → Spring tries: create A → needs B → create B → needs A → BeanCurrentlyInCreationException
+
+Setter circular (works):
+  A() { } + A.setB(B b)
+  B(A a)
+  → Spring creates empty A, creates B (injecting the empty A shell),
+    then calls A.setB(b) → both fully wired</code></pre>
+<p>In one sentence: <strong>Circular dependencies happen when two beans each need the other to be created first; Spring detects constructor circulars at startup and throws, while setter/field circulars are resolved using an &quot;early singleton reference&quot; cache.</strong></p>
+<h2>2. Why &amp; when</h2>
+<p>Circular dependencies usually indicate a design problem — two classes are too tightly coupled. The recommended fix is to <strong>break the cycle by extracting shared logic</strong> into a third bean that both A and B depend on without depending on each other.</p>
+<p>If breaking the cycle is impractical right now, Spring provides escape hatches:</p>
+<ul><li><strong>Use setter or field injection on one side</strong> — Spring creates the bean first (empty), puts an early reference in the singleton cache, then injects it into the other bean.</li><li><strong><code>@Lazy</code> on one injection point</strong> — Spring injects a CGLIB proxy instead of the real bean; the real bean is created on first method call.</li></ul>
+<p>Circular dependencies are always a warning sign, but they surface legitimately in legacy codebases, plugin architectures, and frameworks where two subsystems must know about each other.</p>
+<h2>3. Core concept</h2>
+<pre><code>Spring&#x27;s early singleton cache (singletonFactories):
+
+  Problem: A needs B, B needs A (constructor DI both sides)
+  → deadlock → BeanCurrentlyInCreationException
+
+  Solution: one side uses setter DI
+  Step 1: create A() empty → register A in &quot;earlySingletonObjects&quot; cache
+  Step 2: create B(A a)   → find A in early cache → inject early A into B
+  Step 3: A is now fully created → call A.setB(b) → wire B into A
+  Step 4: Both fully wired ✓
+
+  @Lazy alternative:
+  Step 1: create A(B b)  → B not yet created → inject CGLIB proxy for B
+  Step 2: create B(A a)  → inject A directly (A exists)
+  Step 3: first call to b.someMethod() → proxy fetches real B → delegates</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 205" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Circular dependency: constructor DI deadlocks; setter DI breaks the cycle via early singleton cache">
+  <defs>
+    <marker id="a49" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="b49" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#e06c75"/></marker>
+    <marker id="c49" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+  </defs>
+
+  <!-- Left: Constructor deadlock -->
+  <text x="140" y="18" fill="#e06c75" font-size="10" text-anchor="middle" font-family="sans-serif">Constructor circular (FAILS)</text>
+  <rect x="10"  y="28" width="100" height="44" rx="5" fill="#1c2430" stroke="#e06c75" stroke-width="1.5"/>
+  <text x="60"  y="54" fill="#e06c75" font-size="10" text-anchor="middle" font-family="sans-serif">AuthService(B)</text>
+  <rect x="170" y="28" width="100" height="44" rx="5" fill="#1c2430" stroke="#e06c75" stroke-width="1.5"/>
+  <text x="220" y="54" fill="#e06c75" font-size="10" text-anchor="middle" font-family="sans-serif">SessionStore(A)</text>
+  <path d="M110,44 C140,20 140,20 168,44" stroke="#e06c75" stroke-width="1.5" fill="none" marker-end="url(#b49)"/>
+  <path d="M170,60 C140,82 140,82 112,60" stroke="#e06c75" stroke-width="1.5" fill="none" marker-end="url(#b49)"/>
+  <text x="140" y="94" fill="#e06c75" font-size="8" text-anchor="middle" font-family="sans-serif">BeanCurrentlyInCreationException</text>
+
+  <!-- Right: Setter resolution -->
+  <text x="480" y="18" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">Setter on one side (WORKS)</text>
+  <rect x="350" y="28" width="120" height="44" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="410" y="46" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">AuthService()</text>
+  <text x="410" y="62" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">setSessionStore(B)</text>
+  <rect x="520" y="28" width="120" height="44" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="580" y="54" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">SessionStore(A)</text>
+
+  <!-- Steps -->
+  <text x="480" y="100" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">① new AuthService() → early cache</text>
+  <text x="480" y="114" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">② new SessionStore(earlyA) ✓</text>
+  <text x="480" y="128" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">③ authService.setSessionStore(B) ✓</text>
+
+  <!-- Early cache box -->
+  <rect x="350" y="140" width="290" height="34" rx="4" fill="#0d1117" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="495" y="158" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">Early singleton cache: {authService → incomplete A}</text>
+
+  <line x1="410" y1="72" x2="410" y2="137" stroke="#79c0ff" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#c49)"/>
+  <line x1="495" y1="174" x2="580" y2="74"  stroke="#79c0ff" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#c49)"/>
+</svg>
+<p>Constructor circular: deadlock. Setter on one side: Spring puts an early (incomplete) reference in the cache, creates B injecting the early A, then finishes wiring A.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: <code>AuthService</code> needs <code>SessionStore</code> to look up sessions; <code>SessionStore</code> needs <code>AuthService</code> to validate tokens before storing. Classic circular dependency.</p>
+<h3>Level 1 — Basic</h3>
+<p>Show the problem, then fix with setter injection on one side.</p>
+<pre><code class="lang-java">// CircularDepDemo.java — run with: java CircularDepDemo.java
+import java.util.*;
+
+public class CircularDepDemo {
+
+    // --- Beans ---
+    static class AuthService {
+        private SessionStore sessionStore;  // setter-injected (breaks circle)
+
+        AuthService() { System.out.println(&quot;  [1] AuthService() created (empty)&quot;); }
+
+        void setSessionStore(SessionStore s) {
+            System.out.println(&quot;  [3] AuthService.setSessionStore → wired&quot;);
+            this.sessionStore = s;
+        }
+
+        boolean validateToken(String token) { return token.startsWith(&quot;tok-&quot;); }
+
+        String login(String user) {
+            String token = &quot;tok-&quot; + user + &quot;-&quot; + (int)(Math.random()*9000+1000);
+            sessionStore.store(user, token);
+            return token;
+        }
+    }
+
+    static class SessionStore {
+        private final AuthService auth;  // constructor-injected
+        private final Map&lt;String, String&gt; sessions = new HashMap&lt;&gt;();
+
+        SessionStore(AuthService auth) {
+            System.out.println(&quot;  [2] SessionStore(AuthService) created&quot;);
+            this.auth = auth;
+        }
+
+        void store(String user, String token) {
+            if (!auth.validateToken(token))
+                throw new IllegalArgumentException(&quot;Invalid token: &quot; + token);
+            sessions.put(token, user);
+            System.out.println(&quot;  [SESSION] stored: &quot; + user + &quot; → &quot; + token);
+        }
+
+        Optional&lt;String&gt; lookup(String token) {
+            return Optional.ofNullable(sessions.get(token));
+        }
+    }
+
+    // Minimal container resolving the circular dependency
+    static class Ctx {
+        AuthService  auth;
+        SessionStore sessions;
+
+        void refresh() {
+            System.out.println(&quot;=== Container startup ===&quot;);
+            // 1. Create AuthService (empty — setSessionStore not called yet)
+            auth = new AuthService();
+            // 2. Create SessionStore injecting the (still-empty) AuthService
+            sessions = new SessionStore(auth);
+            // 3. Complete AuthService wiring
+            auth.setSessionStore(sessions);
+            System.out.println(&quot;  [CTX] Both beans fully wired ✓&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        Ctx ctx = new Ctx();
+        ctx.refresh();
+
+        System.out.println(&quot;\n=== Application running ===&quot;);
+        String token = ctx.auth.login(&quot;alice&quot;);
+        System.out.println(&quot;  alice token: &quot; + token);
+        System.out.println(&quot;  lookup: &quot; + ctx.sessions.lookup(token));
+        System.out.println(&quot;  bad token: &quot; + ctx.sessions.lookup(&quot;bad-token&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java CircularDepDemo.java</code></p>
+<p><code>AuthService</code> is created first (step 1) — its <code>sessionStore</code> field is null. <code>SessionStore</code> is created second (step 2), receiving the partially-initialized <code>AuthService</code> as a constructor argument. Finally (step 3), <code>setSessionStore</code> completes <code>AuthService</code>&#x27;s wiring. By step 3, <code>SessionStore</code> exists, so the setter can be called.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add a <code>@Lazy</code>-style proxy alternative: inject a proxy wrapper that defers the real bean lookup to first use.</p>
+<pre><code class="lang-java">// CircularDepDemo2.java — run with: java CircularDepDemo2.java
+import java.lang.reflect.*;
+import java.util.*;
+
+public class CircularDepDemo2 {
+
+    interface NotificationSender { void send(String user, String message); }
+    interface UserPreferences     { Map&lt;String, String&gt; prefs(String user); }
+
+    // NotificationSender needs UserPreferences to look up preferred channel.
+    // UserPreferences needs NotificationSender to send a &quot;preferences updated&quot; notification.
+    // Solution: @Lazy proxy on UserPreferences injection in NotificationSender.
+
+    static class UserPreferencesService implements UserPreferences {
+        private NotificationSender sender;  // setter injection
+
+        UserPreferencesService() { System.out.println(&quot;  [1] UserPreferencesService() created&quot;); }
+
+        void setNotificationSender(NotificationSender s) {
+            System.out.println(&quot;  [3] UserPreferencesService.setNotificationSender wired&quot;);
+            this.sender = s;
+        }
+
+        @Override public Map&lt;String, String&gt; prefs(String user) {
+            return Map.of(&quot;channel&quot;, &quot;email&quot;, &quot;theme&quot;, &quot;dark&quot;, &quot;user&quot;, user);
+        }
+
+        void updatePrefs(String user, String channel) {
+            System.out.println(&quot;  [PREFS] updated &quot; + user + &quot; channel=&quot; + channel);
+            if (sender != null)
+                sender.send(user, &quot;Your notification channel is now: &quot; + channel);
+        }
+    }
+
+    static class EmailNotificationSender implements NotificationSender {
+        private final UserPreferences prefs;  // injected — may be a proxy
+
+        EmailNotificationSender(UserPreferences prefs) {
+            System.out.println(&quot;  [2] EmailNotificationSender(UserPreferences) created&quot;);
+            this.prefs = prefs;
+        }
+
+        @Override public void send(String user, String msg) {
+            String channel = prefs.prefs(user).get(&quot;channel&quot;);
+            System.out.println(&quot;  [NOTIFY via &quot; + channel + &quot;] &quot; + user + &quot;: &quot; + msg);
+        }
+    }
+
+    // @Lazy-style proxy: wraps a Supplier&lt;T&gt;, resolves on first call
+    @SuppressWarnings(&quot;unchecked&quot;)
+    static &lt;T&gt; T lazyProxy(Class&lt;T&gt; iface, java.util.function.Supplier&lt;T&gt; supplier) {
+        Object[] holder = {null};
+        return (T) Proxy.newProxyInstance(
+            iface.getClassLoader(), new Class&lt;?&gt;[]{iface},
+            (proxy, method, args) -&gt; {
+                if (holder[0] == null) {
+                    System.out.println(&quot;  [@Lazy] proxy first call → resolving real bean&quot;);
+                    holder[0] = supplier.get();
+                }
+                return method.invoke(holder[0], args);
+            }
+        );
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;=== Container startup with @Lazy proxy ===&quot;);
+
+        // Hold references to allow forward-reference in lambda
+        UserPreferencesService[] prefsRef = {null};
+
+        // 1. Create UserPreferencesService (no deps yet)
+        prefsRef[0] = new UserPreferencesService();
+
+        // 2. Create EmailNotificationSender with a LAZY proxy for UserPreferences
+        //    The proxy will resolve to prefsRef[0] on first call — not during construction
+        UserPreferences lazyPrefs = lazyProxy(UserPreferences.class, () -&gt; prefsRef[0]);
+        EmailNotificationSender sender = new EmailNotificationSender(lazyPrefs);
+
+        // 3. Complete UserPreferencesService wiring
+        prefsRef[0].setNotificationSender(sender);
+        System.out.println(&quot;  [CTX] Wiring complete ✓&quot;);
+
+        System.out.println(&quot;\n=== Application running ===&quot;);
+        // First call to prefs() triggers proxy resolution
+        sender.send(&quot;alice&quot;, &quot;Welcome!&quot;);
+        prefsRef[0].updatePrefs(&quot;bob&quot;, &quot;sms&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java CircularDepDemo2.java</code></p>
+<p>Instead of setter injection to break the circle, this uses a lazy proxy: <code>EmailNotificationSender</code> receives a proxy object at construction time. When <code>send()</code> is first called, the proxy resolves to the real <code>UserPreferencesService</code>. This mirrors Spring&#x27;s <code>@Lazy</code> injection — no setter needed on the notification sender side.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Best practice: extract the shared concern into a third bean, eliminating the circular dependency entirely.</p>
+<pre><code class="lang-java">// CircularDepDemo3.java — run with: java CircularDepDemo3.java
+import java.util.*;
+
+public class CircularDepDemo3 {
+
+    // BEFORE: OrderService ←→ InventoryService circular
+    // OrderService needs InventoryService to check stock.
+    // InventoryService needs OrderService to cancel orders when stock is zero.
+    //
+    // AFTER: extract StockEventPublisher as a shared dependency.
+    // Both depend on it; neither depends on the other.
+
+    // --- Shared component (extracted) ---
+    static class StockEventPublisher {
+        private final List&lt;String&gt; events = new ArrayList&lt;&gt;();
+
+        StockEventPublisher() { System.out.println(&quot;  [1] StockEventPublisher created&quot;); }
+
+        void publish(String event) {
+            events.add(event);
+            System.out.println(&quot;  [EVENT] &quot; + event);
+        }
+
+        List&lt;String&gt; getEvents() { return Collections.unmodifiableList(events); }
+    }
+
+    // --- OrderService: depends on InventoryService + StockEventPublisher ---
+    static class OrderService {
+        private final InventoryService  inventory;
+        private final StockEventPublisher publisher;
+
+        OrderService(InventoryService inventory, StockEventPublisher publisher) {
+            System.out.println(&quot;  [3] OrderService(InventoryService, StockEventPublisher) created&quot;);
+            this.inventory = inventory; this.publisher = publisher;
+        }
+
+        String placeOrder(String productId, int qty) {
+            if (!inventory.reserve(productId, qty)) {
+                publisher.publish(&quot;ORDER_FAILED: no stock for &quot; + productId);
+                return &quot;FAILED: out of stock&quot;;
+            }
+            String orderId = &quot;ORD-&quot; + productId + &quot;-&quot; + qty;
+            publisher.publish(&quot;ORDER_PLACED: &quot; + orderId);
+            return orderId;
+        }
+    }
+
+    // --- InventoryService: depends on StockEventPublisher only ---
+    static class InventoryService {
+        private final Map&lt;String, Integer&gt;  stock      = new HashMap&lt;&gt;();
+        private final StockEventPublisher   publisher;
+
+        InventoryService(StockEventPublisher publisher) {
+            System.out.println(&quot;  [2] InventoryService(StockEventPublisher) created&quot;);
+            this.publisher = publisher;
+            stock.put(&quot;LAPTOP&quot;, 10); stock.put(&quot;MOUSE&quot;, 50); stock.put(&quot;KEYBOARD&quot;, 0);
+        }
+
+        boolean reserve(String productId, int qty) {
+            int current = stock.getOrDefault(productId, 0);
+            if (current &lt; qty) {
+                publisher.publish(&quot;STOCK_INSUFFICIENT: &quot; + productId + &quot; have=&quot; + current + &quot; need=&quot; + qty);
+                return false;
+            }
+            stock.put(productId, current - qty);
+            publisher.publish(&quot;STOCK_RESERVED: &quot; + productId + &quot; qty=&quot; + qty + &quot; remaining=&quot; + (current - qty));
+            return true;
+        }
+
+        int getStock(String productId) { return stock.getOrDefault(productId, 0); }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;=== Container startup (no circular dependency) ===&quot;);
+        // Dependency order: StockEventPublisher → InventoryService → OrderService
+        StockEventPublisher publisher = new StockEventPublisher();
+        InventoryService    inventory = new InventoryService(publisher);
+        OrderService        orders    = new OrderService(inventory, publisher);
+        System.out.println(&quot;  [CTX] All beans wired via constructor DI — no circular dep ✓&quot;);
+
+        System.out.println(&quot;\n=== Application running ===&quot;);
+        System.out.println(&quot;  &quot; + orders.placeOrder(&quot;LAPTOP&quot;,   2));
+        System.out.println(&quot;  &quot; + orders.placeOrder(&quot;KEYBOARD&quot;, 1));
+        System.out.println(&quot;  &quot; + orders.placeOrder(&quot;LAPTOP&quot;,   15));
+
+        System.out.println(&quot;\n=== Event log ===&quot;);
+        publisher.getEvents().forEach(e -&gt; System.out.println(&quot;  • &quot; + e));
+
+        System.out.println(&quot;\n=== Stock after orders ===&quot;);
+        System.out.println(&quot;  LAPTOP:   &quot; + inventory.getStock(&quot;LAPTOP&quot;));
+        System.out.println(&quot;  KEYBOARD: &quot; + inventory.getStock(&quot;KEYBOARD&quot;));
+
+        System.out.println(&quot;\n=== Design lesson ===&quot;);
+        System.out.println(&quot;  BEFORE: OrderService ←→ InventoryService (circular)&quot;);
+        System.out.println(&quot;  AFTER:  Both depend on StockEventPublisher; neither depends on the other&quot;);
+        System.out.println(&quot;  Circular deps = design smell: extract the shared concern into a third bean&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java CircularDepDemo3.java</code></p>
+<p><code>StockEventPublisher</code> is created first. <code>InventoryService</code> depends only on the publisher. <code>OrderService</code> depends on both <code>InventoryService</code> and the publisher — but not on <code>InventoryService</code> depending back on <code>OrderService</code>. All three constructors are satisfied in order: 1 → 2 → 3. The circular dependency is gone entirely.</p>
+<h2>6. Walkthrough</h2>
+<p><strong>Level 3 — creation order and wiring:</strong></p>
+<pre><code>new StockEventPublisher()        → id=1, no deps
+new InventoryService(publisher)  → id=2, stock pre-loaded
+new OrderService(inventory, publisher) → id=3, all deps satisfied
+
+orders.placeOrder(&quot;LAPTOP&quot;, 2):
+  → inventory.reserve(&quot;LAPTOP&quot;, 2)
+      → stock[&quot;LAPTOP&quot;] = 10 ≥ 2 ✓
+      → publish(&quot;STOCK_RESERVED: LAPTOP qty=2 remaining=8&quot;)
+      → stock[&quot;LAPTOP&quot;] = 8
+      → return true
+  → publish(&quot;ORDER_PLACED: ORD-LAPTOP-2&quot;)
+  → return &quot;ORD-LAPTOP-2&quot;
+
+orders.placeOrder(&quot;KEYBOARD&quot;, 1):
+  → inventory.reserve(&quot;KEYBOARD&quot;, 1)
+      → stock[&quot;KEYBOARD&quot;] = 0 &lt; 1 ✗
+      → publish(&quot;STOCK_INSUFFICIENT: KEYBOARD have=0 need=1&quot;)
+      → return false
+  → publish(&quot;ORDER_FAILED: no stock for KEYBOARD&quot;)
+  → return &quot;FAILED: out of stock&quot;</code></pre>
+<p><strong>Event log (in order):</strong></p>
+<pre><code>STOCK_RESERVED: LAPTOP qty=2 remaining=8
+ORDER_PLACED: ORD-LAPTOP-2
+STOCK_INSUFFICIENT: KEYBOARD have=0 need=1
+ORDER_FAILED: no stock for KEYBOARD
+STOCK_INSUFFICIENT: LAPTOP have=8 need=15
+ORDER_FAILED: no stock for LAPTOP</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Spring 6 / Spring Boot 3 no longer silently resolves setter circular dependencies by default.</strong> In older versions, setter-circular worked out of the box. Modern Spring requires explicit opt-in via <code>spring.main.allow-circular-references=true</code> in <code>application.properties</code> — and it logs a warning. Treat circular deps as errors, not features.</blockquote>
+<blockquote><strong><code>@Lazy</code> on a constructor parameter injects a CGLIB proxy, not the real bean.</strong> The proxy intercepts every method call and lazily fetches the real bean on first invocation. This adds overhead and can surprise code that checks <code>instanceof</code> or uses <code>equals()</code> on the injected object.</blockquote>
+<ul><li>Spring 6 detects circular dependencies involving <code>@Autowired</code> fields at startup. Pre-Spring 6, field circulars were resolved silently; now they also throw unless opted-in.</li><li>The correct fix for a circular dependency is almost always architectural: extract a shared service, use an event/message bus, or break the cycle by moving one direction of the relationship to a callback or observer pattern.</li><li><code>@DependsOn</code> is for ordering, not for resolving circulars — it only says &quot;create B before A&quot; but does not inject B into A.</li><li>If you must allow circular references in Spring Boot 3, add <code>spring.main.allow-circular-references=true</code> — but add a comment and track it for refactoring.</li></ul>
+  <div class="nav"><a class="prv" href="0048-dependency-resolution-process.html"><span class="mini">← Previous</span>Dependency resolution process</a><a class="nxt" href="0050-lazy-initialized-beans-lazy-lazy-init.html"><span class="mini">Next →</span>Lazy-initialized beans (@Lazy / lazy-init)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t49";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
