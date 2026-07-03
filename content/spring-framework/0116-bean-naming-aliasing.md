@@ -1,7 +1,7 @@
 ---
 card: spring-framework
 gi: 116
-slug: bean-naming-aliasing
+slug: bean-naming-aliasing-in-bean
 title: "Bean naming & aliasing in @Bean"
 ---
 

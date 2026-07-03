@@ -1,7 +1,7 @@
 ---
 card: spring-framework
 gi: 117
-slug: bean-description
+slug: bean-description-description
 title: "Bean description (@Description)"
 ---
 

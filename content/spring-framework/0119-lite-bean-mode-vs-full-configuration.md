@@ -1,7 +1,7 @@
 ---
 card: spring-framework
 gi: 119
-slug: lite-bean-mode-vs-full-configuration
+slug: lite-bean-mode-in-component-vs-full-configuration-cglib-prox
 title: "Lite @Bean mode (in @Component) vs full @Configuration"
 ---
 
