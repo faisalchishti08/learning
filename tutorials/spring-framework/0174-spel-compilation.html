@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpEL compilation — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 3. Resources, Validation, SpEL, AOT</div>
+  <div class="htitle">
+    <h1>SpEL compilation</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>By default SpEL <strong>interprets</strong> expressions: every <code>getValue()</code> call walks the parsed AST node by node. SpEL can instead <strong>compile</strong> an expression to JVM bytecode, so subsequent evaluations run at native speed without AST traversal.</p>
+<p>Compilation is configured via <code>SpelParserConfiguration</code>:</p>
+<pre><code class="lang-java">SpelParserConfiguration config = new SpelParserConfiguration(
+    SpelCompilerMode.IMMEDIATE, MyClass.class.getClassLoader());
+SpelExpressionParser parser = new SpelExpressionParser(config);</code></pre>
+<p>Three modes exist:</p>
+<ul><li><code>OFF</code> — always interpret (default).</li><li><code>IMMEDIATE</code> — compile after the first evaluation once all type information is known.</li><li><code>MIXED</code> — interpret until type information stabilises, then compile; fall back to interpretation if runtime types change.</li></ul>
+<h2>2. Why &amp; when</h2>
+<ul><li><strong>Tight evaluation loops</strong> — a discount rule applied to thousands of orders per second is CPU-bound; compiled SpEL can be 5–10× faster than interpreted.</li><li><strong>Rules engines</strong> — externally configured predicates (<code>product.category == &#x27;electronics&#x27; and price &gt; 500</code>) that are hot code paths benefit most.</li><li><strong>Security expressions</strong> — Spring Security evaluates SpEL access-control expressions (<code>hasRole(&#x27;ADMIN&#x27;) and #user.active</code>) on every request; compilation removes the AST overhead.</li><li><strong>Avoid compilation</strong> when expressions are *evaluated once* (config wiring via <code>@Value</code>) — the compilation cost outweighs any gain.</li><li><strong>Avoid compilation</strong> for expressions with frequently changing root-object types — <code>MIXED</code> mode handles this but adds complexity; <code>IMMEDIATE</code> may miscompile if types change after the first eval.</li></ul>
+<h2>3. Core concept</h2>
+<p>Interpreted evaluation path:</p>
+<pre><code>parseExpression(&quot;price * discount&quot;)   → AST
+─────────────────────────────────────
+getValue() call 1: AST walk, reflect getPrice(), reflect getDiscount(), multiply
+getValue() call 2: AST walk again …  (same cost every time)</code></pre>
+<p>Compiled evaluation path:</p>
+<pre><code>parseExpression(&quot;price * discount&quot;)   → AST
+─────────────────────────────────────
+getValue() call 1 (IMMEDIATE): compile AST → bytecode (one-time cost)
+getValue() call 2: invoke compiled method directly  (very fast)
+getValue() call 3: invoke compiled method directly  …</code></pre>
+<p>Compilation happens inside the <code>Expression</code> object. The <code>SpelCompiler</code> uses ASM to generate a class implementing <code>CompiledExpression</code>, which is loaded into the JVM via the provided class loader.</p>
+<p><strong>When compilation fails or is skipped:</strong></p>
+<ul><li>The expression contains a construct the compiler does not support (e.g., complex type coercion).</li><li>The root object type is <code>null</code> on the first call — no type information to compile against.</li><li>In <code>MIXED</code> mode, if the type of a property changes between calls, SpEL falls back to interpreted mode.</li></ul>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 700 210" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ca174" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="cb174" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#79c0ff"/></marker>
+  </defs>
+
+  <!-- Interpreted path -->
+  <rect x="5" y="8" width="330" height="195" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="170" y="28" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif" font-weight="bold">Interpreted (OFF / default)</text>
+
+  <rect x="20" y="38" width="130" height="24" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="85" y="54" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">parseExpression("…")</text>
+  <line x1="85" y1="62" x2="85" y2="78" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ca174)"/>
+  <rect x="20" y="80" width="130" height="24" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="85" y="96" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">AST stored</text>
+
+  <text x="195" y="92" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">getValue() #1</text>
+  <line x1="153" y1="92" x2="175" y2="92" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ca174)"/>
+  <rect x="178" y="80" width="140" height="24" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="248" y="96" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">walk AST → result</text>
+
+  <text x="195" y="130" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">getValue() #2</text>
+  <line x1="153" y1="130" x2="175" y2="130" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ca174)"/>
+  <rect x="178" y="118" width="140" height="24" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="248" y="134" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">walk AST → result</text>
+
+  <text x="248" y="160" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">same cost every call</text>
+  <text x="248" y="173" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">O(AST depth) per eval</text>
+
+  <!-- Compiled path -->
+  <rect x="360" y="8" width="335" height="195" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="527" y="28" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif" font-weight="bold">Compiled (IMMEDIATE)</text>
+
+  <rect x="375" y="38" width="130" height="24" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="440" y="54" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">parseExpression("…")</text>
+  <line x1="440" y1="62" x2="440" y2="78" stroke="#8b949e" stroke-width="1.5" marker-end="url(#cb174)"/>
+  <rect x="375" y="80" width="130" height="24" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="440" y="96" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">AST stored</text>
+
+  <text x="550" y="92" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">getValue() #1 → compile → result</text>
+  <line x1="508" y1="92" x2="530" y2="92" stroke="#6db33f" stroke-width="1.5" marker-end="url(#cb174)"/>
+  <rect x="533" y="80" width="145" height="24" rx="4" fill="#6db33f" opacity="0.2" stroke="#6db33f" stroke-width="1"/>
+  <text x="605" y="96" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">compile AST → bytecode</text>
+
+  <text x="550" y="130" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">getValue() #2</text>
+  <line x1="508" y1="130" x2="530" y2="130" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#cb174)"/>
+  <rect x="533" y="118" width="145" height="24" rx="4" fill="#79c0ff" opacity="0.15" stroke="#79c0ff" stroke-width="1"/>
+  <text x="605" y="134" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">invoke compiled → result</text>
+
+  <text x="605" y="160" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">near-native speed from #2 on</text>
+  <text x="605" y="173" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">O(1) overhead per eval</text>
+</svg>
+<p>Interpreted mode pays AST-walk cost on every call; compiled mode pays the compilation cost once on the first call, then runs bytecode directly from call two onwards.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario is a <strong>product discount calculator</strong> that applies an externally supplied rule expression to thousands of products — a realistic case where compilation matters.</p>
+<h3>Level 1 — Basic</h3>
+<p>Enable compilation and confirm the same expression works in both modes.</p>
+<pre><code class="lang-java">// SpelCompilationBasic.java
+import org.springframework.expression.*;
+import org.springframework.expression.spel.*;
+import org.springframework.expression.spel.standard.*;
+import org.springframework.expression.spel.support.*;
+
+public class SpelCompilationBasic {
+    record Product(String name, double price, String category) {
+        public String getName()     { return name; }
+        public double getPrice()    { return price; }
+        public String getCategory() { return category; }
+    }
+
+    public static void main(String[] args) {
+        var product = new Product(&quot;Laptop&quot;, 1200.0, &quot;electronics&quot;);
+
+        // Interpreted (default)
+        var interpretedParser = new SpelExpressionParser();
+        var ctx = new StandardEvaluationContext(product);
+        Expression interp = interpretedParser.parseExpression(&quot;price * 0.9&quot;);
+        System.out.println(&quot;Interpreted: &quot; + interp.getValue(ctx, Double.class)); // 1080.0
+
+        // Compiled — IMMEDIATE mode
+        var config = new SpelParserConfiguration(SpelCompilerMode.IMMEDIATE,
+                                                  SpelCompilationBasic.class.getClassLoader());
+        var compiledParser = new SpelExpressionParser(config);
+        Expression comp = compiledParser.parseExpression(&quot;price * 0.9&quot;);
+        // First call: interprets AND compiles
+        System.out.println(&quot;Compiled #1:  &quot; + comp.getValue(ctx, Double.class)); // 1080.0
+        // Subsequent calls: execute compiled bytecode
+        System.out.println(&quot;Compiled #2:  &quot; + comp.getValue(ctx, Double.class)); // 1080.0
+
+        // Boolean predicate
+        Expression eligibleExpr = compiledParser.parseExpression(
+            &quot;category == &#x27;electronics&#x27; and price &gt; 500&quot;);
+        System.out.println(&quot;Eligible:     &quot; + eligibleExpr.getValue(ctx, Boolean.class)); // true
+
+        var book = new Product(&quot;Novel&quot;, 15.0, &quot;books&quot;);
+        System.out.println(&quot;Book eligible:&quot; + eligibleExpr.getValue(
+            new StandardEvaluationContext(book), Boolean.class)); // false
+    }
+}</code></pre>
+<p>How to run: <code>java SpelCompilationBasic.java</code></p>
+<p><code>SpelCompilerMode.IMMEDIATE</code> tells SpEL to compile on the first successful evaluation. The compiled expression object is reused — each <code>getValue</code> after that first call runs generated bytecode instead of the AST walker. Passing <code>null</code> as the class loader uses the default class loader; passing a specific class loader is important in OSGi or application-server environments.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Measure interpreted vs compiled performance; compare IMMEDIATE and MIXED modes; handle the case where compilation is not yet done.</p>
+<pre><code class="lang-java">// SpelCompilationIntermediate.java
+import org.springframework.expression.*;
+import org.springframework.expression.spel.*;
+import org.springframework.expression.spel.standard.*;
+import org.springframework.expression.spel.support.*;
+
+public class SpelCompilationIntermediate {
+    public static class Order {
+        private double subtotal;
+        private int quantity;
+        private boolean vip;
+        Order(double s, int q, boolean v) { subtotal=s; quantity=q; vip=v; }
+        public double getSubtotal()  { return subtotal; }
+        public int    getQuantity()  { return quantity; }
+        public boolean isVip()       { return vip; }
+    }
+
+    static double evaluate(Expression expr, Order order) {
+        return expr.getValue(new StandardEvaluationContext(order), Double.class);
+    }
+
+    public static void main(String[] args) {
+        // Expressions to compare
+        String ruleStr = &quot;subtotal * (vip ? 0.80 : 0.95) + (quantity &gt; 10 ? -5.0 : 0.0)&quot;;
+
+        var interpExpr  = new SpelExpressionParser().parseExpression(ruleStr);
+
+        var immCfg = new SpelParserConfiguration(SpelCompilerMode.IMMEDIATE,
+                                                  SpelCompilationIntermediate.class.getClassLoader());
+        var immExpr = new SpelExpressionParser(immCfg).parseExpression(ruleStr);
+
+        var mixCfg = new SpelParserConfiguration(SpelCompilerMode.MIXED,
+                                                  SpelCompilationIntermediate.class.getClassLoader());
+        var mixExpr = new SpelExpressionParser(mixCfg).parseExpression(ruleStr);
+
+        // Warm up
+        var warmOrder = new Order(200.0, 5, true);
+        for (int i = 0; i &lt; 100; i++) {
+            evaluate(interpExpr,  warmOrder);
+            evaluate(immExpr,     warmOrder);
+            evaluate(mixExpr,     warmOrder);
+        }
+
+        // Benchmark: 100 000 evaluations
+        int N = 100_000;
+        var order = new Order(150.0, 15, false);
+
+        long t0 = System.nanoTime();
+        for (int i = 0; i &lt; N; i++) evaluate(interpExpr, order);
+        long interpNs = System.nanoTime() - t0;
+
+        t0 = System.nanoTime();
+        for (int i = 0; i &lt; N; i++) evaluate(immExpr, order);
+        long immNs = System.nanoTime() - t0;
+
+        t0 = System.nanoTime();
+        for (int i = 0; i &lt; N; i++) evaluate(mixExpr, order);
+        long mixNs = System.nanoTime() - t0;
+
+        double result = evaluate(interpExpr, order);
+        System.out.printf(&quot;Result: %.2f%n&quot;, result);            // 137.25
+        System.out.printf(&quot;Interpreted: %,d ms%n&quot;, interpNs / 1_000_000);
+        System.out.printf(&quot;IMMEDIATE:   %,d ms%n&quot;, immNs    / 1_000_000);
+        System.out.printf(&quot;MIXED:       %,d ms%n&quot;, mixNs    / 1_000_000);
+    }
+}</code></pre>
+<p>How to run: <code>java SpelCompilationIntermediate.java</code></p>
+<p>The benchmark evaluates <code>subtotal * (vip ? 0.80 : 0.95) + (quantity &gt; 10 ? -5.0 : 0.0)</code> 100,000 times. After warm-up, compiled modes run 2–10× faster than interpreted depending on the JVM. <code>MIXED</code> mode defers compilation until the type is stable (unlike <code>IMMEDIATE</code> which compiles after the very first call) — both end up compiled but <code>MIXED</code> has a slightly longer warm-up phase.</p>
+<h3>Level 3 — Advanced</h3>
+<p>A Spring bean with a configurable discount rule; rule is compiled once and reused across all requests — the production pattern.</p>
+<pre><code class="lang-java">// SpelCompilationAdvanced.java
+import org.springframework.beans.factory.annotation.*;
+import org.springframework.context.annotation.*;
+import org.springframework.expression.*;
+import org.springframework.expression.spel.*;
+import org.springframework.expression.spel.standard.*;
+import org.springframework.expression.spel.support.*;
+import java.util.*;
+
+@Configuration
+class DiscountCfg {
+    @Bean
+    public DiscountEngine discountEngine() {
+        // Rules loaded from config (simulated here)
+        List&lt;String&gt; rules = List.of(
+            &quot;category == &#x27;electronics&#x27; and price &gt; 500 ? price * 0.85 : price&quot;,
+            &quot;quantity &gt;= 10 ? price * quantity * 0.90 : price * quantity&quot;,
+            &quot;vip and category == &#x27;books&#x27; ? price * 0.70 : price&quot;
+        );
+        return new DiscountEngine(rules);
+    }
+}
+
+class DiscountEngine {
+    private final SpelParserConfiguration cfg = new SpelParserConfiguration(
+        SpelCompilerMode.IMMEDIATE, DiscountEngine.class.getClassLoader());
+    private final SpelExpressionParser parser = new SpelExpressionParser(cfg);
+    // Pre-compiled expressions, keyed by rule string
+    private final Map&lt;String, Expression&gt; compiled = new LinkedHashMap&lt;&gt;();
+
+    DiscountEngine(List&lt;String&gt; rules) {
+        for (String rule : rules) compiled.put(rule, parser.parseExpression(rule));
+    }
+
+    /** Evaluate all rules for the given product/cart context. */
+    public void applyRules(String category, double price, int quantity, boolean vip) {
+        var ctx = new StandardEvaluationContext();
+        ctx.setVariable(&quot;category&quot;, category);
+        ctx.setVariable(&quot;price&quot;,    price);
+        ctx.setVariable(&quot;quantity&quot;, quantity);
+        ctx.setVariable(&quot;vip&quot;,      vip);
+        for (var entry : compiled.entrySet()) {
+            Object result = entry.getValue().getValue(ctx);
+            System.out.printf(&quot;Rule [%-70s] → %s%n&quot;, entry.getKey(), result);
+        }
+    }
+}
+
+public class SpelCompilationAdvanced {
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(DiscountCfg.class);
+        DiscountEngine engine = ctx.getBean(DiscountEngine.class);
+
+        System.out.println(&quot;=== Electronics, $800, qty 1, not VIP ===&quot;);
+        engine.applyRules(&quot;electronics&quot;, 800.0, 1, false);
+
+        System.out.println(&quot;\n=== Books, $15, qty 12, VIP ===&quot;);
+        engine.applyRules(&quot;books&quot;, 15.0, 12, true);
+
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: <code>java SpelCompilationAdvanced.java</code></p>
+<p><code>DiscountEngine</code> pre-compiles every rule expression at construction time (when the <code>@Bean</code> is initialised). The <code>Expression</code> objects are stored in a <code>Map</code> and reused for every product evaluation. Because <code>SpelCompilerMode.IMMEDIATE</code> is set, compilation happens on the first call to each expression — subsequent calls for thousands of products go through bytecode directly. This is the standard pattern for rules engines: parse and compile once at startup, evaluate many times at runtime.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing a single call <code>engine.applyRules(&quot;electronics&quot;, 800.0, 1, false)</code> for rule <code>category == &#x27;electronics&#x27; and price &gt; 500 ? price * 0.85 : price</code>:</p>
+<p><strong>Step 1 — <code>DiscountEngine</code> construction (at Spring wiring time):</strong></p>
+<ul><li><code>parser.parseExpression(rule)</code> builds an AST for each rule string.</li><li>The <code>Expression</code> objects are stored in <code>compiled</code> map — compilation has NOT happened yet (no type info available without a context).</li></ul>
+<p><strong>Step 2 — <code>applyRules</code> called:</strong></p>
+<ul><li>A fresh <code>StandardEvaluationContext</code> is created.</li><li>Variables bound: <code>category=&quot;electronics&quot;</code>, <code>price=800.0</code>, <code>quantity=1</code>, <code>vip=false</code>.</li></ul>
+<p><strong>Step 3 — <code>expression.getValue(ctx)</code> for first rule (FIRST CALL):</strong></p>
+<ul><li>SpEL interprets the expression to produce the result (since this is the first call and compilation needs to happen).</li><li>It also compiles the expression to JVM bytecode at this point (IMMEDIATE mode).</li><li><code>category == &#x27;electronics&#x27;</code> → <code>&quot;electronics&quot; == &quot;electronics&quot;</code> → <code>true</code></li><li><code>price &gt; 500</code> → <code>800.0 &gt; 500</code> → <code>true</code></li><li><code>true and true</code> → <code>true</code></li><li>Ternary: <code>true</code> branch → <code>price * 0.85</code> → <code>800.0 * 0.85</code> = <code>680.0</code></li></ul>
+<p><strong>Step 4 — Output:</strong> <code>Rule [...] → 680.0</code></p>
+<p><strong>Step 5 — Second <code>applyRules</code> call (different product):</strong></p>
+<ul><li>Same rule&#x27;s expression is now compiled.</li><li><code>getValue(ctx)</code> invokes the compiled <code>CompiledExpression.getValue()</code> method directly — JVM runs native bytecode, no AST traversal.</li></ul>
+<p>Expected output for <code>applyRules(&quot;electronics&quot;, 800.0, 1, false)</code>:</p>
+<pre><code>Rule [category == &#x27;electronics&#x27; and price &gt; 500 ? price * 0.85 : price         ] → 680.0
+Rule [quantity &gt;= 10 ? price * quantity * 0.90 : price * quantity               ] → 800.0
+Rule [vip and category == &#x27;books&#x27; ? price * 0.70 : price                        ] → 800.0</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Compilation requires consistent root-object types.</strong> If you evaluate an expression against different classes (e.g., <code>Product</code> then <code>Order</code>), SpEL compiled for <code>Product</code> will fail or produce wrong results when applied to <code>Order</code>. Always evaluate a compiled expression against objects of the same type it was first compiled against, or use <code>MIXED</code> mode which re-compiles when types change.</blockquote>
+<blockquote><strong><code>null</code> root object on the first call prevents compilation in IMMEDIATE mode.</strong> SpEL needs the actual types to generate bytecode. Call <code>getValue</code> with a non-null object at least once before the high-frequency path begins, or use a <code>StandardEvaluationContext</code> with type information manually set.</blockquote>
+<ul><li>Not all SpEL constructs are compilable — collection operators (<code>.?[]</code>, <code>.![]</code>), some type coercions, and custom <code>MethodResolver</code>s fall back to interpreted mode silently. Check <code>SpelExpression.isCompiled()</code> if performance is critical.</li><li>Compilation uses the <code>ClassLoader</code> you provide. In a Spring Boot fat JAR, pass <code>Thread.currentThread().getContextClassLoader()</code>. In a standard app, <code>MyClass.class.getClassLoader()</code> is correct.</li><li><code>SpelCompilerMode.MIXED</code> is safer for expressions whose operand types might change; <code>IMMEDIATE</code> is faster for stable types.</li><li>Compiled expressions hold a reference to the generated class in the provided class loader — in a hot-reload scenario this can cause class loader leaks. Reuse parsers and expressions at application scope, not request scope.</li></ul>
+  <div class="nav"><a class="prv" href="0173-templated-expressions.html"><span class="mini">← Previous</span>Templated expressions</a><a class="nxt" href="0175-aot-processing-overview.html"><span class="mini">Next →</span>AOT processing overview</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t174";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

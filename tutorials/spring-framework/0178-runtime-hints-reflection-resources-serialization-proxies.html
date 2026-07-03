@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Runtime hints (reflection, resources, serialization, proxies)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 3. Resources, Validation, SpEL, AOT</div>
+  <div class="htitle">
+    <h1>"Runtime hints (reflection, resources, serialization, proxies)"</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>runtime hint</strong> is metadata that tells the GraalVM <code>native-image</code> tool &quot;this class / method / resource / interface will be needed at runtime even though static analysis cannot see the usage.&quot; Without a hint the native binary omits the element; accessing it at runtime throws <code>ClassNotFoundException</code>, <code>NoSuchMethodException</code>, or a proxy-generation failure.</p>
+<p>Spring&#x27;s <code>RuntimeHints</code> API (package <code>org.springframework.aot.hint</code>) is the central place to register all four categories:</p>
+<pre><code class="lang-java">RuntimeHints hints = new RuntimeHints();
+
+hints.reflection()    // reflective class/method/field access
+hints.resources()     // classpath resource files
+hints.serialization() // Java serialization (ObjectOutputStream)
+hints.proxies()       // JDK dynamic proxy interface lists</code></pre>
+<h2>2. Why &amp; when</h2>
+<ul><li><strong>Reflection hints</strong> — any code that calls <code>Class.forName()</code>, <code>getDeclaredMethod()</code>, <code>newInstance()</code>, or uses frameworks that do (Jackson, Hibernate, Spring Data) needs reflection hints for the types involved.</li><li><strong>Resource hints</strong> — files loaded with <code>ClassLoader.getResourceAsStream()</code> or <code>@PropertySource</code> must be listed; <code>native-image</code> only includes resources explicitly declared.</li><li><strong>Serialization hints</strong> — any class passed through <code>ObjectOutputStream</code> / <code>ObjectInputStream</code> needs a serialization hint; Java serialization uses reflection internally.</li><li><strong>Proxy hints</strong> — <code>Proxy.newProxyInstance(loader, new Class[]{MyInterface.class}, handler)</code> needs a proxy hint registering the interface list; native image pre-generates the proxy class.</li></ul>
+<p>You do NOT need hints for:</p>
+<ul><li>Classes visible via direct method calls in reachable code (static analysis covers them).</li><li>Spring <code>@Component</code> / <code>@Service</code> beans — Spring AOT generates their hints automatically.</li><li><code>@Value</code> injection of <code>String</code>/<code>int</code>/standard types.</li></ul>
+<h2>3. Core concept</h2>
+<p>The <code>RuntimeHints</code> object is a collector. Hints registered into it are serialised to <code>reflect-config.json</code>, <code>resource-config.json</code>, <code>serialization-config.json</code>, and <code>proxy-config.json</code> under <code>META-INF/native-image/</code> during the AOT build step.</p>
+<table><thead><tr><th>Hint type</th><th>API</th><th>Config file produced</th></tr></thead><tbody><tr><td>Reflection</td><td><code>hints.reflection().registerType(T.class, …)</code></td><td><code>reflect-config.json</code></td></tr><tr><td>Resources</td><td><code>hints.resources().registerPattern(&quot;path/**&quot;)</code></td><td><code>resource-config.json</code></td></tr><tr><td>Serialization</td><td><code>hints.serialization().registerType(T.class)</code></td><td><code>serialization-config.json</code></td></tr><tr><td>JDK proxy</td><td><code>hints.proxies().registerJdkProxy(If1.class, If2.class)</code></td><td><code>proxy-config.json</code></td></tr></tbody></table>
+<p><code>MemberCategory</code> controls what is registered for reflection:</p>
+<table><thead><tr><th><code>MemberCategory</code></th><th>What it enables</th></tr></thead><tbody><tr><td><code>INVOKE_PUBLIC_CONSTRUCTORS</code></td><td><code>Constructor.newInstance()</code> on public constructors</td></tr><tr><td><code>INVOKE_DECLARED_CONSTRUCTORS</code></td><td>same for private/package constructors</td></tr><tr><td><code>INVOKE_PUBLIC_METHODS</code></td><td>calling public instance/static methods</td></tr><tr><td><code>INVOKE_DECLARED_METHODS</code></td><td>calling private/package methods</td></tr><tr><td><code>PUBLIC_FIELDS</code></td><td>reading/writing public fields</td></tr><tr><td><code>DECLARED_FIELDS</code></td><td>reading/writing private/package fields</td></tr></tbody></table>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ra178" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+
+  <!-- RuntimeHints central box -->
+  <rect x="260" y="80" width="180" height="50" rx="6" fill="#6db33f" opacity="0.25" stroke="#6db33f" stroke-width="2"/>
+  <text x="350" y="100" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif" font-weight="bold">RuntimeHints</text>
+  <text x="350" y="118" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">central hint collector</text>
+
+  <!-- Input sources (left) -->
+  <rect x="10" y="10" width="200" height="22" rx="4" fill="#1c2430" stroke="#79c0ff" stroke-width="1"/>
+  <text x="110" y="25" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">RuntimeHintsRegistrar (manual)</text>
+  <line x1="212" y1="21" x2="258" y2="95" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#ra178)" opacity="0.7"/>
+
+  <rect x="10" y="40" width="200" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="110" y="55" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">Spring AOT processors (auto)</text>
+  <line x1="212" y1="51" x2="258" y2="100" stroke="#6db33f" stroke-width="1.5" marker-end="url(#ra178)" opacity="0.7"/>
+
+  <rect x="10" y="70" width="200" height="22" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="110" y="85" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">@RegisterReflectionForBinding</text>
+  <line x1="212" y1="81" x2="258" y2="105" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ra178)" opacity="0.7"/>
+
+  <!-- Output files (right) -->
+  <rect x="490" y="5"  width="200" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="590" y="20" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">reflect-config.json</text>
+  <line x1="442" y1="92" x2="488" y2="16" stroke="#6db33f" stroke-width="1.5" marker-end="url(#ra178)" opacity="0.7"/>
+
+  <rect x="490" y="35" width="200" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="590" y="50" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">resource-config.json</text>
+  <line x1="442" y1="97" x2="488" y2="46" stroke="#6db33f" stroke-width="1.5" marker-end="url(#ra178)" opacity="0.7"/>
+
+  <rect x="490" y="65" width="200" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="590" y="80" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">serialization-config.json</text>
+  <line x1="442" y1="102" x2="488" y2="76" stroke="#6db33f" stroke-width="1.5" marker-end="url(#ra178)" opacity="0.7"/>
+
+  <rect x="490" y="95" width="200" height="22" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="590" y="110" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">proxy-config.json</text>
+  <line x1="442" y1="107" x2="488" y2="106" stroke="#6db33f" stroke-width="1.5" marker-end="url(#ra178)" opacity="0.7"/>
+
+  <!-- native-image at bottom -->
+  <rect x="250" y="160" width="200" height="30" rx="6" fill="#6db33f" opacity="0.35" stroke="#6db33f" stroke-width="2"/>
+  <text x="350" y="179" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif" font-weight="bold">native-image tool</text>
+  <line x1="350" y1="132" x2="350" y2="158" stroke="#6db33f" stroke-width="1.5" marker-end="url(#ra178)"/>
+  <line x1="590" y1="119" x2="400" y2="160" stroke="#6db33f" stroke-width="1.2" marker-end="url(#ra178)" opacity="0.5"/>
+</svg>
+<p>Hints flow into <code>RuntimeHints</code> from multiple sources, serialise to JSON config files, and are fed into <code>native-image</code> to control what is included in the binary.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario is a <strong>document processing service</strong> that uses reflection to load document parsers by class name, loads templates from resources, serialises results, and creates JDK proxies — all four hint categories in one growing example.</p>
+<h3>Level 1 — Basic</h3>
+<p>Using the <code>RuntimeHints</code> API directly — register reflection and resource hints, then verify them programmatically.</p>
+<pre><code class="lang-java">// RuntimeHintsBasic.java
+import org.springframework.aot.hint.*;
+import java.lang.reflect.*;
+
+interface DocumentParser {
+    String parse(String content);
+}
+
+class JsonParser implements DocumentParser {
+    public String parse(String content) { return &quot;JSON: &quot; + content; }
+}
+
+class XmlParser implements DocumentParser {
+    public String parse(String content) { return &quot;XML: &quot; + content; }
+}
+
+public class RuntimeHintsBasic {
+    public static void main(String[] args) throws Exception {
+        var hints = new RuntimeHints();
+
+        // Reflection hint: both parser implementations need reflective instantiation
+        hints.reflection().registerType(JsonParser.class,
+            MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS,
+            MemberCategory.INVOKE_PUBLIC_METHODS);
+        hints.reflection().registerType(XmlParser.class,
+            MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS,
+            MemberCategory.INVOKE_PUBLIC_METHODS);
+
+        // Resource hint: template file loaded via ClassLoader
+        hints.resources().registerPattern(&quot;templates/report.html&quot;);
+        hints.resources().registerPattern(&quot;parsers/*.properties&quot;);
+
+        // Serialization hint: result object passed through ObjectOutputStream
+        hints.serialization().registerType(TypeReference.of(&quot;java.lang.String&quot;));
+
+        // Proxy hint: JDK proxy implementing DocumentParser
+        hints.proxies().registerJdkProxy(DocumentParser.class);
+
+        // Verify: introspect the registered hints
+        System.out.println(&quot;=== Reflection hints ===&quot;);
+        hints.reflection().typeHints().forEach(th -&gt;
+            System.out.println(&quot;  &quot; + th.getType().getName() + &quot; → &quot; + th.getMemberCategories()));
+
+        System.out.println(&quot;=== Resource patterns ===&quot;);
+        hints.resources().resourcePatternHints().forEach(rh -&gt;
+            rh.getIncludes().forEach(p -&gt; System.out.println(&quot;  &quot; + p.toRegex())));
+
+        // Demonstrate that the reflection actually works (in JVM mode)
+        Class&lt;?&gt; cls = Class.forName(&quot;JsonParser&quot;);
+        DocumentParser parser = (DocumentParser) cls.getDeclaredConstructor().newInstance();
+        System.out.println(parser.parse(&quot;{\&quot;key\&quot;:\&quot;value\&quot;}&quot;));
+
+        // JDK proxy
+        Object proxy = Proxy.newProxyInstance(
+            RuntimeHintsBasic.class.getClassLoader(),
+            new Class[]{DocumentParser.class},
+            (p, m, a) -&gt; &quot;Proxy handled: &quot; + m.getName());
+        System.out.println(proxy.toString());
+    }
+}</code></pre>
+<p>How to run: <code>java RuntimeHintsBasic.java</code></p>
+<p><code>hints.reflection().registerType(JsonParser.class, MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS, ...)</code> tells <code>native-image</code> to include <code>JsonParser</code>&#x27;s constructor and methods in the binary. Without this hint in native mode, <code>cls.getDeclaredConstructor().newInstance()</code> would throw <code>ClassNotFoundException</code>. In JVM mode everything works regardless — hints are only consulted by <code>native-image</code> at build time.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Integrate hints with a <code>RuntimeHintsRegistrar</code> used during the Spring AOT phase; verify with <code>RuntimeHintsPredicates</code>.</p>
+<pre><code class="lang-java">// RuntimeHintsIntermediate.java
+import org.springframework.aot.hint.*;
+import org.springframework.aot.hint.predicate.*;
+import java.util.*;
+
+// Domain objects (need serialization + reflection hints for Jackson)
+record Order(String id, String product, double amount) {}
+record OrderResult(String orderId, String status, String message) {}
+
+// Custom hints registrar
+class DocumentServiceHints implements org.springframework.aot.hint.RuntimeHintsRegistrar {
+    @Override
+    public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
+        // Reflection: Order fields + constructor (for Jackson deserialization)
+        hints.reflection().registerType(Order.class,
+            MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS,
+            MemberCategory.PUBLIC_FIELDS,
+            MemberCategory.INVOKE_PUBLIC_METHODS);
+        hints.reflection().registerType(OrderResult.class,
+            MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS,
+            MemberCategory.PUBLIC_FIELDS,
+            MemberCategory.INVOKE_PUBLIC_METHODS);
+
+        // Resources: config files loaded at runtime
+        hints.resources().registerPattern(&quot;orders/schema.json&quot;);
+        hints.resources().registerPattern(&quot;templates/order-*.html&quot;);
+
+        // Serialization: cached results stored in session
+        hints.serialization().registerType(Order.class);
+        hints.serialization().registerType(OrderResult.class);
+    }
+}
+
+public class RuntimeHintsIntermediate {
+    public static void main(String[] args) {
+        var hints = new RuntimeHints();
+        new DocumentServiceHints().registerHints(hints, RuntimeHintsIntermediate.class.getClassLoader());
+
+        // Verify using RuntimeHintsPredicates
+        var predicates = RuntimeHintsPredicates.reflection();
+
+        boolean orderCtorOk = predicates
+            .onConstructor(Order.class.getDeclaredConstructors()[0])
+            .test(hints);
+        System.out.println(&quot;Order constructor hinted: &quot; + orderCtorOk);  // true
+
+        boolean resultCtorOk = predicates
+            .onConstructor(OrderResult.class.getDeclaredConstructors()[0])
+            .test(hints);
+        System.out.println(&quot;OrderResult constructor hinted: &quot; + resultCtorOk); // true
+
+        // Resource patterns registered
+        System.out.println(&quot;Resource patterns:&quot;);
+        hints.resources().resourcePatternHints()
+             .flatMap(rh -&gt; rh.getIncludes().stream())
+             .forEach(p -&gt; System.out.println(&quot;  &quot; + p.toRegex()));
+
+        // Serialization types
+        System.out.println(&quot;Serialization types:&quot;);
+        hints.serialization().javaSerializationHints()
+             .forEach(sh -&gt; System.out.println(&quot;  &quot; + sh.getType().getName()));
+    }
+}</code></pre>
+<p>How to run: <code>java RuntimeHintsIntermediate.java</code></p>
+<p><code>RuntimeHintsPredicates.reflection().onConstructor(...).test(hints)</code> returns <code>true</code> only if the constructor has been registered with a category that allows invocation. Use this in <code>@SpringBootTest</code> with <code>RuntimeHintsPredicates</code> to assert that your registrar covers all needed access patterns — this is the standard way to write native-compatibility tests without actually building a native image.</p>
+<h3>Level 3 — Advanced</h3>
+<p>A Spring Boot service with a custom <code>RuntimeHintsRegistrar</code> covering all four hint types; verification in a Spring AOT test.</p>
+<pre><code class="lang-java">// RuntimeHintsAdvanced.java — Spring Boot service + hints registrar
+import org.springframework.aot.hint.*;
+import org.springframework.beans.factory.annotation.*;
+import org.springframework.boot.*;
+import org.springframework.boot.autoconfigure.*;
+import org.springframework.context.annotation.*;
+import org.springframework.stereotype.*;
+import java.lang.reflect.*;
+import java.util.*;
+
+interface Processor&lt;T&gt; { T process(String input); }
+
+class OrderProcessor implements Processor&lt;String&gt; {
+    public String process(String input) { return &quot;ORDER:&quot; + input.toUpperCase(); }
+}
+
+class InvoiceProcessor implements Processor&lt;String&gt; {
+    public String process(String input) { return &quot;INVOICE:&quot; + input.toUpperCase(); }
+}
+
+// Hint registrar: covers reflection + proxy + resource + serialization
+class ProcessorHintsRegistrar implements RuntimeHintsRegistrar {
+    @Override
+    public void registerHints(RuntimeHints hints, ClassLoader classLoader) {
+        // Reflection: both processor impls need reflective construction
+        for (Class&lt;?&gt; cls : List.of(OrderProcessor.class, InvoiceProcessor.class)) {
+            hints.reflection().registerType(cls,
+                MemberCategory.INVOKE_PUBLIC_CONSTRUCTORS,
+                MemberCategory.INVOKE_PUBLIC_METHODS);
+        }
+        // Proxy: JDK proxy implementing Processor
+        hints.proxies().registerJdkProxy(Processor.class);
+        // Resources: processor config files
+        hints.resources().registerPattern(&quot;processors/*.json&quot;);
+        // Serialization: processing result cached to disk
+        hints.serialization().registerType(TypeReference.of(&quot;java.lang.String&quot;));
+    }
+}
+
+@Service
+class ProcessingService {
+    // Loaded dynamically by name from config (requires reflection hint)
+    private final Map&lt;String, Processor&lt;String&gt;&gt; registry = new LinkedHashMap&lt;&gt;();
+
+    @Autowired
+    ProcessingService() throws Exception {
+        for (String cls : List.of(&quot;OrderProcessor&quot;, &quot;InvoiceProcessor&quot;)) {
+            // This reflective call requires a reflection hint in native mode
+            @SuppressWarnings(&quot;unchecked&quot;)
+            Processor&lt;String&gt; p = (Processor&lt;String&gt;)
+                Class.forName(cls).getDeclaredConstructor().newInstance();
+            registry.put(cls, p);
+        }
+    }
+
+    public String process(String type, String input) {
+        return registry.getOrDefault(type,
+            s -&gt; &quot;UNKNOWN:&quot; + s).process(input);
+    }
+}
+
+@ImportRuntimeHints(ProcessorHintsRegistrar.class)  // registers hints during AOT
+@SpringBootApplication
+public class RuntimeHintsAdvanced {
+    public static void main(String[] args) {
+        var ctx = SpringApplication.run(RuntimeHintsAdvanced.class, args);
+        var svc = ctx.getBean(ProcessingService.class);
+        System.out.println(svc.process(&quot;OrderProcessor&quot;,   &quot;ord-001&quot;));
+        System.out.println(svc.process(&quot;InvoiceProcessor&quot;, &quot;inv-007&quot;));
+        SpringApplication.exit(ctx);
+    }
+}</code></pre>
+<p>How to run: <code>java RuntimeHintsAdvanced.java</code> (JVM); for native: <code>./mvnw -Pnative native:compile &amp;&amp; ./target/app</code></p>
+<p><code>@ImportRuntimeHints(ProcessorHintsRegistrar.class)</code> on <code>@SpringBootApplication</code> causes Spring AOT to invoke <code>ProcessorHintsRegistrar.registerHints(...)</code> during <code>spring-boot:process-aot</code>, which populates <code>reflect-config.json</code> with <code>OrderProcessor</code> and <code>InvoiceProcessor</code>. Without this, the <code>Class.forName(&quot;OrderProcessor&quot;).getDeclaredConstructor().newInstance()</code> call in <code>ProcessingService</code> would fail at native-image runtime.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>ProcessingService</code> initialisation in the Level 3 app:</p>
+<p><strong>Step 1 — AOT phase (<code>spring-boot:process-aot</code>):</strong></p>
+<ul><li><code>@ImportRuntimeHints(ProcessorHintsRegistrar.class)</code> is discovered on <code>RuntimeHintsAdvanced</code>.</li><li>Spring AOT calls <code>new ProcessorHintsRegistrar().registerHints(hints, classLoader)</code>.</li><li>Inside <code>registerHints</code>:</li><li><code>hints.reflection().registerType(OrderProcessor.class, INVOKE_PUBLIC_CONSTRUCTORS, INVOKE_PUBLIC_METHODS)</code> → entry added for <code>OrderProcessor</code> in the reflection registry.</li><li>Same for <code>InvoiceProcessor</code>.</li><li><code>hints.proxies().registerJdkProxy(Processor.class)</code> → entry in proxy registry.</li><li><code>hints.resources().registerPattern(&quot;processors/*.json&quot;)</code> → pattern in resource registry.</li><li>At end of AOT phase, the registries serialise to:</li><li><code>reflect-config.json</code>: <code>[{&quot;name&quot;:&quot;OrderProcessor&quot;,&quot;allPublicConstructors&quot;:true,&quot;allPublicMethods&quot;:true}, ...]</code></li><li><code>proxy-config.json</code>: <code>[{&quot;interfaces&quot;:[&quot;Processor&quot;]}]</code></li><li><code>resource-config.json</code>: <code>[{&quot;pattern&quot;:&quot;\\Qprocessors/\\E.*\\.json&quot;}]</code></li></ul>
+<p><strong>Step 2 — Native image build:</strong></p>
+<ul><li><code>native-image</code> reads <code>reflect-config.json</code>; <code>OrderProcessor</code> and <code>InvoiceProcessor</code> are included with their constructors and methods in the binary&#x27;s reflection metadata.</li><li>Without these entries the classes would be excluded entirely.</li></ul>
+<p><strong>Step 3 — Native runtime:</strong></p>
+<ul><li><code>ProcessingService()</code> constructor runs.</li><li><code>Class.forName(&quot;OrderProcessor&quot;)</code> — succeeds because the class is included in the binary.</li><li><code>.getDeclaredConstructor()</code> — succeeds because <code>INVOKE_PUBLIC_CONSTRUCTORS</code> was registered.</li><li><code>.newInstance()</code> — succeeds; <code>new OrderProcessor()</code> constructed reflectively.</li><li>Registry populated; service ready.</li></ul>
+<p><strong>Request: <code>svc.process(&quot;OrderProcessor&quot;, &quot;ord-001&quot;)</code>:</strong></p>
+<pre><code>registry.get(&quot;OrderProcessor&quot;) → OrderProcessor instance
+.process(&quot;ord-001&quot;) → &quot;ORDER:ORD-001&quot;</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Hints are only consulted at <code>native-image</code> build time.</strong> On the JVM, reflection works regardless of what hints are registered. A service that passes all JVM tests can still fail in native mode if hints are missing. Always run <code>./mvnw -Pnative native:test</code> or use <code>RuntimeHintsPredicates</code> in unit tests to verify hints cover all dynamic access paths.</blockquote>
+<blockquote><strong><code>MemberCategory.DECLARED_FIELDS</code> vs <code>PUBLIC_FIELDS</code></strong> — Jackson uses <code>PUBLIC_FIELDS</code> to map public fields directly. If you have private fields serialised via getters, you need <code>INVOKE_PUBLIC_METHODS</code> for the getters, not <code>DECLARED_FIELDS</code>. Registering unnecessary categories increases binary size.</blockquote>
+<ul><li>Register the most restrictive <code>MemberCategory</code> set that satisfies the actual access pattern — overly broad hints increase native binary size.</li><li><code>hints.reflection().registerType(TypeReference.of(&quot;com.example.Foo&quot;))</code> works even when <code>Foo</code> is not on the AOT-phase classpath — use <code>TypeReference.of(String)</code> for classes that exist only at runtime.</li><li><code>hints.resources().registerPattern(&quot;META-INF/services/**&quot;)</code> is needed for <code>java.util.ServiceLoader</code> usage — Spring Boot registers this automatically for standard Spring SPI, but custom <code>ServiceLoader</code> usages need manual hints.</li><li>Use <code>@SpringBootTest(properties = &quot;spring.aot.enabled=true&quot;)</code> with <code>RuntimeHintsPredicates</code> to write tests that fail at JVM time (cheap) instead of native-image build time (expensive).</li></ul>
+  <div class="nav"><a class="prv" href="0177-graalvm-native-image-support.html"><span class="mini">← Previous</span>GraalVM native image support</a><a class="nxt" href="0179-runtimehintsregistrar.html"><span class="mini">Next →</span>RuntimeHintsRegistrar</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t178";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
