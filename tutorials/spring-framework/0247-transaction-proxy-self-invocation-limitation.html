@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transaction proxy & self-invocation limitation — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 5. Data Access & Transactions</div>
+  <div class="htitle">
+    <h1>Transaction proxy & self-invocation limitation</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>@Transactional</code> relies on Spring AOP proxies. When you call a method on a Spring-managed bean from <strong>outside</strong> the bean, the call goes through the proxy — the transaction starts, the method runs, and the transaction commits or rolls back. When a method in the same class calls another method <strong>on <code>this</code></strong>, the call bypasses the proxy entirely. No proxy means no transaction.</p>
+<pre><code class="lang-java">@Service
+public class InvoiceService {
+    public void generateInvoice(Order order) {
+        // PROBLEM: calls this.save() directly — bypasses proxy
+        this.save(order);             // @Transactional on save() DOES NOTHING
+    }
+
+    @Transactional
+    public void save(Order order) {  // annotation silently ignored when called via this
+        repo.save(order);
+    }
+}</code></pre>
+<p>This is the same self-invocation problem as general AOP (tutorial 0233), but it appears most often with <code>@Transactional</code> because transaction annotations on public methods are extremely common.</p>
+<h2>2. Why &amp; when</h2>
+<p>This limitation matters most for:</p>
+<ul><li><strong>Helper methods</strong> in service classes annotated with <code>@Transactional</code> that are called from other methods in the same class.</li><li><strong><code>@Transactional</code> on <code>private</code> methods</strong> — silently ignored; Spring&#x27;s proxy AOP cannot intercept private methods.</li><li><strong>Batch operations</strong> where an outer public method calls an inner <code>@Transactional</code> method per item — the inner transaction never starts.</li></ul>
+<p>The fix is always the same: <strong>route the call through the proxy</strong>, not through <code>this</code>.</p>
+<h2>3. Core concept</h2>
+<p>The proxy wraps the bean. The proxy holds a reference to the raw target. When the target&#x27;s code runs <code>this.save(order)</code>, it calls directly on the raw object — the proxy is not involved.</p>
+<pre><code>External caller → PROXY → InvoiceService.generateInvoice()
+                              │
+                              └─► this.save()      ← raw object, no proxy
+                                     ↓
+                                InvoiceService.save()  ← @Transactional ignored</code></pre>
+<p>Three solutions, in order of preference:</p>
+<ol><li><strong>Refactor</strong> — move <code>save()</code> into a separate <code>@Service</code> bean and inject it.</li><li><strong>Self-inject</strong> — inject the bean&#x27;s own proxy via <code>@Lazy @Autowired</code>.</li><li><strong><code>AopContext.currentProxy()</code></strong> — retrieve the proxy from a ThreadLocal (requires <code>exposeProxy=true</code>).</li></ol>
+<p>AspectJ LTW (tutorial 0234) avoids this problem because the advice is woven into the bytecode — no proxy is involved and <code>this.save()</code> calls the woven version.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 700 230" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#6db33f"/>
+    </marker>
+    <marker id="rarr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#f85149"/>
+    </marker>
+    <marker id="garr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#79c0ff"/>
+    </marker>
+  </defs>
+
+  <!-- Caller -->
+  <rect x="10" y="95" width="70" height="40" rx="5" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="45" y="119" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Caller</text>
+
+  <line x1="82" y1="115" x2="135" y2="115" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Proxy -->
+  <rect x="135" y="70" width="130" height="90" rx="7" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="200" y="91" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif">TX Proxy</text>
+  <line x1="145" y1="100" x2="255" y2="100" stroke="#8b949e" stroke-width="0.5"/>
+  <text x="200" y="116" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">begin tx ✓</text>
+  <text x="200" y="130" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">generateInvoice()</text>
+  <text x="200" y="145" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">commit/rollback ✓</text>
+
+  <line x1="267" y1="115" x2="320" y2="115" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Target -->
+  <rect x="320" y="40" width="215" height="175" rx="7" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="428" y="62" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="sans-serif">InvoiceService (raw target)</text>
+  <line x1="330" y1="72" x2="525" y2="72" stroke="#8b949e" stroke-width="0.5"/>
+  <text x="428" y="92" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">generateInvoice(order) {</text>
+  <text x="428" y="108" fill="#f85149" font-size="9" text-anchor="middle" font-family="monospace">  this.save(order)  ← raw this</text>
+  <text x="428" y="122" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">}</text>
+
+  <line x1="428" y1="130" x2="428" y2="158" stroke="#f85149" stroke-width="1.5" marker-end="url(#rarr)"/>
+
+  <text x="428" y="178" fill="#8b949e" font-size="9" text-anchor="middle" font-family="monospace">@Transactional</text>
+  <text x="428" y="192" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">save(order) {}</text>
+  <text x="428" y="207" fill="#f85149" font-size="9" text-anchor="middle" font-family="sans-serif">no tx! proxy bypassed</text>
+</svg>
+<p>External call enters the proxy (tx starts). <code>this.save()</code> inside the target bypasses the proxy — no transaction.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an <strong><code>InvoiceService</code></strong> — first showing the bug, then fixing via self-injection, then fixing via <code>AopContext.currentProxy()</code>.</p>
+<h3>Level 1 — Basic</h3>
+<p>The bug: <code>@Transactional</code> on <code>save()</code> is silently ignored when called from <code>generateInvoice()</code>.</p>
+<pre><code class="lang-java">// TxSelfInvokeDemo.java
+import org.springframework.context.annotation.*;
+import org.springframework.jdbc.datasource.*;
+import org.springframework.jdbc.datasource.embedded.*;
+import org.springframework.transaction.annotation.*;
+import org.springframework.stereotype.*;
+import org.aspectj.lang.annotation.*;
+import org.aspectj.lang.*;
+
+@Configuration
+@EnableTransactionManagement
+@EnableAspectJAutoProxy
+@ComponentScan
+public class TxSelfInvokeDemo {
+    @Bean public javax.sql.DataSource dataSource() {
+        return new EmbeddedDatabaseBuilder().setType(EmbeddedDatabaseType.H2)
+            .addScript(&quot;invoices-schema.sql&quot;).build();
+    }
+    @Bean public org.springframework.transaction.PlatformTransactionManager transactionManager(
+            javax.sql.DataSource ds) { return new DataSourceTransactionManager(ds); }
+
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(TxSelfInvokeDemo.class);
+        System.out.println(&quot;=== BUG: self-invocation ===&quot;);
+        ctx.getBean(InvoiceService.class).generateInvoice(&quot;INV-001&quot;);
+        ctx.close();
+    }
+}
+
+@Service
+class InvoiceService {
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    InvoiceService(javax.sql.DataSource ds) { this.jdbc = new org.springframework.jdbc.core.JdbcTemplate(ds); }
+
+    public void generateInvoice(String invoiceId) {
+        System.out.println(&quot;[generateInvoice] calling save via this — @Transactional ignored&quot;);
+        this.save(invoiceId);   // BUG: no proxy → no transaction
+    }
+
+    @Transactional
+    public void save(String invoiceId) {
+        jdbc.update(&quot;INSERT INTO invoices(id,status) VALUES(?,&#x27;GENERATED&#x27;)&quot;, invoiceId);
+        System.out.println(&quot;[save] inserted — but is there a tx? Let&#x27;s check via aspect...&quot;);
+    }
+}
+
+// Aspect to verify whether a transaction is active
+@Aspect @org.springframework.stereotype.Component
+class TxCheckAspect {
+    @Before(&quot;execution(* InvoiceService.save(..))&quot;)
+    public void check(JoinPoint jp) {
+        boolean active = org.springframework.transaction.support
+            .TransactionSynchronizationManager.isActualTransactionActive();
+        System.out.println(&quot;[TxCheck] transaction active when save() called: &quot; + active);
+    }
+}</code></pre>
+<p><code>invoices-schema.sql</code>: <code>CREATE TABLE invoices (id VARCHAR(20) PRIMARY KEY, status VARCHAR(20));</code></p>
+<p>How to run: <code>java -cp spring-context.jar:spring-jdbc.jar:spring-aop.jar:aspectjweaver.jar:h2.jar:. TxSelfInvokeDemo.java</code></p>
+<p><code>[TxCheck] transaction active … false</code> — the aspect confirms no transaction is active when <code>save()</code> is called via <code>this</code>. The <code>@Transactional</code> annotation on <code>save()</code> was silently ignored.</p>
+<p>---</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Fix via <strong>self-injection</strong> — inject the proxy of <code>InvoiceService</code> into itself.</p>
+<pre><code class="lang-java">// TxSelfInvokeDemo.java
+import org.springframework.context.annotation.*;
+import org.springframework.jdbc.datasource.*;
+import org.springframework.jdbc.datasource.embedded.*;
+import org.springframework.transaction.annotation.*;
+import org.springframework.beans.factory.annotation.*;
+import org.springframework.stereotype.*;
+import org.aspectj.lang.annotation.*;
+import org.aspectj.lang.*;
+
+@Configuration
+@EnableTransactionManagement
+@EnableAspectJAutoProxy
+@ComponentScan
+public class TxSelfInvokeDemo {
+    @Bean public javax.sql.DataSource dataSource() {
+        return new EmbeddedDatabaseBuilder().setType(EmbeddedDatabaseType.H2)
+            .addScript(&quot;invoices-schema.sql&quot;).build();
+    }
+    @Bean public org.springframework.transaction.PlatformTransactionManager transactionManager(
+            javax.sql.DataSource ds) { return new DataSourceTransactionManager(ds); }
+
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(TxSelfInvokeDemo.class);
+        System.out.println(&quot;=== FIX: self-injection ===&quot;);
+        ctx.getBean(InvoiceService.class).generateInvoice(&quot;INV-002&quot;);
+        ctx.close();
+    }
+}
+
+@Service
+class InvoiceService {
+    @Lazy @Autowired
+    private InvoiceService self;     // injects the PROXY, not the raw bean
+
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    InvoiceService(javax.sql.DataSource ds) { this.jdbc = new org.springframework.jdbc.core.JdbcTemplate(ds); }
+
+    public void generateInvoice(String invoiceId) {
+        System.out.println(&quot;[generateInvoice] calling save via self proxy&quot;);
+        self.save(invoiceId);        // FIX: goes through the proxy → @Transactional fires
+    }
+
+    @Transactional
+    public void save(String invoiceId) {
+        jdbc.update(&quot;INSERT INTO invoices(id,status) VALUES(?,&#x27;GENERATED&#x27;)&quot;, invoiceId);
+        System.out.println(&quot;[save] inserted inside transaction&quot;);
+    }
+}
+
+@Aspect @org.springframework.stereotype.Component
+class TxCheckAspect {
+    @Before(&quot;execution(* InvoiceService.save(..))&quot;)
+    public void check(JoinPoint jp) {
+        boolean active = org.springframework.transaction.support
+            .TransactionSynchronizationManager.isActualTransactionActive();
+        System.out.println(&quot;[TxCheck] transaction active: &quot; + active);
+    }
+}</code></pre>
+<p>How to run: same classpath</p>
+<p><code>[TxCheck] transaction active: true</code> — the fix works. <code>@Lazy</code> is required to break the circular dependency (<code>InvoiceService</code> needs itself, but must not be injected before it&#x27;s fully created). The <code>@Lazy</code> proxy is resolved only on first access.</p>
+<p>---</p>
+<h3>Level 3 — Advanced</h3>
+<p>Fix via <strong><code>AopContext.currentProxy()</code></strong> and demonstrate detecting vs debugging the self-invocation problem at runtime.</p>
+<pre><code class="lang-java">// TxSelfInvokeDemo.java
+import org.springframework.context.annotation.*;
+import org.springframework.jdbc.datasource.*;
+import org.springframework.jdbc.datasource.embedded.*;
+import org.springframework.transaction.annotation.*;
+import org.springframework.aop.framework.*;
+import org.springframework.stereotype.*;
+import org.aspectj.lang.annotation.*;
+import org.aspectj.lang.*;
+
+@Configuration
+@EnableTransactionManagement
+@EnableAspectJAutoProxy(exposeProxy = true)   // ← required for AopContext
+@ComponentScan
+public class TxSelfInvokeDemo {
+    @Bean public javax.sql.DataSource dataSource() {
+        return new EmbeddedDatabaseBuilder().setType(EmbeddedDatabaseType.H2)
+            .addScript(&quot;invoices-schema.sql&quot;).build();
+    }
+    @Bean public org.springframework.transaction.PlatformTransactionManager transactionManager(
+            javax.sql.DataSource ds) { return new DataSourceTransactionManager(ds); }
+
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(TxSelfInvokeDemo.class);
+
+        // Detect: is the bean a proxy?
+        InvoiceService svc = ctx.getBean(InvoiceService.class);
+        System.out.println(&quot;Is AOP proxy? &quot; + AopUtils.isAopProxy(svc));
+        System.out.println(&quot;Target class: &quot; + AopUtils.getTargetClass(svc).getSimpleName());
+
+        System.out.println(&quot;\n=== FIX: AopContext.currentProxy() ===&quot;);
+        svc.generateInvoice(&quot;INV-003&quot;);
+
+        ctx.close();
+    }
+}
+
+@Service
+class InvoiceService {
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    InvoiceService(javax.sql.DataSource ds) { this.jdbc = new org.springframework.jdbc.core.JdbcTemplate(ds); }
+
+    public void generateInvoice(String invoiceId) {
+        System.out.println(&quot;[generateInvoice] calling save via AopContext proxy&quot;);
+        ((InvoiceService) AopContext.currentProxy()).save(invoiceId);  // FIX: proxy call
+    }
+
+    @Transactional
+    public void save(String invoiceId) {
+        jdbc.update(&quot;INSERT INTO invoices(id,status) VALUES(?,&#x27;GENERATED&#x27;)&quot;, invoiceId);
+        System.out.println(&quot;[save] inserted inside transaction&quot;);
+    }
+}
+
+@Aspect @org.springframework.stereotype.Component
+class TxCheckAspect {
+    @Before(&quot;execution(* InvoiceService.save(..))&quot;)
+    public void check(JoinPoint jp) {
+        boolean active = org.springframework.transaction.support
+            .TransactionSynchronizationManager.isActualTransactionActive();
+        System.out.println(&quot;[TxCheck] transaction active: &quot; + active);
+    }
+}</code></pre>
+<p>How to run: same classpath</p>
+<p><code>AopUtils.isAopProxy(svc)</code> → <code>true</code>. <code>AopUtils.getTargetClass(svc)</code> → <code>InvoiceService</code>. <code>AopContext.currentProxy()</code> retrieves the proxy from the ThreadLocal set by <code>exposeProxy=true</code>, casts it, and routes <code>save()</code> through the proxy. <code>[TxCheck] transaction active: true</code> confirms success.</p>
+<h2>6. Walkthrough</h2>
+<p><strong>Level 1 — bug path (step by step):</strong></p>
+<pre><code>caller → PROXY.generateInvoice(&quot;INV-001&quot;)
+  → TransactionInterceptor:
+      @Transactional on generateInvoice? NO (no annotation) → proceed without tx
+  → InvoiceService.generateInvoice(&quot;INV-001&quot;)
+      this.save(&quot;INV-001&quot;)   ← raw &#x27;this&#x27; — not the proxy
+        → InvoiceService.save(&quot;INV-001&quot;)  [directly, no proxy involved]
+            jdbc.update(&quot;INSERT invoices…&quot;)   [runs WITHOUT a transaction!]
+            autoCommit=true on the JDBC connection → INSERT auto-committed
+  ← returns</code></pre>
+<p><strong>Level 2 — self-inject fix path:</strong></p>
+<pre><code>caller → PROXY.generateInvoice(&quot;INV-002&quot;)
+  → generateInvoice(&quot;INV-002&quot;)
+      self.save(&quot;INV-002&quot;)   ← self IS the PROXY
+        → PROXY.save(&quot;INV-002&quot;)
+            → TransactionInterceptor:
+                @Transactional on save → YES → getTransaction()
+                conn acquired; autoCommit=false
+            → InvoiceService.save(&quot;INV-002&quot;)
+                jdbc.update(&quot;INSERT invoices…&quot;)   [inside tx]
+            → commit()   conn.commit()
+  ← returns</code></pre>
+<p><strong>Level 3 — AopContext fix path:</strong></p>
+<pre><code>caller → PROXY.generateInvoice(&quot;INV-003&quot;)
+  → generateInvoice(&quot;INV-003&quot;)
+      AopContext.currentProxy()   ← reads ThreadLocal, returns PROXY ref
+      cast to InvoiceService
+      PROXY.save(&quot;INV-003&quot;)
+        → TransactionInterceptor: begin tx
+        → save() body: INSERT invoices
+        → commit()
+  ← returns</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong><code>private</code> methods can NEVER participate in <code>@Transactional</code> via Spring AOP.</strong> A <code>@Transactional</code> annotation on a <code>private</code> method is completely ignored — no warning, no error, no transaction. This is a proxy limitation: Spring&#x27;s CGLIB/JDK proxies cannot intercept private methods.</blockquote>
+<blockquote><strong>The most dangerous form of this bug is <code>@Transactional</code> on a batch-inner method.</strong> A common pattern is <code>batchImport()</code> calling <code>processSingle()</code> per item. If <code>processSingle()</code> is <code>@Transactional</code> and called via <code>this</code>, each item runs with no transaction. A single database error leaves data partially inserted.</blockquote>
+<blockquote><strong><code>exposeProxy=true</code> has a small overhead.</strong> Every intercepted method call writes the proxy ref to a ThreadLocal. Acceptable in most applications, but avoid it on hot-path beans in high-TPS systems. Prefer self-injection for those.</blockquote>
+<ul><li>The self-invocation problem is a consequence of proxy-based AOP — the proxy is not the target.</li><li>Cleanest fix: move the called method into a separate <code>@Service</code> and inject it.</li><li><code>@Lazy @Autowired private MyService self</code> — self-injection; works for all proxy-based Spring AOP.</li><li><code>AopContext.currentProxy()</code> — works for legacy code where refactoring is costly; requires <code>exposeProxy=true</code>.</li><li>AspectJ LTW (tutorial 0234) avoids this problem entirely — use it when the self-invocation pattern is pervasive.</li></ul>
+  <div class="nav"><a class="prv" href="0246-rollback-rules-rollbackfor-norollbackfor.html"><span class="mini">← Previous</span>Rollback rules (rollbackFor / noRollbackFor)</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t247";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

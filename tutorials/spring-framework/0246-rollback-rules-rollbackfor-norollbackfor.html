@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rollback rules (rollbackFor / noRollbackFor) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 5. Data Access & Transactions</div>
+  <div class="htitle">
+    <h1>Rollback rules (rollbackFor / noRollbackFor)</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring&#x27;s default rollback rule is: <strong>rollback on <code>RuntimeException</code> and <code>Error</code>; commit on checked <code>Exception</code></strong>. The <code>rollbackFor</code> and <code>noRollbackFor</code> attributes on <code>@Transactional</code> let you override this for specific exception types:</p>
+<pre><code class="lang-java">@Transactional(
+    rollbackFor   = {IOException.class, BusinessException.class},  // also rollback these checked types
+    noRollbackFor = {OptimisticLockException.class}                // DON&#x27;T rollback this RuntimeException
+)
+public void process() throws IOException { ... }</code></pre>
+<p>Internally, Spring compiles these into a list of <code>RollbackRuleAttribute</code> objects (positive rules) and <code>NoRollbackRuleAttribute</code> objects (negative rules). When an exception escapes the method, Spring walks the rule list and picks the most specific match.</p>
+<h2>2. Why &amp; when</h2>
+<p>The default rule (rollback on unchecked only) reflects Java&#x27;s convention that <code>RuntimeException</code> signals unexpected conditions that violate system integrity, while <code>Exception</code> signals recoverable application conditions. But this convention breaks in practice:</p>
+<ul><li>Your <code>InsufficientFundsException extends Exception</code> is a business failure — it <strong>should</strong> rollback.</li><li>Your <code>StaleDataWarning extends RuntimeException</code> is informational — it <strong>should not</strong> rollback.</li></ul>
+<p>Use <code>rollbackFor</code> whenever a checked exception represents a genuine failure that should undo all work done so far. Use <code>noRollbackFor</code> when a <code>RuntimeException</code> subclass is informational and committing partial work is acceptable.</p>
+<h2>3. Core concept</h2>
+<p>Spring stores rollback rules as a list of <code>RollbackRuleAttribute</code> objects in <code>RuleBasedTransactionAttribute</code>. When an exception escapes, <code>rollbackOn(Throwable ex)</code> is called:</p>
+<ol><li>Walk the rule list.</li><li>For each rule, compute the <strong>depth</strong> of the match in the exception class hierarchy: exact match = 0, superclass match = 1, superclass-of-superclass = 2, etc. No match = <code>Integer.MAX_VALUE</code>.</li><li>Pick the rule with the <strong>smallest depth</strong> (most specific).</li><li>If the winning rule is a <code>RollbackRuleAttribute</code> (positive) → rollback; if <code>NoRollbackRuleAttribute</code> → commit.</li><li>If no rule matches → apply the default (rollback on <code>RuntimeException</code>/<code>Error</code>, commit on <code>Exception</code>).</li></ol>
+<p>This means you can have both <code>rollbackFor = IOException.class</code> and <code>noRollbackFor = FileNotFoundException.class</code> — <code>FileNotFoundException extends IOException</code>, so the more specific <code>NoRollbackRuleAttribute</code> wins for that subclass.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 700 210" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#6db33f"/>
+    </marker>
+    <marker id="rarr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#f85149"/>
+    </marker>
+    <marker id="garr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#6db33f"/>
+    </marker>
+  </defs>
+
+  <!-- Exception escapes -->
+  <rect x="10" y="80" width="120" height="50" rx="6" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+  <text x="70" y="101" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">Exception</text>
+  <text x="70" y="117" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">escapes method</text>
+
+  <line x1="132" y1="105" x2="185" y2="105" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Rule evaluation -->
+  <rect x="185" y="55" width="200" height="100" rx="7" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="285" y="78" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="sans-serif">Rule evaluation</text>
+  <line x1="195" y1="86" x2="375" y2="86" stroke="#8b949e" stroke-width="0.5"/>
+  <text x="285" y="104" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">find closest rule match</text>
+  <text x="285" y="119" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">rollbackFor vs noRollbackFor</text>
+  <text x="285" y="134" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">depth-first hierarchy match</text>
+
+  <!-- ROLLBACK branch -->
+  <line x1="387" y1="85" x2="440" y2="55" stroke="#f85149" stroke-width="1.5" marker-end="url(#rarr)"/>
+  <rect x="440" y="25" width="140" height="50" rx="6" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+  <text x="510" y="48" fill="#f85149" font-size="11" text-anchor="middle" font-family="sans-serif">ROLLBACK</text>
+  <text x="510" y="64" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">rollbackFor matched</text>
+
+  <!-- COMMIT branch -->
+  <line x1="387" y1="125" x2="440" y2="155" stroke="#6db33f" stroke-width="1.5" marker-end="url(#garr)"/>
+  <rect x="440" y="135" width="140" height="50" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="510" y="158" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif">COMMIT</text>
+  <text x="510" y="174" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">noRollbackFor matched</text>
+
+  <!-- Default -->
+  <rect x="440" y="85" width="140" height="40" rx="5" fill="#0d1117" stroke="#8b949e" stroke-width="1"/>
+  <text x="510" y="102" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Default (no match):</text>
+  <text x="510" y="116" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">RuntimeException→ROLLBACK</text>
+</svg>
+<p>Exception walks the rule list; most-specific match (smallest inheritance depth) wins.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a <strong><code>PaymentService</code></strong> with a custom exception hierarchy — demonstrating <code>rollbackFor</code>, <code>noRollbackFor</code>, and the hierarchy depth rule.</p>
+<h3>Level 1 — Basic</h3>
+<p>Checked <code>PaymentException</code> causes rollback with <code>rollbackFor</code>.</p>
+<pre><code class="lang-java">// RollbackRulesDemo.java
+import org.springframework.context.annotation.*;
+import org.springframework.jdbc.datasource.*;
+import org.springframework.jdbc.datasource.embedded.*;
+import org.springframework.transaction.annotation.*;
+import org.springframework.stereotype.*;
+
+@Configuration
+@EnableTransactionManagement
+@ComponentScan
+public class RollbackRulesDemo {
+    @Bean public javax.sql.DataSource dataSource() {
+        return new EmbeddedDatabaseBuilder().setType(EmbeddedDatabaseType.H2)
+            .addScript(&quot;payments-schema.sql&quot;).build();
+    }
+    @Bean public org.springframework.transaction.PlatformTransactionManager transactionManager(
+            javax.sql.DataSource ds) { return new DataSourceTransactionManager(ds); }
+
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(RollbackRulesDemo.class);
+        PaymentService svc = ctx.getBean(PaymentService.class);
+
+        // Without rollbackFor: checked exception commits (wrong!)
+        try { svc.processDefault(&quot;TXN-1&quot;, -100.0); } catch (Exception e) {
+            System.out.println(&quot;DEFAULT (no rollbackFor): &quot; + e.getMessage());
+        }
+
+        // With rollbackFor: checked exception rolls back (correct!)
+        try { svc.processWithRollback(&quot;TXN-2&quot;, -100.0); } catch (Exception e) {
+            System.out.println(&quot;WITH rollbackFor: rolled back&quot;);
+        }
+        ctx.close();
+    }
+}
+
+class PaymentException extends Exception {
+    PaymentException(String msg) { super(msg); }
+}
+
+@Service
+class PaymentService {
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    PaymentService(javax.sql.DataSource ds) { this.jdbc = new org.springframework.jdbc.core.JdbcTemplate(ds); }
+
+    @Transactional          // no rollbackFor — checked exception COMMITS
+    public void processDefault(String txnId, double amount) throws PaymentException {
+        jdbc.update(&quot;INSERT INTO payments(id,amount,status) VALUES(?,&#x27;PENDING&#x27;)&quot;, txnId, amount);
+        if (amount &lt; 0) throw new PaymentException(&quot;Negative amount: &quot; + amount);
+    }
+
+    @Transactional(rollbackFor = PaymentException.class)   // checked exception ROLLS BACK
+    public void processWithRollback(String txnId, double amount) throws PaymentException {
+        jdbc.update(&quot;INSERT INTO payments(id,amount,status) VALUES(?,&#x27;PENDING&#x27;)&quot;, txnId, amount);
+        if (amount &lt; 0) throw new PaymentException(&quot;Negative amount: &quot; + amount);
+    }
+}</code></pre>
+<p><code>payments-schema.sql</code>:</p>
+<pre><code class="lang-sql">CREATE TABLE payments (id VARCHAR(20) PRIMARY KEY, amount DECIMAL(10,2), status VARCHAR(20));</code></pre>
+<p>How to run: <code>java -cp spring-context.jar:spring-jdbc.jar:h2.jar:. RollbackRulesDemo.java</code></p>
+<p><code>processDefault</code> commits despite the exception — the <code>INSERT</code> with <code>amount=-100</code> is committed, which is wrong. <code>processWithRollback</code> rolls it back. <code>rollbackFor = PaymentException.class</code> adds a positive rollback rule for the checked exception.</p>
+<p>---</p>
+<h3>Level 2 — Intermediate</h3>
+<p><strong><code>noRollbackFor</code></strong> — an informational <code>RuntimeException</code> should not undo the transaction.</p>
+<pre><code class="lang-java">// RollbackRulesDemo.java
+import org.springframework.context.annotation.*;
+import org.springframework.jdbc.datasource.*;
+import org.springframework.jdbc.datasource.embedded.*;
+import org.springframework.transaction.annotation.*;
+import org.springframework.stereotype.*;
+
+@Configuration
+@EnableTransactionManagement
+@ComponentScan
+public class RollbackRulesDemo {
+    @Bean public javax.sql.DataSource dataSource() {
+        return new EmbeddedDatabaseBuilder().setType(EmbeddedDatabaseType.H2)
+            .addScript(&quot;payments-schema.sql&quot;).build();
+    }
+    @Bean public org.springframework.transaction.PlatformTransactionManager transactionManager(
+            javax.sql.DataSource ds) { return new DataSourceTransactionManager(ds); }
+
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(RollbackRulesDemo.class);
+        PaymentService svc = ctx.getBean(PaymentService.class);
+
+        try {
+            svc.processWithWarning(&quot;TXN-3&quot;, 500.0);
+        } catch (FraudWarning w) {
+            System.out.println(&quot;Warning propagated (tx committed): &quot; + w.getMessage());
+        }
+        ctx.close();
+    }
+}
+
+class FraudWarning extends RuntimeException {
+    FraudWarning(String msg) { super(msg); }
+}
+
+@Service
+class PaymentService {
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    PaymentService(javax.sql.DataSource ds) { this.jdbc = new org.springframework.jdbc.core.JdbcTemplate(ds); }
+
+    @Transactional(noRollbackFor = FraudWarning.class)   // commit despite RuntimeException
+    public void processWithWarning(String txnId, double amount) {
+        jdbc.update(&quot;INSERT INTO payments(id,amount,status) VALUES(?,?,&#x27;FLAGGED&#x27;)&quot;, txnId, amount);
+        System.out.println(&quot;Payment inserted (flagged): &quot; + txnId);
+        // FraudWarning is a RuntimeException — default rule would rollback, but noRollbackFor overrides
+        throw new FraudWarning(&quot;High-value transaction flagged for review: $&quot; + amount);
+    }
+}</code></pre>
+<p>How to run: same classpath</p>
+<p>Without <code>noRollbackFor</code>, the <code>RuntimeException</code> would trigger a rollback — the INSERT would be undone. With <code>noRollbackFor = FraudWarning.class</code>, the INSERT commits (the payment is recorded as <code>FLAGGED</code>), and the <code>FraudWarning</code> propagates to the caller for logging or retry handling.</p>
+<p>---</p>
+<h3>Level 3 — Advanced</h3>
+<p><strong>Hierarchy depth rule</strong> — <code>rollbackFor = IOException.class</code> + <code>noRollbackFor = FileNotFoundException.class</code>. <code>FileNotFoundException</code> (subclass) beats <code>IOException</code> (superclass).</p>
+<pre><code class="lang-java">// RollbackRulesDemo.java
+import org.springframework.context.annotation.*;
+import org.springframework.jdbc.datasource.*;
+import org.springframework.jdbc.datasource.embedded.*;
+import org.springframework.transaction.annotation.*;
+import org.springframework.stereotype.*;
+import java.io.*;
+
+@Configuration
+@EnableTransactionManagement
+@ComponentScan
+public class RollbackRulesDemo {
+    @Bean public javax.sql.DataSource dataSource() {
+        return new EmbeddedDatabaseBuilder().setType(EmbeddedDatabaseType.H2)
+            .addScript(&quot;payments-schema.sql&quot;).build();
+    }
+    @Bean public org.springframework.transaction.PlatformTransactionManager transactionManager(
+            javax.sql.DataSource ds) { return new DataSourceTransactionManager(ds); }
+
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(RollbackRulesDemo.class);
+        PaymentService svc = ctx.getBean(PaymentService.class);
+
+        // IOException (not FileNotFoundException) → rollback
+        try { svc.storeReceipt(&quot;TXN-4&quot;, &quot;generic-io-failure&quot;); }
+        catch (Exception e) { System.out.println(&quot;IOException → rolled back: &quot; + e.getMessage()); }
+
+        // FileNotFoundException (subclass) → commit (noRollbackFor wins)
+        try { svc.storeReceipt(&quot;TXN-5&quot;, &quot;file-not-found&quot;); }
+        catch (Exception e) { System.out.println(&quot;FileNotFoundException → committed: &quot; + e.getMessage()); }
+
+        ctx.close();
+    }
+}
+
+@Service
+class PaymentService {
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    PaymentService(javax.sql.DataSource ds) { this.jdbc = new org.springframework.jdbc.core.JdbcTemplate(ds); }
+
+    @Transactional(
+        rollbackFor   = IOException.class,              // rollback on IOException and subclasses
+        noRollbackFor = FileNotFoundException.class     // EXCEPT FileNotFoundException (more specific)
+    )
+    public void storeReceipt(String txnId, String mode) throws IOException {
+        jdbc.update(&quot;INSERT INTO payments(id,amount,status) VALUES(?,0,&#x27;RECEIPT&#x27;)&quot;, txnId);
+        System.out.println(&quot;Inserted receipt for &quot; + txnId + &quot; (mode=&quot; + mode + &quot;)&quot;);
+        if (&quot;generic-io-failure&quot;.equals(mode)) throw new IOException(&quot;Storage unavailable&quot;);
+        if (&quot;file-not-found&quot;.equals(mode))     throw new FileNotFoundException(&quot;template.pdf not found&quot;);
+    }
+}</code></pre>
+<p>How to run: same classpath</p>
+<p><code>IOException</code> at depth 0 matches the <code>rollbackFor</code> rule → rollback. <code>FileNotFoundException</code> matches <code>noRollbackFor</code> at depth 0 and <code>rollbackFor</code> at depth 1 (<code>FileNotFoundException extends IOException</code>). <strong>Most specific wins</strong> → <code>noRollbackFor</code> wins → commit. The <code>TXN-5</code> INSERT is committed.</p>
+<h2>6. Walkthrough</h2>
+<p><strong>Level 3 — rule evaluation detail:</strong></p>
+<pre><code>storeReceipt(&quot;TXN-5&quot;,&quot;file-not-found&quot;)
+  tx opens
+  INSERT payments (&#x27;TXN-5&#x27;,0,&#x27;RECEIPT&#x27;)   [on conn]
+  throw FileNotFoundException(&quot;template.pdf not found&quot;)
+
+TransactionInterceptor.rollbackOn(FileNotFoundException):
+  rules = [
+    NoRollbackRuleAttribute(FileNotFoundException)   ← added from noRollbackFor
+    RollbackRuleAttribute(IOException)               ← added from rollbackFor
+    RollbackRuleAttribute(RuntimeException)          ← the built-in default
+  ]
+  for each rule, compute depth of FileNotFoundException in hierarchy:
+    NoRollbackRuleAttribute(FileNotFoundException): depth=0  ← EXACT MATCH, smallest
+    RollbackRuleAttribute(IOException):             depth=1
+    RollbackRuleAttribute(RuntimeException):        no match
+
+  winning rule: NoRollbackRuleAttribute → DO NOT rollback → COMMIT
+  conn.commit()
+  FileNotFoundException re-thrown to caller</code></pre>
+<p><strong>Level 1 — default vs rollbackFor:</strong></p>
+<pre><code>processDefault throws PaymentException (checked):
+  rules = [RollbackRuleAttribute(RuntimeException) default]
+  PaymentException not a subclass of RuntimeException → no rule matches
+  default: checked exception → COMMIT  ← wrong!
+
+processWithRollback throws PaymentException (rollbackFor):
+  rules = [RollbackRuleAttribute(PaymentException), RollbackRuleAttribute(RuntimeException) default]
+  PaymentException depth 0 in RollbackRuleAttribute(PaymentException) → wins → ROLLBACK  ← correct</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Checked exceptions commit by default.</strong> If your custom <code>BusinessException extends Exception</code> signals an abort, you MUST add <code>rollbackFor = BusinessException.class</code>. Otherwise Spring silently commits partial work.</blockquote>
+<blockquote><strong><code>rollbackFor</code> is additive, not replacing.</strong> Adding <code>rollbackFor = IOException.class</code> still rolls back on <code>RuntimeException</code> (the built-in rule). You cannot remove the default <code>RuntimeException</code> rollback rule with <code>noRollbackFor</code>... unless you explicitly list every <code>RuntimeException</code> subclass, which is impractical.</blockquote>
+<blockquote><strong><code>noRollbackFor</code> on a superclass + <code>rollbackFor</code> on a subclass works as expected.</strong> The more specific (lower depth) rule always wins. This lets you fine-tune an entire exception family with one parent rule and one override.</blockquote>
+<ul><li>Default: rollback on <code>RuntimeException</code>/<code>Error</code>; commit on <code>Exception</code>.</li><li><code>rollbackFor</code>: extend rollback to named checked (or unchecked) exception types.</li><li><code>noRollbackFor</code>: prevent rollback for informational <code>RuntimeException</code> subclasses.</li><li>Hierarchy depth rule: most specific type in the class hierarchy wins.</li><li><code>TransactionAspectSupport.currentTransactionStatus().setRollbackOnly()</code> is the programmatic equivalent — marks rollback without throwing any exception.</li></ul>
+  <div class="nav"><a class="prv" href="0245-isolation-levels.html"><span class="mini">← Previous</span>Isolation levels</a><a class="nxt" href="0247-transaction-proxy-self-invocation-limitation.html"><span class="mini">Next →</span>Transaction proxy & self-invocation limitation</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t246";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
