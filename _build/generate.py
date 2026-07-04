@@ -14,14 +14,15 @@ import md as mdmod
 import tutorial as tut
 import tutorial_shell
 import manifest as manifestmod
-import data_microservices, data_genai, data_webdev, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps
+import data_java, data_microservices, data_genai, data_webdev, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps
 
 OUT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 # Ordered registry of every project (mirrors spring.io/projects active list).
-# data_microservices, data_genai & data_webdev are knowledge areas (not spring.io projects) — listed first.
+# data_java is the Language Foundation card (hand-maintained java.html; here only to drive tutorials).
+# data_microservices, data_genai & data_webdev are knowledge areas (not spring.io projects).
 PROJECTS = []
-for mod in (data_microservices, data_genai, data_webdev, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps):
+for mod in (data_java, data_microservices, data_genai, data_webdev, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps):
     PROJECTS.extend(mod.PROJECTS)
 
 
@@ -34,6 +35,10 @@ def total_topics(sections):
 
 
 def write_project(p, links=None):
+    # java.html is hand-maintained (bespoke template + its own progress key); never overwrite it.
+    # It still participates in PROJECTS so its tutorials build and the resolver can sequence it.
+    if p["file"] == "java.html":
+        return total_topics(p["sections"])
     storage_key = "spring-checklist:" + p["file"]
     html = render(p["title"], p["logo"], p["subtitle"], storage_key, p["sections"], links=links)
     path = os.path.join(OUT, p["file"])
@@ -197,18 +202,7 @@ def main():
     rows = []
     grand = 0
 
-    # Java SE checklist (separate hand-maintained file) — list it first on the hub.
-    jn = java_topic_count()
-    if jn:
-        java_card = {
-            "file": "java.html", "title": "Java SE", "logo": "J",
-            "cat": "Language Foundation",
-            "subtitle": "Every Java micro-topic by release — the language Spring runs on.",
-        }
-        rows.append((java_card, jn))
-        grand += jn
-        print(f"  {'java.html':<34} {jn:>4} topics")
-
+    # Java SE (java.html) now flows through PROJECTS via data_java (listed first) — no special-case.
     linkmap = build_tutorials()
     n_pages = sum(len(v) for v in linkmap.values())
 
