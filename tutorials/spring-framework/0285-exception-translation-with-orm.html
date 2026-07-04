@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exception Translation with ORM — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 5. Data Access & Transactions</div>
+  <div class="htitle">
+    <h1>Exception Translation with ORM</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring&#x27;s <strong>exception translation</strong> converts JPA/Hibernate vendor exceptions into its portable <code>DataAccessException</code> hierarchy, so your data-access code throws consistent Spring exceptions regardless of the underlying ORM.</p>
+<p>The two key pieces:</p>
+<ol><li><strong><code>@Repository</code></strong> — marks the bean as a candidate for exception translation.</li><li><strong><code>PersistenceExceptionTranslationPostProcessor</code></strong> — a <code>BeanPostProcessor</code> that wraps <code>@Repository</code> beans in an AOP proxy; the proxy intercepts unchecked exceptions and routes them through registered <code>PersistenceExceptionTranslator</code>s.</li></ol>
+<pre><code class="lang-java">@Repository         // enables exception translation proxy
+class OrderRepo {
+    @PersistenceContext EntityManager em;
+
+    @Transactional
+    public void save(Order o) {
+        em.persist(o);      // Hibernate ConstraintViolationException
+                            // → Spring DataIntegrityViolationException
+    }
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>JPA throws <code>jakarta.persistence.PersistenceException</code> (and vendor-specific subclasses). Hibernate throws <code>org.hibernate.exception.ConstraintViolationException</code>. EclipseLink throws its own hierarchy. Without translation, every catch clause is provider-specific and every test breaks when you change ORM vendors.</p>
+<p>Spring&#x27;s <code>DataAccessException</code> hierarchy is provider-neutral:</p>
+<pre><code>DataAccessException
+  ├─ DataIntegrityViolationException  (constraint, FK violation)
+  ├─ OptimisticLockingFailureException
+  ├─ EmptyResultDataAccessException
+  ├─ TransientDataAccessResourceException
+  └─ ...</code></pre>
+<p>Add <code>@Repository</code> + <code>PersistenceExceptionTranslationPostProcessor</code> and your service layer catches <code>DataIntegrityViolationException</code> regardless of whether the underlying store is Hibernate, EclipseLink, or JDBC.</p>
+<h2>3. Core concept</h2>
+<pre><code>@Repository bean
+  ↓ (AOP proxy from PersistenceExceptionTranslationPostProcessor)
+  em.persist(entity)
+  ↓
+Hibernate throws ConstraintViolationException
+  ↓
+proxy.invoke() catches RuntimeException
+  ↓
+DataAccessUtils.translateIfNecessary(ex, translators)
+  iterates registered PersistenceExceptionTranslators:
+    HibernateJpaDialect.translateExceptionIfPossible(ex)
+      → DataIntegrityViolationException
+  ↓
+throws DataIntegrityViolationException to caller</code></pre>
+<p>The <code>PersistenceExceptionTranslationPostProcessor</code> auto-discovers <code>PersistenceExceptionTranslator</code> beans in the <code>ApplicationContext</code> (both <code>JpaTransactionManager</code> and <code>HibernateJpaDialect</code> implement this interface).</p>
+<p>Wiring: with <code>@Configuration + @EnableTransactionManagement</code>, you still need to declare the postprocessor explicitly:</p>
+<pre><code class="lang-java">@Bean
+PersistenceExceptionTranslationPostProcessor exTranslation() {
+    return new PersistenceExceptionTranslationPostProcessor();
+}</code></pre>
+<p>(Spring Boot auto-configures this for you. In plain Spring, declare it manually.)</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 700 190" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#6db33f"/>
+    </marker>
+    <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#79c0ff"/>
+    </marker>
+  </defs>
+
+  <!-- Service -->
+  <rect x="10" y="70" width="120" height="50" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="70" y="92" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">@Service</text>
+  <text x="70" y="108" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">catches DataAccessEx</text>
+  <line x1="132" y1="95" x2="165" y2="95" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <!-- Proxy -->
+  <rect x="167" y="55" width="175" height="80" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="254" y="78" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">Translation Proxy</text>
+  <text x="254" y="92" fill="#8b949e" font-size="7" text-anchor="middle" font-family="monospace">(from PersistenceException-</text>
+  <text x="254" y="103" fill="#8b949e" font-size="7" text-anchor="middle" font-family="monospace">TranslationPostProcessor)</text>
+  <line x1="177" y1="109" x2="332" y2="109" stroke="#8b949e" stroke-width="0.5"/>
+  <text x="254" y="124" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">catch → translateIfNecessary()</text>
+  <line x1="344" y1="95" x2="387" y2="95" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- @Repository -->
+  <rect x="389" y="60" width="145" height="70" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="461" y="82" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">@Repository bean</text>
+  <line x1="399" y1="88" x2="524" y2="88" stroke="#8b949e" stroke-width="0.5"/>
+  <text x="461" y="104" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">em.persist(entity)</text>
+  <text x="461" y="118" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="monospace">↓ ConstraintViolEx</text>
+
+  <!-- translator -->
+  <line x1="461" y1="132" x2="461" y2="160" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="461" y="175" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">→ DataIntegrityViolationException</text>
+</svg>
+<h2>5. Runnable example</h2>
+<p>Scenario: an <strong>order management service</strong> — observe exception translation at three levels of complexity.</p>
+<h3>Level 1 — Basic</h3>
+<p><code>@Repository</code> + <code>PersistenceExceptionTranslationPostProcessor</code> translate constraint violations.</p>
+<pre><code class="lang-java">// ExceptionTranslationDemo.java
+import jakarta.persistence.*;
+import org.springframework.context.annotation.*;
+import org.springframework.dao.*;
+import org.springframework.orm.jpa.*;
+import org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter;
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.*;
+import javax.sql.DataSource;
+import java.util.*;
+
+@Entity @Table(name=&quot;orders&quot;,
+    uniqueConstraints=@UniqueConstraint(columnNames=&quot;order_ref&quot;))
+class Order {
+    @Id @GeneratedValue(strategy=GenerationType.IDENTITY) Long id;
+    @Column(name=&quot;order_ref&quot;) String ref; double total;
+    public Order(){} public Order(String r,double t){ref=r;total=t;}
+    public Long getId(){return id;} public String getRef(){return ref;}
+    public String toString(){return &quot;Order[&quot;+id+&quot;,&quot;+ref+&quot;,&quot;+total+&quot;]&quot;;}
+}
+
+@Repository     // ← required for exception translation proxy
+class OrderRepo {
+    @PersistenceContext EntityManager em;
+
+    @Transactional
+    public Order save(Order order){ em.persist(order); return order; }
+
+    @Transactional(readOnly=true)
+    public List&lt;Order&gt; findAll(){
+        return em.createQuery(&quot;FROM Order&quot;, Order.class).getResultList(); }
+}
+
+@Configuration @EnableTransactionManagement @ComponentScan
+class AppCfg {
+    @Bean DataSource ds(){
+        var d=new org.springframework.jdbc.datasource.DriverManagerDataSource();
+        d.setDriverClassName(&quot;org.h2.Driver&quot;); d.setUrl(&quot;jdbc:h2:mem:orders;DB_CLOSE_DELAY=-1&quot;);
+        d.setUsername(&quot;sa&quot;); d.setPassword(&quot;&quot;); return d;
+    }
+    @Bean LocalContainerEntityManagerFactoryBean emf(DataSource ds){
+        var emf=new LocalContainerEntityManagerFactoryBean(); emf.setDataSource(ds); emf.setPackagesToScan(&quot;&quot;);
+        var a=new HibernateJpaVendorAdapter(); a.setGenerateDdl(true); emf.setJpaVendorAdapter(a); return emf;
+    }
+    @Bean JpaTransactionManager transactionManager(EntityManagerFactory emf){return new JpaTransactionManager(emf);}
+    @Bean PersistenceExceptionTranslationPostProcessor exTranslation(){
+        return new PersistenceExceptionTranslationPostProcessor();  // installs translation AOP proxy
+    }
+}
+
+public class ExceptionTranslationDemo {
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(AppCfg.class);
+        OrderRepo repo = ctx.getBean(OrderRepo.class);
+
+        repo.save(new Order(&quot;ORD-001&quot;, 100.00));
+
+        // duplicate ref → Hibernate ConstraintViolationException
+        // → translated to Spring DataIntegrityViolationException
+        try {
+            repo.save(new Order(&quot;ORD-001&quot;, 200.00));
+        } catch (DataIntegrityViolationException e) {
+            System.out.println(&quot;Translated: &quot; + e.getClass().getSimpleName());
+        }
+
+        System.out.println(&quot;Orders: &quot; + repo.findAll());
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: <code>java -cp spring-context.jar:spring-orm.jar:spring-tx.jar:spring-jdbc.jar:hibernate-core.jar:jakarta.persistence-api.jar:h2.jar:. ExceptionTranslationDemo.java</code></p>
+<p>Without <code>@Repository</code>, Hibernate&#x27;s <code>ConstraintViolationException</code> would propagate untranslated. With <code>@Repository</code> + <code>PersistenceExceptionTranslationPostProcessor</code>, the proxy catches it and calls the registered <code>PersistenceExceptionTranslator</code>s to produce a <code>DataIntegrityViolationException</code>.</p>
+<p>---</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Distinguish <code>DataIntegrityViolationException</code> vs <code>OptimisticLockingFailureException</code>.</p>
+<pre><code class="lang-java">// ExceptionTranslationDemo.java
+import jakarta.persistence.*;
+import org.springframework.context.annotation.*;
+import org.springframework.dao.*;
+import org.springframework.orm.jpa.*;
+import org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter;
+import org.springframework.stereotype.*;
+import org.springframework.transaction.annotation.*;
+import javax.sql.DataSource;
+import java.util.*;
+
+@Entity @Table(name=&quot;products&quot;,
+    uniqueConstraints=@UniqueConstraint(columnNames=&quot;sku&quot;))
+class Product {
+    @Id @GeneratedValue(strategy=GenerationType.IDENTITY) Long id;
+    String sku; double price;
+    @Version int version;  // optimistic locking
+    public Product(){} public Product(String s,double p){sku=s;price=p;}
+    public Long getId(){return id;} public void setPrice(double p){price=p;}
+    public String toString(){return &quot;Product[&quot;+sku+&quot;,&quot;+price+&quot;,v&quot;+version+&quot;]&quot;;}
+}
+
+@Repository
+class ProductRepo {
+    @PersistenceContext EntityManager em;
+    @Transactional public Product save(Product p){ em.persist(p); return p; }
+    @Transactional(readOnly=true) public Product findById(Long id){ return em.find(Product.class, id); }
+    @Transactional public void updatePrice(Long id, double price){
+        Product p=em.find(Product.class,id);
+        if(p!=null) p.setPrice(price);
+    }
+}
+
+@Service
+class ProductService {
+    private final ProductRepo repo;
+    ProductService(ProductRepo r){ repo=r; }
+
+    public void demonstrateTranslation(Long id) {
+        // simulate stale-state optimistic locking conflict
+        Product p = repo.findById(id);
+        // In a real race: another TX updates + increments version
+        // We simulate by detaching and re-persisting with stale version
+        try {
+            repo.updatePrice(id, 99.99);  // normal update
+            System.out.println(&quot;Price updated successfully&quot;);
+        } catch (OptimisticLockingFailureException e) {
+            System.out.println(&quot;Optimistic lock: &quot; + e.getClass().getSimpleName());
+        } catch (DataIntegrityViolationException e) {
+            System.out.println(&quot;Integrity: &quot; + e.getClass().getSimpleName());
+        } catch (DataAccessException e) {
+            System.out.println(&quot;Other DAE: &quot; + e.getClass().getSimpleName());
+        }
+    }
+}
+
+// (AppCfg same as Level 1 but scan includes Product)
+
+public class ExceptionTranslationDemo {
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(AppCfg.class);
+        ProductRepo repo = ctx.getBean(ProductRepo.class);
+        ProductService svc = ctx.getBean(ProductService.class);
+
+        Product p = repo.save(new Product(&quot;SKU-001&quot;, 49.99));
+
+        // duplicate SKU → DataIntegrityViolationException
+        try {
+            repo.save(new Product(&quot;SKU-001&quot;, 99.99));
+        } catch (DataIntegrityViolationException e) {
+            System.out.println(&quot;Duplicate SKU caught as: &quot; + e.getClass().getSimpleName());
+        }
+
+        svc.demonstrateTranslation(p.getId());
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: same classpath</p>
+<p><code>@Version</code> field enables optimistic locking. When a stale entity conflicts, Hibernate throws <code>StaleObjectStateException</code> which <code>HibernateJpaDialect</code> translates to <code>OptimisticLockingFailureException</code>. Each Spring <code>DataAccessException</code> subclass corresponds to a specific failure mode — catch the right level.</p>
+<p>---</p>
+<h3>Level 3 — Advanced</h3>
+<p>Custom <code>PersistenceExceptionTranslator</code> for domain-specific exceptions.</p>
+<pre><code class="lang-java">// ExceptionTranslationDemo.java
+import jakarta.persistence.*;
+import org.springframework.context.annotation.*;
+import org.springframework.dao.*;
+import org.springframework.dao.support.PersistenceExceptionTranslator;
+import org.springframework.orm.jpa.*;
+import org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter;
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.*;
+import javax.sql.DataSource;
+
+// Domain exception (not a Spring class)
+class DuplicateOrderException extends DataIntegrityViolationException {
+    DuplicateOrderException(String msg){ super(msg); }
+}
+
+// Custom translator for order-specific exceptions
+class OrderExceptionTranslator implements PersistenceExceptionTranslator {
+    @Override
+    public DataAccessException translateExceptionIfPossible(RuntimeException ex) {
+        // intercept only ConstraintViolationException with our constraint name
+        if (ex.getMessage() != null &amp;&amp;
+            ex.getMessage().contains(&quot;ORDERS&quot;) &amp;&amp;
+            ex.getMessage().contains(&quot;ORDER_REF&quot;)) {
+            return new DuplicateOrderException(&quot;Duplicate order reference: &quot; + extractRef(ex));
+        }
+        return null;  // null = not handled by this translator → next translator tries
+    }
+    private String extractRef(RuntimeException ex){
+        String msg = ex.getMessage();
+        int i = msg.indexOf(&quot;&#x27;&quot;); int j = msg.lastIndexOf(&quot;&#x27;&quot;);
+        return (i&gt;=0 &amp;&amp; j&gt;i) ? msg.substring(i+1,j) : &quot;unknown&quot;;
+    }
+}
+
+@Entity @Table(name=&quot;orders&quot;,
+    uniqueConstraints=@UniqueConstraint(name=&quot;ORDER_REF&quot;,columnNames=&quot;order_ref&quot;))
+class Order {
+    @Id @GeneratedValue(strategy=GenerationType.IDENTITY) Long id;
+    @Column(name=&quot;order_ref&quot;) String ref; double total;
+    public Order(){} public Order(String r,double t){ref=r;total=t;}
+}
+
+@Repository
+class OrderRepo2 {
+    @PersistenceContext EntityManager em;
+    @Transactional public void save(Order o){ em.persist(o); }
+}
+
+@Configuration @EnableTransactionManagement @ComponentScan
+class AppCfgCustom {
+    @Bean DataSource ds(){
+        var d=new org.springframework.jdbc.datasource.DriverManagerDataSource();
+        d.setDriverClassName(&quot;org.h2.Driver&quot;); d.setUrl(&quot;jdbc:h2:mem:ordersadv;DB_CLOSE_DELAY=-1&quot;);
+        d.setUsername(&quot;sa&quot;); d.setPassword(&quot;&quot;); return d;
+    }
+    @Bean LocalContainerEntityManagerFactoryBean emf(DataSource ds){
+        var emf=new LocalContainerEntityManagerFactoryBean(); emf.setDataSource(ds); emf.setPackagesToScan(&quot;&quot;);
+        var a=new HibernateJpaVendorAdapter(); a.setGenerateDdl(true); emf.setJpaVendorAdapter(a); return emf;
+    }
+    @Bean JpaTransactionManager transactionManager(EntityManagerFactory emf){return new JpaTransactionManager(emf);}
+    @Bean PersistenceExceptionTranslationPostProcessor exTranslation(){
+        return new PersistenceExceptionTranslationPostProcessor();
+    }
+    @Bean PersistenceExceptionTranslator orderTranslator(){
+        return new OrderExceptionTranslator();  // registered as a PET bean → auto-discovered
+    }
+}
+
+public class ExceptionTranslationDemo {
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(AppCfgCustom.class);
+        OrderRepo2 repo = ctx.getBean(OrderRepo2.class);
+
+        repo.save(new Order(&quot;ORD-001&quot;, 100.00));
+        try {
+            repo.save(new Order(&quot;ORD-001&quot;, 200.00));
+        } catch (DuplicateOrderException e) {
+            System.out.println(&quot;Custom exception: &quot; + e.getClass().getSimpleName() + &quot; — &quot; + e.getMessage());
+        } catch (DataIntegrityViolationException e) {
+            System.out.println(&quot;Fallback: &quot; + e.getClass().getSimpleName());
+        }
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: same classpath</p>
+<p>Any bean implementing <code>PersistenceExceptionTranslator</code> is auto-discovered by <code>PersistenceExceptionTranslationPostProcessor</code>. The custom translator runs first; returning <code>null</code> defers to the next translator. Returning a non-null <code>DataAccessException</code> short-circuits — the returned exception is thrown to the caller.</p>
+<h2>6. Walkthrough</h2>
+<p><strong>Level 1 — duplicate save, full translation flow:</strong></p>
+<ol><li><code>repo.save(new Order(&quot;ORD-001&quot;, 200.00))</code> → AOP proxy intercepts (two proxies layered: <code>@Transactional</code> proxy + translation proxy).</li><li><code>@Transactional</code> proxy begins TX, delegates to real <code>OrderRepo.save()</code>.</li><li><code>em.persist(order)</code> enqueues in persistence context.</li><li>TX commit → <code>em.flush()</code> → Hibernate issues <code>INSERT</code> → H2 raises <code>UNIQUE constraint violation</code>.</li><li>Hibernate wraps in <code>org.hibernate.exception.ConstraintViolationException</code>.</li><li>Unchecked exception exits <code>@Transactional</code> proxy → proxy rolls back TX, re-throws exception.</li><li>Translation proxy (from <code>PersistenceExceptionTranslationPostProcessor</code>) catches the <code>RuntimeException</code>.</li><li>Iterates <code>PersistenceExceptionTranslator</code> beans: <code>HibernateJpaDialect.translateExceptionIfPossible()</code> matches → returns <code>DataIntegrityViolationException</code>.</li><li>Translation proxy throws <code>DataIntegrityViolationException</code> → reaches caller&#x27;s <code>catch</code> block.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong><code>@Repository</code> is necessary but not sufficient.</strong> You also need <code>PersistenceExceptionTranslationPostProcessor</code> in the <code>ApplicationContext</code>. Without the postprocessor, <code>@Repository</code> is just a stereotype marker — no translation proxy is installed. Spring Boot configures the postprocessor automatically; plain Spring does not.</blockquote>
+<blockquote><strong>Translation only catches unchecked exceptions</strong> that escape the <code>@Repository</code> method. Exceptions swallowed inside the method are never seen by the proxy.</blockquote>
+<blockquote><strong><code>EmptyResultDataAccessException</code> is NOT produced automatically.</strong> <code>em.getSingleResult()</code> throws <code>NoResultException</code> (JPA checked), which the translation proxy converts to <code>EmptyResultDataAccessException</code>. <code>em.find()</code> returns <code>null</code> — not an exception.</blockquote>
+<ul><li><code>@Repository</code> + <code>PersistenceExceptionTranslationPostProcessor</code> = translation pair.</li><li>Standard translations: <code>ConstraintViolationException</code> → <code>DataIntegrityViolationException</code>, <code>StaleObjectStateException</code> → <code>OptimisticLockingFailureException</code>.</li><li>Custom translator: implement <code>PersistenceExceptionTranslator</code>, declare as <code>@Bean</code>, return <code>null</code> to defer.</li><li>Spring Boot auto-configures the postprocessor; plain Spring requires explicit <code>@Bean</code>.</li></ul>
+  <div class="nav"><a class="prv" href="0284-jpadialect.html"><span class="mini">← Previous</span>JpaDialect</a><a class="nxt" href="0286-object-xml-mapping-oxm-abstraction.html"><span class="mini">Next →</span>Object/XML mapping (OXM) abstraction</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t285";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
