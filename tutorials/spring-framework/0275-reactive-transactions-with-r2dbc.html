@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reactive transactions with R2DBC — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 5. Data Access & Transactions</div>
+  <div class="htitle">
+    <h1>Reactive transactions with R2DBC</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Reactive transactions</strong> in Spring apply the same ACID guarantees as traditional transactions, but the coordination is done through reactive types (<code>Mono</code>/<code>Flux</code>) instead of thread-local storage. The key classes are:</p>
+<ul><li><strong><code>R2dbcTransactionManager</code></strong> — implements <code>ReactiveTransactionManager</code>; manages transactions over an R2DBC <code>ConnectionFactory</code>.</li><li><strong><code>TransactionalOperator</code></strong> — programmatic reactive transaction wrapper (equivalent to <code>TransactionTemplate</code> in JDBC).</li><li><strong><code>@Transactional</code></strong> — declarative, works on methods returning <code>Mono</code> or <code>Flux</code> (Spring AOP intercepts them and wraps in a transaction).</li></ul>
+<pre><code class="lang-java">// Declarative — method returns Mono; Spring wraps the whole subscription in a TX
+@Transactional
+public Mono&lt;Void&gt; transfer(long from, long to, double amount) {
+    return debit(from, amount).then(credit(to, amount));
+}
+
+// Programmatic — explicit wrapping
+Flux&lt;Long&gt; txOps = Flux.concat(debit(from, amt), credit(to, amt))
+    .as(transactionalOperator::transactional);</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Traditional Spring transaction management stores the current transaction&#x27;s <code>Connection</code> in a <strong>thread-local</strong> variable. In reactive code there is no stable &quot;current thread&quot; — a reactive pipeline can hop between threads at every operator. R2DBC transactions solve this by storing the connection in Reactor&#x27;s <strong><code>Context</code></strong> (a per-subscription key-value store that travels with the reactive pipeline).</p>
+<p>Use reactive transactions when:</p>
+<ul><li>The entire stack is reactive (WebFlux + R2DBC).</li><li>You need atomicity across multiple database operations in a reactive pipeline.</li><li>Rolling back reactively on error (e.g., if the second operation fails, undo the first).</li></ul>
+<p><strong>Never mix</strong> reactive and imperative transactions — don&#x27;t call a <code>@Transactional</code> R2DBC method from a blocking <code>JdbcTemplate</code> context or vice versa.</p>
+<h2>3. Core concept</h2>
+<p><code>ReactiveTransactionManager</code> replaces <code>PlatformTransactionManager</code>:</p>
+<pre><code class="lang-java">// Traditional (blocking)
+PlatformTransactionManager → getTransaction() → commit() → rollback()
+
+// Reactive
+ReactiveTransactionManager → getReactiveTransaction() → commit() → rollback()
+  all methods return Mono&lt;&gt; — non-blocking</code></pre>
+<p>Reactor <code>Context</code> carries the transaction:</p>
+<pre><code>subscribe():
+  → ReactiveTransactionManager.getReactiveTransaction()
+  → acquires Connection from pool (Mono&lt;Connection&gt;)
+  → stores Connection in Reactor Context
+
+inside pipeline:
+  → DatabaseClient.sql(...).fetch().all()
+  → reads Connection from Context (not thread-local)
+  → executes on the TX-bound Connection
+
+on completion:
+  → commit() or rollback()
+  → releases Connection to pool</code></pre>
+<p><code>TransactionalOperator.transactional(publisher)</code> is the programmatic API: it wraps any <code>Mono</code> or <code>Flux</code> and applies the transaction.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#6db33f"/>
+    </marker>
+    <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#79c0ff"/>
+    </marker>
+  </defs>
+
+  <!-- Subscribe -->
+  <rect x="10" y="90" width="100" height="40" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="60" y="113" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">subscribe()</text>
+  <line x1="112" y1="110" x2="155" y2="110" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- TX start -->
+  <rect x="157" y="70" width="170" height="80" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="242" y="93" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">R2dbcTransactionManager</text>
+  <line x1="167" y1="99" x2="317" y2="99" stroke="#8b949e" stroke-width="0.5"/>
+  <text x="242" y="116" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">1. acquire Connection</text>
+  <text x="242" y="130" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">2. store in Reactor Context</text>
+  <line x1="329" y1="110" x2="372" y2="110" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Reactor Context -->
+  <rect x="374" y="80" width="160" height="60" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="454" y="102" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">Reactor Context</text>
+  <text x="454" y="118" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">key=CF → PooledConnection</text>
+
+  <!-- DatabaseClient reads context -->
+  <rect x="157" y="175" width="380" height="30" rx="4" fill="#0d1117" stroke="#6db33f" stroke-width="1"/>
+  <text x="347" y="194" fill="#6db33f" font-size="8" text-anchor="middle" font-family="monospace">DatabaseClient reads TX-bound connection from Context</text>
+
+  <!-- Commit/rollback -->
+  <rect x="540" y="90" width="150" height="40" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="615" y="108" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">commit / rollback</text>
+  <text x="615" y="122" fill="#8b949e" font-size="7" text-anchor="middle" font-family="monospace">on complete / onError</text>
+  <line x1="536" y1="110" x2="693" y2="110" stroke="#8b949e" stroke-width="1" marker-end="url(#arr2)"/>
+</svg>
+<p>TX state lives in Reactor <code>Context</code>; <code>DatabaseClient</code> reads it automatically. TX commits on <code>onComplete</code>, rolls back on <code>onError</code>.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a <strong>bank transfer</strong> — debit from one account, credit another atomically; rollback if the second step fails.</p>
+<h3>Level 1 — Basic</h3>
+<p><code>TransactionalOperator</code> for programmatic reactive transaction.</p>
+<pre><code class="lang-java">// ReactiveTransactionDemo.java
+import io.r2dbc.h2.*;
+import io.r2dbc.spi.ConnectionFactory;
+import org.springframework.r2dbc.connection.R2dbcTransactionManager;
+import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.transaction.ReactiveTransactionManager;
+import org.springframework.transaction.reactive.TransactionalOperator;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+public class ReactiveTransactionDemo {
+
+    static ConnectionFactory buildCF() {
+        return new H2ConnectionFactory(H2ConnectionConfiguration.builder()
+            .inMemory(&quot;bank&quot;).option(&quot;DB_CLOSE_DELAY=-1&quot;).build());
+    }
+
+    public static void main(String[] args) {
+        ConnectionFactory cf = buildCF();
+        DatabaseClient client = DatabaseClient.create(cf);
+        ReactiveTransactionManager txm = new R2dbcTransactionManager(cf);
+        TransactionalOperator tx = TransactionalOperator.create(txm);
+
+        // Schema + seed
+        client.sql(&quot;CREATE TABLE accounts (id BIGINT PRIMARY KEY, name VARCHAR(50), balance DOUBLE)&quot;)
+            .fetch().rowsUpdated()
+            .then(client.sql(&quot;INSERT INTO accounts VALUES(1,&#x27;Alice&#x27;,1000.0)&quot;).fetch().rowsUpdated())
+            .then(client.sql(&quot;INSERT INTO accounts VALUES(2,&#x27;Bob&#x27;,500.0)&quot;).fetch().rowsUpdated())
+            .block();
+
+        // Transfer $200 from Alice to Bob — wrapped in a transaction
+        Mono&lt;Void&gt; transfer = client.sql(&quot;UPDATE accounts SET balance=balance-:amt WHERE id=:id&quot;)
+            .bind(&quot;amt&quot;,200.0).bind(&quot;id&quot;,1L).fetch().rowsUpdated()
+            .then(client.sql(&quot;UPDATE accounts SET balance=balance+:amt WHERE id=:id&quot;)
+                .bind(&quot;amt&quot;,200.0).bind(&quot;id&quot;,2L).fetch().rowsUpdated())
+            .then();
+
+        transfer.as(tx::transactional).block();
+
+        // Verify
+        client.sql(&quot;SELECT name, balance FROM accounts ORDER BY id&quot;)
+            .fetch().all()
+            .doOnNext(r -&gt; System.out.printf(&quot;  %-6s $%.2f%n&quot;, r.get(&quot;NAME&quot;), r.get(&quot;BALANCE&quot;)))
+            .blockLast();
+        // Alice: $800, Bob: $700
+    }
+}</code></pre>
+<p>How to run: <code>java -cp spring-r2dbc.jar:spring-tx.jar:r2dbc-spi.jar:r2dbc-h2.jar:reactor-core.jar:. ReactiveTransactionDemo.java</code></p>
+<p><code>.as(tx::transactional)</code> wraps any <code>Mono</code> or <code>Flux</code> in a transaction. If any step in the chain emits <code>onError</code>, the transaction rolls back automatically. <code>R2dbcTransactionManager</code> acquires a connection from <code>cf</code>, begins the transaction, and stores the connection in the Reactor <code>Context</code> so <code>DatabaseClient</code> uses it for all subsequent SQL in the chain.</p>
+<p>---</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Rollback on error — simulated failed transfer.</p>
+<pre><code class="lang-java">// ReactiveTransactionDemo.java
+import io.r2dbc.h2.*;
+import io.r2dbc.spi.ConnectionFactory;
+import org.springframework.r2dbc.connection.R2dbcTransactionManager;
+import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.transaction.ReactiveTransactionManager;
+import org.springframework.transaction.reactive.TransactionalOperator;
+import reactor.core.publisher.Mono;
+
+public class ReactiveTransactionDemo {
+
+    static ConnectionFactory buildCF() {
+        return new H2ConnectionFactory(H2ConnectionConfiguration.builder()
+            .inMemory(&quot;bank&quot;).option(&quot;DB_CLOSE_DELAY=-1&quot;).build());
+    }
+
+    static void printBalances(DatabaseClient client) {
+        client.sql(&quot;SELECT name, balance FROM accounts ORDER BY id&quot;)
+            .fetch().all()
+            .doOnNext(r -&gt; System.out.printf(&quot;  %-6s $%.2f%n&quot;, r.get(&quot;NAME&quot;), r.get(&quot;BALANCE&quot;)))
+            .blockLast();
+    }
+
+    public static void main(String[] args) {
+        ConnectionFactory cf = buildCF();
+        DatabaseClient client = DatabaseClient.create(cf);
+        TransactionalOperator tx = TransactionalOperator.create(new R2dbcTransactionManager(cf));
+
+        client.sql(&quot;CREATE TABLE accounts (id BIGINT PRIMARY KEY, name VARCHAR(50), balance DOUBLE)&quot;)
+            .fetch().rowsUpdated()
+            .then(client.sql(&quot;INSERT INTO accounts VALUES(1,&#x27;Alice&#x27;,1000.0)&quot;).fetch().rowsUpdated())
+            .then(client.sql(&quot;INSERT INTO accounts VALUES(2,&#x27;Bob&#x27;,500.0)&quot;).fetch().rowsUpdated())
+            .block();
+
+        System.out.println(&quot;Before failed transfer:&quot;);
+        printBalances(client);
+
+        // Attempt a transfer that fails mid-way
+        Mono&lt;Void&gt; failingTransfer = client.sql(
+            &quot;UPDATE accounts SET balance=balance-:amt WHERE id=:id&quot;)
+            .bind(&quot;amt&quot;,300.0).bind(&quot;id&quot;,1L).fetch().rowsUpdated()
+            .then(Mono.error(new RuntimeException(&quot;Payment gateway failed!&quot;)))
+            .then(client.sql(
+                &quot;UPDATE accounts SET balance=balance+:amt WHERE id=:id&quot;)
+                .bind(&quot;amt&quot;,300.0).bind(&quot;id&quot;,2L).fetch().rowsUpdated())
+            .then();
+
+        failingTransfer.as(tx::transactional)
+            .onErrorResume(e -&gt; {
+                System.out.println(&quot;Error caught: &quot; + e.getMessage() + &quot; — TX rolled back&quot;);
+                return Mono.empty();
+            })
+            .block();
+
+        System.out.println(&quot;After failed transfer (should be unchanged):&quot;);
+        printBalances(client);
+        // Both balances unchanged — rollback worked
+    }
+}</code></pre>
+<p>How to run: same classpath</p>
+<p>When <code>Mono.error(...)</code> is emitted in the middle of the reactive chain, the <code>TransactionalOperator</code> intercepts <code>onError</code> and calls <code>ReactiveTransactionManager.rollback(status)</code> before propagating the error upstream. Alice&#x27;s debit is undone — neither account changes.</p>
+<p>---</p>
+<h3>Level 3 — Advanced</h3>
+<p><code>@Transactional</code> on a reactive method in a Spring <code>@Service</code> + propagation.</p>
+<pre><code class="lang-java">// ReactiveTransactionDemo.java
+import io.r2dbc.h2.*;
+import io.r2dbc.spi.ConnectionFactory;
+import org.springframework.context.annotation.*;
+import org.springframework.r2dbc.connection.R2dbcTransactionManager;
+import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.*;
+import org.springframework.transaction.annotation.*;
+import org.springframework.transaction.reactive.TransactionalOperator;
+import reactor.core.publisher.Mono;
+
+@Configuration
+@EnableTransactionManagement
+class BankConfig {
+    @Bean ConnectionFactory connectionFactory() {
+        return new H2ConnectionFactory(H2ConnectionConfiguration.builder()
+            .inMemory(&quot;bank&quot;).option(&quot;DB_CLOSE_DELAY=-1&quot;).build());
+    }
+    @Bean DatabaseClient databaseClient(ConnectionFactory cf) { return DatabaseClient.create(cf); }
+    @Bean ReactiveTransactionManager transactionManager(ConnectionFactory cf) {
+        return new R2dbcTransactionManager(cf);
+    }
+}
+
+@Service
+class AccountService {
+    private final DatabaseClient client;
+    AccountService(DatabaseClient client) { this.client = client; }
+
+    @Transactional
+    public Mono&lt;Void&gt; transfer(long from, long to, double amount) {
+        return client.sql(&quot;UPDATE accounts SET balance=balance-:amt WHERE id=:id&quot;)
+            .bind(&quot;amt&quot;,amount).bind(&quot;id&quot;,from).fetch().rowsUpdated()
+            .then(client.sql(&quot;UPDATE accounts SET balance=balance+:amt WHERE id=:id&quot;)
+                .bind(&quot;amt&quot;,amount).bind(&quot;id&quot;,to).fetch().rowsUpdated())
+            .then();
+    }
+
+    @Transactional(readOnly = true)
+    public Mono&lt;Double&gt; getBalance(long id) {
+        return client.sql(&quot;SELECT balance FROM accounts WHERE id=:id&quot;)
+            .bind(&quot;id&quot;,id)
+            .map(row -&gt; row.get(&quot;balance&quot;, Double.class))
+            .one();
+    }
+}
+
+public class ReactiveTransactionDemo {
+    public static void main(String[] args) {
+        var ctx = new AnnotationConfigApplicationContext(BankConfig.class, AccountService.class);
+        DatabaseClient client = ctx.getBean(DatabaseClient.class);
+        AccountService svc = ctx.getBean(AccountService.class);
+
+        client.sql(&quot;CREATE TABLE accounts (id BIGINT PRIMARY KEY, name VARCHAR(50), balance DOUBLE)&quot;)
+            .fetch().rowsUpdated()
+            .then(client.sql(&quot;INSERT INTO accounts VALUES(1,&#x27;Alice&#x27;,1000.0)&quot;).fetch().rowsUpdated())
+            .then(client.sql(&quot;INSERT INTO accounts VALUES(2,&#x27;Bob&#x27;,500.0)&quot;).fetch().rowsUpdated())
+            .block();
+
+        // @Transactional wraps the Mono — TX begins on subscribe, commits on onComplete
+        svc.transfer(1L, 2L, 150.0).block();
+
+        System.out.printf(&quot;Alice: $%.2f%n&quot;, svc.getBalance(1L).block());
+        System.out.printf(&quot;Bob:   $%.2f%n&quot;, svc.getBalance(2L).block());
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: same classpath + spring-context.jar + spring-aspects.jar</p>
+<p><code>@Transactional</code> on a reactive method (returning <code>Mono</code>/<code>Flux</code>) triggers Spring AOP to wrap the subscription in a transaction via <code>R2dbcTransactionManager</code>. The transaction does NOT begin when <code>transfer()</code> is called — it begins when the caller subscribes to the returned <code>Mono</code>. <code>@Transactional(readOnly=true)</code> hints the database driver to optimise for read-only access.</p>
+<h2>6. Walkthrough</h2>
+<p><strong>Level 1 — <code>transfer</code> wrapped in <code>TransactionalOperator</code> (execution order):</strong></p>
+<ol><li><strong><code>transfer.as(tx::transactional).block()</code></strong>: subscribes. <code>TransactionalOperator.transactional(transfer)</code> intercepts the subscription.</li><li><strong><code>R2dbcTransactionManager.getReactiveTransaction()</code></strong>: acquires a <code>Connection</code> from the <code>ConnectionFactory</code>, calls <code>connection.beginTransaction()</code> → <code>Mono&lt;Void&gt;</code>.</li><li><strong>Connection stored in Reactor <code>Context</code></strong> under the <code>ConnectionFactory</code> key.</li><li><strong>First UPDATE</strong>: <code>DatabaseClient</code> detects TX-bound connection in Context — reuses it. <code>UPDATE accounts SET balance=balance-200 WHERE id=1</code> — Alice&#x27;s balance <code>1000 → 800</code>.</li><li><strong>Second UPDATE</strong> (chained via <code>.then()</code>): same TX-bound connection. <code>UPDATE accounts SET balance=balance+200 WHERE id=2</code> — Bob&#x27;s balance <code>500 → 700</code>.</li><li><strong><code>Mono&lt;Void&gt;</code> completes</strong> — <code>TransactionalOperator</code> calls <code>R2dbcTransactionManager.commit()</code> → <code>connection.commitTransaction()</code>. Changes made permanent.</li><li><strong>Connection released</strong> to pool.</li></ol>
+<p>For the failing transfer (Level 2), step 4 runs (Alice debited), then <code>Mono.error(...)</code> triggers <code>onError</code>. <code>TransactionalOperator</code> calls <code>rollback()</code> → <code>connection.rollbackTransaction()</code>. Alice&#x27;s debit is undone.</p>
+<pre><code>Normal TX:
+  beginTransaction()
+  UPDATE ... WHERE id=1  → Alice: 1000→800
+  UPDATE ... WHERE id=2  → Bob:   500→700
+  commit()              → persisted
+
+Failed TX:
+  beginTransaction()
+  UPDATE ... WHERE id=1  → Alice: 1000→800 (in TX, not committed)
+  Mono.error() fired
+  rollback()            → Alice: 800→1000 (undone)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong><code>@Transactional</code> on reactive methods: the transaction begins at subscription time, NOT at method call time.</strong> If the method is called but the returned <code>Mono</code> is never subscribed to, no transaction ever begins. This is a fundamental difference from blocking <code>@Transactional</code>.</blockquote>
+<blockquote><strong>Never block inside a <code>@Transactional</code> reactive method.</strong> Calling <code>.block()</code> inside a reactive TX method will deadlock the event loop. Use <code>.then()</code>, <code>flatMap()</code>, and other reactive operators to chain operations.</blockquote>
+<blockquote><strong><code>@Transactional</code> <code>propagation = REQUIRES_NEW</code> works reactively</strong> via Reactor <code>Context</code> substitution — the inner transaction uses a new connection stored in a child Context while the outer TX connection is preserved in the parent Context.</blockquote>
+<ul><li><code>R2dbcTransactionManager</code> — drives reactive TX via Reactor Context (not thread-local).</li><li><code>TransactionalOperator.transactional(publisher)</code> — programmatic TX wrapper for any <code>Mono</code>/<code>Flux</code>.</li><li><code>@Transactional</code> works on reactive methods — TX begins at subscribe, commits at onComplete, rolls back at onError.</li><li>Both <code>DatabaseClient</code> and <code>TransactionManager</code> must share the same <code>ConnectionFactory</code>.</li><li>Never <code>.block()</code> inside a reactive TX method — deadlock risk.</li></ul>
+  <div class="nav"><a class="prv" href="0274-connectionfactory-configuration.html"><span class="mini">← Previous</span>ConnectionFactory configuration</a><a class="nxt" href="0276-orm-integration-overview-benefits.html"><span class="mini">Next →</span>ORM integration overview & benefits</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t275";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
