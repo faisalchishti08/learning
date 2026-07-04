@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data buffers & codecs — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 3. Resources, Validation, SpEL, AOT</div>
+  <div class="htitle">
+    <h1>Data buffers & codecs</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring&#x27;s <strong>data buffer abstraction</strong> (<code>DataBuffer</code>, <code>DataBufferFactory</code>) is a unified API over raw byte buffers — including Netty&#x27;s <code>ByteBuf</code>, Java NIO&#x27;s <code>ByteBuffer</code>, and others — so reactive code can handle bytes without leaking framework-specific types. <strong>Codecs</strong> (<code>Encoder&lt;T&gt;</code>, <code>Decoder&lt;T&gt;</code>, <code>HttpMessageReader&lt;T&gt;</code>, <code>HttpMessageWriter&lt;T&gt;</code>) sit on top: they read or write a stream of <code>DataBuffer</code> objects and convert them to/from Java objects (JSON, XML, protobuf, form data).</p>
+<p>This machinery powers Spring WebFlux&#x27;s reactive HTTP layer. When WebFlux receives a request body, it arrives as a <code>Flux&lt;DataBuffer&gt;</code>; a codec (e.g. <code>Jackson2JsonDecoder</code>) subscribes, accumulates bytes, and deserialises them to a domain object.</p>
+<h2>2. Why &amp; when</h2>
+<p>Traditional Servlet I/O blocks a thread while reading or writing bytes. Reactive HTTP (WebFlux, Reactor Netty) uses non-blocking I/O — bytes arrive in chunks on event-loop threads. You need:</p>
+<ol><li><strong>A common buffer type</strong> that wraps whatever the underlying transport gives you (Netty <code>ByteBuf</code>, <code>ByteBuffer</code>, etc.) without copying bytes unnecessarily.</li><li><strong>Backpressure-aware encoding/decoding</strong> so large payloads are streamed rather than fully loaded into memory.</li><li><strong>Pooled buffers</strong> (Netty) that must be explicitly released to avoid memory leaks.</li></ol>
+<p>You interact with these APIs when building custom <code>WebFilter</code>s that inspect request bodies, writing custom codecs for proprietary binary formats, or tuning WebFlux codec configuration (max in-memory size, CBOR, protobuf).</p>
+<h2>3. Core concept</h2>
+<p>Think of a <code>DataBuffer</code> as a labelled envelope of bytes — it knows how it was allocated, and (for pooled implementations) must be returned to the post office when you&#x27;re done. A <code>Codec</code> is a translator that reads a stream of such envelopes and produces a typed value, or vice versa.</p>
+<p>Key types:</p>
+<table><thead><tr><th>Type</th><th>Role</th></tr></thead><tbody><tr><td><code>DataBuffer</code></td><td>Single chunk of bytes (read/write position, capacity)</td></tr><tr><td><code>DataBufferFactory</code></td><td>Creates <code>DataBuffer</code> instances; hides Netty vs JDK differences</td></tr><tr><td><code>DataBufferUtils</code></td><td>Utility: join, release, read from <code>InputStream</code>/<code>Resource</code></td></tr><tr><td><code>Encoder&lt;T&gt;</code></td><td><code>T → Flux&lt;DataBuffer&gt;</code> (encode object to byte stream)</td></tr><tr><td><code>Decoder&lt;T&gt;</code></td><td><code>Flux&lt;DataBuffer&gt; → Mono&lt;T&gt;</code> (decode byte stream to object)</td></tr><tr><td><code>HttpMessageReader&lt;T&gt;</code></td><td>Wraps <code>Decoder</code>, handles HTTP content negotiation</td></tr><tr><td><code>HttpMessageWriter&lt;T&gt;</code></td><td>Wraps <code>Encoder</code>, handles HTTP content negotiation</td></tr></tbody></table>
+<p><strong>Buffer lifecycle:</strong> <code>DefaultDataBuffer</code> (JDK-backed) is garbage collected normally. <code>NettyDataBuffer</code> is reference-counted — call <code>DataBufferUtils.release(buffer)</code> when you&#x27;re done, or use <code>DataBufferUtils.join(flux).doFinally(s -&gt; DataBufferUtils.release(joined))</code>.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg">
+  <!-- HTTP Request -->
+  <rect x="15" y="80" width="100" height="50" rx="7" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="65" y="103" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">HTTP Request</text>
+  <text x="65" y="119" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">bytes arrive</text>
+
+  <!-- Arrow -->
+  <line x1="115" y1="105" x2="170" y2="105" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="143" y="97" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Flux&lt;DataBuffer&gt;</text>
+
+  <!-- Decoder -->
+  <rect x="170" y="75" width="130" height="60" rx="7" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="235" y="101" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="sans-serif">Decoder</text>
+  <text x="235" y="117" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">(e.g. Jackson2Json)</text>
+
+  <!-- Arrow -->
+  <line x1="300" y1="105" x2="360" y2="105" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="330" y="97" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Mono&lt;MyDto&gt;</text>
+
+  <!-- Handler -->
+  <rect x="360" y="80" width="120" height="50" rx="7" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="420" y="108" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Handler / Controller</text>
+
+  <!-- Encoder path (response) -->
+  <line x1="420" y1="130" x2="420" y2="165" stroke="#6db33f" stroke-width="1" stroke-dasharray="4 2"/>
+  <rect x="360" y="165" width="120" height="40" rx="7" fill="#1c2430" stroke="#6db33f" stroke-width="1"/>
+  <text x="420" y="188" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">Encoder → response</text>
+
+  <!-- Release note -->
+  <text x="235" y="155" fill="#e06c75" font-size="9" text-anchor="middle" font-family="sans-serif">release pooled buffers!</text>
+
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0,8 3,0 6" fill="#79c0ff"/>
+    </marker>
+  </defs>
+</svg>
+<p>Request bytes arrive as <code>Flux&lt;DataBuffer&gt;</code>, the decoder assembles them into a typed object, the handler processes it, and an encoder serialises the response back.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a <strong>byte-processing pipeline</strong> — first manually creating and reading a <code>DataBuffer</code>, then encoding/decoding a simple object, then a full custom codec that handles a proprietary CSV format.</p>
+<h3>Level 1 — Basic</h3>
+<p>Create a <code>DataBuffer</code>, write bytes, read them back.</p>
+<pre><code class="lang-java">// DataBufferDemo.java
+import org.springframework.core.io.buffer.*;
+import java.nio.charset.*;
+
+public class DataBufferDemo {
+    public static void main(String[] args) {
+        DataBufferFactory factory = new DefaultDataBufferFactory();
+
+        // Allocate a buffer and write a UTF-8 string
+        DataBuffer buf = factory.allocateBuffer(64);
+        buf.write(&quot;Hello, DataBuffer!&quot;.getBytes(StandardCharsets.UTF_8));
+
+        // Read back
+        byte[] bytes = new byte[buf.readableByteCount()];
+        buf.read(bytes);
+        System.out.println(&quot;Read: &quot; + new String(bytes, StandardCharsets.UTF_8));
+
+        // Release (DefaultDataBuffer is GC&#x27;d, but good habit)
+        DataBufferUtils.release(buf);
+    }
+}</code></pre>
+<p>How to run: <code>java -cp spring-core.jar:reactor-core.jar:. DataBufferDemo.java</code></p>
+<p><code>DefaultDataBufferFactory</code> creates a JDK-heap-backed buffer. <code>write(byte[])</code> advances the write position; <code>readableByteCount()</code> returns how many bytes are available to read. Always release — critical for Netty-backed buffers.</p>
+<p>---</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Use <code>Jackson2JsonEncoder</code>/<code>Jackson2JsonDecoder</code> to encode a Java object to a <code>Flux&lt;DataBuffer&gt;</code> and decode it back.</p>
+<pre><code class="lang-java">// DataBufferDemo.java
+import org.springframework.core.io.buffer.*;
+import org.springframework.http.codec.json.*;
+import org.springframework.core.*;
+import org.springframework.util.*;
+import reactor.core.publisher.*;
+import java.util.*;
+
+public class DataBufferDemo {
+    public static void main(String[] args) {
+        var factory = new DefaultDataBufferFactory();
+        var encoder = new Jackson2JsonEncoder();
+        var decoder = new Jackson2JsonDecoder();
+
+        // Object to encode
+        Map&lt;String, Object&gt; payload = Map.of(&quot;id&quot;, 42, &quot;name&quot;, &quot;Alice&quot;);
+
+        // Encode: Map -&gt; Flux&lt;DataBuffer&gt;
+        Flux&lt;DataBuffer&gt; encoded = encoder.encode(
+            Mono.just(payload),
+            factory,
+            ResolvableType.forClass(Map.class),
+            org.springframework.http.MediaType.APPLICATION_JSON,
+            Map.of()
+        );
+
+        // Decode: Flux&lt;DataBuffer&gt; -&gt; Mono&lt;Map&gt;
+        Mono&lt;Map&gt; decoded = decoder.decodeToMono(
+            encoded,
+            ResolvableType.forClass(Map.class),
+            org.springframework.http.MediaType.APPLICATION_JSON,
+            Map.of()
+        ).cast(Map.class);
+
+        decoded.subscribe(m -&gt; System.out.println(&quot;Decoded: &quot; + m));
+    }
+}</code></pre>
+<p>How to run: <code>java -cp spring-core.jar:spring-web.jar:jackson-databind.jar:reactor-core.jar:. DataBufferDemo.java</code></p>
+<p><code>encoder.encode(…)</code> produces a <code>Flux&lt;DataBuffer&gt;</code> containing the JSON bytes. <code>decoder.decodeToMono(…)</code> subscribes to that flux, accumulates chunks, and parses the JSON. The <code>ResolvableType</code> carries generic type information (like <code>TypeToken</code> in Gson).</p>
+<p>---</p>
+<h3>Level 3 — Advanced</h3>
+<p>Write a custom <code>Encoder</code>/<code>Decoder</code> pair for a simple CSV format: <code>id,name</code> fields, one record per line.</p>
+<pre><code class="lang-java">// DataBufferDemo.java
+import org.springframework.core.io.buffer.*;
+import org.springframework.core.*;
+import org.springframework.http.*;
+import org.springframework.http.codec.*;
+import reactor.core.publisher.*;
+import java.nio.charset.*;
+import java.util.*;
+
+// Domain object
+record Person(int id, String name) {}
+
+// Custom CSV Encoder
+class CsvPersonEncoder implements HttpMessageWriter&lt;Person&gt; {
+    private final DataBufferFactory factory = new DefaultDataBufferFactory();
+
+    @Override public List&lt;MediaType&gt; getWritableMediaTypes() {
+        return List.of(MediaType.parseMediaType(&quot;text/csv&quot;));
+    }
+    @Override public boolean canWrite(ResolvableType et, MediaType mt) {
+        return Person.class.isAssignableFrom(et.toClass());
+    }
+    @Override public Mono&lt;Void&gt; write(
+            org.reactivestreams.Publisher&lt;? extends Person&gt; inputStream,
+            ResolvableType et, MediaType ct,
+            org.springframework.http.ReactiveHttpOutputMessage msg,
+            Map&lt;String,Object&gt; hints) {
+        Flux&lt;DataBuffer&gt; body = Flux.from(inputStream).map(p -&gt; {
+            String csv = p.id() + &quot;,&quot; + p.name() + &quot;\n&quot;;
+            byte[] bytes = csv.getBytes(StandardCharsets.UTF_8);
+            DataBuffer buf = factory.allocateBuffer(bytes.length);
+            buf.write(bytes);
+            return buf;
+        });
+        return msg.writeWith(body);
+    }
+}
+
+// Custom CSV Decoder
+class CsvPersonDecoder implements HttpMessageReader&lt;Person&gt; {
+    @Override public List&lt;MediaType&gt; getReadableMediaTypes() {
+        return List.of(MediaType.parseMediaType(&quot;text/csv&quot;));
+    }
+    @Override public boolean canRead(ResolvableType et, MediaType mt) {
+        return Person.class.isAssignableFrom(et.toClass());
+    }
+    @Override public Flux&lt;Person&gt; read(
+            ResolvableType et, org.springframework.http.ReactiveHttpInputMessage msg,
+            Map&lt;String,Object&gt; hints) {
+        return DataBufferUtils.join(msg.getBody())
+            .flatMapMany(buf -&gt; {
+                String csv = buf.toString(StandardCharsets.UTF_8);
+                DataBufferUtils.release(buf);
+                return Flux.fromArray(csv.split(&quot;\n&quot;))
+                    .filter(line -&gt; !line.isBlank())
+                    .map(line -&gt; {
+                        String[] parts = line.split(&quot;,&quot;, 2);
+                        return new Person(Integer.parseInt(parts[0].trim()), parts[1].trim());
+                    });
+            });
+    }
+    @Override public Mono&lt;Person&gt; readMono(
+            ResolvableType et, org.springframework.http.ReactiveHttpInputMessage msg,
+            Map&lt;String,Object&gt; hints) {
+        return read(et, msg, hints).next();
+    }
+}
+
+public class DataBufferDemo {
+    public static void main(String[] args) {
+        // Simulate encoding
+        var factory = new DefaultDataBufferFactory();
+        var people = List.of(new Person(1, &quot;Alice&quot;), new Person(2, &quot;Bob&quot;));
+        Flux&lt;DataBuffer&gt; csvStream = Flux.fromIterable(people).map(p -&gt; {
+            byte[] bytes = (p.id() + &quot;,&quot; + p.name() + &quot;\n&quot;).getBytes(StandardCharsets.UTF_8);
+            DataBuffer buf = factory.allocateBuffer(bytes.length);
+            buf.write(bytes);
+            return buf;
+        });
+
+        // Simulate decoding
+        DataBufferUtils.join(csvStream)
+            .flatMapMany(buf -&gt; {
+                String csv = buf.toString(StandardCharsets.UTF_8);
+                DataBufferUtils.release(buf);
+                return Flux.fromArray(csv.split(&quot;\n&quot;))
+                    .filter(l -&gt; !l.isBlank())
+                    .map(line -&gt; {
+                        String[] p = line.split(&quot;,&quot;, 2);
+                        return new Person(Integer.parseInt(p[0].trim()), p[1].trim());
+                    });
+            })
+            .subscribe(p -&gt; System.out.println(&quot;Decoded: &quot; + p));
+    }
+}</code></pre>
+<p>How to run: <code>java -cp spring-core.jar:spring-web.jar:reactor-core.jar:. DataBufferDemo.java</code></p>
+<p><code>DataBufferUtils.join(flux)</code> collects all chunks into one buffer. The <code>flatMapMany</code> then splits lines and parses each into a <code>Person</code>. <code>DataBufferUtils.release(buf)</code> is called immediately after reading the bytes to return the buffer to the pool — skipping this causes memory leaks in Netty environments.</p>
+<h2>6. Walkthrough</h2>
+<p><strong>Encoding pipeline (Level 2):</strong></p>
+<ol><li><code>encoder.encode(Mono.just(payload), factory, …)</code> is called — no bytes yet; this returns a cold <code>Flux&lt;DataBuffer&gt;</code>.</li><li><code>decoder.decodeToMono(encoded, …)</code> subscribes to the flux — this triggers the encoder.</li><li>The encoder calls Jackson&#x27;s <code>ObjectMapper.writeValueAsBytes(payload)</code> → <code>{&quot;id&quot;:42,&quot;name&quot;:&quot;Alice&quot;}</code>.</li><li>It allocates a <code>DataBuffer</code> via <code>factory.allocateBuffer(bytes.length)</code>, writes the JSON bytes, and emits it.</li><li>The decoder receives the single <code>DataBuffer</code>, reads the bytes, calls <code>mapper.readValue(bytes, Map.class)</code>.</li><li>The result <code>Map</code> is emitted by the <code>Mono&lt;Map&gt;</code>.</li></ol>
+<p><strong>Custom codec execution (Level 3):</strong></p>
+<ol><li><code>Flux.fromIterable(people)</code> emits two <code>Person</code> objects.</li><li>The map operator converts each to a <code>DataBuffer</code> containing one CSV line.</li><li><code>DataBufferUtils.join(csvStream)</code> subscribes and accumulates both <code>DataBuffer</code>s into one using <code>allocateBuffer(sumOfCapacities)</code> and <code>buf.write(chunk)</code>.</li><li><code>toString(UTF_8)</code> reads all bytes as a string: <code>&quot;1,Alice\n2,Bob\n&quot;</code>.</li><li><code>split(&quot;\n&quot;)</code> → <code>[&quot;1,Alice&quot;, &quot;2,Bob&quot;]</code>.</li><li>Each line splits on <code>,</code> to construct a <code>Person</code> record.</li><li><code>release(buf)</code> returns the joined buffer to the pool.</li></ol>
+<p><strong>Output:</strong></p>
+<pre><code>Decoded: Person[id=1, name=Alice]
+Decoded: Person[id=2, name=Bob]</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Netty <code>ByteBuf</code> reference counting causes leaks.</strong> When using Reactor Netty (the default WebFlux server), <code>DataBuffer</code> wraps a reference-counted <code>ByteBuf</code>. Every buffer you receive must be released exactly once with <code>DataBufferUtils.release(buf)</code> — or use operators like <code>DataBufferUtils.join</code> which handle release internally.</blockquote>
+<blockquote><strong><code>DataBufferUtils.join</code> loads the full body into memory.</strong> For large request bodies, this defeats streaming. Use <code>Flux&lt;DataBuffer&gt;</code> pipelines that process chunks rather than joining them all.</blockquote>
+<ul><li>Never hold a <code>DataBuffer</code> across a reactive boundary (e.g., store it in a field for later use) — by then it may already be released.</li><li><code>ResolvableType</code> is Spring&#x27;s answer to Java&#x27;s type erasure: <code>ResolvableType.forClassWithGenerics(List.class, Person.class)</code> encodes <code>List&lt;Person&gt;</code> at runtime.</li><li><code>DefaultDataBufferFactory.sharedInstance</code> is a thread-safe singleton suitable for most non-Netty use cases.</li><li>Custom codecs must be registered via <code>WebFluxConfigurer.configureHttpMessageCodecs(ServerCodecConfigurer)</code> to be picked up by WebFlux.</li><li>The <code>CodecConfigurer.defaultCodecs().maxInMemorySize(size)</code> setting controls the buffer limit for <code>decodeToMono</code> — default is 256 KB; increase for large JSON bodies.</li></ul>
+  <div class="nav"><a class="prv" href="0202-null-safety-annotations-nullable-nonnull.html"><span class="mini">← Previous</span>Null-safety annotations (@Nullable, @NonNull)</a><a class="nxt" href="0204-spring-jcl-logging-bridge.html"><span class="mini">Next →</span>Spring JCL logging bridge</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t203";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
