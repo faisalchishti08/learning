@@ -35,10 +35,6 @@ def total_topics(sections):
 
 
 def write_project(p, links=None):
-    # java.html is hand-maintained (bespoke template + its own progress key); never overwrite it.
-    # It still participates in PROJECTS so its tutorials build and the resolver can sequence it.
-    if p["file"] == "java.html":
-        return total_topics(p["sections"])
     storage_key = "spring-checklist:" + p["file"]
     html = render(p["title"], p["logo"], p["subtitle"], storage_key, p["sections"], links=links)
     path = os.path.join(OUT, p["file"])
