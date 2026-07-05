@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>jlink — custom runtime image linker — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 0. Foundations & Environment</div>
+  <div class="htitle">
+    <h1>jlink — custom runtime image linker</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong><code>jlink</code></strong> is the JDK tool that assembles a custom Java runtime image containing only the modules your application needs. The output is a self-contained directory with a <code>bin/java</code> launcher and only the module subset you specified — no full JDK or JRE required on the target machine.</p>
+<p><code>jlink</code> ships with the JDK (<code>jdk.jlink</code> module). It requires modular JARs or a module path — it cannot create an image from pure classpath JARs without at least knowing which JDK modules they need (discoverable via <code>jdeps</code>).</p>
+<h2>2. Why &amp; when</h2>
+<p><code>jlink</code> is the right tool when:</p>
+<ul><li><strong>Minimising Docker image size</strong> — a <code>jlink</code> image for a Spring Boot REST API is ~50–80 MB vs 400 MB for a full JDK image.</li><li><strong>Distributing CLI tools</strong> — ship a single directory containing the JRE + app, no Java installation required on the target.</li><li><strong>Serverless cold starts</strong> — smaller JRE → less to load into memory → faster Lambda cold start (combined with CDS/AppCDS).</li><li><strong>Security</strong> — fewer modules = smaller attack surface (no <code>jdk.compiler</code>, no <code>jshell</code>, no <code>jdb</code>).</li></ul>
+<p><code>jlink</code> requires:</p>
+<ol><li>All application JARs (if modular) on <code>--module-path</code>.</li><li>A list of modules to include (<code>--add-modules</code>).</li><li>A JDK, not just a JRE (the <code>jlink</code> tool itself is JDK-only).</li></ol>
+<p>The <code>jdeps --print-module-deps app.jar</code> output feeds directly into <code>jlink --add-modules</code>.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-bash">jlink [options] --module-path &lt;path&gt; --add-modules &lt;modules&gt; --output &lt;dir&gt;
+
+Essential flags:
+  --module-path &lt;path&gt;     where to find modules (JDK modules auto-included)
+  --add-modules &lt;list&gt;     comma-separated modules to include (from jdeps output)
+  --output &lt;dir&gt;           directory to create the runtime image in
+
+Size reduction flags (safe to combine):
+  --compress=2             ZIP-compress class files inside the image
+  --strip-debug            remove debug symbols from native JVM binaries
+  --no-header-files        remove JNI header files (C/C++ only)
+  --no-man-pages           remove man pages
+
+Launcher shortcut:
+  --launcher name=module/mainClass   add a launch script  (e.g. --launcher myapp=com.example/com.example.Main)
+
+Other useful flags:
+  --bind-services          include service providers (ServiceLoader) reachable from included modules
+  --ignore-signing-information  needed if any JAR is signed
+  --list-modules           list modules in the image and exit
+  --endian &lt;little|big&gt;    target CPU byte order (cross-compilation)</code></pre>
+<p>Typical workflow:</p>
+<pre><code class="lang-bash"># Step 1: find needed modules
+jdeps --ignore-missing-deps --print-module-deps app.jar
+
+# Step 2: link
+jlink \
+  --add-modules java.base,java.logging,java.net.http,java.sql \
+  --compress=2 \
+  --strip-debug \
+  --no-header-files \
+  --no-man-pages \
+  --output custom-jre
+
+# Step 3: run
+custom-jre/bin/java -jar app.jar</code></pre>
+<p>Docker multi-stage build:</p>
+<pre><code class="lang-dockerfile">FROM eclipse-temurin:21-jdk AS builder
+COPY . /app
+RUN cd /app &amp;&amp; ./mvnw -q package -DskipTests
+RUN jdeps --ignore-missing-deps --print-module-deps target/app.jar &gt; /modules.txt
+RUN jlink --add-modules $(cat /modules.txt) --compress=2 --strip-debug \
+          --no-header-files --no-man-pages --output /custom-jre
+
+FROM debian:12-slim
+COPY --from=builder /custom-jre /opt/jre
+COPY --from=builder /app/target/app.jar /app.jar
+ENTRYPOINT [&quot;/opt/jre/bin/java&quot;, &quot;-jar&quot;, &quot;/app.jar&quot;]</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="jlink assembles selected modules from JDK into a minimal custom JRE directory">
+  <rect x="10" y="10" width="660" height="200" rx="8" fill="#0d1117"/>
+
+  <!-- JDK modules pool -->
+  <rect x="20" y="35" width="200" height="140" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="120" y="55" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">JDK Modules</text>
+  <text x="35" y="72"  fill="#6db33f" font-size="9" font-family="monospace">java.base ──────── ●</text>
+  <text x="35" y="87"  fill="#6db33f" font-size="9" font-family="monospace">java.logging ───── ●</text>
+  <text x="35" y="102" fill="#6db33f" font-size="9" font-family="monospace">java.sql ─────────●</text>
+  <text x="35" y="117" fill="#8b949e" font-size="9" font-family="monospace">java.desktop ──── ○</text>
+  <text x="35" y="132" fill="#8b949e" font-size="9" font-family="monospace">jdk.compiler ─── ○</text>
+  <text x="35" y="147" fill="#8b949e" font-size="9" font-family="monospace">jdk.jshell ────── ○</text>
+  <text x="35" y="162" fill="#8b949e" font-size="9" font-family="monospace">... (70+ modules) ○</text>
+
+  <!-- jlink tool -->
+  <rect x="260" y="80" width="100" height="50" rx="5" fill="#1c2430" stroke="#79c0ff" stroke-width="2"/>
+  <text x="310" y="104" fill="#79c0ff" font-size="12" text-anchor="middle" font-family="sans-serif">jlink</text>
+  <text x="310" y="120" fill="#8b949e" font-size="8"  text-anchor="middle" font-family="sans-serif">--add-modules</text>
+
+  <!-- arrows in -->
+  <line x1="220" y1="90"  x2="255" y2="100" stroke="#6db33f" stroke-width="1.5" marker-end="url(#jl1)"/>
+  <line x1="220" y1="100" x2="255" y2="103" stroke="#6db33f" stroke-width="1.5"/>
+  <line x1="220" y1="110" x2="255" y2="106" stroke="#6db33f" stroke-width="1.5"/>
+
+  <!-- arrow out -->
+  <line x1="360" y1="105" x2="395" y2="105" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#jl2)"/>
+
+  <!-- Output image -->
+  <rect x="395" y="35" width="255" height="150" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="520" y="55" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">custom-jre/</text>
+  <text x="415" y="73"  fill="#e6edf3" font-size="9" font-family="monospace">bin/java</text>
+  <text x="415" y="88"  fill="#8b949e" font-size="9" font-family="monospace">lib/modules  (only 3)</text>
+  <text x="415" y="103" fill="#8b949e" font-size="9" font-family="monospace">lib/server/libjvm.so</text>
+  <text x="415" y="118" fill="#8b949e" font-size="9" font-family="monospace">conf/ release legal/</text>
+  <text x="415" y="143" fill="#6db33f" font-size="9" font-family="monospace">Size: ~50–80 MB</text>
+  <text x="415" y="157" fill="#8b949e" font-size="8" font-family="sans-serif">vs 400 MB full JDK</text>
+  <text x="415" y="171" fill="#8b949e" font-size="8" font-family="sans-serif">no Java needed on target</text>
+
+  <defs>
+    <marker id="jl1" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#6db33f" stroke-width="1.5"/></marker>
+    <marker id="jl2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="none" stroke="#79c0ff" stroke-width="1.5"/></marker>
+  </defs>
+</svg>
+<p><code>jlink</code> selects the specified modules from the JDK module pool and produces a compact <code>custom-jre/</code> directory. Unneeded modules are excluded.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: build a minimal custom JRE, measure its size, and run a simple application using it — end-to-end from module discovery to execution.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// JlinkBasic.java
+import java.nio.file.*;
+import java.util.*;
+
+public class JlinkBasic {
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;=== jlink custom runtime image demo ===\n&quot;);
+
+        // Show current module set
+        Set&lt;Module&gt; mods = java.lang.ModuleLayer.boot().modules();
+        System.out.println(&quot;Current JVM modules: &quot; + mods.size());
+
+        // Check jlink availability
+        Path jlink = findTool(&quot;jlink&quot;);
+        Path jdeps  = findTool(&quot;jdeps&quot;);
+        System.out.println(&quot;jlink found: &quot; + (jlink != null ? jlink : &quot;NOT FOUND — needs JDK&quot;));
+        System.out.println(&quot;jdeps found: &quot; + (jdeps != null ? jdeps : &quot;NOT FOUND — needs JDK&quot;));
+
+        // Show what a minimal jlink command looks like
+        System.out.println(&quot;\n[ Minimal jlink command ]&quot;);
+        System.out.println(&quot;  jlink \\&quot;);
+        System.out.println(&quot;    --add-modules java.base \\&quot;);
+        System.out.println(&quot;    --compress=2 --strip-debug \\&quot;);
+        System.out.println(&quot;    --no-header-files --no-man-pages \\&quot;);
+        System.out.println(&quot;    --output /tmp/min-jre&quot;);
+        System.out.println(&quot;\n  # Result: ~30–35 MB (java.base only)&quot;);
+        System.out.println(&quot;  # Compare: full JDK ~400 MB, eclipse-temurin:21-jre ~170 MB&quot;);
+
+        // Module size estimates
+        System.out.println(&quot;\n[ Cumulative size by module (estimates) ]&quot;);
+        Object[][] modules = {
+            {&quot;java.base&quot;,           &quot;~40 MB&quot;, &quot;always included&quot;},
+            {&quot;+ java.logging&quot;,      &quot;~42 MB&quot;, &quot;+2 MB&quot;},
+            {&quot;+ java.xml&quot;,          &quot;~54 MB&quot;, &quot;+12 MB&quot;},
+            {&quot;+ java.sql&quot;,          &quot;~57 MB&quot;, &quot;+3 MB&quot;},
+            {&quot;+ java.net.http&quot;,     &quot;~60 MB&quot;, &quot;+3 MB&quot;},
+            {&quot;+ java.management&quot;,   &quot;~62 MB&quot;, &quot;+2 MB&quot;},
+            {&quot;+ java.desktop&quot;,      &quot;~82 MB&quot;, &quot;+20 MB (Swing/AWT, avoid if possible)&quot;},
+        };
+        for (var r : modules)
+            System.out.printf(&quot;  %-25s %-10s %s%n&quot;, r[0], r[1], r[2]);
+    }
+
+    static Path findTool(String name) {
+        Path p = Path.of(System.getProperty(&quot;java.home&quot;)).resolve(&quot;bin/&quot; + name);
+        if (Files.exists(p)) return p;
+        if (Files.exists(Path.of(p + &quot;.exe&quot;))) return Path.of(p + &quot;.exe&quot;);
+        return null;
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java JlinkBasic.java</code></p>
+<p><code>java.base</code> is always required and is ~40 MB. Each additional module adds to the image. <code>java.desktop</code> is the heaviest optional module — exclude it for server-side applications.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Same jlink demo extended to actually build a minimal custom JRE (java.base only) and measure its size vs the full JDK.</p>
+<pre><code class="lang-java">// JlinkBuildImage.java
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.stream.*;
+
+public class JlinkBuildImage {
+    public static void main(String[] args) throws Exception {
+        Path jlinkTool = findTool(&quot;jlink&quot;);
+        if (jlinkTool == null) { System.err.println(&quot;jlink not found — JDK required&quot;); return; }
+
+        Path outDir = Path.of(System.getProperty(&quot;java.io.tmpdir&quot;)).resolve(&quot;min-jre-&quot; + System.currentTimeMillis());
+
+        System.out.println(&quot;=== Building minimal custom JRE ===&quot;);
+        System.out.println(&quot;Output: &quot; + outDir + &quot;\n&quot;);
+
+        // Build with java.base only
+        ProcessBuilder pb = new ProcessBuilder(
+            jlinkTool.toString(),
+            &quot;--add-modules&quot;, &quot;java.base&quot;,
+            &quot;--compress=2&quot;,
+            &quot;--strip-debug&quot;,
+            &quot;--no-header-files&quot;,
+            &quot;--no-man-pages&quot;,
+            &quot;--output&quot;, outDir.toString()
+        );
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String output = new String(p.getInputStream().readAllBytes());
+        int rc = p.waitFor();
+
+        if (rc != 0) {
+            System.out.println(&quot;jlink failed: &quot; + output);
+            return;
+        }
+        System.out.println(&quot;jlink succeeded!&quot;);
+
+        // Measure size
+        long sizeMB = Files.walk(outDir)
+            .filter(Files::isRegularFile)
+            .mapToLong(f -&gt; { try { return Files.size(f); } catch (Exception e) { return 0; } })
+            .sum() / (1024 * 1024);
+
+        System.out.printf(&quot;Image size: %d MB%n&quot;, sizeMB);
+        System.out.printf(&quot;Full JDK  : ~%d MB%n&quot;, dirSizeMB(Path.of(System.getProperty(&quot;java.home&quot;))));
+
+        // List top-level directories
+        System.out.println(&quot;\nImage structure:&quot;);
+        Files.list(outDir).sorted().forEach(d -&gt;
+            System.out.println(&quot;  &quot; + outDir.relativize(d) + &quot;/&quot;));
+
+        // Test: run the custom JRE
+        Path customJava = outDir.resolve(&quot;bin/java&quot;);
+        if (!Files.exists(customJava)) customJava = outDir.resolve(&quot;bin/java.exe&quot;);
+        if (Files.exists(customJava)) {
+            System.out.println(&quot;\nRunning: &quot; + customJava + &quot; --version&quot;);
+            Process vp = new ProcessBuilder(customJava.toString(), &quot;--version&quot;).start();
+            System.out.println(new String(vp.getInputStream().readAllBytes()).strip());
+            vp.waitFor();
+
+            System.out.println(&quot;\nRunning: &quot; + customJava + &quot; --list-modules&quot;);
+            Process lp = new ProcessBuilder(customJava.toString(), &quot;--list-modules&quot;).start();
+            System.out.print(&quot;  Modules: &quot;);
+            System.out.println(new String(lp.getInputStream().readAllBytes()).strip());
+            lp.waitFor();
+        }
+
+        // Cleanup
+        Files.walk(outDir).sorted(Comparator.reverseOrder()).forEach(f -&gt; f.toFile().delete());
+        System.out.println(&quot;\nCleaned up &quot; + outDir);
+    }
+
+    static long dirSizeMB(Path dir) {
+        try {
+            return Files.walk(dir).filter(Files::isRegularFile)
+                .mapToLong(f -&gt; { try { return Files.size(f); } catch (Exception e) { return 0; } })
+                .sum() / (1024 * 1024);
+        } catch (Exception e) { return -1; }
+    }
+
+    static Path findTool(String name) {
+        Path p = Path.of(System.getProperty(&quot;java.home&quot;)).resolve(&quot;bin/&quot; + name);
+        if (Files.exists(p)) return p;
+        if (Files.exists(Path.of(p + &quot;.exe&quot;))) return Path.of(p + &quot;.exe&quot;);
+        return null;
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java JlinkBuildImage.java</code></p>
+<p>This builds a real <code>java.base</code>-only JRE in a temp directory, runs it to check <code>--version</code>, and measures the size. The resulting image is typically 30–40 MB.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Same scenario grown to simulate a full Docker-style workflow: discover modules with <code>jdeps</code>, link, embed an app JAR, and show the complete multi-stage build pattern.</p>
+<pre><code class="lang-java">// JlinkWorkflow.java
+import javax.tools.*;
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.stream.*;
+
+public class JlinkWorkflow {
+
+    // A minimal app that uses java.base + java.logging
+    static final String APP_SOURCE =
+        &quot;import java.util.logging.*;\n&quot; +
+        &quot;import java.util.*;\n&quot; +
+        &quot;public class App {\n&quot; +
+        &quot;    private static final Logger LOG = Logger.getLogger(\&quot;App\&quot;);\n&quot; +
+        &quot;    public static void main(String[] args) {\n&quot; +
+        &quot;        LOG.info(\&quot;App started\&quot;);\n&quot; +
+        &quot;        System.out.println(\&quot;Running in custom JRE!\&quot;);\n&quot; +
+        &quot;        System.out.println(\&quot;Java: \&quot; + System.getProperty(\&quot;java.version\&quot;));\n&quot; +
+        &quot;        System.out.println(\&quot;Modules in boot layer: \&quot; +\n&quot; +
+        &quot;            java.lang.ModuleLayer.boot().modules().size());\n&quot; +
+        &quot;    }\n&quot; +
+        &quot;}\n&quot;;
+
+    public static void main(String[] args) throws Exception {
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        Path jdepsTool  = findTool(&quot;jdeps&quot;);
+        Path jlinkTool  = findTool(&quot;jlink&quot;);
+        if (compiler == null || jdepsTool == null || jlinkTool == null) {
+            System.err.println(&quot;Full JDK required (javac, jdeps, jlink)&quot;); return;
+        }
+
+        Path workDir = Files.createTempDirectory(&quot;jlink-workflow&quot;);
+        Path appSrc  = workDir.resolve(&quot;App.java&quot;);
+        Path classDir = Files.createDirectories(workDir.resolve(&quot;classes&quot;));
+        Path jreDir   = workDir.resolve(&quot;custom-jre&quot;);
+        Path jarFile  = workDir.resolve(&quot;app.jar&quot;);
+
+        System.out.println(&quot;=== Full jlink workflow: compile → jdeps → jlink → run ===\n&quot;);
+
+        // Step 1: compile
+        Files.writeString(appSrc, APP_SOURCE);
+        compiler.run(null, null, null, &quot;-d&quot;, classDir.toString(), appSrc.toString());
+        System.out.println(&quot;Step 1: compiled App.java → &quot; + classDir.resolve(&quot;App.class&quot;));
+
+        // Step 2: create a JAR
+        Process jarProc = new ProcessBuilder(findTool(&quot;jar&quot;).toString(),
+            &quot;cf&quot;, jarFile.toString(), &quot;-C&quot;, classDir.toString(), &quot;.&quot;)
+            .redirectErrorStream(true).start();
+        jarProc.waitFor();
+        System.out.println(&quot;Step 2: created app.jar (&quot; + Files.size(jarFile) + &quot; bytes)&quot;);
+
+        // Step 3: jdeps to discover modules
+        Process jdepsProc = new ProcessBuilder(jdepsTool.toString(),
+            &quot;--ignore-missing-deps&quot;, &quot;--print-module-deps&quot;, jarFile.toString())
+            .redirectErrorStream(true).start();
+        String modules = new String(jdepsProc.getInputStream().readAllBytes()).strip();
+        jdepsProc.waitFor();
+        System.out.println(&quot;Step 3: jdeps modules → &quot; + modules);
+
+        // Step 4: jlink
+        ProcessBuilder jlinkPb = new ProcessBuilder(jlinkTool.toString(),
+            &quot;--add-modules&quot;, modules,
+            &quot;--compress=2&quot;, &quot;--strip-debug&quot;,
+            &quot;--no-header-files&quot;, &quot;--no-man-pages&quot;,
+            &quot;--output&quot;, jreDir.toString());
+        jlinkPb.redirectErrorStream(true);
+        Process jlinkProc = jlinkPb.start();
+        String jlinkOut = new String(jlinkProc.getInputStream().readAllBytes());
+        jlinkProc.waitFor();
+        if (!jlinkOut.isBlank()) System.out.println(&quot;  jlink: &quot; + jlinkOut.strip());
+
+        long jreMB = Files.walk(jreDir).filter(Files::isRegularFile)
+            .mapToLong(f -&gt; { try { return Files.size(f); } catch (Exception e) { return 0; } })
+            .sum() / (1024 * 1024);
+        System.out.printf(&quot;Step 4: custom JRE built — %d MB (modules: %s)%n&quot;, jreMB, modules);
+
+        // Step 5: run app with custom JRE
+        Path customJava = jreDir.resolve(&quot;bin/java&quot;);
+        if (!Files.exists(customJava)) customJava = jreDir.resolve(&quot;bin/java.exe&quot;);
+
+        System.out.println(&quot;\nStep 5: running App.class with custom JRE&quot;);
+        Process runProc = new ProcessBuilder(customJava.toString(),
+            &quot;-cp&quot;, classDir.toString(), &quot;App&quot;)
+            .redirectErrorStream(true).start();
+        System.out.println(new String(runProc.getInputStream().readAllBytes()).indent(2));
+        runProc.waitFor();
+
+        System.out.println(&quot;[ Docker equivalent ]&quot;);
+        System.out.println(&quot;  FROM eclipse-temurin:21-jdk AS builder&quot;);
+        System.out.println(&quot;  RUN jdeps --print-module-deps target/app.jar &gt; /modules.txt&quot;);
+        System.out.println(&quot;  RUN jlink --add-modules $(cat /modules.txt) --compress=2 --strip-debug \\&quot;);
+        System.out.println(&quot;            --no-header-files --no-man-pages --output /custom-jre&quot;);
+        System.out.println(&quot;  FROM debian:12-slim&quot;);
+        System.out.println(&quot;  COPY --from=builder /custom-jre /opt/jre&quot;);
+        System.out.println(&quot;  COPY --from=builder /app.jar /app.jar&quot;);
+        System.out.println(&quot;  ENTRYPOINT [\&quot;/opt/jre/bin/java\&quot;, \&quot;-jar\&quot;, \&quot;/app.jar\&quot;]&quot;);
+
+        Files.walk(workDir).sorted(Comparator.reverseOrder()).forEach(f -&gt; f.toFile().delete());
+    }
+
+    static Path findTool(String name) {
+        Path p = Path.of(System.getProperty(&quot;java.home&quot;)).resolve(&quot;bin/&quot; + name);
+        if (Files.exists(p)) return p;
+        if (Files.exists(Path.of(p + &quot;.exe&quot;))) return Path.of(p + &quot;.exe&quot;);
+        return null;
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java JlinkWorkflow.java</code></p>
+<p>Full end-to-end: compile → JAR → <code>jdeps</code> module discovery → <code>jlink</code> custom JRE → run app with custom JRE. The final <code>custom-jre/</code> would go into the Docker <code>COPY --from=builder</code> stage.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution in <code>JlinkWorkflow.main</code>:</p>
+<ol><li><strong>Compile</strong> — <code>App.java</code> imports <code>java.util.logging.Logger</code> and <code>java.util.*</code>. Standard compile to <code>classes/App.class</code>.</li></ol>
+<ol><li><strong>Create JAR</strong> — <code>jar cf app.jar -C classes .</code> creates a plain JAR (no <code>MANIFEST.MF Main-Class</code> — run with <code>-cp</code> for this demo). For <code>-jar</code>, add <code>--main-class App</code> to the jar command.</li></ol>
+<ol><li><strong><code>jdeps --print-module-deps app.jar</code></strong> — output: <code>java.base,java.logging</code> (because <code>Logger</code> is in <code>java.logging</code>). This is the comma-separated list fed directly to <code>jlink --add-modules</code>.</li></ol>
+<ol><li><strong><code>jlink</code> execution</strong> — takes ~2–5 seconds on a modern machine. <code>--compress=2</code> zip-compresses class files inside the <code>lib/modules</code> JIMAGE file. <code>--strip-debug</code> removes DWARF debug symbols from native JVM binaries (saves 10–20 MB).</li></ol>
+<ol><li><strong>Run with custom JRE</strong> — <code>custom-jre/bin/java -cp classes App</code>. The output shows <code>Modules in boot layer: 2</code> (java.base + java.logging) — vs 70+ for a full JDK. All other JDK modules are physically absent from <code>custom-jre/lib/modules</code>.</li></ol>
+<ol><li><strong>Docker pattern</strong> — the multi-stage Dockerfile uses the JDK-based image for the build stage (needs <code>jlink</code>), then copies only the <code>custom-jre/</code> into a minimal base image (Debian slim). The final image needs no JDK, no JRE package — just the custom JRE directory.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong><code>jlink</code> requires all application JARs to be modular or their JDK module deps to be explicitly listed.</strong> For non-modular &quot;classpath&quot; apps (most Spring Boot apps), use <code>jdeps --ignore-missing-deps --print-module-deps</code> to find the JDK module list, then <code>jlink</code> that. Your app code runs on the classpath; you only <code>jlink</code> the JDK modules.</blockquote>
+<blockquote><strong><code>--bind-services</code> is needed if your code uses <code>ServiceLoader</code> to discover JDK services.</strong> JDBC drivers (loaded via <code>DriverManager</code>), crypto providers, charset providers, and XML parsers all use ServiceLoader. Without <code>--bind-services</code>, those services may not be present in the image.</blockquote>
+<ul><li><code>jlink --add-modules M1,M2 --output dir</code> → minimal JRE with only M1 and M2.</li><li><code>--compress=2 --strip-debug --no-header-files --no-man-pages</code> → save ~30–50% image size.</li><li><code>jdeps --print-module-deps app.jar</code> → get the <code>--add-modules</code> list automatically.</li><li>Output image is self-contained: <code>dir/bin/java -jar app.jar</code> works with no Java install needed.</li><li><code>--bind-services</code> for ServiceLoader-dependent code (JDBC, crypto, XML parsers).</li><li>Docker: build JRE in a JDK stage, copy <code>custom-jre/</code> into a minimal base image.</li></ul>
+  <div class="nav"><a class="prv" href="0035-jdeps-dependency-analyzer.html"><span class="mini">← Previous</span>jdeps — dependency analyzer</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t36";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
