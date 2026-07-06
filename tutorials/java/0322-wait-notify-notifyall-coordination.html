@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wait / notify / notifyAll coordination — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 1. Core Language (Java 1.0–1.4)</div>
+  <div class="htitle">
+    <h1>wait / notify / notifyAll coordination</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>wait()</code>, <code>notify()</code>, and <code>notifyAll()</code> are methods on every Java object (inherited from <code>Object</code>) used for threads to coordinate around a shared condition. A thread calls <code>wait()</code> inside a <code>synchronized</code> block to release the lock and pause until another thread calls <code>notify()</code> (wakes one waiting thread) or <code>notifyAll()</code> (wakes all waiting threads) on that same object.</p>
+<pre><code class="lang-java">public class WaitNotifyDemo {
+    static final Object lock = new Object();
+    static boolean ready = false;
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread waiter = new Thread(() -&gt; {
+            synchronized (lock) {
+                while (!ready) {
+                    try { lock.wait(); } catch (InterruptedException e) { return; }
+                }
+                System.out.println(&quot;Waiter: condition became true, proceeding.&quot;);
+            }
+        });
+        waiter.start();
+
+        Thread.sleep(300); // let the waiter start waiting first
+        synchronized (lock) {
+            ready = true;
+            lock.notify(); // wake the waiting thread
+        }
+        waiter.join();
+    }
+}</code></pre>
+<p><code>lock.wait()</code> must be called while holding <code>lock</code>&#x27;s monitor (inside a <code>synchronized (lock)</code> block) — it releases that lock and blocks the calling thread until another thread calls <code>lock.notify()</code>/<code>lock.notifyAll()</code> on the same object, at which point the waiting thread re-acquires the lock before continuing.</p>
+<h2>2. Why &amp; when</h2>
+<p>Sometimes a thread needs to wait for some condition to become true before it can proceed, and simply looping and re-checking that condition repeatedly (a technique called &quot;busy-waiting&quot; or &quot;spinning&quot;) wastes CPU. <code>wait</code>/<code>notify</code> let a thread sleep efficiently — consuming no CPU at all — until specifically woken up by another thread that changed the relevant condition.</p>
+<ul><li><strong>Producer/consumer coordination</strong> — a consumer thread waits until a producer thread has data ready, without spinning in a tight loop checking a flag over and over.</li><li><strong>Efficient blocking</strong> — unlike <code>Thread.sleep</code> (which wakes up unconditionally after a fixed time regardless of whether anything relevant changed), <code>wait()</code> only wakes when explicitly notified (or interrupted), making it the right tool when a thread genuinely doesn&#x27;t know how long it will need to wait.</li><li><strong>Building blocking data structures</strong> — classic bounded queues and similar structures use <code>wait</code>/<code>notify</code> internally to block producers when full and consumers when empty.</li></ul>
+<p>Always call <code>wait()</code> inside a loop checking the actual condition (<code>while (!ready) lock.wait();</code>, not <code>if (!ready) lock.wait();</code>) — a thread can wake up from <code>wait()</code> for reasons other than the condition actually being true (a &quot;spurious wakeup,&quot; or another thread&#x27;s notification about an unrelated condition change), so re-checking after waking is mandatory, not optional. Modern code often prefers higher-level <code>java.util.concurrent</code> tools (<code>BlockingQueue</code>, <code>CountDownLatch</code>, <code>Condition</code>) over raw <code>wait</code>/<code>notify</code>, since those tools handle many of <code>wait</code>/<code>notify</code>&#x27;s subtle correctness requirements for you — but understanding this mechanism is foundational to understanding what those higher-level tools do internally.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">public class WaitNotifyCore {
+    static final Object lock = new Object();
+    static int sharedValue = 0;
+    static boolean valueReady = false;
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread consumer = new Thread(() -&gt; {
+            synchronized (lock) {
+                while (!valueReady) { // loop, not a single if -- guards against spurious wakeups
+                    try { lock.wait(); } catch (InterruptedException e) { return; }
+                }
+                System.out.println(&quot;Consumer read: &quot; + sharedValue);
+            }
+        });
+        consumer.start();
+
+        synchronized (lock) {
+            sharedValue = 42;
+            valueReady = true;
+            lock.notifyAll(); // wake ALL waiting threads (here, just the one consumer)
+        }
+        consumer.join();
+    }
+}</code></pre>
+<p><code>notifyAll()</code> wakes every thread currently waiting on <code>lock</code> (here, just the one <code>consumer</code>), each of which then re-acquires the lock (one at a time) and re-checks its <code>while</code> condition — the consumer&#x27;s loop condition, <code>!valueReady</code>, is now <code>false</code>, so it exits the loop and proceeds to read <code>sharedValue</code>, which is guaranteed to be <code>42</code> since both writes happened before the <code>notifyAll()</code> inside the same synchronized block.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 600 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A waiting thread releases the lock while blocked in wait, then reacquires it upon being notified and rechecking its condition">
+  <rect x="8" y="8" width="584" height="154" rx="8" fill="#0d1117"/>
+  <text x="20" y="30" fill="#79c0ff" font-size="10" font-family="monospace">Consumer: synchronized(lock){ while(!ready) lock.wait(); ... }</text>
+  <text x="20" y="55" fill="#8b949e" font-size="9">wait() releases the lock and blocks -- lock is FREE for others while waiting</text>
+  <text x="20" y="90" fill="#6db33f" font-size="10" font-family="monospace">Producer: synchronized(lock){ ready=true; lock.notifyAll(); }</text>
+  <text x="20" y="115" fill="#8b949e" font-size="9">notifyAll() wakes waiters; each must RE-ACQUIRE the lock before continuing</text>
+  <text x="20" y="145" fill="#f85149" font-size="9">Consumer re-checks "while(!ready)" after waking -- never assumes the condition is now true.</text>
+</svg>
+<p><code>wait()</code> releases the lock while blocked; waking requires re-acquiring the lock and re-verifying the condition.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a simple single-slot producer/consumer handoff, evolved from a basic one-shot wait/notify signal into a repeated producer/consumer loop, then into a version correctly using <code>notifyAll</code> and a proper condition-check loop to handle multiple consumers safely.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class WaitNotifyBasic {
+    static final Object lock = new Object();
+    static String message = null;
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread consumer = new Thread(() -&gt; {
+            synchronized (lock) {
+                while (message == null) {
+                    try { lock.wait(); } catch (InterruptedException e) { return; }
+                }
+                System.out.println(&quot;Consumer received: &quot; + message);
+            }
+        });
+        consumer.start();
+
+        Thread.sleep(200); // ensure consumer is waiting before we produce
+        synchronized (lock) {
+            message = &quot;Hello from producer!&quot;;
+            lock.notify();
+        }
+        consumer.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java WaitNotifyBasic.java</code></p>
+<p>A single producer/consumer handoff: the consumer waits until <code>message</code> is set, then the producer sets it and calls <code>notify()</code> to wake the consumer — the simplest possible demonstration of the coordination pattern.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Same handoff, now repeated multiple times in a loop, with the producer and consumer alternating — demonstrating that <code>wait</code>/<code>notify</code> supports an ongoing back-and-forth, not just a single one-time signal.</p>
+<pre><code class="lang-java">public class WaitNotifyIntermediate {
+    static final Object lock = new Object();
+    static String message = null;
+    static boolean done = false;
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread consumer = new Thread(() -&gt; {
+            synchronized (lock) {
+                while (!done) {
+                    while (message == null &amp;&amp; !done) {
+                        try { lock.wait(); } catch (InterruptedException e) { return; }
+                    }
+                    if (message != null) {
+                        System.out.println(&quot;Consumer received: &quot; + message);
+                        message = null;
+                        lock.notify(); // tell the producer it can produce again
+                    }
+                }
+            }
+        });
+        consumer.start();
+
+        for (int i = 1; i &lt;= 3; i++) {
+            synchronized (lock) {
+                message = &quot;Message &quot; + i;
+                lock.notify();
+                while (message != null) { // wait until the consumer has taken it
+                    lock.wait();
+                }
+            }
+        }
+        synchronized (lock) {
+            done = true;
+            lock.notify();
+        }
+        consumer.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java WaitNotifyIntermediate.java</code></p>
+<p>Producer and consumer now alternate: the producer sets a message and waits for the consumer to clear it before producing the next one, and the consumer waits for a message, consumes it, clears it, and notifies the producer — this back-and-forth handoff, repeated three times, demonstrates <code>wait</code>/<code>notify</code> as an ongoing coordination mechanism rather than a single one-shot signal.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Same handoff pattern, now generalized to support <strong>multiple consumer threads</strong> competing for messages from one producer, correctly using <code>notifyAll()</code> (since <code>notify()</code> only wakes one arbitrarily-chosen waiter, which could leave other legitimately-waiting consumers stuck) and a robust condition-check loop that handles the case where a woken consumer finds the message already taken by a different consumer.</p>
+<pre><code class="lang-java">public class WaitNotifyAdvanced {
+    static final Object lock = new Object();
+    static String message = null;
+    static boolean done = false;
+
+    static void consumerLoop(String name) {
+        while (true) {
+            synchronized (lock) {
+                while (message == null &amp;&amp; !done) {
+                    try { lock.wait(); } catch (InterruptedException e) { return; }
+                }
+                if (message != null) {
+                    System.out.println(name + &quot; consumed: &quot; + message);
+                    message = null;
+                    lock.notifyAll(); // wake the producer AND any other still-waiting consumers
+                } else if (done) {
+                    return; // no more messages will ever come
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread c1 = new Thread(() -&gt; consumerLoop(&quot;Consumer-1&quot;));
+        Thread c2 = new Thread(() -&gt; consumerLoop(&quot;Consumer-2&quot;));
+        c1.start();
+        c2.start();
+
+        for (int i = 1; i &lt;= 4; i++) {
+            synchronized (lock) {
+                while (message != null) { // wait for the previous message to be taken
+                    lock.wait();
+                }
+                message = &quot;Message &quot; + i;
+                lock.notifyAll(); // wake BOTH consumers -- only one will actually get the message
+            }
+        }
+        synchronized (lock) {
+            done = true;
+            lock.notifyAll();
+        }
+        c1.join();
+        c2.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java WaitNotifyAdvanced.java</code></p>
+<p>With two consumers, <code>notifyAll()</code> (not <code>notify()</code>) is essential: if the producer used <code>notify()</code>, it might wake a consumer that then finds <code>message == null</code> again (because a *different*, non-woken consumer somehow got to it first, or the message was already cleared) and would need to go back to waiting anyway — <code>notifyAll()</code> wakes both consumers, each of which re-acquires the lock (one at a time, since they still need the lock to check the condition) and re-checks <code>while (message == null &amp;&amp; !done)</code>, so whichever one actually finds a real message present consumes it, and the other correctly loops back to waiting.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace one produce/consume cycle in <code>WaitNotifyAdvanced.main</code> step by step, assuming <code>Consumer-1</code> and <code>Consumer-2</code> are both already waiting when the producer produces &quot;Message 1&quot;.</p>
+<p><strong>Producer produces.</strong> In the <code>for</code> loop&#x27;s first iteration, the main thread acquires <code>lock</code>, finds <code>message == null</code> (true initially, so its own <code>while (message != null) wait()</code> guard doesn&#x27;t block), sets <code>message = &quot;Message 1&quot;</code>, and calls <code>lock.notifyAll()</code>. This wakes <strong>both</strong> <code>Consumer-1</code> and <code>Consumer-2</code>, which were blocked inside their own <code>lock.wait()</code> calls — but waking up from <code>wait()</code> doesn&#x27;t mean they immediately run; each must first re-acquire <code>lock</code>, which only one can hold at a time.</p>
+<p><strong>One consumer wins the race to re-acquire the lock.</strong> Say <code>Consumer-1</code> re-acquires <code>lock</code> first. It re-checks <code>while (message == null &amp;&amp; !done)</code> — <code>message</code> is <code>&quot;Message 1&quot;</code>, not <code>null</code>, so the loop condition is <code>false</code>, and it exits the wait loop. It prints <code>&quot;Consumer-1 consumed: Message 1&quot;</code>, sets <code>message = null</code>, and calls <code>lock.notifyAll()</code> again (waking the producer, which is waiting in its own <code>while (message != null) wait()</code> loop, and also re-waking <code>Consumer-2</code>, which hasn&#x27;t gotten a chance to check anything yet). <code>Consumer-1</code> then releases the lock as it exits its <code>synchronized</code> block.</p>
+<p><strong><code>Consumer-2</code> gets its turn.</strong> It re-acquires <code>lock</code> (having been woken by <code>Consumer-1</code>&#x27;s <code>notifyAll()</code>), re-checks its condition: <code>message == null</code> is now <code>true</code> again (since <code>Consumer-1</code> already cleared it) and <code>done</code> is still <code>false</code>, so its <code>while</code> condition remains <code>true</code> — it calls <code>lock.wait()</code> again, correctly going back to sleep rather than mistakenly trying to consume a message that isn&#x27;t there anymore.</p>
+<p><strong>The producer gets its turn.</strong> Having also been woken by <code>Consumer-1</code>&#x27;s <code>notifyAll()</code>, the producer re-acquires <code>lock</code> in its own <code>while (message != null) wait()</code> check — <code>message</code> is now <code>null</code> (cleared by <code>Consumer-1</code>), so this condition is <code>false</code>, and the producer&#x27;s wait loop exits, letting the <code>for</code> loop proceed to its second iteration, producing <code>&quot;Message 2&quot;</code>.</p>
+<p><strong>The cycle repeats</strong> for messages 2, 3, and 4, with the two consumers essentially taking turns (though which specific consumer gets any given message depends on scheduling and isn&#x27;t deterministic) — the key correctness property is that every message is consumed by exactly one consumer, and no consumer ever &quot;sees&quot; the same message another already took, because the <code>while</code> re-check after waking prevents acting on a stale or already-consumed condition.</p>
+<pre><code>Producer: sets message, notifyAll() -&gt; wakes BOTH consumers
+
+Consumer-1 (wins the race for the lock first):
+  re-check: message != null -&gt; consumes it, clears message, notifyAll()
+
+Consumer-2 (gets the lock next):
+  re-check: message == null again -&gt; goes back to wait() (correctly, no double-consumption)
+
+Producer (gets the lock next):
+  re-check: message == null -&gt; proceeds to produce the NEXT message</code></pre>
+<p><strong>Output (illustrative — which consumer gets which message varies by run):</strong></p>
+<pre><code>Consumer-1 consumed: Message 1
+Consumer-2 consumed: Message 2
+Consumer-1 consumed: Message 3
+Consumer-2 consumed: Message 4</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><code>wait()</code> must always be called inside a loop that re-checks the actual condition, never a single <code>if</code>. A thread can wake from <code>wait()</code> due to a &quot;spurious wakeup&quot; (permitted by the Java specification, though rare in practice) or because <code>notifyAll()</code> woke multiple threads but the condition is only actually true for one of them — as clearly demonstrated by <code>Consumer-2</code> correctly going back to sleep after finding the message already gone.</blockquote>
+<blockquote>Calling <code>wait()</code>, <code>notify()</code>, or <code>notifyAll()</code> outside a <code>synchronized</code> block on that same object throws <code>IllegalMonitorStateException</code> — these methods fundamentally require the calling thread to already hold the object&#x27;s monitor lock, since <code>wait()</code>&#x27;s whole mechanism (releasing the lock atomically with beginning to wait) depends on it.</blockquote>
+<ul><li><code>wait()</code> releases the held lock and blocks until <code>notify()</code>/<code>notifyAll()</code> is called on the same object, then re-acquires the lock before continuing.</li><li>Always call <code>wait()</code> inside a <code>while</code> loop re-checking the real condition — never assume waking up means the condition is now true.</li><li>Use <code>notifyAll()</code> (not <code>notify()</code>) whenever multiple threads might be waiting for potentially different reasons, or when you can&#x27;t guarantee any arbitrarily-woken single thread is the &quot;correct&quot; one to proceed.</li><li>For most real applications, prefer higher-level <code>java.util.concurrent</code> utilities (<code>BlockingQueue</code>, <code>CountDownLatch</code>, <code>Condition</code>) over raw <code>wait</code>/<code>notify</code>, reserving this mechanism for understanding how those tools work underneath.</li></ul>
+  <div class="nav"><a class="prv" href="0321-synchronized-blocks.html"><span class="mini">← Previous</span>synchronized blocks</a><a class="nxt" href="0323-thread-states-lifecycle.html"><span class="mini">Next →</span>Thread states & lifecycle</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t322";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
