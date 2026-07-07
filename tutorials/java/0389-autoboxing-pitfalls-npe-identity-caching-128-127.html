@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>'Autoboxing pitfalls (NPE, == identity, caching -128..127)' — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 2. Java 5 (J2SE 5.0 'Tiger')</div>
+  <div class="htitle">
+    <h1>'Autoboxing pitfalls (NPE, == identity, caching -128..127)'</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Autoboxing and unboxing (see [[autoboxing-primitive-wrapper]] and [[auto-unboxing-wrapper-primitive]]) make primitives and wrapper objects look almost interchangeable in source code, but three specific pitfalls come from the ways they genuinely aren&#x27;t: <strong>unboxing a <code>null</code> throws <code>NullPointerException</code></strong>; <strong>comparing boxed values with <code>==</code> compares object identity, not numeric value</strong>; and <strong>the JVM caches <code>Integer</code> (and other wrapper) objects for small values, roughly -128 to 127</strong>, which makes <code>==</code> on small numbers appear to work correctly by accident, only to silently break for larger ones.</p>
+<h2>2. Why &amp; when</h2>
+<p>These pitfalls exist because <code>Integer</code> (and the other wrapper classes) are genuinely reference types with object identity, even though autoboxing makes them look like primitives most of the time. <code>==</code> on any reference type always compares identity (&quot;are these the exact same object?&quot;), never value — this is completely consistent with how <code>==</code> behaves for every other object type in Java, but it surprises people specifically with boxed numbers because the *literal* code (<code>Integer a = 100; Integer b = 100; a == b</code>) reads as if it should obviously compare the numbers.</p>
+<p>The caching behaviour makes this worse in a sneaky way: <code>Integer.valueOf(int)</code> (which autoboxing calls internally) returns a <strong>cached, shared object</strong> for values from -128 to 127, but allocates a genuinely new object for anything outside that range. So <code>Integer a = 100; Integer b = 100; a == b</code> happens to be <code>true</code> (both reference the same cached object), lulling developers into believing <code>==</code> works for boxed integers — right up until a value like <code>200</code> breaks that same code silently, since <code>200</code> falls outside the cache and gets two separate objects.</p>
+<p>The fix for all of this is the same, simple rule: never use <code>==</code> to compare boxed wrapper values for equality — always use <code>.equals()</code>, and always guard against <code>null</code> before unboxing.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">public class BoxingPitfallsDemo {
+    public static void main(String[] args) {
+        Integer a = 100, b = 100; // both within the cache range (-128..127)
+        System.out.println(&quot;100 == 100 (cached): &quot; + (a == b)); // true -- same cached object, by luck
+
+        Integer c = 200, d = 200; // both OUTSIDE the cache range
+        System.out.println(&quot;200 == 200 (not cached): &quot; + (c == d)); // false -- two distinct objects!
+
+        System.out.println(&quot;Correct comparison: &quot; + c.equals(d)); // true -- always correct, regardless of caching
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java BoxingPitfallsDemo.java</code></p>
+<p><code>a == b</code> is <code>true</code> purely because <code>100</code> falls within <code>Integer</code>&#x27;s cached range, so <code>a</code> and <code>b</code> happen to reference the identical cached object. <code>c == d</code> is <code>false</code> even though both hold the mathematical value <code>200</code>, because <code>200</code> is outside the cache, so autoboxing allocates two separate <code>Integer</code> objects. <code>c.equals(d)</code> is <code>true</code> in both cases, since <code>.equals()</code> correctly compares the actual numeric values, never identity.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="values within the Integer cache range share one object so == appears to work by luck, while values outside the cache get separate objects so == silently gives the wrong answer">
+  <rect x="8" y="8" width="624" height="174" rx="8" fill="#0d1117"/>
+  <text x="20" y="30" fill="#e6edf3" font-size="11">Integer a = 100, b = 100;   (within cache -128..127)</text>
+  <rect x="240" y="40" width="140" height="35" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="310" y="62" fill="#6db33f" font-size="10" text-anchor="middle">one cached Integer(100)</text>
+  <line x1="140" y1="65" x2="235" y2="57" stroke="#79c0ff" stroke-width="1.5"/>
+  <line x1="140" y1="85" x2="235" y2="65" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="20" y="100" fill="#6db33f" font-size="10">a == b -&gt; true (same object, by luck of caching)</text>
+
+  <text x="20" y="130" fill="#e6edf3" font-size="11">Integer c = 200, d = 200;   (outside cache range)</text>
+  <rect x="220" y="140" width="120" height="30" rx="6" fill="#1c2430" stroke="#f85149"/>
+  <text x="280" y="160" fill="#f85149" font-size="9" text-anchor="middle">new Integer(200)</text>
+  <rect x="380" y="140" width="120" height="30" rx="6" fill="#1c2430" stroke="#f85149"/>
+  <text x="440" y="160" fill="#f85149" font-size="9" text-anchor="middle">new Integer(200)</text>
+  <text x="20" y="185" fill="#f85149" font-size="10">c == d -&gt; false! Two distinct objects with the same value -- always use .equals() instead.</text>
+</svg>
+<h2>5. Runnable example</h2>
+<p>Scenario: a loyalty-points comparison feature, evolved from a version that appears to work correctly in small-scale testing (values happen to be within the cache range), through the exact moment larger real-world values expose the bug, to a properly fixed version using <code>.equals()</code> throughout.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class LoyaltyPointsTestingSmallValues {
+    static boolean samePoints(Integer a, Integer b) {
+        return a == b; // looks reasonable, tests pass... for now
+    }
+
+    public static void main(String[] args) {
+        System.out.println(samePoints(50, 50));   // true -- within cache, &quot;works&quot;
+        System.out.println(samePoints(100, 100)); // true -- within cache, &quot;works&quot;
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java LoyaltyPointsTestingSmallValues.java</code></p>
+<p>Both test cases use small values within <code>Integer</code>&#x27;s cache range, so <code>a == b</code> happens to give the mathematically correct answer both times — this creates false confidence that <code>==</code> is a valid way to compare these boxed values, when it&#x27;s actually working by coincidence.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">public class LoyaltyPointsBugExposed {
+    static boolean samePoints(Integer a, Integer b) {
+        return a == b; // the same &quot;working&quot; code from Level 1
+    }
+
+    public static void main(String[] args) {
+        System.out.println(samePoints(50, 50));     // still true -- within cache
+        System.out.println(samePoints(500, 500));   // FALSE! -- real customers earn more than 127 points
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java LoyaltyPointsBugExposed.java</code></p>
+<p>The exact same <code>samePoints</code> method that &quot;worked&quot; in Level 1 now silently returns <code>false</code> for <code>samePoints(500, 500)</code> — two customers who genuinely have the identical point total are incorrectly reported as having different totals, purely because <code>500</code> falls outside the <code>Integer</code> cache and each argument gets its own separate object.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">public class LoyaltyPointsFixed {
+    static boolean samePoints(Integer a, Integer b) {
+        if (a == null || b == null) { // guard against null BEFORE calling .equals() or unboxing
+            return a == b; // both null -&gt; true; exactly one null -&gt; false; safe identity check here is fine
+        }
+        return a.equals(b); // correct numeric comparison, regardless of caching
+    }
+
+    public static void main(String[] args) {
+        System.out.println(samePoints(50, 50));    // true -- correct, and no longer by luck
+        System.out.println(samePoints(500, 500));  // true now -- bug fixed
+        System.out.println(samePoints(500, null)); // false -- handled safely, no NullPointerException
+        System.out.println(samePoints(null, null)); // true -- both absent, treated as equal
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java LoyaltyPointsFixed.java</code></p>
+<p><code>samePoints</code> now checks for <code>null</code> first — if either argument is <code>null</code>, <code>a == b</code> is used deliberately (safe here, since it&#x27;s comparing against <code>null</code>, not doing a numeric comparison, and Java allows <code>==</code> against <code>null</code> without triggering unboxing). Once both are confirmed non-<code>null</code>, <code>.equals()</code> performs a genuine value comparison, correct regardless of whether the values happen to fall inside or outside the cache range.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts in <code>main</code>. <code>samePoints(500, 500)</code> is called first (tracing the previously-broken case). Both <code>500</code> literals are autoboxed into <code>Integer</code> objects as they&#x27;re passed as arguments — since <code>500</code> is outside the -128..127 cache range, this produces two genuinely separate <code>Integer</code> objects, one for each argument.</p>
+<p>Inside <code>samePoints</code>, <code>a == null || b == null</code> checks: <code>a</code> is a real (non-null) <code>Integer</code> object, so <code>a == null</code> is <code>false</code>; same for <code>b</code>. The whole condition is <code>false</code>, so the guard branch is skipped. <code>a.equals(b)</code> runs next: <code>Integer.equals</code> compares the actual <code>int</code> values wrapped by each object — <code>500</code> and <code>500</code> — which are equal, so it returns <code>true</code>, regardless of the fact that <code>a</code> and <code>b</code> are two distinct objects. <code>main</code> prints <code>true</code>.</p>
+<p><code>samePoints(500, null)</code> runs next. The second argument, <code>null</code>, is passed directly as <code>Integer b = null</code> — no autoboxing occurs for a <code>null</code> literal, since <code>null</code> is already a valid reference of any reference type. Inside <code>samePoints</code>, <code>a == null || b == null</code> checks: <code>a == null</code> is <code>false</code>, but <code>b == null</code> is <code>true</code> — the whole condition is <code>true</code> (short-circuited <code>||</code>). The guard branch executes: <code>return a == b</code>, which is <code>Integer(500) == null</code> — this is a safe, ordinary reference comparison against <code>null</code> (it does <strong>not</strong> attempt to unbox <code>a</code>, since <code>==</code> against <code>null</code> never triggers unboxing), and it&#x27;s <code>false</code>, since <code>a</code> is a real object, not <code>null</code>. <code>main</code> prints <code>false</code>.</p>
+<p><code>samePoints(null, null)</code> runs last. Both <code>a == null</code> and <code>b == null</code> are <code>true</code>, so the guard branch runs: <code>return a == b</code>, which is <code>null == null</code>, <code>true</code>. <code>main</code> prints <code>true</code>.</p>
+<p>Expected output:</p>
+<pre><code>true
+true
+false
+true</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><code>Integer.valueOf(int)</code> — which is exactly what autoboxing calls internally — caches and reuses objects only for values from -128 to 127 (the exact range is guaranteed by the JVM specification, though implementations may cache a wider range). Code that appears to work correctly with <code>==</code> on boxed integers during testing with small values can silently break in production once real values exceed that range — always use <code>.equals()</code>, never assume small-scale testing has proven <code>==</code> correct.</blockquote>
+<ul><li>Comparing boxed wrapper objects with <code>==</code> compares object identity, never numeric value — this is standard, correct <code>==</code> behaviour for any reference type, it just surprises people specifically with numbers.</li><li>The JVM caches <code>Integer</code> objects (and similarly for <code>Byte</code>, <code>Short</code>, <code>Long</code>, <code>Character</code>, <code>Boolean</code>) for a small range of common values, making <code>==</code> appear to work by coincidence for those values only.</li><li>Always use <code>.equals()</code> to compare boxed wrapper values for equality — it is correct in every case, regardless of caching, and costs essentially nothing extra.</li><li>Always check for <code>null</code> before letting a boxed reference participate in unboxing (arithmetic, comparisons via <code>&lt;</code>/<code>&gt;</code>, loop conditions) — unboxing <code>null</code> throws <code>NullPointerException</code> immediately, see [[auto-unboxing-wrapper-primitive]].</li><li>When guarding against <code>null</code> before an equality check, compare against <code>null</code> with <code>==</code> directly (safe, since it never triggers unboxing) — only call <code>.equals()</code> once you&#x27;ve confirmed the reference is genuinely non-null.</li></ul>
+  <div class="nav"><a class="prv" href="0388-auto-unboxing-wrapper-primitive.html"><span class="mini">← Previous</span>Auto-unboxing (wrapper → primitive)</a><a class="nxt" href="0390-enhanced-for-each-loop.html"><span class="mini">Next →</span>Enhanced for-each loop</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t389";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
