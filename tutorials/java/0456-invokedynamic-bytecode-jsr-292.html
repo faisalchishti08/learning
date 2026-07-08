@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>invokedynamic bytecode (JSR 292) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 4. Java 7 (Java SE 7 'Dolphin')</div>
+  <div class="htitle">
+    <h1>invokedynamic bytecode (JSR 292)</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>invokedynamic</code>, added in Java 7 as JSR 292, is a JVM bytecode instruction — one of the handful of &quot;method invocation&quot; instructions the JVM understands, alongside the older <code>invokevirtual</code>, <code>invokestatic</code>, <code>invokespecial</code>, and <code>invokeinterface</code>. Unlike those older instructions, which the JVM resolves to a specific method at class-loading time based on a fixed type, <code>invokedynamic</code> defers the decision of *what to actually call* to a &quot;bootstrap method,&quot; resolved lazily — and potentially differently for different call sites, or changeably over the life of the program.</p>
+<h2>2. Why &amp; when</h2>
+<p><code>invokedynamic</code> was originally added to support <strong>dynamically-typed languages</strong> running on the JVM (JRuby, Jython, Groovy, and similar) — languages where a method call&#x27;s actual target often can&#x27;t be determined until runtime, since the type of the receiver might not be known or fixed in the way a statically-typed Java method call is. Without <code>invokedynamic</code>, implementing such a language on the JVM meant generating clunky, indirect bytecode (reflection-based dispatch, or hand-rolled lookup tables) to emulate dynamic dispatch — <code>invokedynamic</code> gave language implementers a proper, efficient, JVM-native primitive for this instead.</p>
+<p>For years after Java 7, ordinary Java code itself never generated <code>invokedynamic</code> at all — it was purely for other JVM languages&#x27; benefit. That changed starting with <strong>Java 8&#x27;s lambda expressions</strong>: <code>javac</code> began compiling lambdas using <code>invokedynamic</code> (rather than generating a separate synthetic class per lambda, as anonymous classes require), deferring the actual lambda-implementing-class creation to runtime. Java 9 extended this further, using <code>invokedynamic</code> (via <code>StringConcatFactory</code>) to implement <code>+</code>-based string concatenation more efficiently than the <code>StringBuilder</code>-chain bytecode javac used to generate. You don&#x27;t call <code>invokedynamic</code> from Java source code directly — it only ever shows up as a detail of *how the compiler chose to implement* certain language features.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">Runnable task = () -&gt; System.out.println(&quot;hello&quot;); // a lambda expression
+
+// javac compiles this using invokedynamic -- the actual class implementing Runnable
+// for this lambda is generated LAZILY, at runtime, the first time this code path executes,
+// rather than existing as a separate .class file the compiler generated up front.</code></pre>
+<p>Because <code>invokedynamic</code> is a bytecode-level detail, it&#x27;s not something you write or call directly in Java source — you can only observe its presence by disassembling compiled bytecode with <code>javap -c</code>, which is exactly what the runnable examples below do programmatically.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An anonymous class compiles into a completely separate class file with a fixed method call resolved at compile time; a lambda compiles into an invokedynamic call site whose actual implementation is linked lazily at runtime">
+  <rect x="8" y="8" width="624" height="154" rx="8" fill="#0d1117"/>
+  <text x="20" y="26" fill="#f85149" font-size="11" font-family="sans-serif">Anonymous class: a SEPARATE .class file, resolved at compile time</text>
+  <rect x="30" y="38" width="560" height="26" rx="4" fill="#1c2430" stroke="#f85149"/><text x="310" y="56" fill="#f85149" font-size="9" text-anchor="middle" font-family="sans-serif">invokespecial / invokevirtual -- fixed target, known at compile time</text>
+
+  <text x="20" y="100" fill="#6db33f" font-size="11" font-family="sans-serif">Lambda: ONE invokedynamic call site, target linked lazily</text>
+  <rect x="30" y="112" width="560" height="26" rx="4" fill="#1c2430" stroke="#6db33f"/><text x="310" y="130" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">invokedynamic -- bootstrap method decides the real target at runtime</text>
+</svg>
+<p>Anonymous classes are a compile-time-fixed mechanism; lambdas defer their actual implementation to a lazily-linked runtime call site.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: inspecting real compiled bytecode to observe <code>invokedynamic</code> directly — the same investigation, evolved from confirming a lambda&#x27;s bytecode contains it, through comparing a lambda against an equivalent anonymous class side by side, to observing a second, entirely different Java feature (<code>+</code>-based string concatenation) that also relies on <code>invokedynamic</code> under the hood.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.nio.file.*;
+import java.io.*;
+
+public class InvokeDynamicBasic {
+    public static void main(String[] args) throws Exception {
+        Path tempDir = Files.createTempDirectory(&quot;invokedynamic-demo&quot;);
+        Path source = tempDir.resolve(&quot;LambdaExample.java&quot;);
+        Files.writeString(source, &quot;&quot;&quot;
+            public class LambdaExample {
+                public static void main(String[] args) {
+                    Runnable task = () -&gt; System.out.println(&quot;hello&quot;);
+                    task.run();
+                }
+            }
+            &quot;&quot;&quot;);
+
+        String javaHome = System.getProperty(&quot;java.home&quot;);
+        String javacPath = javaHome + File.separator + &quot;bin&quot; + File.separator + &quot;javac&quot;;
+        String javapPath = javaHome + File.separator + &quot;bin&quot; + File.separator + &quot;javap&quot;;
+
+        // Compile the lambda example using the real javac executable
+        new ProcessBuilder(javacPath, source.toString()).inheritIO().start().waitFor();
+
+        // Disassemble it with javap and capture the output
+        Process javap = new ProcessBuilder(javapPath, &quot;-c&quot;, tempDir.resolve(&quot;LambdaExample.class&quot;).toString())
+            .redirectErrorStream(true).start();
+        String bytecode = new String(javap.getInputStream().readAllBytes());
+        javap.waitFor();
+
+        long invokedynamicCount = bytecode.lines().filter(line -&gt; line.contains(&quot;invokedynamic&quot;)).count();
+        System.out.println(&quot;invokedynamic instructions found in the lambda&#x27;s bytecode: &quot; + invokedynamicCount);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java InvokeDynamicBasic.java</code></p>
+<p>This writes a small lambda-using source file to a temp directory, compiles it with the real <code>javac</code> executable (located via <code>System.getProperty(&quot;java.home&quot;)</code>), then disassembles the result with <code>javap -c</code> and counts occurrences of <code>&quot;invokedynamic&quot;</code> in the output — confirming, directly from real compiled bytecode, that the lambda expression genuinely compiles down to this instruction.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.nio.file.*;
+import java.io.*;
+
+public class InvokeDynamicCompare {
+    static long countInvokedynamic(Path tempDir, String className, String source) throws Exception {
+        Path sourceFile = tempDir.resolve(className + &quot;.java&quot;);
+        Files.writeString(sourceFile, source);
+
+        String javaHome = System.getProperty(&quot;java.home&quot;);
+        String javacPath = javaHome + File.separator + &quot;bin&quot; + File.separator + &quot;javac&quot;;
+        String javapPath = javaHome + File.separator + &quot;bin&quot; + File.separator + &quot;javap&quot;;
+
+        new ProcessBuilder(javacPath, sourceFile.toString()).inheritIO().start().waitFor();
+
+        Process javap = new ProcessBuilder(javapPath, &quot;-c&quot;, tempDir.resolve(className + &quot;.class&quot;).toString())
+            .redirectErrorStream(true).start();
+        String bytecode = new String(javap.getInputStream().readAllBytes());
+        javap.waitFor();
+
+        return bytecode.lines().filter(line -&gt; line.contains(&quot;invokedynamic&quot;)).count();
+    }
+
+    public static void main(String[] args) throws Exception {
+        Path tempDir = Files.createTempDirectory(&quot;invokedynamic-compare&quot;);
+
+        String anonymousSource = &quot;&quot;&quot;
+            public class AnonymousExample {
+                public static void main(String[] args) {
+                    Runnable task = new Runnable() {
+                        public void run() { System.out.println(&quot;hello&quot;); }
+                    };
+                    task.run();
+                }
+            }
+            &quot;&quot;&quot;;
+
+        String lambdaSource = &quot;&quot;&quot;
+            public class LambdaExample2 {
+                public static void main(String[] args) {
+                    Runnable task = () -&gt; System.out.println(&quot;hello&quot;);
+                    task.run();
+                }
+            }
+            &quot;&quot;&quot;;
+
+        long anonymousCount = countInvokedynamic(tempDir, &quot;AnonymousExample&quot;, anonymousSource);
+        long lambdaCount = countInvokedynamic(tempDir, &quot;LambdaExample2&quot;, lambdaSource);
+
+        System.out.println(&quot;Anonymous class version -- invokedynamic count: &quot; + anonymousCount);
+        System.out.println(&quot;Lambda version -- invokedynamic count: &quot; + lambdaCount);
+        System.out.println(&quot;Lambda uses invokedynamic, anonymous class does not: &quot;
+            + (lambdaCount &gt; 0 &amp;&amp; anonymousCount == 0));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java InvokeDynamicCompare.java</code></p>
+<p>Two functionally-equivalent <code>Runnable</code> implementations — one an anonymous class, one a lambda — are compiled and disassembled the same way. The anonymous class compiles to zero <code>invokedynamic</code> instructions (it becomes an ordinary, separate class resolved with conventional invocation instructions); the lambda compiles to exactly one — direct, empirical confirmation of the difference in how <code>javac</code> implements each construct.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.nio.file.*;
+import java.io.*;
+
+public class InvokeDynamicStringConcat {
+    static String disassemble(Path tempDir, String className, String source) throws Exception {
+        Path sourceFile = tempDir.resolve(className + &quot;.java&quot;);
+        Files.writeString(sourceFile, source);
+
+        String javaHome = System.getProperty(&quot;java.home&quot;);
+        String javacPath = javaHome + File.separator + &quot;bin&quot; + File.separator + &quot;javac&quot;;
+        String javapPath = javaHome + File.separator + &quot;bin&quot; + File.separator + &quot;javap&quot;;
+
+        new ProcessBuilder(javacPath, sourceFile.toString()).inheritIO().start().waitFor();
+
+        Process javap = new ProcessBuilder(javapPath, &quot;-c&quot;, &quot;-v&quot;, tempDir.resolve(className + &quot;.class&quot;).toString())
+            .redirectErrorStream(true).start();
+        String output = new String(javap.getInputStream().readAllBytes());
+        javap.waitFor();
+        return output;
+    }
+
+    public static void main(String[] args) throws Exception {
+        Path tempDir = Files.createTempDirectory(&quot;invokedynamic-concat&quot;);
+
+        String concatSource = &quot;&quot;&quot;
+            public class ConcatExample {
+                public static void main(String[] args) {
+                    String name = &quot;World&quot;;
+                    String greeting = &quot;Hello, &quot; + name + &quot;!&quot;; // string concatenation with a variable
+                    System.out.println(greeting);
+                }
+            }
+            &quot;&quot;&quot;;
+
+        String bytecode = disassemble(tempDir, &quot;ConcatExample&quot;, concatSource);
+        long invokedynamicCount = bytecode.lines().filter(line -&gt; line.contains(&quot;invokedynamic&quot;)).count();
+        boolean usesStringConcatFactory = bytecode.contains(&quot;StringConcatFactory&quot;);
+
+        System.out.println(&quot;String concatenation invokedynamic count: &quot; + invokedynamicCount);
+        System.out.println(&quot;Uses java.lang.invoke.StringConcatFactory: &quot; + usesStringConcatFactory);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java InvokeDynamicStringConcat.java</code></p>
+<p>Ordinary <code>+</code>-based string concatenation involving a variable also compiles to <code>invokedynamic</code>, on modern JDKs — specifically bootstrapped via <code>java.lang.invoke.StringConcatFactory</code>, a Java 9 change from the older <code>StringBuilder</code>-chain bytecode that <code>javac</code> used to generate for the same source code. This demonstrates that <code>invokedynamic</code>&#x27;s usefulness extended well beyond its original dynamic-language motivation, becoming a general optimization mechanism <code>javac</code> itself now relies on for more than one language feature.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts in <code>main</code> of the Level 3 example. <code>concatSource</code> defines a small program that concatenates a string literal, a variable (<code>name</code>), and another string literal using <code>+</code>.</p>
+<p><code>disassemble(tempDir, &quot;ConcatExample&quot;, concatSource)</code> writes this source to a temporary file, then invokes the real <code>javac</code> executable (located via <code>System.getProperty(&quot;java.home&quot;) + &quot;/bin/javac&quot;</code>) as an external process via <code>ProcessBuilder</code>, compiling it into a genuine <code>.class</code> file. It then invokes <code>javap -c -v</code> (verbose disassembly, including constant pool details) as a second external process against that compiled class, capturing its full text output.</p>
+<p>Back in <code>main</code>, <code>bytecode.lines().filter(line -&gt; line.contains(&quot;invokedynamic&quot;)).count()</code> counts how many lines of the disassembly mention <code>invokedynamic</code> — on a modern JDK, string concatenation like this compiles to <code>invokedynamic</code> call sites (the exact count can reflect how the concatenation is broken into call sites internally, but at least one is always present for a genuine variable-involving concatenation). <code>bytecode.contains(&quot;StringConcatFactory&quot;)</code> checks whether the disassembly&#x27;s constant pool references <code>java.lang.invoke.StringConcatFactory</code> — the specific bootstrap method class responsible for resolving these call sites at runtime.</p>
+<p>Both checks confirm that this everyday, unremarkable-looking Java code (<code>&quot;Hello, &quot; + name + &quot;!&quot;</code>) is, since Java 9, implemented under the hood using the very same <code>invokedynamic</code> mechanism JSR 292 introduced back in Java 7 — originally for entirely different languages&#x27; benefit, now repurposed by <code>javac</code> itself for two distinct, common Java language features (lambdas and string concatenation).</p>
+<p>Expected output:</p>
+<pre><code>String concatenation invokedynamic count: 2
+Uses java.lang.invoke.StringConcatFactory: true</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>The exact number of <code>invokedynamic</code> call sites a given piece of source code compiles to is an <strong>implementation detail</strong> of the specific <code>javac</code> version being used, not something guaranteed by the Java Language Specification. The counts shown in these examples (one for a simple lambda, two for a particular string concatenation) reflect this JDK&#x27;s current compiler behavior — don&#x27;t write production code that depends on a specific <code>invokedynamic</code> count, since a future <code>javac</code> release could legitimately compile the same source differently.</blockquote>
+<ul><li><code>invokedynamic</code> is a JVM bytecode instruction that defers method-call resolution to a runtime &quot;bootstrap method,&quot; rather than resolving a fixed target at compile/class-load time like the older invocation instructions.</li><li>It was introduced in Java 7 (JSR 292) primarily to support dynamically-typed JVM languages (JRuby, Groovy, and similar) — for years, ordinary Java code itself never generated it.</li><li>Since Java 8, <code>javac</code> compiles <strong>lambda expressions</strong> using <code>invokedynamic</code>, deferring the actual implementing class&#x27;s creation to runtime, rather than generating a separate synthetic class per lambda the way anonymous classes require.</li><li>Since Java 9, <code>javac</code> also compiles <code>+</code>-based <strong>string concatenation</strong> involving variables using <code>invokedynamic</code>, via <code>java.lang.invoke.StringConcatFactory</code>, replacing the older <code>StringBuilder</code>-chain bytecode pattern.</li><li>You never write <code>invokedynamic</code> directly in Java source — it&#x27;s purely an implementation detail of how the compiler chooses to realize certain language features, observable only by disassembling compiled bytecode with a tool like <code>javap -c</code>.</li></ul>
+  <div class="nav"><a class="prv" href="0455-phaser.html"><span class="mini">← Previous</span>Phaser</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t456";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
