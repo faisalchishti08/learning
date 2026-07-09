@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Parallel streams & spliterators — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 5. Java 8 (LTS)</div>
+  <div class="htitle">
+    <h1>Parallel streams & spliterators</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>parallel stream</strong> splits its work across multiple threads (backed by the JVM&#x27;s common <code>ForkJoinPool</code>), created either via <code>Collection.parallelStream()</code> or by calling <code>.parallel()</code> on an existing stream. Behind the scenes, this splitting is done by a <code>Spliterator</code> (&quot;splittable iterator&quot;) — an object that knows how to divide a data source into smaller, independently-processable chunks (<code>trySplit()</code>), traverse the elements in a chunk (<code>tryAdvance()</code>/<code>forEachRemaining()</code>), and report characteristics about the source (<code>SIZED</code>, <code>ORDERED</code>, <code>DISTINCT</code>, and others) that help the stream framework decide how best to parallelize.</p>
+<h2>2. Why &amp; when</h2>
+<p>Parallel streams can speed up CPU-intensive work on large datasets by using multiple cores simultaneously — but they&#x27;re not automatically faster, and understanding why requires understanding <code>Spliterator</code>s. A source that splits cheaply and evenly (an <code>ArrayList</code>, a primitive array) parallelizes well, since each thread gets a similarly-sized, independent chunk to work on. A source that splits poorly or unevenly (a <code>LinkedList</code>, an <code>Iterator</code>-based source with no size information) parallelizes badly, since the overhead of coordinating threads can exceed any benefit — sometimes making a parallel stream *slower* than its sequential equivalent. Recognizing this is essential before reaching for <code>.parallel()</code> as a performance fix.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">import java.util.*;
+import java.util.stream.*;
+
+List&lt;Integer&gt; numbers = IntStream.rangeClosed(1, 10_000_000).boxed().toList();
+
+// Sequential: one thread does all the work
+long sequentialSum = numbers.stream().mapToLong(Integer::longValue).sum();
+
+// Parallel: ArrayList-backed source splits cheaply and evenly across threads
+long parallelSum = numbers.parallelStream().mapToLong(Integer::longValue).sum();
+
+// Inspecting the spliterator directly
+Spliterator&lt;Integer&gt; spliterator = numbers.spliterator();
+System.out.println(spliterator.estimateSize());        // reports the source&#x27;s size
+System.out.println(spliterator.characteristics());       // reports properties like SIZED, ORDERED</code></pre>
+<p><code>parallelStream()</code>/<code>.parallel()</code> triggers the stream to use its source&#x27;s <code>Spliterator</code> to divide work across threads; a well-behaved spliterator (from <code>ArrayList</code>, arrays) splits evenly and cheaply, which is what makes parallel speedup possible in the first place.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="a spliterator recursively splits a source into chunks distributed across worker threads">
+  <rect x="8" y="8" width="624" height="134" rx="8" fill="#0d1117"/>
+  <rect x="250" y="15" width="140" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="320" y="35" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="sans-serif">full source</text>
+  <line x1="290" y1="45" x2="200" y2="75" stroke="#8b949e" stroke-width="1.5"/>
+  <line x1="350" y1="45" x2="440" y2="75" stroke="#8b949e" stroke-width="1.5"/>
+  <rect x="140" y="80" width="120" height="28" rx="4" fill="#1c2430" stroke="#6db33f"/><text x="200" y="98" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">trySplit() -&gt; half</text>
+  <rect x="380" y="80" width="120" height="28" rx="4" fill="#1c2430" stroke="#6db33f"/><text x="440" y="98" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">trySplit() -&gt; half</text>
+  <rect x="80" y="120" width="90" height="24" rx="3" fill="#1c2430" stroke="#8b949e"/><text x="125" y="136" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">thread A</text>
+  <rect x="200" y="120" width="90" height="24" rx="3" fill="#1c2430" stroke="#8b949e"/><text x="245" y="136" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">thread B</text>
+  <rect x="330" y="120" width="90" height="24" rx="3" fill="#1c2430" stroke="#8b949e"/><text x="375" y="136" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">thread C</text>
+  <rect x="450" y="120" width="90" height="24" rx="3" fill="#1c2430" stroke="#8b949e"/><text x="495" y="136" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">thread D</text>
+</svg>
+<p><code>trySplit()</code> recursively divides the source into smaller chunks until each is small enough to hand to an individual worker thread.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: computing an expensive check over a large dataset — evolved from a plain sequential-vs-parallel comparison on a good source, through demonstrating a poor-splitting source that gains nothing from parallelism, to a version writing a custom <code>Spliterator</code> to understand what makes splitting well-behaved.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.*;
+import java.util.stream.*;
+
+public class ParallelBasic {
+    static boolean isPrime(int n) {
+        if (n &lt; 2) return false;
+        for (int i = 2; (long) i * i &lt;= n; i++) {
+            if (n % i == 0) return false;
+        }
+        return true;
+    }
+
+    public static void main(String[] args) {
+        List&lt;Integer&gt; numbers = IntStream.rangeClosed(2, 200_000).boxed().toList();
+
+        long sequentialCount = numbers.stream().filter(ParallelBasic::isPrime).count();
+        long parallelCount = numbers.parallelStream().filter(ParallelBasic::isPrime).count();
+
+        System.out.println(&quot;Sequential count: &quot; + sequentialCount);
+        System.out.println(&quot;Parallel count: &quot; + parallelCount);
+        System.out.println(&quot;Results match: &quot; + (sequentialCount == parallelCount));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ParallelBasic.java</code></p>
+<p>Expected output:</p>
+<pre><code>Sequential count: 17984
+Parallel count: 17984
+Results match: true</code></pre>
+<p><code>numbers</code> is backed by an <code>ArrayList</code> (via <code>.toList()</code>), which has a well-behaved <code>Spliterator</code>: it knows its exact size upfront and can split evenly into halves recursively, distributing the CPU-intensive <code>isPrime</code> check across all available cores. Both the sequential and parallel versions produce the identical count (<code>17984</code> primes between <code>2</code> and <code>200,000</code>), confirming parallel execution here changes *performance*, not *correctness*.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+import java.util.stream.*;
+
+public class ParallelPoorSplitting {
+    public static void main(String[] args) {
+        LinkedList&lt;Integer&gt; linkedNumbers = new LinkedList&lt;&gt;(IntStream.rangeClosed(1, 100_000).boxed().toList());
+        ArrayList&lt;Integer&gt; arrayNumbers = new ArrayList&lt;&gt;(linkedNumbers);
+
+        // Both report the same characteristics -- the difference is NOT in what they report.
+        Spliterator&lt;Integer&gt; linkedSpliterator = linkedNumbers.spliterator();
+        Spliterator&lt;Integer&gt; arraySpliterator = arrayNumbers.spliterator();
+        System.out.println(&quot;LinkedList spliterator reports SUBSIZED: &quot; +
+                linkedSpliterator.hasCharacteristics(Spliterator.SUBSIZED));
+        System.out.println(&quot;ArrayList spliterator reports SUBSIZED: &quot; +
+                arraySpliterator.hasCharacteristics(Spliterator.SUBSIZED));
+
+        // Random access cost is where the real difference lives: ArrayList.get(mid) is O(1);
+        // LinkedList.get(mid) must walk node by node from whichever end is closer.
+        int mid = 50_000;
+        long t1 = System.nanoTime();
+        arrayNumbers.get(mid);
+        long arrayGetTime = System.nanoTime() - t1;
+
+        long t2 = System.nanoTime();
+        linkedNumbers.get(mid);
+        long linkedGetTime = System.nanoTime() - t2;
+
+        System.out.println(&quot;ArrayList.get(mid) was faster than LinkedList.get(mid): &quot; + (arrayGetTime &lt; linkedGetTime));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ParallelPoorSplitting.java</code></p>
+<p>Expected output:</p>
+<pre><code>LinkedList spliterator reports SUBSIZED: true
+ArrayList spliterator reports SUBSIZED: true
+ArrayList.get(mid) was faster than LinkedList.get(mid): true</code></pre>
+<p>The real-world concern this adds: both spliterators report the *same* characteristics — Java&#x27;s built-in spliterator implementations report <code>SIZED</code>/<code>SUBSIZED</code> for any <code>Collection</code> whose <code>size()</code> is known upfront, <code>LinkedList</code> included. The real difference is hidden underneath: <code>LinkedList</code>&#x27;s spliterator splits by walking its internal nodes to gather a batch of elements, which costs time proportional to how far it has to walk, while <code>ArrayList</code>&#x27;s spliterator can jump straight to any midpoint index in constant time. The <code>get(mid)</code> comparison here is a proxy for that same underlying cost — <code>ArrayList</code> reaches an arbitrary element instantly via direct indexing, while <code>LinkedList</code> must traverse node by node to get there, and that same node-walking cost is what makes each of <code>LinkedList</code>&#x27;s recursive splits during parallel processing more expensive than <code>ArrayList</code>&#x27;s.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.*;
+
+public class CustomSpliterator {
+    // A minimal custom Spliterator over a fixed int[] range -- splits evenly, like ArrayList&#x27;s does.
+    static class RangeSpliterator implements Spliterator&lt;Integer&gt; {
+        private int current;
+        private final int end;
+
+        RangeSpliterator(int start, int end) {
+            this.current = start;
+            this.end = end;
+        }
+
+        @Override
+        public boolean tryAdvance(Consumer&lt;? super Integer&gt; action) {
+            if (current &gt;= end) return false;
+            action.accept(current++);
+            return true;
+        }
+
+        @Override
+        public Spliterator&lt;Integer&gt; trySplit() {
+            int remaining = end - current;
+            if (remaining &lt; 2) return null; // too small to split further
+            int mid = current + remaining / 2;
+            Spliterator&lt;Integer&gt; firstHalf = new RangeSpliterator(current, mid);
+            this.current = mid; // this spliterator keeps the second half
+            return firstHalf;
+        }
+
+        @Override public long estimateSize() { return end - current; }
+        @Override public int characteristics() { return ORDERED | SIZED | SUBSIZED | IMMUTABLE; }
+    }
+
+    public static void main(String[] args) {
+        Spliterator&lt;Integer&gt; spliterator = new RangeSpliterator(1, 21);
+
+        List&lt;Integer&gt; collected = Collections.synchronizedList(new ArrayList&lt;&gt;());
+        java.util.stream.StreamSupport.stream(spliterator, true) // true = parallel
+                .forEach(collected::add);
+
+        Collections.sort(collected); // parallel forEach doesn&#x27;t preserve order -- sort for a stable check
+        System.out.println(&quot;Collected &quot; + collected.size() + &quot; values: &quot; + collected);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java CustomSpliterator.java</code></p>
+<p>Expected output:</p>
+<pre><code>Collected 20 values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]</code></pre>
+<p>This writes a minimal custom <code>Spliterator</code> from scratch, mirroring what <code>ArrayList</code>&#x27;s built-in spliterator does conceptually: <code>trySplit()</code> divides the remaining range roughly in half, returning a new spliterator for the first half while keeping the second half for itself — this is exactly the recursive halving strategy that makes a source parallelize well. <code>StreamSupport.stream(spliterator, true)</code> builds a genuine parallel stream directly from this custom spliterator, and the twenty values <code>1</code> through <code>20</code> are correctly collected (via a thread-safe <code>synchronizedList</code>, since multiple threads write to it concurrently), regardless of which thread happened to process which sub-range.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts in <code>main</code> of the Level 3 example. <code>spliterator</code> is created as a <code>RangeSpliterator</code> covering <code>1</code> to <code>20</code> (exclusive of <code>21</code>, so <code>20</code> values: <code>1</code> through <code>20</code>).</p>
+<p><code>StreamSupport.stream(spliterator, true)</code> builds a parallel stream directly from this spliterator. Internally, the <code>ForkJoinPool</code>&#x27;s work-stealing mechanism repeatedly calls <code>trySplit()</code> on the spliterator (and on the spliterators it returns) to divide the work into pieces small enough for individual threads to handle.</p>
+<p>The first <code>trySplit()</code> call: <code>current=1</code>, <code>end=21</code>, <code>remaining = 21 - 1 = 20</code>. Since <code>20 &gt;= 2</code>, splitting proceeds: <code>mid = 1 + 20/2 = 1 + 10 = 11</code>. A new <code>RangeSpliterator(1, 11)</code> is returned as the &quot;first half&quot; (covering <code>1</code> through <code>10</code>), and the original spliterator&#x27;s <code>current</code> is updated to <code>11</code>, so it now covers <code>11</code> through <code>20</code>.</p>
+<p>Each of these two halves may be split again: the <code>(1, 11)</code> half has <code>remaining = 11 - 1 = 10 &gt;= 2</code>, so it splits into <code>(1, 6)</code> and keeps <code>(6, 11)</code>. The <code>(11, 21)</code> half has <code>remaining = 21 - 11 = 10 &gt;= 2</code>, so it splits into <code>(11, 16)</code> and keeps <code>(16, 21)</code>. This recursive splitting continues until each piece is small enough (or the framework decides further splitting isn&#x27;t worthwhile), at which point <code>tryAdvance(...)</code> is called repeatedly on each final piece to actually produce its individual elements.</p>
+<pre><code>RangeSpliterator(1,21), remaining=20
+  trySplit -&gt; (1,11) split off, this keeps (11,21)
+    (1,11), remaining=10 -&gt; trySplit -&gt; (1,6) split off, keeps (6,11)
+    (11,21), remaining=10 -&gt; trySplit -&gt; (11,16) split off, keeps (16,21)
+  ... splitting continues recursively until pieces are small ...
+
+Each final small piece: tryAdvance() called repeatedly to emit its individual int values.</code></pre>
+<p>Each thread processes its assigned final piece via <code>tryAdvance</code>, calling <code>collected::add</code> (a <code>synchronizedList</code>, safe for concurrent writes from multiple threads) for each value it produces. Once all pieces are exhausted, <code>collected</code> holds all twenty values, <code>1</code> through <code>20</code>, though not necessarily in that order, since different threads finished their pieces at different times. <code>Collections.sort(collected)</code> restores a predictable order purely for the printed check. <code>collected.size()</code> is <code>20</code>, and the sorted list prints as <code>[1, 2, 3, ..., 20]</code> — confirming every value from the original range was produced exactly once, regardless of how the recursive splitting divided the work across threads.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Parallel streams are not automatically faster — for small datasets, or datasets backed by a poorly-splitting source (<code>LinkedList</code>, <code>Iterator</code>-based sources), the overhead of thread coordination can exceed any benefit from parallel execution, sometimes making the parallel version *slower* than sequential. Always measure before assuming <code>.parallel()</code> helps, and prefer <code>ArrayList</code>/array-backed sources (or <code>IntStream.range(...)</code>) when parallelism is genuinely needed for a CPU-intensive computation on a large dataset.</blockquote>
+<ul><li>Parallel streams split their work using the source&#x27;s <code>Spliterator</code>, which knows how to divide the data (<code>trySplit()</code>) and traverse it (<code>tryAdvance()</code>).</li><li>A well-behaved spliterator (from <code>ArrayList</code>, arrays, <code>IntStream.range</code>) splits cheaply and evenly, which is what makes parallel execution actually pay off.</li><li><code>LinkedList</code> and other node-based or size-unknown sources have spliterators that split poorly, often making <code>.parallelStream()</code> on them a net loss compared to sequential processing.</li><li><code>Spliterator.hasCharacteristics(SUBSIZED)</code> indicates a spliterator can guarantee the sizes of the pieces it splits into — a strong signal for good parallel performance.</li><li>Writing a custom <code>Spliterator</code> (as shown in Level 3) is rarely necessary in application code, but understanding the interface clarifies exactly why some sources parallelize well and others don&#x27;t.</li></ul>
+  <div class="nav"><a class="prv" href="0525-ordered-vs-unordered-streams.html"><span class="mini">← Previous</span>Ordered vs unordered streams</a><a class="nxt" href="0527-stream-cannot-be-reused.html"><span class="mini">Next →</span>Stream cannot be reused</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t526";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
