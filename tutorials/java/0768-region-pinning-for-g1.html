@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Region pinning for G1 — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 19. Java 22</div>
+  <div class="htitle">
+    <h1>Region pinning for G1</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Java 22</strong> (JEP 423) adds <strong>region pinning</strong> to the G1 garbage collector, eliminating a long-standing restriction: previously, G1 had to <strong>disable garbage collection entirely</strong> for the whole heap while any thread was inside JNI critical code (a native method holding a direct pointer into Java heap memory via <code>GetPrimitiveArrayCritical</code> or similar). With region pinning, G1 can instead <strong>pin</strong> just the specific heap regions containing memory a JNI critical section is actively using, leaving every other region free to be collected normally — meaning a long-running JNI critical section no longer stalls garbage collection across the entire heap, only for the small set of regions it actually touches.</p>
+<h2>2. Why &amp; when</h2>
+<p>JNI critical sections exist so native code can get a direct, unmanaged pointer into a Java array&#x27;s memory — useful for performance-sensitive native interop, like calling into a native image-processing or numerics library on a Java array without copying data first. But garbage collection, including G1&#x27;s mostly-concurrent collection, generally needs to be able to move objects around in memory (compaction), and a native pointer obtained via a JNI critical section would be invalidated if the collector moved the underlying memory out from under it. Before this JEP, G1&#x27;s answer was blunt: block garbage collection for the *entire heap* for as long as *any* thread held a JNI critical section open, on the theory that pausing everything was simpler and safer than tracking which specific memory needed protecting. That blunt approach becomes a real throughput and latency problem exactly when it matters most: an application making frequent or long-running JNI critical calls (numeric libraries, hardware-accelerated codecs, certain database drivers) could stall G1&#x27;s collection cycles heap-wide, working directly against G1&#x27;s whole design goal of predictable, low pause times. Region pinning fixes this precisely: G1 now pins only the heap regions actually referenced by an active JNI critical section, letting collection proceed normally everywhere else — meaningful for any application combining G1 (the JDK&#x27;s default collector) with JNI-critical-heavy native interop.</p>
+<h2>3. Core concept</h2>
+<pre><code># No application code change required — this is a G1 internal behavior improvement.
+# Before Java 22: a JNI critical section anywhere stalls G1 collection heap-wide.
+# Java 22+: G1 pins only the specific regions the critical section touches.
+
+java -XX:+UseG1GC -Xlog:gc MyNativeInteropApp</code></pre>
+<p>The improvement is entirely inside G1&#x27;s implementation — there&#x27;s no new API, flag to enable it (it&#x27;s on by default with G1 in Java 22+), or code change needed to benefit from it.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Before region pinning, a JNI critical section anywhere blocks G1 collection across the whole heap; with region pinning, only the specific regions the critical section touches are pinned, leaving the rest of the heap collectible" >
+  <rect x="20" y="20" width="280" height="70" rx="8" fill="#1c2430" stroke="#8b949e"/>
+  <text x="160" y="42" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Before Java 22</text>
+  <text x="160" y="62" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">entire heap blocked during JNI critical</text>
+  <text x="160" y="78" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">section, regardless of which region it touches</text>
+
+  <rect x="340" y="20" width="280" height="70" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="480" y="42" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif">Java 22+: region pinning</text>
+  <text x="480" y="62" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">only the specific region(s) touched</text>
+  <text x="480" y="78" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">by the critical section are pinned</text>
+
+  <text x="320" y="150" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">The rest of the heap continues to be collected normally while a JNI critical section is active</text>
+</svg>
+<p>*A narrow pin replaces a heap-wide freeze — collection keeps working everywhere else.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a native array-processing workload combined with ongoing background allocation, growing from a simple JNI critical call into a workload that demonstrates collection continuing to make progress elsewhere on the heap.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class JniCriticalBasic {
+    public static void main(String[] args) {
+        int[] data = new int[1_000_000];
+        for (int i = 0; i &lt; data.length; i++) data[i] = i;
+
+        long sum = sumArray(data);
+        System.out.println(&quot;sum: &quot; + sum);
+    }
+
+    // A plain Java sum — stands in for what a JNI critical section would do
+    // natively (this entry focuses on the GC behavior, not on writing actual
+    // native/JNI glue code, which is a separate, more involved setup).
+    static long sumArray(int[] data) {
+        long total = 0;
+        for (int value : data) total += value;
+        return total;
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -XX:+UseG1GC JniCriticalBasic.java</code> (JDK 22+).</p>
+<p>This is a plain summation over a 1,000,000-element array, standing in conceptually for what a real JNI critical section would do with a directly-pinned pointer into the same array&#x27;s memory — the point here is to establish the workload shape before reasoning about GC behavior around it.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class JniCriticalWithAllocation {
+    static volatile long sink; // prevent dead-code elimination of the background work
+
+    public static void main(String[] args) throws InterruptedException {
+        int[] data = new int[10_000_000];
+        for (int i = 0; i &lt; data.length; i++) data[i] = i;
+
+        Thread backgroundAllocator = new Thread(() -&gt; {
+            List&lt;byte[]&gt; garbage = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; 5000; i++) {
+                garbage.add(new byte[10_000]); // steady stream of short-lived allocation
+                if (garbage.size() &gt; 100) garbage.remove(0);
+                sink += garbage.size();
+            }
+        });
+        backgroundAllocator.start();
+
+        long sum = sumArray(data); // the long-running &quot;critical section&quot; equivalent
+        backgroundAllocator.join();
+
+        System.out.println(&quot;sum: &quot; + sum);
+    }
+
+    static long sumArray(int[] data) {
+        long total = 0;
+        for (int value : data) total += value;
+        return total;
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -XX:+UseG1GC -Xlog:gc JniCriticalWithAllocation.java</code>.</p>
+<p>The real-world concern added: a <strong>background thread continuously allocating and discarding memory</strong> runs concurrently with the long array-processing operation — under pre-region-pinning G1 behavior, a genuinely long-held JNI critical section over <code>data</code> would have stalled collection of the background thread&#x27;s garbage heap-wide; with region pinning, <code>-Xlog:gc</code> output would show collection cycles continuing to run and reclaim the background allocator&#x27;s garbage in regions other than the one(s) holding <code>data</code>, even while a critical-section-equivalent operation is in progress.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.*;
+
+public class JniCriticalConcurrent {
+    static long sumArray(int[] data) {
+        long total = 0;
+        for (int value : data) total += value;
+        return total;
+    }
+
+    public static void main(String[] args) throws Exception {
+        final int ARRAY_COUNT = 4;
+        int[][] arrays = new int[ARRAY_COUNT][];
+        for (int a = 0; a &lt; ARRAY_COUNT; a++) {
+            arrays[a] = new int[5_000_000];
+            for (int i = 0; i &lt; arrays[a].length; i++) arrays[a][i] = i + a;
+        }
+
+        try (var executor = Executors.newFixedThreadPool(ARRAY_COUNT)) {
+            List&lt;Future&lt;Long&gt;&gt; sumFutures = new ArrayList&lt;&gt;();
+            for (int[] array : arrays) {
+                sumFutures.add(executor.submit(() -&gt; sumArray(array)));
+            }
+
+            // Meanwhile, generate steady allocation pressure from the main thread
+            List&lt;byte[]&gt; churn = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; 20000; i++) {
+                churn.add(new byte[5_000]);
+                if (churn.size() &gt; 200) churn.remove(0);
+            }
+
+            long total = 0;
+            for (Future&lt;Long&gt; f : sumFutures) total += f.get();
+            System.out.println(&quot;total: &quot; + total + &quot;, churn size: &quot; + churn.size());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -XX:+UseG1GC -Xlog:gc:file=g1.log JniCriticalConcurrent.java</code>.</p>
+<p>This adds the production-flavored hard case: <strong>four concurrent long-running array operations</strong> (standing in for four threads each holding their own JNI critical section over a different large array) running alongside continuous allocation churn on the main thread — the realistic shape of a service that both processes data via native interop and continues normal request-handling allocation at the same time, which is exactly the scenario region pinning is designed to keep responsive.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing the GC-relevant behavior of <code>JniCriticalConcurrent.main</code> (conceptually, since the &quot;critical section&quot; here is simulated with plain Java loops rather than actual native code):</p>
+<ol><li><code>main</code> allocates four large <code>int[]</code> arrays (5,000,000 elements each) and submits one long-running &quot;critical-section-equivalent&quot; summation task per array to a fixed thread pool.</li><li>While those four tasks run (each looping over its own large array), the main thread simultaneously runs a churn loop, continuously allocating and discarding 5,000-byte buffers — generating a steady stream of short-lived garbage.</li><li>Under the pre-region-pinning G1 behavior, if the four summation tasks were genuine JNI critical sections, <strong>any one of them being active would have blocked G1 collection across the entire heap</strong> — meaning the main thread&#x27;s churn garbage would pile up uncollected until every critical section finished, risking heap exhaustion or a very large deferred collection once they all released.</li><li>Under Java 22&#x27;s region-pinning behavior, G1 instead pins only the heap regions containing each of the four large arrays actively being summed — every other region, including the ones holding the main thread&#x27;s discarded churn buffers, remains fully collectible. <code>-Xlog:gc</code> output (written to <code>g1.log</code>) would show collection cycles running and reclaiming churn garbage throughout the run, not just in a burst after all four summations finish.</li><li>Once all four <code>Future&lt;Long&gt;</code> results are collected via <code>.get()</code>, <code>main</code> prints the combined total and the churn list&#x27;s final size.</li></ol>
+<p>Expected output:</p>
+<pre><code>total: &lt;some large sum&gt;, churn size: 200</code></pre>
+<p>(The exact sum depends on the arrays&#x27; contents; the meaningful, observable difference from region pinning is in the accompanying <code>g1.log</code> GC cycle timing and frequency, not in this program&#x27;s printed values — the printed output would be identical with or without region pinning, since it&#x27;s a GC *efficiency* improvement, not a correctness-visible one.)</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> region pinning is a G1-internal improvement, not something application code interacts with directly — there&#x27;s no new flag to pass or API to call. If you want to *observe* its effect, you need to compare GC log behavior (collection frequency and heap-wide pause characteristics) between workloads with and without long-held JNI critical sections, not look for any change in your own code&#x27;s behavior or output.</blockquote>
+<ul><li>No application-visible API — this is purely a G1 collector internals improvement, enabled automatically with G1 in Java 22+.</li><li>Fixes a long-standing throughput and latency risk: previously, any active JNI critical section blocked G1 collection across the *entire* heap, not just the memory it touched.</li><li>Most relevant to applications combining G1 (the JDK&#x27;s default collector) with JNI-critical-heavy native interop — numeric libraries, hardware-accelerated codecs, certain native database or hardware drivers.</li><li>Use <code>-Xlog:gc</code> (or a dedicated log file) to observe collection cycle frequency directly if you suspect JNI-critical-related GC stalls in a workload predating this fix.</li><li>Complements other G1 and <a href="0749-generational-zgc.md">generational ZGC</a> throughput work as part of the JDK&#x27;s ongoing effort to reduce GC-related stalls across a wide range of real workload shapes.</li></ul>
+  <div class="nav"><a class="prv" href="0767-class-file-api-preview.html"><span class="mini">← Previous</span>Class-File API (preview)</a><a class="nxt" href="0769-launch-multi-file-source-code-programs.html"><span class="mini">Next →</span>Launch multi-file source-code programs</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t768";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
