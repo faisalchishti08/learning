@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Virtual threads (preview) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 16. Java 19</div>
+  <div class="htitle">
+    <h1>Virtual threads (preview)</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Java 19</strong> (JEP 425) previews <strong>virtual threads</strong>: lightweight threads implemented by the JVM itself rather than by the operating system. A traditional Java <code>Thread</code> is a thin wrapper around one <strong>OS (platform) thread</strong> — a relatively heavyweight resource, typically limited to a few thousand per process before memory and scheduling overhead become a real problem. A virtual thread, created with <code>Thread.ofVirtual()</code> or <code>Executors.newVirtualThreadPerTaskExecutor()</code>, is instead a JVM-managed unit of execution that gets *mounted* onto a small pool of underlying platform threads (called *carrier threads*) only while it&#x27;s actively running code, and is *unmounted* the moment it blocks on I/O — freeing the carrier thread to run a different virtual thread in the meantime. This makes it practical to create <strong>millions</strong> of virtual threads in a single JVM, each written in the same simple, blocking, one-thread-per-task style Java code has always used, without the throughput collapse that would come from creating millions of platform threads. Being a preview feature in Java 19, it requires <code>--enable-preview</code> to compile and run.</p>
+<h2>2. Why &amp; when</h2>
+<p>For years, high-throughput Java servers faced a real dilemma: writing simple, sequential, blocking-style code (<code>socket.read()</code>, <code>resultSet.next()</code>, one thread per request) is by far the easiest style to write, debug, and reason about — but it doesn&#x27;t scale past a few thousand concurrent requests, because each request ties up one increasingly expensive OS thread for its entire duration, even while that thread is doing nothing but waiting on a network call or a database query. The alternative — asynchronous, reactive, callback- or <code>CompletableFuture</code>-based code — scales far better because it never blocks an OS thread waiting for I/O, but it fundamentally changes how code is written: stack traces fragment across callback boundaries, debugging and profiling tools struggle to show a coherent call history, and simple control flow (a <code>for</code> loop calling a blocking method) has to be rewritten in a much more complex, harder-to-read style. Virtual threads exist to eliminate this trade-off entirely: they let a program achieve the throughput of asynchronous code while being written in the plain, sequential, blocking style that&#x27;s easiest to understand — because when a virtual thread calls a blocking method like <code>Socket.read()</code>, the JVM automatically parks it and frees the underlying carrier thread, rather than that carrier thread sitting idle. Reach for virtual threads specifically for <strong>I/O-bound, high-concurrency</strong> workloads — a server handling many simultaneous requests, each of which spends most of its time waiting on a database, another service, or a file — not for CPU-bound work, where the number of platform threads actually doing computation is still ultimately bounded by real CPU cores.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">// Traditional platform thread — one real OS thread, expensive to create many of.
+Thread platform = Thread.ofPlatform().start(() -&gt; System.out.println(&quot;platform thread&quot;));
+
+// Virtual thread — JVM-managed, cheap to create millions of.
+Thread virtual = Thread.ofVirtual().start(() -&gt; System.out.println(&quot;virtual thread&quot;));
+
+// The idiomatic way to use many of them: one virtual thread per task.
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    executor.submit(() -&gt; doBlockingWork());
+}</code></pre>
+<p>The same <code>Thread</code> and familiar blocking APIs (<code>Thread.sleep</code>, <code>InputStream.read</code>, <code>java.net.Socket</code>) work unchanged on virtual threads — the JVM handles mounting and unmounting transparently underneath.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Many virtual threads are mounted onto a small pool of carrier (platform/OS) threads; a virtual thread that blocks on I/O is unmounted, freeing its carrier thread to run a different virtual thread">
+  <text x="150" y="20" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">Thousands of virtual threads</text>
+  <rect x="20" y="30" width="60" height="30" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="50" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">VT-1</text>
+  <rect x="90" y="30" width="60" height="30" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="120" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">VT-2</text>
+  <rect x="160" y="30" width="60" height="30" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="190" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">VT-3</text>
+  <text x="250" y="50" fill="#8b949e" font-size="14" text-anchor="middle" font-family="sans-serif">...</text>
+  <rect x="280" y="30" width="60" height="30" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="310" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">VT-N</text>
+
+  <line x1="50" y1="60" x2="80" y2="110" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a6)"/>
+  <line x1="190" y1="60" x2="220" y2="110" stroke="#3fb950" stroke-width="1.5" marker-end="url(#a6)"/>
+  <text x="140" y="90" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">mounted while running</text>
+
+  <rect x="20" y="120" width="120" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="80" y="144" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">carrier thread A</text>
+  <rect x="180" y="120" width="120" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="240" y="144" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">carrier thread B</text>
+  <text x="160" y="190" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">a small pool of real OS threads (roughly = CPU cores)</text>
+
+  <text x="450" y="130" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">VT-2 blocks on I/O -&gt;</text>
+  <text x="450" y="145" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">unmounted, carrier freed</text>
+  <text x="450" y="165" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">for another virtual thread</text>
+
+  <defs><marker id="a6" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#3fb950"/></marker></defs>
+</svg>
+<p>Only virtual threads *actively running code* occupy a carrier thread; blocked ones step aside.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: simulating many concurrent &quot;slow I/O&quot; tasks (each just sleeping, standing in for a network call or database query). The example grows from a small number of platform threads, to the same task run on thousands of virtual threads to show the scale difference, to a virtual-thread-per-task executor collecting results with proper structured shutdown and timing comparison.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: VirtualThreadBasic.java
+// Run with --enable-preview: virtual threads are a preview feature in Java 19.
+public class VirtualThreadBasic {
+    public static void main(String[] args) throws InterruptedException {
+        Thread platform = Thread.ofPlatform().start(() -&gt;
+                System.out.println(&quot;Running on: &quot; + Thread.currentThread()));
+        platform.join();
+
+        Thread virtual = Thread.ofVirtual().start(() -&gt;
+                System.out.println(&quot;Running on: &quot; + Thread.currentThread()));
+        virtual.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>javac --release 19 --enable-preview VirtualThreadBasic.java
+java --enable-preview VirtualThreadBasic</code></pre>
+<p>Expected output shape (exact thread names/ids vary by run):</p>
+<pre><code>Running on: Thread[#21,Thread-0,5,main]
+Running on: VirtualThread[#23]/runnable@ForkJoinPool-1-worker-1</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: VirtualThreadScaleIntermediate.java
+// The SAME &quot;slow I/O&quot; task (a sleep standing in for a blocking network call),
+// now run 10,000 times concurrently — demonstrating the scale that platform
+// threads cannot practically reach, but virtual threads handle easily.
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class VirtualThreadScaleIntermediate {
+    static void simulateSlowIO() {
+        try {
+            Thread.sleep(100); // stands in for a blocking network/database call
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int taskCount = 10_000;
+        AtomicInteger completed = new AtomicInteger();
+        long start = System.currentTimeMillis();
+
+        Thread[] threads = new Thread[taskCount];
+        for (int i = 0; i &lt; taskCount; i++) {
+            threads[i] = Thread.ofVirtual().start(() -&gt; {
+                simulateSlowIO();
+                completed.incrementAndGet();
+            });
+        }
+        for (Thread t : threads) t.join();
+
+        long elapsedMs = System.currentTimeMillis() - start;
+        System.out.println(&quot;Completed &quot; + completed.get() + &quot; virtual-thread tasks in ~&quot; + elapsedMs + &quot;ms&quot;);
+        System.out.println(&quot;(each task &#x27;slept&#x27; 100ms; total elapsed proves they ran concurrently, not one-at-a-time)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java --enable-preview VirtualThreadScaleIntermediate.java</code></pre>
+<p>Expected output (elapsed time is close to 100ms-range, not 10,000 x 100ms, proving concurrency):</p>
+<pre><code>Completed 10000 virtual-thread tasks in ~150ms
+(each task &#x27;slept&#x27; 100ms; total elapsed proves they ran concurrently, not one-at-a-time)</code></pre>
+<p>10,000 platform threads attempting the same thing would typically be far slower to even create, and could exhaust OS resources on many systems — the point this level demonstrates concretely.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: VirtualThreadExecutorAdvanced.java
+// Uses the idiomatic Executors.newVirtualThreadPerTaskExecutor(), collects
+// per-task results via Future, and handles a mix of successful and failing
+// tasks — the production-flavored shape of virtual-thread-based concurrency.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class VirtualThreadExecutorAdvanced {
+    static String fetchFromService(int id) throws InterruptedException {
+        Thread.sleep(50); // simulated network latency
+        if (id == 7) throw new RuntimeException(&quot;service &quot; + id + &quot; timed out&quot;);
+        return &quot;result-from-service-&quot; + id;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int taskCount = 20;
+        List&lt;Future&lt;String&gt;&gt; futures = new ArrayList&lt;&gt;();
+
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i &lt; taskCount; i++) {
+                int id = i;
+                futures.add(executor.submit(() -&gt; fetchFromService(id)));
+            }
+        } // executor.close() waits for all submitted tasks to finish before returning
+
+        int succeeded = 0, failed = 0;
+        for (Future&lt;String&gt; f : futures) {
+            try {
+                f.get();
+                succeeded++;
+            } catch (ExecutionException e) {
+                failed++;
+            }
+        }
+        System.out.println(&quot;Succeeded: &quot; + succeeded + &quot;, Failed: &quot; + failed + &quot; (out of &quot; + taskCount + &quot;)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java --enable-preview VirtualThreadExecutorAdvanced.java</code></pre>
+<p>Expected output:</p>
+<pre><code>Succeeded: 19, Failed: 1 (out of 20)</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><code>VirtualThreadExecutorAdvanced.main</code> opens an <code>ExecutorService</code> from <code>Executors.newVirtualThreadPerTaskExecutor()</code> inside a <code>try</code>-with-resources block — this executor&#x27;s defining behavior is that it creates one <strong>brand-new virtual thread per submitted task</strong>, rather than reusing a fixed pool of worker threads the way <code>Executors.newFixedThreadPool</code> does.</li><li>The loop calls <code>executor.submit(...)</code> 20 times, each submission returning a <code>Future&lt;String&gt;</code> immediately, without blocking — internally, each submission spawns a new virtual thread that begins running <code>fetchFromService(id)</code> right away, mounted onto whichever carrier thread happens to be free.</li><li>Inside <code>fetchFromService</code>, <code>Thread.sleep(50)</code> simulates blocking network I/O. This is the critical moment for virtual threads: when a virtual thread calls a blocking operation the JVM knows how to virtualize (like <code>Thread.sleep</code>, or blocking I/O on <code>java.net</code>/<code>java.nio</code> sockets), it is <strong>unmounted</strong> from its carrier thread — the carrier is freed to run a *different* virtual thread&#x27;s code during that 50ms wait, rather than sitting idle.</li><li>When <code>id == 7</code>, the method throws a <code>RuntimeException</code> instead of returning normally — this simulates one call among the twenty actually failing, exactly like a real service timeout would.</li><li>The <code>try</code>-with-resources block&#x27;s implicit <code>executor.close()</code> call (a new, <code>AutoCloseable</code>-based executor shutdown behavior) blocks the *main* thread until every submitted virtual-thread task has completed — success or failure — before the block exits and execution continues to the <code>Future</code> result-collection loop.</li><li>That loop calls <code>f.get()</code> on each of the 20 futures. For the 19 successful tasks, <code>get()</code> returns the fetched string normally. For task 7, <code>get()</code> throws <code>ExecutionException</code>, wrapping the <code>RuntimeException</code> that was thrown inside the virtual thread — this is standard <code>Future</code> behavior, unchanged by virtual threads: an exception thrown inside the task is captured and re-thrown from <code>get()</code>, never silently lost.</li><li>The final counts, <code>succeeded=19</code> and <code>failed=1</code>, confirm all 20 tasks ran to completion (success or failure) using 20 separate virtual threads, mounted and unmounted onto a small carrier-thread pool behind the scenes — all written as plain, sequential, blocking-style code with no callbacks or <code>CompletableFuture</code> chaining.</li></ol>
+<pre><code>executor.submit() x 20                    small pool of carrier threads (~CPU cores)
+      |                                              |
+      v                                              v
+  20 virtual threads created            each virtual thread mounts, runs
+      |                                  until it calls Thread.sleep(50)
+      v                                              |
+  each blocks on sleep(50)  -------------&gt;  unmounted; carrier freed for another VT
+      |                                              |
+  sleep completes  &lt;---------------------  re-mounted onto (possibly different) carrier
+      |
+  returns result or throws  -&gt;  captured in its Future</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>This is a <strong>preview feature in Java 19</strong> — both <code>javac</code> (with <code>--release 19</code>) and <code>java</code> require <code>--enable-preview</code>, and the API was still being refined before its eventual finalization in a later JDK release; treat Java 19&#x27;s exact behavior as subject to change.</blockquote>
+<ul><li>Virtual threads help <strong>I/O-bound</strong> concurrency, not CPU-bound concurrency — a virtual thread running pure computation (no blocking calls) occupies its carrier thread for the entire duration, exactly like a platform thread would; creating a million virtual threads all doing tight CPU loops provides no benefit over a bounded number of platform threads, since real CPU core count is still the limiting factor.</li><li>Blocking inside a <code>synchronized</code> block or method historically <strong>pinned</strong> a virtual thread to its carrier (preventing unmounting) in early virtual-thread implementations including this Java 19 preview — a significant caveat for code migrating from thread-pool-based concurrency that relies heavily on <code>synchronized</code>; <code>java.util.concurrent.locks.ReentrantLock</code> does not have this limitation and is generally preferred with virtual threads.</li><li><code>Executors.newVirtualThreadPerTaskExecutor()</code> deliberately creates unlimited threads (one per task, no pooling/reuse) — this is safe specifically *because* virtual threads are cheap; using the same unbounded-creation pattern with a platform-thread executor would exhaust system resources.</li><li>Debugging and profiling tools were updated alongside this feature to understand virtual threads specifically — thread dumps can show hundreds of thousands of virtual threads meaningfully grouped by carrier, something that would be unreadable noise with an equivalent number of platform threads.</li><li>The <code>try</code>-with-resources auto-closing behavior of <code>ExecutorService</code> (Level 3) — waiting for all submitted tasks before the block exits — is itself a broader Java concurrency improvement introduced alongside virtual threads, making it easy to get correct, leak-free shutdown semantics without manually calling <code>shutdown()</code> and <code>awaitTermination()</code>.</li></ul>
+  <div class="nav"><a class="prv" href="0724-deprecate-finalization-for-removal.html"><span class="mini">← Previous</span>Deprecate finalization for removal</a><a class="nxt" href="0726-structured-concurrency-incubator.html"><span class="mini">Next →</span>Structured concurrency (incubator)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t725";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Structured concurrency (incubator) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 16. Java 19</div>
+  <div class="htitle">
+    <h1>Structured concurrency (incubator)</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Java 19</strong> (JEP 428) incubates <strong>structured concurrency</strong>: an API (<code>jdk.incubator.concurrent.StructuredTaskScope</code>) for treating a group of related concurrent subtasks as one unit of work with a single lifetime, rather than as independent threads whose fates must be tracked and joined manually. It builds directly on <a href="0725-virtual-threads-preview.md">virtual threads</a> — each subtask typically runs on its own virtual thread — but its purpose is orthogonal: where virtual threads make it *cheap* to spawn many concurrent tasks, structured concurrency makes it *safe and easy to reason about* what happens when you do. The core rule is simple: a <code>StructuredTaskScope</code> cannot exit (its <code>close()</code> cannot return) until every subtask it forked has completed, one way or another — success, failure, or cancellation. Being an incubator API in Java 19, it requires <code>--add-modules jdk.incubator.concurrent</code> and was still evolving toward finalization.</p>
+<h2>2. Why &amp; when</h2>
+<p>Traditional concurrent code that fires off several threads or <code>Future</code>s to do related work in parallel — call service A and service B concurrently, then combine their results — has a well-known set of failure modes that are easy to get wrong: if task A fails, does the code remember to cancel task B, or does B keep running to no purpose, wasting resources and possibly outliving the method that spawned it (a &quot;thread leak&quot;)? If the calling thread is interrupted or times out, do the child tasks get interrupted too, or do they keep running in the background, detached from anything tracking them? Exceptions thrown in a background thread, and the coordination logic to correctly propagate, aggregate, or ignore them, tend to be hand-rolled ad hoc with <code>CompletableFuture.allOf</code>, manual <code>ExecutorService</code> bookkeeping, or raw <code>Thread</code> + shared state — all error-prone, and all difficult to get right consistently across a codebase. Structured concurrency solves this by enforcing, at the API level, that concurrent subtasks are *scoped*: they&#x27;re forked within a block, and that block cannot complete until all subtasks are accounted for. This gives concurrent code the same reliable nesting and lifetime guarantees that structured *sequential* code has always had from <code>try</code>/<code>catch</code>/<code>finally</code> blocks — a subtask&#x27;s lifetime is strictly bounded by the scope that created it, cancellation and error propagation are automatic rather than manually wired, and a debugger or thread dump can show the parent-child relationship between tasks clearly. Reach for <code>StructuredTaskScope</code> any time a method needs to run a small number of related, unrelated-in-implementation subtasks concurrently and must combine their results (or fail fast if one fails) before returning.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    Future&lt;String&gt; userTask  = scope.fork(() -&gt; fetchUser(id));
+    Future&lt;String&gt; orderTask = scope.fork(() -&gt; fetchOrders(id));
+
+    scope.join();           // wait for both to finish (or one to fail)
+    scope.throwIfFailed();  // re-throw if either subtask threw
+
+    return new Response(userTask.resultNow(), orderTask.resultNow());
+} // scope.close() guarantees every forked subtask has terminated before this line finishes</code></pre>
+<p><code>ShutdownOnFailure</code> is a policy: if any subtask fails, the scope cancels the others automatically, so no subtask outlives the failed operation.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A StructuredTaskScope forks child subtasks that run concurrently; the scope cannot exit until every subtask has completed, and a ShutdownOnFailure policy cancels remaining siblings the moment one subtask fails">
+  <rect x="20" y="20" width="600" height="180" rx="10" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="330" y="42" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">try (var scope = new StructuredTaskScope.ShutdownOnFailure())</text>
+
+  <rect x="60" y="60" width="180" height="50" rx="8" fill="#0f1620" stroke="#79c0ff"/>
+  <text x="150" y="90" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">fork(fetchUser)</text>
+
+  <rect x="400" y="60" width="180" height="50" rx="8" fill="#0f1620" stroke="#79c0ff"/>
+  <text x="490" y="90" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">fork(fetchOrders)</text>
+
+  <text x="330" y="140" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">scope.join() — waits for BOTH to finish</text>
+  <text x="330" y="165" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">if one throws, the other is cancelled automatically</text>
+  <text x="330" y="185" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">scope cannot close() until both subtasks have terminated</text>
+</svg>
+<p>The scope&#x27;s own lifetime cannot end before every child task it started has ended, one way or another.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an &quot;aggregate results from two services&quot; operation, growing from a basic two-task fan-out/fan-in, to a failure-propagating version where either subtask failing cancels its sibling and fails fast, to a version with a hard deadline that cancels all subtasks if the combined operation takes too long — the realistic shape of a backend endpoint calling multiple downstream services.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ScopeBasic.java
+// Run with --enable-preview --add-modules jdk.incubator.concurrent — Java 19 incubator.
+import jdk.incubator.concurrent.StructuredTaskScope;
+import java.util.concurrent.*;
+
+public class ScopeBasic {
+    static String fetchUser(int id) throws InterruptedException {
+        Thread.sleep(50); // simulated network call
+        return &quot;user-&quot; + id;
+    }
+
+    static String fetchOrders(int id) throws InterruptedException {
+        Thread.sleep(70); // simulated network call
+        return &quot;orders-for-&quot; + id;
+    }
+
+    public static void main(String[] args) throws Exception {
+        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+            Future&lt;String&gt; userTask = scope.fork(() -&gt; fetchUser(42));
+            Future&lt;String&gt; orderTask = scope.fork(() -&gt; fetchOrders(42));
+
+            scope.join();
+            scope.throwIfFailed();
+
+            System.out.println(&quot;Combined: &quot; + userTask.resultNow() + &quot; + &quot; + orderTask.resultNow());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>javac --release 19 --enable-preview --add-modules jdk.incubator.concurrent ScopeBasic.java
+java --enable-preview --add-modules jdk.incubator.concurrent ScopeBasic</code></pre>
+<p>Expected output:</p>
+<pre><code>Combined: user-42 + orders-for-42</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ScopeFailureIntermediate.java
+// The SAME two-task fan-out, but now one subtask fails — demonstrating
+// ShutdownOnFailure&#x27;s automatic cancellation of the sibling task.
+import jdk.incubator.concurrent.StructuredTaskScope;
+import java.util.concurrent.*;
+
+public class ScopeFailureIntermediate {
+    static String fetchUser(int id) throws InterruptedException {
+        Thread.sleep(200); // deliberately slow, so we can observe it get cancelled
+        System.out.println(&quot;fetchUser finished (should NOT print if cancelled correctly)&quot;);
+        return &quot;user-&quot; + id;
+    }
+
+    static String fetchOrders(int id) throws InterruptedException {
+        Thread.sleep(30);
+        throw new RuntimeException(&quot;orders service unavailable for id=&quot; + id);
+    }
+
+    public static void main(String[] args) {
+        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+            Future&lt;String&gt; userTask = scope.fork(() -&gt; fetchUser(42));
+            Future&lt;String&gt; orderTask = scope.fork(() -&gt; fetchOrders(42));
+
+            scope.join();
+            scope.throwIfFailed(); // this line throws, since orderTask failed
+        } catch (Exception e) {
+            System.out.println(&quot;Operation failed as expected: &quot; + e.getCause().getMessage());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>javac --release 19 --enable-preview --add-modules jdk.incubator.concurrent ScopeFailureIntermediate.java
+java --enable-preview --add-modules jdk.incubator.concurrent ScopeFailureIntermediate</code></pre>
+<p>Expected output (the &quot;fetchUser finished&quot; line should NOT appear — it was cancelled):</p>
+<pre><code>Operation failed as expected: orders service unavailable for id=42</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ScopeDeadlineAdvanced.java
+// Adds a hard deadline via joinUntil — if the combined operation takes too
+// long, ALL subtasks are cancelled together, the production-flavored
+// pattern for enforcing a service-level timeout across fan-out calls.
+import jdk.incubator.concurrent.StructuredTaskScope;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.concurrent.*;
+
+public class ScopeDeadlineAdvanced {
+    static String fetchFast(String name, long delayMs) throws InterruptedException {
+        Thread.sleep(delayMs);
+        return name + &quot; completed in &quot; + delayMs + &quot;ms&quot;;
+    }
+
+    static String runWithDeadline(long deadlineMs, long... delaysMs) throws InterruptedException {
+        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+            Future&lt;String&gt;[] tasks = new Future[delaysMs.length];
+            for (int i = 0; i &lt; delaysMs.length; i++) {
+                int idx = i;
+                tasks[i] = scope.fork(() -&gt; fetchFast(&quot;task-&quot; + idx, delaysMs[idx]));
+            }
+
+            Instant deadline = Instant.now().plus(deadlineMs, ChronoUnit.MILLIS);
+            try {
+                scope.joinUntil(deadline);
+            } catch (TimeoutException e) {
+                return &quot;TIMED OUT after &quot; + deadlineMs + &quot;ms — all subtasks cancelled&quot;;
+            }
+            scope.throwIfFailed();
+
+            StringBuilder sb = new StringBuilder();
+            for (Future&lt;String&gt; t : tasks) sb.append(t.resultNow()).append(&quot;; &quot;);
+            return sb.toString();
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(runWithDeadline(500, 50, 80, 60)); // all fast enough
+        System.out.println(runWithDeadline(100, 50, 300, 60)); // one too slow -&gt; timeout
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>javac --release 19 --enable-preview --add-modules jdk.incubator.concurrent ScopeDeadlineAdvanced.java
+java --enable-preview --add-modules jdk.incubator.concurrent ScopeDeadlineAdvanced</code></pre>
+<p>Expected output:</p>
+<pre><code>task-0 completed in 50ms; task-1 completed in 80ms; task-2 completed in 60ms; 
+TIMED OUT after 100ms — all subtasks cancelled</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><code>ScopeDeadlineAdvanced.main</code> calls <code>runWithDeadline</code> twice: once with all delays comfortably under the deadline, once with one delay (<code>300ms</code>) that will exceed the <code>100ms</code> deadline.</li><li>Inside <code>runWithDeadline</code>, a <code>StructuredTaskScope.ShutdownOnFailure</code> is opened, and <code>scope.fork(...)</code> is called once per delay — each call immediately starts a new subtask (backed by a virtual thread) and returns a <code>Future&lt;String&gt;</code> that will hold its eventual result.</li><li><code>scope.joinUntil(deadline)</code> is the key structural difference from the earlier levels&#x27; plain <code>scope.join()</code>: it waits for all forked subtasks to complete, but only until the given <code>Instant</code> — if the deadline passes first, it throws <code>TimeoutException</code> instead of returning normally.</li><li>For the first call (<code>runWithDeadline(500, 50, 80, 60)</code>), all three subtasks finish well within 500ms, so <code>joinUntil</code> returns normally, <code>throwIfFailed()</code> finds nothing to report, and the loop collects each <code>Future</code>&#x27;s result via <code>resultNow()</code> (safe to call here specifically because <code>join</code>/<code>joinUntil</code> already guaranteed every subtask has terminated).</li><li>For the second call (<code>runWithDeadline(100, 50, 300, 60)</code>), <code>task-0</code> and <code>task-2</code> finish quickly, but <code>task-1</code> is still sleeping when the 100ms deadline arrives. <code>joinUntil</code> throws <code>TimeoutException</code> — and, critically, before that exception propagates out of the <code>try</code>-with-resources block, the <code>StructuredTaskScope</code>&#x27;s <code>close()</code> method (invoked automatically) forcibly interrupts and cancels <strong>every</strong> subtask that hasn&#x27;t finished yet, including <code>task-1</code>, which never gets to complete its <code>Thread.sleep(300)</code>.</li><li>This is the core guarantee structured concurrency provides that manual <code>Future</code>/<code>ExecutorService</code> bookkeeping does not automatically give you: the timeout on the *scope* is a timeout on the *entire group* of subtasks together, and no subtask can outlive that group&#x27;s failure — there&#x27;s no possibility of <code>task-1</code> continuing to run silently in the background after <code>runWithDeadline</code> has already returned its <code>&quot;TIMED OUT&quot;</code> message to the caller.</li><li>In the earlier <code>ScopeFailureIntermediate</code> example, the same underlying mechanism produces a different visible effect: <code>fetchOrders</code> throwing an exception triggers <code>ShutdownOnFailure</code>&#x27;s policy immediately, canceling <code>fetchUser</code>&#x27;s still-running virtual thread before its artificially slow <code>200ms</code> sleep completes — which is exactly why the <code>&quot;fetchUser finished&quot;</code> line never prints.</li></ol>
+<pre><code>runWithDeadline(100, 50, 300, 60)
+      |
+      v
+fork task-0 (50ms)   fork task-1 (300ms)   fork task-2 (60ms)
+      |                     |                     |
+   finishes            still running          finishes
+   at 50ms                                    at 60ms
+      |                     |                     |
+      +----- scope.joinUntil(deadline @ 100ms) ----+
+                             |
+                     deadline passes (100ms)
+                             |
+                             v
+                    TimeoutException thrown
+                             |
+                             v
+              scope.close() cancels task-1 (still running)
+                             |
+                             v
+                  &quot;TIMED OUT ... all subtasks cancelled&quot;</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>This is an <strong>incubator API</strong> (<code>jdk.incubator.concurrent</code>) in Java 19, layered on the also-preview <a href="0725-virtual-threads-preview.md">virtual threads</a> feature — it requires both <code>--enable-preview</code> and <code>--add-modules jdk.incubator.concurrent</code>, and its exact class and method names (<code>StructuredTaskScope</code>, <code>ShutdownOnFailure</code>) continued to evolve — including package relocation to <code>java.util.concurrent</code> — before eventual finalization in later JDKs.</blockquote>
+<ul><li><code>Future.resultNow()</code> (used throughout these examples) is only safe to call <strong>after</strong> <code>scope.join()</code>/<code>joinUntil()</code> has returned successfully — calling it on a subtask that hasn&#x27;t completed throws <code>IllegalStateException</code>; the structured-concurrency contract is what makes calling it immediately after <code>join()</code> provably safe.</li><li><code>ShutdownOnFailure</code> is one policy among several — <code>StructuredTaskScope.ShutdownOnSuccess</code> is the mirror-image policy for &quot;race several redundant tasks, take the first successful result, cancel the rest,&quot; useful for calling the same operation against multiple redundant replicas and using whichever answers first.</li><li>The scope&#x27;s <code>close()</code> — called automatically by <code>try</code>-with-resources — is what enforces the &quot;no subtask can outlive its scope&quot; guarantee; a <code>StructuredTaskScope</code> opened without a <code>try</code>-with-resources block (or one from which <code>close()</code> is never called) loses this safety guarantee entirely, so always use it as a resource.</li><li>Subtasks forked within a scope automatically inherit <code>ScopedValue</code>/thread-local-like context propagation in the finalized version of this API — even in this Java 19 incubator round, the design&#x27;s intent is that a subtask feels like &quot;the same logical operation, just running concurrently,&quot; not an unrelated detached thread.</li><li>Structured concurrency and virtual threads are complementary, not the same feature: virtual threads make forking many concurrent tasks cheap; <code>StructuredTaskScope</code> makes managing their combined lifetime, error propagation, and cancellation safe and automatic.</li></ul>
+  <div class="nav"><a class="prv" href="0725-virtual-threads-preview.html"><span class="mini">← Previous</span>Virtual threads (preview)</a><a class="nxt" href="0727-record-patterns-preview.html"><span class="mini">Next →</span>Record patterns (preview)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t726";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
