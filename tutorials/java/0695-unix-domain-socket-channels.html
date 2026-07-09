@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Unix-domain socket channels — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 13. Java 16</div>
+  <div class="htitle">
+    <h1>Unix-domain socket channels</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Java 16</strong> added standard support for <strong>Unix-domain sockets</strong> (JEP 380) in the <code>java.nio.channels</code> API — <code>SocketChannel</code>, <code>ServerSocketChannel</code>, and the new <code>UnixDomainSocketAddress</code> class now work with sockets addressed by a <strong>filesystem path</strong> rather than a host/port pair. A Unix-domain socket is an inter-process communication mechanism, available on Unix-like systems (Linux, macOS) and, since Windows 10, on Windows too, that lets two processes on the <strong>same machine</strong> communicate through a named path in the filesystem (like <code>/tmp/my-app.sock</code>) instead of going through the full TCP/IP networking stack.</p>
+<h2>2. Why &amp; when</h2>
+<p>Many applications only ever need to communicate between processes running on the *same host* — a local daemon and its CLI client, sidecar processes in a container pod, or components of a larger application split into separate processes for isolation. Using TCP sockets (<code>127.0.0.1:port</code>) for this works, but carries real overhead and rough edges that don&#x27;t apply when both endpoints are on the same machine: TCP&#x27;s connection-establishment overhead, the network stack&#x27;s checksumming and buffering machinery, and the practical annoyance of managing port numbers (avoiding collisions, deciding who owns which port). Unix-domain sockets address all of this: they&#x27;re addressed by filesystem path (so permissions can be controlled via ordinary file permissions), avoid the TCP/IP stack&#x27;s overhead since the OS kernel can shuttle data directly between the two processes, and eliminate port-number management entirely. Before Java 16, using Unix-domain sockets from Java meant a third-party native-binding library; from Java 16 onward, it&#x27;s a standard, first-class part of <code>java.nio.channels</code>. Reach for it when building same-host inter-process communication — a local service and its CLI, or communication between sidecar containers sharing a filesystem volume — where the two endpoints are guaranteed to be on the same machine.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">import java.net.UnixDomainSocketAddress;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.nio.file.Path;
+
+Path socketPath = Path.of(&quot;/tmp/my-app.sock&quot;);
+UnixDomainSocketAddress address = UnixDomainSocketAddress.of(socketPath);
+
+// Server side
+ServerSocketChannel server = ServerSocketChannel.open(java.net.StandardProtocolFamily.UNIX);
+server.bind(address);
+
+// Client side
+SocketChannel client = SocketChannel.open(address);</code></pre>
+<p>The API mirrors ordinary TCP socket channel usage almost exactly — the only differences are the <code>StandardProtocolFamily.UNIX</code> argument and using a filesystem-path-based <code>UnixDomainSocketAddress</code> instead of an <code>InetSocketAddress</code>.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two processes on the same machine communicate through a Unix-domain socket addressed by a filesystem path, bypassing the TCP/IP network stack">
+  <rect x="20" y="60" width="180" height="70" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="110" y="88" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Process A</text>
+  <text x="110" y="108" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">server</text>
+
+  <rect x="440" y="60" width="180" height="70" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="530" y="88" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Process B</text>
+  <text x="530" y="108" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">client</text>
+
+  <rect x="240" y="70" width="160" height="50" rx="6" fill="#161b22" stroke="#79c0ff"/>
+  <text x="320" y="92" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="monospace">/tmp/my-app.sock</text>
+  <text x="320" y="108" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">filesystem path, same host</text>
+
+  <line x1="200" y1="95" x2="240" y2="95" stroke="#3fb950" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="400" y1="95" x2="440" y2="95" stroke="#3fb950" stroke-width="2" marker-end="url(#a)"/>
+
+  <defs><marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#3fb950"/></marker></defs>
+</svg>
+<p>Two same-machine processes connect through a filesystem path, without any TCP/IP networking involved.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a tiny same-machine echo service — first a basic server that accepts one connection and echoes back what it reads, with a client sending a message, then a version handling multiple sequential client connections in a loop, then a small request/response protocol layered on top (a simple line-based &quot;ping&quot; command returning &quot;pong&quot; plus a timestamp).</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UnixSocketEchoBasic.java
+import java.net.StandardProtocolFamily;
+import java.net.UnixDomainSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+public class UnixSocketEchoBasic {
+    public static void main(String[] args) throws Exception {
+        Path socketPath = Files.createTempFile(&quot;echo&quot;, &quot;.sock&quot;);
+        Files.delete(socketPath); // the path must not exist yet for bind()
+        UnixDomainSocketAddress address = UnixDomainSocketAddress.of(socketPath);
+
+        try (ServerSocketChannel server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
+            server.bind(address);
+
+            Thread serverThread = new Thread(() -&gt; {
+                try (SocketChannel accepted = server.accept()) {
+                    ByteBuffer buffer = ByteBuffer.allocate(256);
+                    int read = accepted.read(buffer);
+                    buffer.flip();
+                    accepted.write(buffer); // echo back exactly what was read
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            serverThread.start();
+
+            try (SocketChannel client = SocketChannel.open(address)) {
+                client.write(ByteBuffer.wrap(&quot;hello over a unix socket&quot;.getBytes()));
+                ByteBuffer response = ByteBuffer.allocate(256);
+                client.read(response);
+                response.flip();
+                byte[] bytes = new byte[response.remaining()];
+                response.get(bytes);
+                System.out.println(&quot;Client received: &quot; + new String(bytes));
+            }
+            serverThread.join();
+        } finally {
+            Files.deleteIfExists(socketPath);
+        }
+    }
+}</code></pre>
+<p><strong>How to run (Linux or macOS — Unix-domain sockets aren&#x27;t available in every environment, e.g. some container sandboxes):</strong></p>
+<pre><code>java UnixSocketEchoBasic.java</code></pre>
+<p>Expected output:</p>
+<pre><code>Client received: hello over a unix socket</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: UnixSocketMultiClient.java
+import java.net.StandardProtocolFamily;
+import java.net.UnixDomainSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+public class UnixSocketMultiClient {
+    public static void main(String[] args) throws Exception {
+        Path socketPath = Files.createTempFile(&quot;multi&quot;, &quot;.sock&quot;);
+        Files.delete(socketPath);
+        UnixDomainSocketAddress address = UnixDomainSocketAddress.of(socketPath);
+
+        try (ServerSocketChannel server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
+            server.bind(address);
+
+            Thread serverThread = new Thread(() -&gt; {
+                try {
+                    for (int i = 0; i &lt; 3; i++) {
+                        try (SocketChannel accepted = server.accept()) {
+                            ByteBuffer buffer = ByteBuffer.allocate(256);
+                            int read = accepted.read(buffer);
+                            buffer.flip();
+                            byte[] bytes = new byte[buffer.remaining()];
+                            buffer.get(bytes);
+                            String reply = &quot;echo: &quot; + new String(bytes);
+                            accepted.write(ByteBuffer.wrap(reply.getBytes()));
+                        }
+                    }
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            serverThread.start();
+
+            for (int i = 1; i &lt;= 3; i++) {
+                try (SocketChannel client = SocketChannel.open(address)) {
+                    client.write(ByteBuffer.wrap((&quot;message &quot; + i).getBytes()));
+                    ByteBuffer response = ByteBuffer.allocate(256);
+                    client.read(response);
+                    response.flip();
+                    byte[] bytes = new byte[response.remaining()];
+                    response.get(bytes);
+                    System.out.println(new String(bytes));
+                }
+            }
+            serverThread.join();
+        } finally {
+            Files.deleteIfExists(socketPath);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java UnixSocketMultiClient.java</code></pre>
+<p>Expected output:</p>
+<pre><code>echo: message 1
+echo: message 2
+echo: message 3</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: UnixSocketPingProtocol.java
+import java.net.StandardProtocolFamily;
+import java.net.UnixDomainSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+public class UnixSocketPingProtocol {
+    static String handleRequest(String request) {
+        if (request.equals(&quot;PING&quot;)) {
+            return &quot;PONG &quot; + System.currentTimeMillis();
+        }
+        return &quot;ERROR unknown command: &quot; + request;
+    }
+
+    public static void main(String[] args) throws Exception {
+        Path socketPath = Files.createTempFile(&quot;ping&quot;, &quot;.sock&quot;);
+        Files.delete(socketPath);
+        UnixDomainSocketAddress address = UnixDomainSocketAddress.of(socketPath);
+
+        try (ServerSocketChannel server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
+            server.bind(address);
+
+            Thread serverThread = new Thread(() -&gt; {
+                try (SocketChannel accepted = server.accept()) {
+                    ByteBuffer buffer = ByteBuffer.allocate(256);
+                    int read = accepted.read(buffer);
+                    buffer.flip();
+                    byte[] bytes = new byte[buffer.remaining()];
+                    buffer.get(bytes);
+                    String request = new String(bytes);
+                    String response = handleRequest(request);
+                    accepted.write(ByteBuffer.wrap(response.getBytes()));
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            serverThread.start();
+
+            try (SocketChannel client = SocketChannel.open(address)) {
+                client.write(ByteBuffer.wrap(&quot;PING&quot;.getBytes()));
+                ByteBuffer response = ByteBuffer.allocate(256);
+                client.read(response);
+                response.flip();
+                byte[] bytes = new byte[response.remaining()];
+                response.get(bytes);
+                String reply = new String(bytes);
+                System.out.println(&quot;Server replied: &quot; + reply.split(&quot; &quot;)[0]); // print just &quot;PONG&quot;, timestamp varies
+            }
+            serverThread.join();
+        } finally {
+            Files.deleteIfExists(socketPath);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java UnixSocketPingProtocol.java</code></pre>
+<p>Expected output:</p>
+<pre><code>Server replied: PONG</code></pre>
+<p>Level 3 layers a minimal request/response <strong>protocol</strong> on top of the raw byte channel: the client sends the literal string <code>&quot;PING&quot;</code>, <code>handleRequest</code> on the server side interprets it and replies with <code>&quot;PONG &lt;timestamp&gt;&quot;</code>, and since the timestamp varies every run, the client only prints the fixed <code>&quot;PONG&quot;</code> portion — the same design pattern (parse a request, dispatch to a handler, format a response) that a real same-host RPC protocol over a Unix-domain socket would use, just reduced to its simplest possible form.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>main</code> creates a temporary file path via <code>Files.createTempFile(...)</code> purely to get a unique, collision-free filename, then immediately deletes it with <code>Files.delete(socketPath)</code> — this is necessary because <code>ServerSocketChannel.bind()</code> requires the socket path to <strong>not</strong> already exist as a regular file; the OS creates the special socket file at that path during <code>bind()</code> itself.</li><li><code>ServerSocketChannel.open(StandardProtocolFamily.UNIX)</code> opens a server channel specifically for the Unix-domain protocol family (as opposed to the default <code>INET</code>/<code>INET6</code> used for ordinary TCP), and <code>.bind(address)</code> binds it to the filesystem path wrapped in <code>UnixDomainSocketAddress</code>.</li><li>A separate <code>serverThread</code> is started to run <code>server.accept()</code> — this blocks until a client connects, so it must run concurrently with the client-side code below (running both in the same thread would deadlock, since <code>accept()</code> would block forever waiting for a connection the client hasn&#x27;t made yet).</li><li>Back in the main thread, <code>SocketChannel.open(address)</code> connects a client channel to the same socket path — the OS kernel matches this connection attempt against the listening server channel bound to that exact path.</li><li>Once connected, <code>client.write(ByteBuffer.wrap(&quot;PING&quot;.getBytes()))</code> sends the literal bytes <code>P</code>, <code>I</code>, <code>N</code>, <code>G</code> through the socket; on the server side, <code>accepted.read(buffer)</code> (inside <code>serverThread</code>) receives those same bytes into its own <code>ByteBuffer</code>.</li><li><code>handleRequest(&quot;PING&quot;)</code> checks the received string against the known <code>&quot;PING&quot;</code> command and returns <code>&quot;PONG &quot; + System.currentTimeMillis()</code> — a response string that includes a real, always-changing timestamp appended after a space.</li><li>The server writes that response back through the same connected channel (<code>accepted.write(...)</code>), and the client&#x27;s <code>client.read(response)</code> receives it into its own buffer.</li><li>Back in the client, <code>new String(bytes)</code> reconstructs the full response string (e.g. <code>&quot;PONG 1751234567890&quot;</code>), and <code>reply.split(&quot; &quot;)[0]</code> extracts just the first word (<code>&quot;PONG&quot;</code>), discarding the variable timestamp before printing — ensuring the printed output is exactly reproducible across runs despite the underlying protocol genuinely including a real, changing timestamp.</li><li>Both <code>SocketChannel</code>s and the <code>ServerSocketChannel</code> are opened inside <code>try</code>-with-resources blocks, so each is automatically closed once its block exits; <code>serverThread.join()</code> ensures the main thread waits for the server-side handling to fully complete before the program proceeds to clean up the socket file in the <code>finally</code> block.</li></ol>
+<pre><code>main thread                              serverThread
+   │                                          │
+   │                                    server.accept() (blocks)
+SocketChannel.open(address) ─────────────────►│ (connection established)
+   │                                          │
+client.write(&quot;PING&quot;) ─────────────────────────►│ accepted.read(...) -&gt; &quot;PING&quot;
+   │                                    handleRequest(&quot;PING&quot;) -&gt; &quot;PONG &lt;ts&gt;&quot;
+   │◄──────────────────────────────────── accepted.write(&quot;PONG &lt;ts&gt;&quot;)
+client.read(...) -&gt; &quot;PONG &lt;ts&gt;&quot;                │
+print &quot;PONG&quot; (timestamp stripped)              │</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><code>ServerSocketChannel.bind(address)</code> requires that <strong>no file already exists</strong> at the target path — the OS creates the special Unix-domain socket file during <code>bind()</code>. If a stale socket file from a previous, uncleanly-terminated run is still present at that path, <code>bind()</code> fails; production code typically checks for and removes a stale socket file (after confirming no other process is actually using it) before binding.</blockquote>
+<ul><li>Unix-domain sockets only work for <strong>same-machine</strong> communication — they cannot be used across a network the way TCP sockets can; if the two endpoints might ever run on different hosts, use ordinary TCP sockets instead.</li><li>The socket file created at the bound path should be cleaned up (deleted) when the server shuts down — an abandoned socket file left on disk after a crash can block a future <code>bind()</code> attempt at the same path until manually removed.</li><li>Availability depends on the OS: Linux and macOS have long supported Unix-domain sockets; Windows gained support starting with Windows 10 (1803) — code intending to run across all three should check for <code>UnsupportedOperationException</code> or otherwise handle environments lacking support.</li><li>Beyond simple byte throughput, Unix-domain sockets on many platforms also support passing file descriptors and credentials between processes at the OS level — capabilities Java&#x27;s <code>java.nio.channels</code> API in this JEP does not expose, so if you need those specific OS-level features, you&#x27;d still need a native-interop layer.</li><li>Compared to loopback TCP (<code>127.0.0.1</code>), Unix-domain sockets typically have lower latency and overhead for same-host IPC, since the kernel can shuttle data directly without traversing the full network stack.</li></ul>
+  <div class="nav"><a class="prv" href="0694-foreign-memory-access-api-3rd-incubator.html"><span class="mini">← Previous</span>Foreign-Memory Access API (3rd incubator)</a><a class="nxt" href="0696-strong-encapsulation-of-jdk-internals-by-default.html"><span class="mini">Next →</span>Strong encapsulation of JDK internals by default</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t695";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

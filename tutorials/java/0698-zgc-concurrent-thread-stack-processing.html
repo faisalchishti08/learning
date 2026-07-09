@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZGC concurrent thread-stack processing — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 13. Java 16</div>
+  <div class="htitle">
+    <h1>ZGC concurrent thread-stack processing</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Java 16</strong> taught <strong>ZGC</strong> to process <strong>thread stacks concurrently</strong> rather than during a stop-the-world pause (JEP 376). Garbage collectors need to scan each application thread&#x27;s stack to find <strong>GC roots</strong> — local variables that reference heap objects, which anchor those objects as reachable. Before this change, even ZGC (a collector otherwise designed around minimizing stop-the-world pauses) had to briefly pause each thread to scan its stack safely, since a thread&#x27;s stack changes constantly as it executes. Java 16 moved this stack-scanning work to run <strong>concurrently</strong>, while application threads continue executing, removing one of the last remaining sources of stop-the-world pause time in ZGC&#x27;s design.</p>
+<h2>2. Why &amp; when</h2>
+<p>ZGC&#x27;s whole design philosophy is minimizing pause times so they don&#x27;t scale with heap size, but stack scanning had remained an exception: because a thread&#x27;s stack is actively being read from and written to by that very thread while it runs, safely scanning it traditionally required briefly stopping the thread first, to guarantee the collector sees a consistent snapshot rather than a stack mutating mid-scan. As applications used more threads (common in highly concurrent server workloads), the cumulative pause time spent stopping every thread to scan its stack became a larger and larger fraction of ZGC&#x27;s total pause time, working against the exact goal ZGC exists to achieve. This JEP applied a technique to make stack scanning safe to perform concurrently, without stopping the owning thread — closing this gap and making ZGC&#x27;s pauses even less dependent on the number of live threads. This is, like <a href="0697-elastic-metaspace.md">Elastic Metaspace</a>, an internal collector implementation improvement with no application-facing API — but it&#x27;s directly relevant to any application already choosing ZGC for latency-sensitive workloads with many threads, since it further reduces pause times exactly there.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-bash"># No new flags or APIs — this is an internal ZGC algorithm improvement
+java -XX:+UseZGC -Xlog:gc,gc+phases -Xmx8g MyApp
+
+# Compare pause-time logs before/after this change conceptually:
+# Pre-Java 16 ZGC: pause time includes a &quot;stop threads to scan stacks&quot; component
+# Java 16+ ZGC: stack scanning happens concurrently; pauses shrink further</code></pre>
+<p>You observe the benefit through GC pause-time logs and phase timings, not through any new code you write — the improvement lives entirely inside ZGC&#x27;s implementation.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Before Java 16, ZGC stopped each application thread briefly to scan its stack; Java 16 lets stack scanning run concurrently without stopping threads">
+  <rect x="20" y="20" width="280" height="160" rx="8" fill="#1c2430" stroke="#8b949e"/>
+  <text x="160" y="42" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">Before Java 16</text>
+  <text x="160" y="70" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">thread stops briefly</text>
+  <text x="160" y="90" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">stack scanned (paused)</text>
+  <text x="160" y="110" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">thread resumes</text>
+  <text x="160" y="145" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">pause scales with thread count</text>
+
+  <rect x="340" y="20" width="280" height="160" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="480" y="42" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Java 16+</text>
+  <text x="480" y="70" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">thread keeps running</text>
+  <text x="480" y="90" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">stack scanned concurrently</text>
+  <text x="480" y="110" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">no separate pause needed</text>
+  <text x="480" y="145" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">pause less dependent on thread count</text>
+</svg>
+<p>The same stack-scanning work happens either as a brief per-thread pause or concurrently alongside continued execution.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a multi-threaded workload with many active threads under ZGC — first a baseline with a handful of threads doing allocation-heavy work while logging GC pause times, then scaling up the thread count substantially to see whether pause times grow with thread count, then a small harness that reports both total GC pause time and thread count together for a clear before/after-style comparison an operator could use when evaluating ZGC across releases.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: FewThreadsWorkload.java
+import java.util.concurrent.CountDownLatch;
+
+public class FewThreadsWorkload {
+    public static void main(String[] args) throws InterruptedException {
+        int threadCount = 4;
+        CountDownLatch done = new CountDownLatch(threadCount);
+        long start = System.nanoTime();
+
+        for (int t = 0; t &lt; threadCount; t++) {
+            new Thread(() -&gt; {
+                byte[][] buffers = new byte[1000][];
+                for (int round = 0; round &lt; 2000; round++) {
+                    for (int i = 0; i &lt; buffers.length; i++) {
+                        buffers[i] = new byte[512];
+                    }
+                }
+                done.countDown();
+            }).start();
+        }
+
+        done.await();
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;Threads: &quot; + threadCount + &quot;, elapsed: &quot; + elapsedMs + &quot; ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java -XX:+UseZGC -Xlog:gc -Xmx1g FewThreadsWorkload.java</code></pre>
+<p>Expected output shape (GC log lines interleaved with the final result; exact timings and the specific collection trigger reason vary by run):</p>
+<pre><code>[0.380s][info][gc] GC(3) Garbage Collection (Allocation Stall) 1024M(100%)-&gt;34M(3%)
+...
+Threads: 4, elapsed: 160 ms</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ManyThreadsWorkload.java
+import java.util.concurrent.CountDownLatch;
+
+public class ManyThreadsWorkload {
+    public static void main(String[] args) throws InterruptedException {
+        int threadCount = 200;
+        CountDownLatch done = new CountDownLatch(threadCount);
+        long start = System.nanoTime();
+
+        for (int t = 0; t &lt; threadCount; t++) {
+            new Thread(() -&gt; {
+                byte[][] buffers = new byte[50][];
+                for (int round = 0; round &lt; 200; round++) {
+                    for (int i = 0; i &lt; buffers.length; i++) {
+                        buffers[i] = new byte[512];
+                    }
+                }
+                done.countDown();
+            }).start();
+        }
+
+        done.await();
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;Threads: &quot; + threadCount + &quot;, elapsed: &quot; + elapsedMs + &quot; ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run with pause-time logging:</strong></p>
+<pre><code>java -XX:+UseZGC -Xlog:gc,safepoint -Xmx1g ManyThreadsWorkload.java</code></pre>
+<p>Expected output shape (200 threads now active concurrently; the <code>-Xlog:gc,safepoint</code> output shows individual safepoint operations like <code>XMarkEnd</code> and <code>XRelocateStart</code> with their own timings — ZGC&#x27;s concurrent stack scanning means the increase in thread count does not translate into a proportional increase in stop-the-world pause time):</p>
+<pre><code>[0.235s][info][safepoint] Safepoint &quot;XMarkEnd&quot;, Time since last: 5247750 ns, Reaching safepoint: 4170333 ns, Cleanup: 2250 ns, At safepoint: 18958 ns, Total: 4191541 ns
+[0.260s][info][gc       ] GC(0) Garbage Collection (Warmup) 278M(27%)-&gt;674M(66%)
+...
+Threads: 200, elapsed: 64 ms</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ThreadScalingReport.java
+import java.lang.management.ManagementFactory;
+import java.lang.management.GarbageCollectorMXBean;
+import java.util.concurrent.CountDownLatch;
+import java.util.List;
+
+public class ThreadScalingReport {
+    static long totalGcTime() {
+        return ManagementFactory.getGarbageCollectorMXBeans().stream()
+                .filter(b -&gt; b.getName().contains(&quot;ZGC&quot;))
+                .mapToLong(GarbageCollectorMXBean::getCollectionTime)
+                .sum();
+    }
+
+    static long runWorkload(int threadCount) throws InterruptedException {
+        CountDownLatch done = new CountDownLatch(threadCount);
+        for (int t = 0; t &lt; threadCount; t++) {
+            new Thread(() -&gt; {
+                byte[][] buffers = new byte[200][];
+                for (int round = 0; round &lt; 500; round++) {
+                    for (int i = 0; i &lt; buffers.length; i++) {
+                        buffers[i] = new byte[512];
+                    }
+                }
+                done.countDown();
+            }).start();
+        }
+        done.await();
+        return totalGcTime();
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int[] threadCounts = { 10, 50, 200 };
+        long previousGcTime = totalGcTime();
+
+        for (int count : threadCounts) {
+            long gcTimeAfter = runWorkload(count);
+            long delta = gcTimeAfter - previousGcTime;
+            System.out.println(&quot;Threads=&quot; + count + &quot;: cumulative GC time delta=&quot; + delta + &quot;ms&quot;);
+            previousGcTime = gcTimeAfter;
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java -XX:+UseZGC -Xmx1g ThreadScalingReport.java</code></pre>
+<p>Expected output shape (note that each thread performs the same fixed amount of allocation, so total allocation volume also scales with thread count — the interesting signal is that the GC time delta grows *sub-linearly* relative to that volume, e.g. a 4x jump in thread count from 50 to 200 produces roughly a 2x jump in GC time, not 4x, consistent with per-thread stack-scanning no longer being a proportional per-thread cost):</p>
+<pre><code>Threads=10: cumulative GC time delta=0ms
+Threads=50: cumulative GC time delta=96ms
+Threads=200: cumulative GC time delta=197ms</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><code>ThreadScalingReport.main</code> iterates over three increasing thread counts (<code>10</code>, <code>50</code>, <code>200</code>), calling <code>runWorkload(count)</code> for each and tracking <code>totalGcTime()</code>&#x27;s cumulative value before and after each run.</li><li>Inside <code>runWorkload</code>, <code>count</code> threads are launched, each running an identical small allocation loop (30 buffers of 512 bytes, refreshed 100 times), and a <code>CountDownLatch</code> ensures <code>main</code> waits for every thread in that wave to finish before measuring GC time again.</li><li><code>totalGcTime()</code> sums <code>getCollectionTime()</code> across every <code>GarbageCollectorMXBean</code> whose name contains <code>&quot;ZGC&quot;</code> (matching however many beans this specific JDK version exposes for ZGC — one or several, depending on version, as discussed in <a href="0683-zgc-production-ready.md">ZGC production-ready</a>) — giving the cumulative milliseconds ZGC has spent collecting since JVM startup, at the moment each call is made.</li><li>For each thread count in turn, the delta between the cumulative GC time *after* that wave&#x27;s workload and the cumulative GC time recorded *before* it isolates roughly how much collection time that specific wave&#x27;s allocation pressure (and its accompanying stack-scanning work, across however many threads were active) contributed.</li><li>Because each thread performs the same fixed amount of allocation work, increasing <code>threadCount</code> also increases the *total* allocation volume across the wave — so collection time isn&#x27;t expected to stay perfectly flat. What Java 16&#x27;s concurrent thread-stack scanning changes is that the <strong>per-thread cost of scanning that thread&#x27;s stack</strong> no longer requires stopping it, so the growth in collection time as thread count rises should track roughly with total allocation volume, not be inflated by an additional, separate per-thread stack-scanning pause cost stacking on top. In the sample run above, a 4x increase in thread count (50 to 200) produced only around a 2x increase in GC time delta — a sub-linear relationship consistent with stack-scanning no longer adding a proportional per-thread tax.</li><li>Each wave&#x27;s result line — thread count alongside the GC time delta attributable to it — is printed, giving a simple, three-point empirical picture of how (little) GC overhead scales with thread count under ZGC on Java 16+.</li></ol>
+<pre><code>for threadCount in [10, 50, 200]:
+    launch threadCount threads, each allocating a bounded amount
+    wait for all to finish (CountDownLatch)
+    measure delta in cumulative ZGC collection time
+    print threadCount alongside that delta</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>The GC-time deltas measured here reflect <strong>collection time only</strong> (via <code>GarbageCollectorMXBean.getCollectionTime()</code>), not the separate, harder-to-measure-from-pure-Java concept of &quot;stop-the-world pause time specifically attributable to stack scanning.&quot; A precise before/after comparison of this specific JEP&#x27;s benefit is better done via <code>-Xlog:gc,safepoint</code> and vendor profiling tools than by application-level <code>MemoryMXBean</code>/<code>GarbageCollectorMXBean</code> measurements alone — treat this tutorial&#x27;s numbers as illustrative of the qualitative pattern, not a rigorous benchmark.</blockquote>
+<ul><li>This is an <strong>internal ZGC implementation change</strong> with no new application-facing API — you can&#x27;t &quot;turn on&quot; concurrent thread-stack scanning separately from ZGC itself; it&#x27;s simply how ZGC&#x27;s stack scanning works from Java 16 onward.</li><li>The benefit scales with <strong>thread count</strong>: applications with many concurrently active threads (highly concurrent server workloads, thread-per-request architectures) benefit more than single- or few-threaded applications, where stack-scanning pause time was never a large contributor to begin with.</li><li>This JEP, alongside <a href="0697-elastic-metaspace.md">Elastic Metaspace</a> in the very same release, reflects a broader pattern of incremental, implementation-level JVM improvements that require no application code changes yet directly improve production behavior once you&#x27;re running on the newer JDK.</li><li>If evaluating whether to upgrade a latency-sensitive, high-thread-count ZGC-based service specifically for this improvement, the most reliable approach is comparing real <code>-Xlog:gc,safepoint</code> pause-time logs from representative production-like load on both JDK versions, rather than relying on a synthetic microbenchmark.</li><li>ZGC&#x27;s design continued evolving in JDK releases after Java 16 (including a later shift to a generational architecture) — treat any specific internal mechanism described here as accurate to the Java 16 era specifically, not necessarily a permanent characteristic of all future ZGC versions.</li></ul>
+  <div class="nav"><a class="prv" href="0697-elastic-metaspace.html"><span class="mini">← Previous</span>Elastic Metaspace</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t698";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
