@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>G1 abortable mixed collections — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 9. Java 12</div>
+  <div class="htitle">
+    <h1>G1 abortable mixed collections</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>G1 abortable mixed collections</strong>, added in <strong>Java 12</strong> (JEP 344), lets G1&#x27;s &quot;mixed&quot; garbage collection pauses <strong>stop early</strong> if they&#x27;re about to exceed the pause-time goal you set with <code>-XX:MaxGCPauseMillis</code>. G1 works by collecting the heap in regions, and a &quot;mixed collection&quot; pause processes both young-generation regions and a batch of old-generation regions in the same pause. Before Java 12, once G1 committed to collecting a set of old regions in a mixed pause, it collected *all* of them, even if that meant blowing well past the target pause time — the collection wasn&#x27;t checkable or interruptible mid-flight. From Java 12 onward, G1 checks its progress periodically during a mixed collection and can abort — stopping after the current region — if it&#x27;s already run long enough, deferring the remaining old regions to a future pause.</p>
+<h2>2. Why &amp; when</h2>
+<p><code>-XX:MaxGCPauseMillis</code> is meant to be a *soft goal* the collector tries to honor, but before this change, mixed collections could silently and significantly overshoot it — an application configured for, say, 200 ms pauses might occasionally see 500+ ms pauses simply because the collector had already picked a batch of old regions and had no way to bail out partway through. This is exactly the kind of latency spike that erodes trust in a pause-time goal and makes G1 harder to tune predictably. Abortable mixed collections make the goal genuinely closer to real for the mixed-collection phase (young-only pauses were already more predictable). You benefit automatically just by running on Java 12+ with G1 (the default collector) — there&#x27;s no new flag to opt in, it&#x27;s a scheduling improvement to how G1 respects the pause-time goal you already configure.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-bash"># Set a pause-time goal — G1 tries to keep pauses under this target
+java -XX:MaxGCPauseMillis=200 -Xlog:gc MyApp
+
+# Before Java 12: a mixed collection pause might commit to N old regions
+# and finish ALL of them even if the pause blows past 200ms.
+#
+# Java 12+: G1 checks elapsed time between old regions during the pause
+# and can stop early (&quot;abort&quot;), leaving the rest for a later mixed collection.</code></pre>
+<p>No API or flag changes — this is purely internal scheduling logic inside G1&#x27;s mixed collection algorithm, making the existing <code>MaxGCPauseMillis</code> goal more reliably honored.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 620 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Before Java 12 a mixed collection processes all committed old regions even past the pause goal; from Java 12 it can abort early and defer remaining regions">
+  <rect x="10" y="20" width="290" height="150" rx="8" fill="#1c2430" stroke="#f85149"/>
+  <text x="155" y="42" fill="#f85149" font-size="12" text-anchor="middle" font-family="sans-serif">Before Java 12</text>
+  <rect x="25" y="55" width="40" height="24" fill="#79c0ff"/><text x="45" y="72" fill="#0d1117" font-size="9" text-anchor="middle">Y</text>
+  <rect x="70" y="55" width="40" height="24" fill="#6db33f"/><text x="90" y="72" fill="#0d1117" font-size="9" text-anchor="middle">O1</text>
+  <rect x="115" y="55" width="40" height="24" fill="#6db33f"/><text x="135" y="72" fill="#0d1117" font-size="9" text-anchor="middle">O2</text>
+  <rect x="160" y="55" width="40" height="24" fill="#f85149"/><text x="180" y="72" fill="#0d1117" font-size="9" text-anchor="middle">O3</text>
+  <text x="20" y="105" fill="#f85149" font-size="10" font-family="sans-serif">Goal: 200ms — pause runs</text>
+  <text x="20" y="120" fill="#f85149" font-size="10" font-family="sans-serif">to 480ms finishing ALL</text>
+  <text x="20" y="135" fill="#f85149" font-size="10" font-family="sans-serif">committed old regions.</text>
+  <text x="20" y="155" fill="#8b949e" font-size="9" font-family="sans-serif">No way to bail out mid-pause.</text>
+
+  <rect x="320" y="20" width="290" height="150" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="465" y="42" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Java 12+</text>
+  <rect x="335" y="55" width="40" height="24" fill="#79c0ff"/><text x="355" y="72" fill="#0d1117" font-size="9" text-anchor="middle">Y</text>
+  <rect x="380" y="55" width="40" height="24" fill="#6db33f"/><text x="400" y="72" fill="#0d1117" font-size="9" text-anchor="middle">O1</text>
+  <rect x="425" y="55" width="40" height="24" fill="#6db33f"/><text x="445" y="72" fill="#0d1117" font-size="9" text-anchor="middle">O2</text>
+  <rect x="470" y="55" width="40" height="24" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,2"/><text x="490" y="72" fill="#8b949e" font-size="9" text-anchor="middle">O3</text>
+  <text x="335" y="105" fill="#6db33f" font-size="10" font-family="sans-serif">Goal: 200ms — pause checks</text>
+  <text x="335" y="120" fill="#6db33f" font-size="10" font-family="sans-serif">time after O2, aborts before</text>
+  <text x="335" y="135" fill="#6db33f" font-size="10" font-family="sans-serif">O3, stays near 200ms.</text>
+  <text x="335" y="155" fill="#8b949e" font-size="9" font-family="sans-serif">O3 deferred to next mixed pause.</text>
+</svg>
+<p>Java 12&#x27;s G1 checks its elapsed time between old regions and can stop the pause early, deferring leftover regions instead of always finishing the whole batch.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an application that generates enough old-generation garbage to trigger G1 mixed collections — first running with a default pause goal, then tightening the goal to make mixed-collection behavior visible, then using GC logging to observe the abort behavior across multiple mixed-collection pauses.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: OldGenChurn.java
+import java.util.ArrayList;
+import java.util.List;
+
+public class OldGenChurn {
+    static List&lt;byte[]&gt; survivors = new ArrayList&lt;&gt;();
+
+    public static void main(String[] args) {
+        // Promote enough objects to old generation to eventually trigger mixed GCs.
+        for (int i = 0; i &lt; 2_000_000; i++) {
+            byte[] chunk = new byte[256];
+            survivors.add(chunk);
+            if (survivors.size() &gt; 100_000) {
+                survivors.subList(0, 20_000).clear(); // free some, keep churn going
+            }
+        }
+        System.out.println(&quot;Done. Survivor list size: &quot; + survivors.size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xmx256m -Xlog:gc OldGenChurn.java</code></p>
+<p>Expected output includes program output plus interleaved GC log lines:</p>
+<pre><code>[0.812s][info][gc] GC(12) Pause Young (Normal) (G1 Evacuation Pause) 45M-&gt;20M(256M) 12.345ms
+[1.203s][info][gc] GC(15) Pause Young (Mixed) (G1 Evacuation Pause) 60M-&gt;25M(256M) 18.901ms
+...
+Done. Survivor list size: 100000</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<p><strong>How to run with a tight pause goal</strong>, making G1 work harder to stay within budget:</p>
+<pre><code>java -Xmx256m -XX:MaxGCPauseMillis=50 -Xlog:gc OldGenChurn.java</code></pre>
+<p>Expected output shows more frequent, shorter mixed-collection pauses as G1 tries to respect the tighter 50 ms goal:</p>
+<pre><code>[0.734s][info][gc] GC(10) Pause Young (Mixed) (G1 Evacuation Pause) 58M-&gt;24M(256M) 22.145ms
+[0.798s][info][gc] GC(11) Pause Young (Mixed) (G1 Evacuation Pause) 61M-&gt;26M(256M) 19.882ms
+Done. Survivor list size: 100000</code></pre>
+<p>Tightening <code>MaxGCPauseMillis</code> doesn&#x27;t change the program&#x27;s output, but it changes how G1 paces mixed collections — with abortable mixed collections (Java 12+), G1 is far less likely to produce a rogue pause that badly overshoots the 50 ms target, instead spreading old-region reclamation across more, shorter pauses.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: OldGenChurnTimed.java
+import java.util.ArrayList;
+import java.util.List;
+
+public class OldGenChurnTimed {
+    static List&lt;byte[]&gt; survivors = new ArrayList&lt;&gt;();
+
+    public static void main(String[] args) {
+        long worstGapMs = 0;
+        long last = System.nanoTime();
+
+        for (int i = 0; i &lt; 5_000_000; i++) {
+            byte[] chunk = new byte[256];
+            survivors.add(chunk);
+            if (survivors.size() &gt; 150_000) {
+                survivors.subList(0, 30_000).clear();
+            }
+            if (i % 100_000 == 0) {
+                long now = System.nanoTime();
+                long gapMs = (now - last) / 1_000_000;
+                if (gapMs &gt; worstGapMs) worstGapMs = gapMs;
+                last = now;
+            }
+        }
+        System.out.println(&quot;Worst observed gap between checkpoints: &quot; + worstGapMs + &quot; ms&quot;);
+        System.out.println(&quot;Final survivor list size: &quot; + survivors.size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xmx256m -XX:MaxGCPauseMillis=50 -Xlog:gc:file=gc.log OldGenChurnTimed.java</code></p>
+<p>Expected output:</p>
+<pre><code>Worst observed gap between checkpoints: 41 ms
+Final survivor list size: 150000</code></pre>
+<p>with <code>gc.log</code> containing many <code>Pause Young (Mixed)</code> entries, each staying reasonably close to the 50 ms target rather than occasionally spiking far past it.</p>
+<p>Level 3 measures the worst gap between periodic checkpoints in application code — a crude proxy for &quot;how bad did the worst pause feel from the application&#x27;s perspective&quot; — and redirects GC logs to a file (<code>-Xlog:gc:file=gc.log</code>) for later inspection, showing how abortable mixed collections keep even the worst-case pause closer to the configured goal instead of an unbounded overshoot.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The JVM starts with <code>-Xmx256m</code> (small heap, to trigger GC activity quickly for the demo) and <code>-XX:MaxGCPauseMillis=50</code> (an aggressive pause-time goal).</li><li><code>main</code> enters the loop and begins allocating <code>byte[256]</code> chunks, adding each to the static <code>survivors</code> list — this keeps objects reachable long enough that many get promoted from young generation into the old generation as G1&#x27;s young collections run in the background.</li><li>Once old-generation occupancy crosses G1&#x27;s internal threshold, G1 schedules a <strong>mixed collection</strong>: a pause that reclaims both young regions and a chosen batch of old regions together, since young-only collections alone can&#x27;t reclaim old garbage.</li><li>During that mixed-collection pause, G1 processes old regions one at a time, and after each one, checks the elapsed pause time against the 50 ms goal (this is the Java 12 behavior from JEP 344). If it&#x27;s already close to or over budget, it aborts — stopping before processing the remaining regions it had tentatively selected — rather than plowing through all of them regardless of cost.</li><li>Any old regions left unprocessed because of the abort are simply left for a <strong>future</strong> mixed-collection pause to pick up; nothing is lost, the reclamation work is just spread across more, smaller pauses.</li><li>Back in application code, every 100,000 iterations the loop records a timestamp and computes <code>gapMs</code>, the wall-clock time since the last checkpoint — this interval includes both normal allocation work and any GC pause that happened to occur during that stretch, so a bad GC pause shows up as an unusually large gap.</li><li><code>worstGapMs</code> tracks the largest such gap seen across the whole run. After all 5,000,000 iterations complete, <code>main</code> prints that worst gap and the final <code>survivors</code> size — a small worst-gap value (well under, say, 100 ms even though the machine did substantial GC work) is the practical, application-visible evidence that abortable mixed collections kept pauses from spiraling.</li></ol>
+<pre><code>allocate ──► old regions fill ──► mixed collection scheduled
+    process O1 ──check time (ok)──► process O2 ──check time (near goal)──► ABORT
+    remaining old regions (O3, O4...) deferred to NEXT mixed collection</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><code>MaxGCPauseMillis</code> is, and remains, a <strong>soft goal</strong>, not a hard guarantee — abortable mixed collections make G1 much better at respecting it during the mixed-collection phase specifically, but extremely tight goals on heavily allocating workloads can still occasionally be missed. Don&#x27;t treat the flag as a hard real-time bound; treat it as a strong hint G1 now honors more faithfully.</blockquote>
+<ul><li>This is an internal G1 scheduling improvement with no new public API or flag — it applies automatically once you&#x27;re on Java 12+ using G1 (the default collector).</li><li>It specifically improves *mixed* collections (young + a batch of old regions); plain young-only collections were already reasonably predictable before this change.</li><li>Aborted (deferred) old regions aren&#x27;t wasted work — they&#x27;re simply picked up in a subsequent mixed-collection cycle.</li><li>Tighter <code>MaxGCPauseMillis</code> values generally mean more, smaller mixed-collection pauses rather than fewer, larger ones — plan capacity accordingly.</li><li>Always verify pause behavior with <code>-Xlog:gc</code> (or a GC visualization tool) rather than assuming a flag&#x27;s effect — GC tuning is workload-specific.</li></ul>
+  <div class="nav"><a class="prv" href="0653-shenandoah-gc-experimental.html"><span class="mini">← Previous</span>Shenandoah GC (experimental)</a><a class="nxt" href="0655-g1-promptly-return-unused-memory.html"><span class="mini">Next →</span>G1 promptly return unused memory</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t654";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

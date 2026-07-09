@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>G1 promptly return unused memory — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 9. Java 12</div>
+  <div class="htitle">
+    <h1>G1 promptly return unused memory</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>G1 promptly return unused memory</strong>, added in <strong>Java 12</strong> (JEP 346), makes the G1 garbage collector give committed-but-unused heap memory <strong>back to the operating system</strong> during idle periods, not just during full GCs. Before this change, G1 only returned memory to the OS when a full garbage collection ran — and G1 is specifically designed to *avoid* full GCs whenever possible, so an application whose memory usage spiked once and then dropped could sit there holding onto all that committed memory indefinitely, never giving it back, even while completely idle. From Java 12 onward, G1 periodically checks heap usage during idle periods and, if the JVM has been idle for a configurable amount of time (<code>-XX:G1PeriodicGCInterval</code>), can trigger a concurrent cycle specifically to identify and uncommit unused regions back to the OS.</p>
+<h2>2. Why &amp; when</h2>
+<p>This matters a lot for memory-density-sensitive environments: containers, cloud VMs billed by allocated memory, and any host running many JVMs side by side. Without prompt memory return, a JVM that briefly needed a large heap (say, during a startup burst or an occasional batch job) would keep that memory &quot;reserved&quot; from the OS&#x27;s perspective forever, starving other processes on the same machine even though the JVM itself was using almost none of it. This was a well-known pain point for G1 versus other collectors (like the older CMS, which had this idle-return behavior already) and a real obstacle to running G1 efficiently in memory-constrained containers. Reach for the relevant flags whenever you&#x27;re running G1 in a container or shared host and want the JVM&#x27;s memory footprint to shrink back down after a usage spike, instead of staying pinned at its peak.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-bash"># Enable periodic GC to reclaim idle memory (disabled by default: interval 0 = off)
+java -XX:+UseG1GC -XX:G1PeriodicGCInterval=60000 MyApp
+# Above: if the JVM is idle for 60 seconds, G1 may trigger a GC cycle
+# specifically to find and uncommit unused heap regions.
+
+# Control how &quot;idle&quot; is measured and how aggressive the returned GC is:
+java -XX:+UseG1GC \
+     -XX:G1PeriodicGCInterval=60000 \
+     -XX:G1PeriodicGCLoadThreshold=0 \
+     MyApp</code></pre>
+<p><code>G1PeriodicGCInterval</code> (milliseconds, default <code>0</code> = disabled) is the main knob — set it to a nonzero value to opt in to periodic idle-memory reclamation; <code>G1PeriodicGCLoadThreshold</code> controls how low CPU load must be for a periodic GC to be considered worth triggering.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 620 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Heap usage spikes then drops; before Java 12 committed memory stays high, after Java 12 idle periodic GC returns it to the OS">
+  <line x1="30" y1="160" x2="600" y2="160" stroke="#8b949e" stroke-width="1"/>
+  <line x1="30" y1="20" x2="30" y2="160" stroke="#8b949e" stroke-width="1"/>
+  <text x="15" y="25" fill="#8b949e" font-size="9" font-family="sans-serif">mem</text>
+
+  <path d="M30,140 L120,140 L180,40 L280,40 L340,140 L600,140" fill="none" stroke="#f85149" stroke-width="2" stroke-dasharray="4,2"/>
+  <text x="450" y="130" fill="#f85149" font-size="10" font-family="sans-serif">Before: committed memory stays high (no full GC triggered)</text>
+
+  <path d="M30,145 L120,145 L180,45 L280,45 L340,145 L360,145 L370,155 L600,155" fill="none" stroke="#6db33f" stroke-width="2"/>
+  <text x="380" y="175" fill="#6db33f" font-size="10" font-family="sans-serif">After Java 12: idle periodic GC returns memory to OS</text>
+
+  <text x="180" y="35" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">usage spike</text>
+  <text x="365" y="115" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">idle → periodic GC</text>
+</svg>
+<p>After the spike ends and the JVM goes idle, Java 12&#x27;s periodic GC notices and uncommits the unused regions, shrinking the JVM&#x27;s footprint (green line drops); pre-Java-12 behavior (red dashed) stays pinned at peak.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a program that briefly allocates a large amount of memory (simulating a startup burst or batch job) and then goes idle — first observing the default behavior with periodic GC disabled, then enabling it and watching memory get returned, then building a small monitor that reports the JVM&#x27;s committed memory over time to make the effect visible from within the program itself.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: MemorySpike.java
+import java.util.ArrayList;
+import java.util.List;
+
+public class MemorySpike {
+    public static void main(String[] args) throws InterruptedException {
+        List&lt;byte[]&gt; temp = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 2000; i++) {
+            temp.add(new byte[1024 * 1024]); // 1 MB each =&gt; ~2 GB peak
+        }
+        System.out.println(&quot;Peak allocation done: &quot; + temp.size() + &quot; MB held.&quot;);
+
+        temp.clear();       // drop all references
+        temp = null;        // make it eligible for collection
+        System.out.println(&quot;Cleared references. Now sleeping (idle)...&quot;);
+
+        Thread.sleep(90_000); // stay idle for 90 seconds
+        System.out.println(&quot;Done sleeping.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run (default, periodic GC disabled):</strong> <code>java -Xmx3g MemorySpike.java</code></p>
+<p>While this runs, check the process&#x27;s resident memory in another terminal (e.g. <code>ps -o rss -p &lt;pid&gt;</code> on macOS/Linux). Expected: RSS stays near its peak throughout the 90-second sleep — the JVM doesn&#x27;t proactively return the memory.</p>
+<h3>Level 2 — Intermediate</h3>
+<p><strong>How to run with periodic idle GC enabled:</strong></p>
+<pre><code>java -Xmx3g -XX:+UseG1GC -XX:G1PeriodicGCInterval=10000 -Xlog:gc MemorySpike.java</code></pre>
+<p>Expected console output is the same program messages, but the GC log now shows a periodic GC cycle firing roughly 10 seconds after the program goes idle:</p>
+<pre><code>Peak allocation done: 2000 MB held.
+Cleared references. Now sleeping (idle)...
+[92.341s][info][gc] GC(5) Pause Young (Concurrent Start) (G1 Periodic Collection) 2048M-&gt;12M(3072M) 8.234ms
+Done sleeping.</code></pre>
+<p>Checking RSS in another terminal this time shows it <strong>drop</strong> noticeably a few seconds into the sleep, once <code>G1PeriodicGCInterval</code> (10 seconds of idleness) elapses and the periodic collection runs — proof the memory is being returned to the OS during the idle period, not just held.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: MemoryMonitor.java
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
+import java.lang.management.MemoryUsage;
+import java.util.ArrayList;
+import java.util.List;
+
+public class MemoryMonitor {
+    static void report(String label) {
+        MemoryMXBean mem = ManagementFactory.getMemoryMXBean();
+        MemoryUsage heap = mem.getHeapMemoryUsage();
+        System.out.printf(&quot;%-25s committed=%dMB used=%dMB%n&quot;,
+            label, heap.getCommitted() / (1024 * 1024), heap.getUsed() / (1024 * 1024));
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        report(&quot;startup&quot;);
+
+        List&lt;byte[]&gt; temp = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 1500; i++) {
+            temp.add(new byte[1024 * 1024]);
+        }
+        report(&quot;after spike&quot;);
+
+        temp.clear();
+        temp = null;
+        report(&quot;after clear (refs dropped)&quot;);
+
+        for (int i = 0; i &lt; 6; i++) {
+            Thread.sleep(15_000);
+            report(&quot;idle +&quot; + ((i + 1) * 15) + &quot;s&quot;);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xmx2g -XX:+UseG1GC -XX:G1PeriodicGCInterval=10000 MemoryMonitor.java</code></p>
+<p>Expected output (values approximate):</p>
+<pre><code>startup                  committed=64MB used=8MB
+after spike               committed=1600MB used=1536MB
+after clear (refs dropped) committed=1600MB used=45MB
+idle +15s                 committed=1600MB used=40MB
+idle +30s                 committed=180MB used=38MB
+idle +45s                 committed=175MB used=37MB
+idle +60s                 committed=175MB used=36MB
+idle +75s                 committed=175MB used=36MB
+idle +90s                 committed=175MB used=35MB</code></pre>
+<p>Level 3 uses <code>MemoryMXBean</code> to read the heap&#x27;s <strong>committed</strong> size directly from inside the JVM — <code>used</code> drops immediately after clearing references (the objects become garbage-collectible), but <code>committed</code> (the memory actually reserved from the OS) stays high until enough idle time passes for <code>G1PeriodicGCInterval</code> to trigger a periodic collection that uncommits the now-unused regions, visible as the sharp drop between &quot;idle +15s&quot; and &quot;idle +30s&quot;.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>main</code> calls <code>report(&quot;startup&quot;)</code> first. <code>ManagementFactory.getMemoryMXBean().getHeapMemoryUsage()</code> reads the JVM&#x27;s current heap statistics; at startup both <code>committed</code> and <code>used</code> are small since almost nothing has been allocated yet.</li><li>The loop allocates 1500 one-megabyte <code>byte[]</code> objects, each added to <code>temp</code>, keeping all of them reachable — the heap grows to accommodate this, and G1 commits more regions from the OS as needed. <code>report(&quot;after spike&quot;)</code> shows both <code>committed</code> and <code>used</code> near their peak (~1.5 GB).</li><li><code>temp.clear()</code> removes every reference from the list, and <code>temp = null</code> drops the list itself — none of those 1500 byte arrays are reachable from any GC root anymore, making them garbage. But <strong>no collection has necessarily run yet</strong> at this exact point, so <code>report(&quot;after clear&quot;)</code> can still show <code>used</code> reflecting some not-yet-collected garbage, though typically a young collection will have already reclaimed most of it, dropping <code>used</code> sharply while <code>committed</code> stays unchanged — the regions are still reserved from the OS even though nothing meaningful occupies them.</li><li>The final loop calls <code>Thread.sleep(15_000)</code> six times, calling <code>report(...)</code> after each. During these sleeps, the application makes no allocations at all — this is exactly the &quot;idle&quot; condition <code>G1PeriodicGCInterval</code> is designed to detect.</li><li>Once 10 seconds of idleness have elapsed (the configured <code>G1PeriodicGCInterval</code>), G1&#x27;s periodic-GC mechanism triggers a GC cycle specifically to check whether committed regions are actually needed. Finding large swaths of committed-but-empty regions, it uncommits them, handing that memory back to the operating system.</li><li>This shows up in the output as the sharp drop in <code>committed</code> between the <code>&quot;idle +15s&quot;</code> and <code>&quot;idle +30s&quot;</code> checkpoints — <code>used</code> was already low, but <code>committed</code> only falls once the periodic GC actually runs and performs the uncommit.</li><li>Subsequent idle checkpoints show <code>committed</code> staying near its new, lower value, since there&#x27;s nothing new to reclaim — the JVM&#x27;s OS-visible memory footprint has settled down to roughly what the application is actually using, rather than remaining pinned at its historical peak.</li></ol>
+<pre><code>startup: committed=64MB
+   │ allocate 1.5GB
+after spike: committed=1600MB, used=1536MB
+   │ drop references
+after clear: committed=1600MB (unchanged!), used=45MB (dropped)
+   │ idle 10s+ → G1PeriodicGCInterval fires → uncommit unused regions
+idle +30s: committed=180MB (dropped!), used=38MB</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><code>G1PeriodicGCInterval</code> defaults to <code>0</code>, meaning <strong>periodic idle-memory return is OFF by default</strong> — you must explicitly opt in with a nonzero millisecond value. Simply upgrading to Java 12 does not automatically shrink idle JVMs&#x27; memory footprint; the JEP added the *capability*, not a new default behavior.</blockquote>
+<ul><li><code>committed</code> memory (reserved from the OS) and <code>used</code> memory (actually holding live objects) are different numbers — dropping references shrinks <code>used</code> quickly but doesn&#x27;t shrink <code>committed</code> without a GC cycle that specifically uncommits regions.</li><li><code>G1PeriodicGCInterval</code> is measured from the last GC activity — the JVM must be genuinely idle (no allocation pressure triggering other GCs) for that long before a periodic cycle fires.</li><li><code>G1PeriodicGCLoadThreshold</code> lets you require low CPU load before triggering a periodic GC, avoiding extra GC work when the machine is already busy with other things.</li><li>This feature is especially valuable in containerized/cloud deployments where committed-but-idle memory directly costs money or starves co-located processes.</li><li>Use <code>MemoryMXBean.getHeapMemoryUsage().getCommitted()</code> (or OS-level RSS monitoring) to verify the effect — total heap usage graphs from application-level metrics alone won&#x27;t show committed-vs-used distinctions.</li></ul>
+  <div class="nav"><a class="prv" href="0654-g1-abortable-mixed-collections.html"><span class="mini">← Previous</span>G1 abortable mixed collections</a><a class="nxt" href="0656-jvm-constants-api-java-lang-constant.html"><span class="mini">Next →</span>JVM Constants API (java.lang.constant)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t655";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
