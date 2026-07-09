@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Strongly encapsulated internals (no illegal-access) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 14. Java 17 (LTS)</div>
+  <div class="htitle">
+    <h1>Strongly encapsulated internals (no illegal-access)</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Java 17</strong> (JEP 403) took JDK-internals encapsulation one step further than <a href="0696-strong-encapsulation-of-jdk-internals-by-default.md">Java 16&#x27;s default flip</a>: it <strong>removed the <code>--illegal-access</code> command-line option entirely</strong>. Java 16 had changed the *default* from &quot;permit&quot; to &quot;deny,&quot; but still let you restore the old permissive behavior with <code>--illegal-access=permit</code> as an escape hatch. Java 17 removes that escape hatch: the <code>--illegal-access</code> flag no longer exists at all, and reflective access to unexported JDK internal packages is unconditionally denied unless explicitly opened via <code>--add-opens</code> (or <code>--add-exports</code> for exports without deep reflection). Only <code>java.base</code>&#x27;s small set of &quot;critical&quot; internal APIs still permitted for reflective access as of Java 16 (kept as a deliberate, temporary carve-out for a few especially entrenched libraries) remain reachable without an explicit module flag in Java 17.</p>
+<h2>2. Why &amp; when</h2>
+<p>Java 16&#x27;s default change was intentionally still escapable, specifically to avoid abruptly breaking every application relying on illegal reflective access all at once — <code>--illegal-access=permit</code> served as a safety valve while the ecosystem finished migrating. By Java 17, the JDK team judged that transition sufficiently complete: keeping the flag around indefinitely would have meant the module system&#x27;s encapsulation goal was still, in effect, optional, which undermined the point of enforcing it in the first place. Removing <code>--illegal-access</code> outright means there is now exactly one way to access a JDK-internal package reflectively across a module boundary: explicit, per-package <code>--add-opens module/package=target-module</code> (or <code>ALL-UNNAMED</code> for classpath code), decided deliberately by whoever configures the application&#x27;s launch, rather than a single blanket flag anyone could reach for. This matters immediately if you upgrade an application (or a dependency using reflection against JDK internals) straight from Java 15 or earlier to Java 17 — any lingering reliance on <code>--illegal-access=permit</code> as a stopgap must be replaced with specific <code>--add-opens</code> entries, or the dependency itself must be upgraded to one that no longer needs the access at all.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-bash"># Java 16: --illegal-access still existed as an (already-deprecated) escape hatch
+java --illegal-access=permit MyApp.jar        # worked in Java 16, with a warning
+
+# Java 17: the flag is gone entirely
+java --illegal-access=permit MyApp.jar        # error: unrecognized option
+
+# The only supported way to reach a specific internal package in Java 17+:
+java --add-opens java.base/sun.nio.ch=ALL-UNNAMED MyApp.jar</code></pre>
+<p>There is no longer a single switch to broadly restore illegal reflective access — only precise, per-package <code>--add-opens</code> entries remain.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Java 16 denied illegal reflective access by default but allowed restoring the old behavior with --illegal-access=permit; Java 17 removes that flag entirely, leaving only precise per-package --add-opens as the way to reach an internal API">
+  <rect x="20" y="20" width="280" height="170" rx="8" fill="#1c2430" stroke="#8b949e"/>
+  <text x="160" y="42" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">Java 16</text>
+  <text x="160" y="70" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">default: illegal access denied</text>
+  <text x="160" y="95" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">--illegal-access=permit still works</text>
+  <text x="160" y="120" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">(broad escape hatch, one flag)</text>
+  <text x="160" y="150" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">transition safety valve</text>
+
+  <rect x="340" y="20" width="280" height="170" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="480" y="42" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Java 17+</text>
+  <text x="480" y="70" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">--illegal-access flag: removed</text>
+  <text x="480" y="100" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">--add-opens pkg=target only</text>
+  <text x="480" y="125" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">(precise, per-package, deliberate)</text>
+  <text x="480" y="155" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">encapsulation enforced, no broad escape hatch</text>
+</svg>
+<p>The safety-valve flag disappears; only targeted, per-package <code>--add-opens</code> remains as the supported way to reach internals.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a small tool that reflectively inspects a JDK-internal field — first showing it fail with <code>InaccessibleObjectException</code> when run with no special flags (the Java 17+ default), then succeeding once the specific package is opened via <code>--add-opens</code>, then a version that detects at runtime whether the required access has been granted and reports a clear, actionable message either way, the kind of defensive check a library relying on such access might add for its users.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ReflectInternalBasic.java
+import java.lang.reflect.Field;
+
+public class ReflectInternalBasic {
+    public static void main(String[] args) throws Exception {
+        // sun.nio.ch is a java.base-internal package not open to unnamed modules by default.
+        Class&lt;?&gt; clazz = Class.forName(&quot;sun.nio.ch.NativeThread&quot;);
+        Field[] fields = clazz.getDeclaredFields();
+        System.out.println(&quot;Declared field count on &quot; + clazz.getName() + &quot;: &quot; + fields.length);
+        if (fields.length &gt; 0) {
+            fields[0].setAccessible(true); // this line throws if the package isn&#x27;t opened
+            System.out.println(&quot;First field: &quot; + fields[0].getName());
+        }
+    }
+}</code></pre>
+<p><strong>How to run (no special flags — Java 17+ default):</strong></p>
+<pre><code>java ReflectInternalBasic.java</code></pre>
+<p>Expected output (the package is unopened by default in Java 17, so <code>setAccessible(true)</code> fails):</p>
+<pre><code>Declared field count on sun.nio.ch.NativeThread: 2
+Exception in thread &quot;main&quot; java.lang.reflect.InaccessibleObjectException: Unable to make field ... accessible: module java.base does not &quot;opens sun.nio.ch&quot; to unnamed module ...</code></pre>
+<p><strong>How to run (explicitly opening the package):</strong></p>
+<pre><code>java --add-opens java.base/sun.nio.ch=ALL-UNNAMED ReflectInternalBasic.java</code></pre>
+<p>Expected output:</p>
+<pre><code>Declared field count on sun.nio.ch.NativeThread: 2
+First field: id</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: GracefulReflectionCheck.java
+import java.lang.reflect.Field;
+import java.lang.reflect.InaccessibleObjectException;
+
+public class GracefulReflectionCheck {
+    static boolean tryOpenInternalField() {
+        try {
+            Class&lt;?&gt; clazz = Class.forName(&quot;sun.nio.ch.NativeThread&quot;);
+            Field field = clazz.getDeclaredFields()[0];
+            field.setAccessible(true);
+            return true;
+        } catch (InaccessibleObjectException e) {
+            return false;
+        } catch (ReflectiveOperationException e) {
+            return false;
+        }
+    }
+
+    public static void main(String[] args) {
+        boolean granted = tryOpenInternalField();
+        System.out.println(&quot;Reflective access to sun.nio.ch internals granted: &quot; + granted);
+        if (!granted) {
+            System.out.println(&quot;Add: --add-opens java.base/sun.nio.ch=ALL-UNNAMED to your launch command.&quot;);
+        }
+    }
+}</code></pre>
+<p><strong>How to run (no flags):</strong></p>
+<pre><code>java GracefulReflectionCheck.java</code></pre>
+<p>Expected output:</p>
+<pre><code>Reflective access to sun.nio.ch internals granted: false
+Add: --add-opens java.base/sun.nio.ch=ALL-UNNAMED to your launch command.</code></pre>
+<p><strong>How to run (with the required flag):</strong></p>
+<pre><code>java --add-opens java.base/sun.nio.ch=ALL-UNNAMED GracefulReflectionCheck.java</code></pre>
+<p>Expected output:</p>
+<pre><code>Reflective access to sun.nio.ch internals granted: true</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: DiagnosticReport.java
+import java.lang.reflect.Field;
+import java.lang.reflect.InaccessibleObjectException;
+
+public class DiagnosticReport {
+    record AccessCheck(String packageName, boolean accessible, String hint) {}
+
+    static AccessCheck check(String className, String packageName) {
+        try {
+            Class&lt;?&gt; clazz = Class.forName(className);
+            Field field = clazz.getDeclaredFields()[0];
+            field.setAccessible(true);
+            return new AccessCheck(packageName, true, &quot;already accessible&quot;);
+        } catch (InaccessibleObjectException e) {
+            return new AccessCheck(packageName, false,
+                    &quot;--add-opens java.base/&quot; + packageName + &quot;=ALL-UNNAMED&quot;);
+        } catch (ReflectiveOperationException | ArrayIndexOutOfBoundsException e) {
+            return new AccessCheck(packageName, false, &quot;unavailable: &quot; + e.getMessage());
+        }
+    }
+
+    public static void main(String[] args) {
+        String[][] targets = {
+                { &quot;sun.nio.ch.NativeThread&quot;, &quot;sun.nio.ch&quot; },
+                { &quot;sun.misc.Unsafe&quot;, &quot;sun.misc&quot; }
+        };
+
+        System.out.println(&quot;=== JDK-internal reflective access report (Java 17+) ===&quot;);
+        for (String[] target : targets) {
+            AccessCheck result = check(target[0], target[1]);
+            System.out.printf(&quot;%-15s accessible=%-6s hint=%s%n&quot;, result.packageName(), result.accessible(), result.hint());
+        }
+    }
+}</code></pre>
+<p><strong>How to run (no flags):</strong></p>
+<pre><code>java DiagnosticReport.java</code></pre>
+<p>Expected output shape (each internal package independently reports whether it&#x27;s reachable and, if not, exactly which flag would open it):</p>
+<pre><code>=== JDK-internal reflective access report (Java 17+) ===
+sun.nio.ch      accessible=false hint=--add-opens java.base/sun.nio.ch=ALL-UNNAMED
+sun.misc        accessible=false hint=--add-opens java.base/sun.misc=ALL-UNNAMED</code></pre>
+<p><strong>How to run (opening both packages):</strong></p>
+<pre><code>java --add-opens java.base/sun.nio.ch=ALL-UNNAMED --add-opens java.base/sun.misc=ALL-UNNAMED DiagnosticReport.java</code></pre>
+<p>Expected output:</p>
+<pre><code>=== JDK-internal reflective access report (Java 17+) ===
+sun.nio.ch      accessible=true hint=already accessible
+sun.misc        accessible=true hint=already accessible</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><code>DiagnosticReport.main</code> iterates over a small table of internal-class-and-package pairs, calling <code>check(...)</code> for each — this pattern is exactly what a library or diagnostic tool would do at startup to determine, ahead of time, whether it has the reflective access it needs, rather than discovering the problem only when a deeper code path fails unexpectedly at runtime.</li><li>Inside <code>check</code>, <code>Class.forName(className)</code> loads the internal class successfully (loading a class doesn&#x27;t require it to be *opened* — only reflectively accessing its non-public members does), then <code>field.setAccessible(true)</code> is the actual operation that triggers Java&#x27;s module-access enforcement.</li><li>If the package is not open to the calling module (the default state for essentially every <code>java.base</code> internal package on Java 17+, since <code>--illegal-access=permit</code> no longer exists to override this broadly), <code>setAccessible(true)</code> throws <code>InaccessibleObjectException</code>, which <code>check</code> catches and turns into a clear, actionable <code>hint</code> string naming the exact <code>--add-opens</code> flag that would fix it.</li><li>Running the program with no flags demonstrates the Java 17+ default: every internal package check reports <code>accessible=false</code>, each with its own precise remediation hint — there is no single blanket flag left to try, only the specific <code>--add-opens</code> for each package actually needed.</li><li>Re-running with both <code>--add-opens</code> flags supplied on the command line flips both checks to <code>accessible=true</code>, demonstrating that access is granted (or not) <strong>per package</strong>, decided explicitly at launch time by whoever configures the JVM&#x27;s command line — a deliberate, auditable decision rather than an implicit, broadly-permissive default.</li></ol>
+<pre><code>Class.forName(internalClass)     &lt;- loading the class itself always succeeds
+        │
+field.setAccessible(true)        &lt;- module system enforcement happens here
+        │
+   package opened via --add-opens?
+     yes -&gt; succeeds, field usable reflectively
+     no  -&gt; InaccessibleObjectException (no blanket --illegal-access escape hatch remains)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Removing <code>--illegal-access</code> does <strong>not</strong> mean reflective access to JDK internals became impossible — it means the *only* remaining way to grant it is precise, per-package <code>--add-opens</code> (or <code>--add-exports</code>) entries, decided deliberately rather than through one broadly permissive flag. Applications and libraries that genuinely need specific internal access still can, by naming exactly which package they need opened.</blockquote>
+<ul><li>A small set of especially entrenched <code>java.base</code> internal APIs (carried over from the Java 16 transition) may remain reflectively accessible without any flag at all in Java 17 — but this is a narrow, explicitly-tracked exception list, not a general escape hatch, and code shouldn&#x27;t rely on it persisting in future releases.</li><li>If an application (or one of its dependencies) throws <code>InaccessibleObjectException</code> after upgrading straight from Java 15 or earlier to Java 17, check first whether the dependency has a newer version that no longer needs the internal access at all — adding <code>--add-opens</code> is a reasonable stopgap, but it&#x27;s tying your launch configuration to an internal implementation detail that could change or disappear in a future JDK release regardless.</li><li><code>--add-opens</code> is more surgical than the old <code>--illegal-access=permit</code> by design: it must name the specific module and package (e.g., <code>java.base/sun.nio.ch</code>), which makes exactly what access an application requires visible and auditable in its launch configuration, rather than hidden behind one catch-all flag.</li><li>Loading an internal class via <code>Class.forName(...)</code> never itself requires module access — only reflectively *invoking* or *setting accessible* on its non-public members does; this distinction is why <code>check</code>&#x27;s <code>Class.forName</code> call in this tutorial&#x27;s example always succeeds even when the subsequent <code>setAccessible</code> call fails.</li><li>See <a href="0696-strong-encapsulation-of-jdk-internals-by-default.md">Strong encapsulation of JDK internals by default</a> (Java 16) for the earlier step in this same multi-release progression — Java 16 changed the default; Java 17 removed the last broad way to override it.</li></ul>
+  <div class="nav"><a class="prv" href="0714-remove-experimental-aot-jit-graal-compiler.html"><span class="mini">← Previous</span>Remove experimental AOT/JIT (Graal) compiler</a><a class="nxt" href="0716-remove-applet-api-deprecated.html"><span class="mini">Next →</span>Remove Applet API (deprecated)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t715";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
