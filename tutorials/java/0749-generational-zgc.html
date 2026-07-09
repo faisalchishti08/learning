@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Generational ZGC — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 18. Java 21 (LTS)</div>
+  <div class="htitle">
+    <h1>Generational ZGC</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Java 21</strong> (JEP 439) adds a <strong>generational mode</strong> to the Z Garbage Collector (ZGC), enabled with <code>-XX:+UseZGC -XX:+ZGenerational</code> (this became the default ZGC mode in a later release). Generational ZGC splits the heap into a <strong>young generation</strong> for newly allocated, short-lived objects and an <strong>old generation</strong> for objects that have survived multiple collections — applying the well-established &quot;generational hypothesis&quot; (most objects die young) to ZGC&#x27;s design, which previously treated the whole heap as a single, ungenerationed space. The result is significantly reduced CPU overhead and higher throughput for the same ultra-low pause times ZGC was already known for.</p>
+<h2>2. Why &amp; when</h2>
+<p>Before generational mode, ZGC already delivered its headline feature — pause times measured in <strong>single-digit milliseconds</strong>, independent of heap size, even at multi-terabyte heaps — by doing almost all of its work concurrently with the running application. But treating the entire heap as one region meant every collection cycle had to scan the *whole* heap for garbage, including old, long-lived objects that were extremely unlikely to have become garbage since the last cycle. Most real workloads follow the generational hypothesis: the overwhelming majority of objects (request-scoped buffers, temporary collections, short-lived local objects) die almost immediately, while a small fraction (caches, connection pools, long-lived singletons) survive indefinitely. Generational ZGC exploits this by collecting the young generation far more frequently and cheaply (it&#x27;s usually mostly garbage, so there&#x27;s little live data to preserve) and the old generation much less often — cutting the total CPU work ZGC needs to do to keep pace with allocation, without giving up any of the sub-millisecond-pause guarantee. This matters for any latency-sensitive service running on ZGC where CPU headroom, not just pause time, is a real constraint — trading collector CPU overhead for the same pause-time floor is a straightforward win once your workload matches the generational assumption (which most do).</p>
+<h2>3. Core concept</h2>
+<pre><code># Enable generational ZGC (JEP 439, Java 21+; became the default in later JDKs)
+java -XX:+UseZGC -XX:+ZGenerational -Xmx4g -Xlog:gc MyApp
+
+# Compare against non-generational (single-generation) ZGC
+java -XX:+UseZGC -XX:-ZGenerational -Xmx4g -Xlog:gc MyApp</code></pre>
+<p>Both modes share ZGC&#x27;s pause-time characteristics; the flag only changes <strong>how much work</strong> the collector does per unit of allocation, which shows up as CPU usage and GC log frequency, not as observable pause-time differences in the application.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Generational ZGC splits the heap into a frequently collected young generation and a rarely collected old generation, reducing total collector work versus scanning the whole heap every cycle">
+  <rect x="20" y="20" width="600" height="50" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="320" y="50" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Non-generational ZGC: every cycle scans the ENTIRE heap</text>
+
+  <rect x="20" y="90" width="260" height="50" rx="8" fill="#0f1620" stroke="#79c0ff"/>
+  <text x="150" y="112" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="sans-serif">Young generation</text>
+  <text x="150" y="130" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">collected often, mostly garbage, cheap</text>
+
+  <rect x="300" y="90" width="320" height="50" rx="8" fill="#0f1620" stroke="#8b949e"/>
+  <text x="460" y="112" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Old generation</text>
+  <text x="460" y="130" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">collected rarely, mostly live, skipped most cycles</text>
+
+  <text x="320" y="180" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Same sub-millisecond pause times, less total CPU work per byte allocated</text>
+</svg>
+<p>*Generational ZGC focuses frequent, cheap collections on the generation most likely to hold garbage.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an allocation-heavy service simulation, growing from a naive allocator into a workload shaped like real generational behavior, with GC configuration to match.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class AllocateBasic {
+    public static void main(String[] args) {
+        List&lt;byte[]&gt; shortLived;
+        for (int round = 0; round &lt; 200_000; round++) {
+            shortLived = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; 10; i++) {
+                shortLived.add(new byte[1024]); // 1 KB temporary buffers
+            }
+            // shortLived goes out of scope here — becomes garbage almost immediately
+        }
+        System.out.println(&quot;done allocating&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xmx256m AllocateBasic.java</code> (JDK 21+; works with any GC, no special flags yet).</p>
+<p>This allocates 2,000,000 short-lived 1 KB buffers total, each batch of ten discarded at the end of every loop iteration — a textbook &quot;most objects die young&quot; workload, though nothing here yet chooses or configures a specific collector.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class AllocateWithSurvivors {
+    static final List&lt;byte[]&gt; longLivedCache = new ArrayList&lt;&gt;();
+
+    public static void main(String[] args) {
+        for (int round = 0; round &lt; 200_000; round++) {
+            List&lt;byte[]&gt; shortLived = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; 10; i++) {
+                shortLived.add(new byte[1024]);
+            }
+            if (round % 1000 == 0) {
+                longLivedCache.add(new byte[1024]); // occasionally, something survives
+            }
+        }
+        System.out.println(&quot;cache size (long-lived survivors): &quot; + longLivedCache.size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xmx256m -XX:+UseZGC -XX:+ZGenerational -Xlog:gc AllocateWithSurvivors.java</code>.</p>
+<p>The real-world concern added: a small <code>longLivedCache</code> that accumulates a handful of survivors (200 objects total, one per 1,000 rounds) alongside the flood of short-lived garbage — mirroring a real service&#x27;s mix of request-scoped temporaries and a small long-lived cache. Running with <code>-Xlog:gc</code> prints ZGC&#x27;s cycle log lines, showing frequent young-generation collections and far rarer old-generation ones.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.*;
+
+public class AllocateProduction {
+    static final Map&lt;Integer, byte[]&gt; connectionPool = new ConcurrentHashMap&lt;&gt;();
+
+    static void handleRequest(int requestId) {
+        // request-scoped, short-lived allocations — the bulk of GC pressure
+        List&lt;byte[]&gt; buffers = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 20; i++) {
+            buffers.add(new byte[2048]);
+        }
+        // simulate occasional long-lived connection registration
+        if (requestId % 5000 == 0) {
+            connectionPool.put(requestId, new byte[4096]);
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        long start = System.nanoTime();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i &lt; 500_000; i++) {
+                int requestId = i;
+                executor.submit(() -&gt; handleRequest(requestId));
+            }
+        }
+        double seconds = (System.nanoTime() - start) / 1e9;
+        System.out.printf(&quot;processed 500,000 requests in %.2fs, cache entries=%d%n&quot;,
+            seconds, connectionPool.size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java -Xmx512m -XX:+UseZGC -XX:+ZGenerational -Xlog:gc:file=gen.log AllocateProduction.java
+java -Xmx512m -XX:+UseZGC -XX:-ZGenerational -Xlog:gc:file=nongen.log AllocateProduction.java</code></pre>
+<p>This adds the production-flavored hard case: 500,000 concurrent virtual-thread-backed requests (combining with <a href="0739-virtual-threads-standardized.md">virtual threads — standardized</a>), each allocating a burst of short-lived buffers and occasionally registering a long-lived entry in a shared <code>ConcurrentHashMap</code> — then comparing GC log output between generational and non-generational ZGC to see the difference in collection frequency and total logged GC CPU time directly, rather than just taking the improvement on faith.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing what happens during one run of <code>AllocateProduction</code> under generational ZGC:</p>
+<ol><li><code>main</code> starts a timer, then opens a virtual-thread-per-task executor and submits 500,000 tasks, each calling <code>handleRequest(requestId)</code>.</li><li>Each <code>handleRequest</code> call allocates 20 short-lived <code>byte[2048]</code> buffers into a local <code>ArrayList</code> that goes out of scope the moment the method returns — this is the overwhelming majority of all allocation in the program, and virtually all of it becomes garbage within microseconds of being created.</li><li>Every 5,000th request additionally inserts a <code>byte[4096]</code> entry into <code>connectionPool</code>, a <code>ConcurrentHashMap</code> that lives for the entire run — a small trickle of genuinely long-lived allocation representing, say, persistent connection state.</li><li>Under the hood, generational ZGC&#x27;s young-generation collector runs frequently and cheaply: because the young generation fills almost entirely with the request-scoped buffers that die within microseconds, most young-generation collection cycles find very little live data to preserve, so each cycle finishes fast and the collector rarely needs to touch the old generation at all.</li><li>The rare <code>connectionPool</code> entries that survive several young-generation collections get <strong>promoted</strong> to the old generation, which is scanned far less often — exactly the behavior the generational hypothesis predicts, and exactly what <code>-Xlog:gc</code> output would show as a low ratio of old-generation to young-generation collection cycles.</li><li>Once all 500,000 submitted tasks complete, the try-with-resources block&#x27;s implicit <code>executor.close()</code> returns, <code>main</code> computes elapsed time, and prints the final summary line.</li></ol>
+<p>Expected output shape (exact timing varies by machine):</p>
+<pre><code>processed 500,000 requests in 1.8Xs, cache entries=100</code></pre>
+<p>Comparing <code>gen.log</code> against <code>nongen.log</code> (from the two commands above) would show the generational run logging <strong>more young-generation cycles but far less total scanned-heap work per cycle</strong>, and typically a lower overall GC CPU percentage for the same workload — the concrete, measurable form of &quot;generational ZGC does less total work for the same pause-time guarantee.&quot;</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> generational ZGC&#x27;s benefit is proportional to how well a workload actually matches the generational hypothesis. A workload that allocates huge, long-lived objects directly (skipping a &quot;young&quot; phase entirely — e.g., loading a multi-gigabyte dataset once at startup and holding it for the process lifetime) sees little advantage from generational mode, since there&#x27;s no flood of young garbage for the young-generation collector to reclaim cheaply.</blockquote>
+<ul><li>Enable with <code>-XX:+UseZGC -XX:+ZGenerational</code> on Java 21 (later JDKs made this the default ZGC behavior — check your JDK version&#x27;s release notes before assuming the flag is still needed).</li><li>Generational ZGC keeps the same sub-millisecond pause-time guarantee as non-generational ZGC; the improvement is in <strong>CPU overhead and throughput</strong>, not pause latency.</li><li>Best suited to workloads matching the generational hypothesis: lots of short-lived allocation, a smaller amount of long-lived state — true of most request/response and event-processing services.</li><li>Use <code>-Xlog:gc</code> (or a dedicated log file via <code>-Xlog:gc:file=...</code>) to observe collection frequency and cycle cost directly rather than assuming the improvement applies to your workload.</li><li>Combine with <a href="0739-virtual-threads-standardized.md">virtual threads</a> carefully: massive concurrency means massive allocation concurrency too, which is exactly the scenario generational GC design is meant to absorb efficiently.</li></ul>
+  <div class="nav"><a class="prv" href="0748-getfirst-getlast-reversed-methods.html"><span class="mini">← Previous</span>getFirst/getLast/reversed methods</a><a class="nxt" href="0750-string-templates-preview.html"><span class="mini">Next →</span>String templates (preview)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t749";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
