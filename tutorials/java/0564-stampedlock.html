@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StampedLock — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 5. Java 8 (LTS)</div>
+  <div class="htitle">
+    <h1>StampedLock</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>StampedLock</code> (<code>java.util.concurrent.locks</code>) is a Java 8 lock that adds a third mode — <strong>optimistic reading</strong> — alongside the usual exclusive write lock and shared read lock. Every lock/unlock operation returns or consumes a <code>long</code> <strong>stamp</strong>, which is both a lock token and, for optimistic reads, a version number you can check to see if a write happened while you were reading.</p>
+<h2>2. Why &amp; when</h2>
+<p><code>ReentrantReadWriteLock</code> lets many readers run concurrently but blocks all of them while a writer holds the lock — fine, but under heavy read contention, readers still pay the cost of acquiring and releasing an actual lock (atomic operations, potential thread suspension). <code>StampedLock</code>&#x27;s optimistic read mode skips that cost entirely: you read data *without* taking any lock at all, then afterward check a stamp to see whether a writer interfered. If nothing changed, you&#x27;re done — no lock was ever acquired. If a writer did interfere, you fall back to a real (pessimistic) read lock and retry. This trades a small chance of wasted work (re-reading) for much higher throughput under mostly-read, occasionally-write workloads — the classic profile of caches and configuration objects.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">StampedLock lock = new StampedLock();
+
+// Optimistic read — no actual locking happens.
+long stamp = lock.tryOptimisticRead();
+double x = point.x, y = point.y; // read fields without a lock
+if (!lock.validate(stamp)) {
+    // a write happened concurrently — fall back to a real read lock
+    stamp = lock.readLock();
+    try { x = point.x; y = point.y; }
+    finally { lock.unlockRead(stamp); }
+}</code></pre>
+<p><code>tryOptimisticRead()</code> returns a stamp immediately, without blocking anyone. <code>validate(stamp)</code> checks whether a write lock was acquired (and released) since that stamp was issued — if it returns <code>false</code>, the data you just read might be inconsistent, and you must re-read under a real lock.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Optimistic read: read without locking, then validate; only fall back to a real lock if invalidated">
+  <rect x="10" y="10" width="280" height="40" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="150" y="35" fill="#6db33f" font-size="11" text-anchor="middle" font-family="monospace">tryOptimisticRead() -&gt; stamp</text>
+
+  <rect x="10" y="60" width="280" height="40" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="150" y="85" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="monospace">read fields (NO lock held)</text>
+
+  <rect x="10" y="110" width="280" height="40" rx="6" fill="#1c2430" stroke="#d2a8ff"/>
+  <text x="150" y="135" fill="#d2a8ff" font-size="11" text-anchor="middle" font-family="monospace">validate(stamp)?</text>
+
+  <line x1="290" y1="130" x2="380" y2="80" stroke="#8b949e" stroke-width="1.5" marker-end="url(#s1)"/>
+  <text x="400" y="70" fill="#8b949e" font-size="10" font-family="sans-serif">valid -&gt; done, no lock ever taken</text>
+
+  <line x1="290" y1="130" x2="380" y2="170" stroke="#f85149" stroke-width="1.5" marker-end="url(#s2)"/>
+  <text x="400" y="185" fill="#f85149" font-size="10" font-family="sans-serif">invalid -&gt; fall back to readLock() and retry</text>
+
+  <defs>
+    <marker id="s1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="s2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f85149"/></marker>
+  </defs>
+</svg>
+<p>The common case (no concurrent write) pays for a read with zero locking overhead; the rare case (a write did interfere) falls back to a correctness-guaranteeing real lock.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a shared 2D <code>Point</code> that many threads read concurrently while occasionally being moved by a writer thread — starting with basic exclusive read/write locking, then adding optimistic reads with fallback, then building a small benchmark comparing optimistic vs. pessimistic read throughput under concurrent load.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.StampedLock;
+
+public class StampedLockBasic {
+    static class Point {
+        private double x, y;
+        private final StampedLock lock = new StampedLock();
+
+        void move(double deltaX, double deltaY) {
+            long stamp = lock.writeLock();
+            try {
+                x += deltaX;
+                y += deltaY;
+            } finally {
+                lock.unlockWrite(stamp);
+            }
+        }
+
+        double distanceFromOrigin() {
+            long stamp = lock.readLock();
+            try {
+                return Math.sqrt(x * x + y * y);
+            } finally {
+                lock.unlockRead(stamp);
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        Point point = new Point();
+        point.move(3, 4);
+        System.out.println(&quot;Distance: &quot; + point.distanceFromOrigin());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java StampedLockBasic.java</code></p>
+<p>Expected output:</p>
+<pre><code>Distance: 5.0</code></pre>
+<p><code>lock.writeLock()</code> blocks until exclusive access is granted and returns a stamp identifying that specific lock acquisition; <code>lock.unlockWrite(stamp)</code> releases it, and the stamp must match — this is a plain, correctness-first exclusive lock, functionally similar to <code>ReentrantLock</code>. <code>lock.readLock()</code>/<code>unlockRead(stamp)</code> work the same way but allow multiple concurrent readers, blocked only by an active writer — this level uses <code>StampedLock</code> exactly like a <code>ReadWriteLock</code>, without yet using its distinguishing optimistic-read feature.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.StampedLock;
+
+public class StampedLockOptimistic {
+    static class Point {
+        private double x, y;
+        private final StampedLock lock = new StampedLock();
+
+        void move(double deltaX, double deltaY) {
+            long stamp = lock.writeLock();
+            try {
+                x += deltaX;
+                y += deltaY;
+            } finally {
+                lock.unlockWrite(stamp);
+            }
+        }
+
+        double distanceFromOrigin() {
+            long stamp = lock.tryOptimisticRead(); // no lock taken yet
+            double currentX = x, currentY = y;
+
+            if (!lock.validate(stamp)) {
+                // A write happened between the read and the validate — fall back to a real lock.
+                stamp = lock.readLock();
+                try {
+                    currentX = x;
+                    currentY = y;
+                } finally {
+                    lock.unlockRead(stamp);
+                }
+            }
+            return Math.sqrt(currentX * currentX + currentY * currentY);
+        }
+    }
+
+    public static void main(String[] args) {
+        Point point = new Point();
+        point.move(3, 4);
+        System.out.println(&quot;Distance: &quot; + point.distanceFromOrigin());
+        point.move(1, 0); // move to (4, 4)
+        System.out.println(&quot;Distance: &quot; + point.distanceFromOrigin());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java StampedLockOptimistic.java</code></p>
+<p>Expected output:</p>
+<pre><code>Distance: 5.0
+Distance: 5.656854249492381</code></pre>
+<p>The real-world concern this adds: <strong>avoiding lock overhead on the read path entirely in the uncontended case.</strong> <code>tryOptimisticRead()</code> returns a stamp without blocking or taking any actual lock — <code>x</code> and <code>y</code> are read speculatively. <code>lock.validate(stamp)</code> then checks whether any write lock was acquired and released since that stamp was issued; in this single-threaded example there&#x27;s never a concurrent writer, so <code>validate</code> always succeeds and the fallback <code>readLock()</code> branch never executes — the whole read happens with zero lock acquisition cost.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.StampedLock;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+
+public class StampedLockConcurrent {
+    static class Point {
+        private double x, y;
+        private final StampedLock lock = new StampedLock();
+        private final AtomicInteger optimisticSuccesses = new AtomicInteger();
+        private final AtomicInteger optimisticFailures = new AtomicInteger();
+
+        void move(double deltaX, double deltaY) {
+            long stamp = lock.writeLock();
+            try {
+                x += deltaX;
+                y += deltaY;
+            } finally {
+                lock.unlockWrite(stamp);
+            }
+        }
+
+        double distanceFromOrigin() {
+            long stamp = lock.tryOptimisticRead();
+            double currentX = x, currentY = y;
+
+            if (!lock.validate(stamp)) {
+                optimisticFailures.incrementAndGet();
+                stamp = lock.readLock();
+                try {
+                    currentX = x;
+                    currentY = y;
+                } finally {
+                    lock.unlockRead(stamp);
+                }
+            } else {
+                optimisticSuccesses.incrementAndGet();
+            }
+            return Math.sqrt(currentX * currentX + currentY * currentY);
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Point point = new Point();
+        int readerCount = 4;
+        int readsPerThread = 50_000;
+        CountDownLatch done = new CountDownLatch(readerCount + 1);
+
+        // Reader threads: hammer distanceFromOrigin() using optimistic reads.
+        for (int i = 0; i &lt; readerCount; i++) {
+            new Thread(() -&gt; {
+                for (int r = 0; r &lt; readsPerThread; r++) point.distanceFromOrigin();
+                done.countDown();
+            }).start();
+        }
+
+        // Writer thread: moves the point periodically while readers are active.
+        new Thread(() -&gt; {
+            for (int w = 0; w &lt; 200; w++) {
+                point.move(0.001, 0.001);
+            }
+            done.countDown();
+        }).start();
+
+        done.await();
+        int successes = point.optimisticSuccesses.get();
+        int failures = point.optimisticFailures.get();
+        System.out.println(&quot;Optimistic reads that needed no fallback: &quot; + (successes &gt; 0));
+        System.out.println(&quot;Total reads observed: &quot; + (successes + failures == readerCount * readsPerThread));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java StampedLockConcurrent.java</code></p>
+<p>Expected output:</p>
+<pre><code>Optimistic reads that needed no fallback: true
+Total reads observed: true</code></pre>
+<p>This handles the production-flavoured case of <strong>genuine concurrent access</strong>: four reader threads calling <code>distanceFromOrigin()</code> 50,000 times each while a writer thread concurrently calls <code>move(...)</code> 200 times. Because writes are relatively rare compared to reads, the vast majority of <code>tryOptimisticRead()</code> calls succeed without ever falling back to <code>readLock()</code> — <code>optimisticSuccesses</code> ends up far larger than <code>optimisticFailures</code>, demonstrating the throughput advantage <code>StampedLock</code> offers over a plain <code>ReadWriteLock</code> under a read-heavy workload.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts in <code>main</code> of the Level 3 example. Four reader threads and one writer thread are started, all sharing a single <code>Point</code> instance and its <code>StampedLock</code>.</p>
+<p>Each reader thread loops 50,000 times calling <code>point.distanceFromOrigin()</code>. Inside, <code>lock.tryOptimisticRead()</code> returns a stamp representing &quot;the lock&#x27;s current version, with no actual lock acquired&quot; — this call never blocks, regardless of what other threads are doing. <code>currentX</code> and <code>currentY</code> are then read directly from the (potentially concurrently-modified) fields.</p>
+<pre><code>Reader thread:                          Writer thread (concurrently):
+stamp = tryOptimisticRead()             writeLock() -&gt; acquires exclusive access
+currentX = x; currentY = y  &lt;---------- x += 0.001; y += 0.001   (fields change mid-read!)
+validate(stamp)                         unlockWrite(stamp)
+  -&gt; if a write completed during        
+     the read window, validate()        
+     returns false</code></pre>
+<p><code>lock.validate(stamp)</code> checks whether any writer acquired and released the write lock since <code>stamp</code> was issued. If a writer&#x27;s <code>move(...)</code> call happened to overlap with a reader&#x27;s field reads, <code>validate</code> returns <code>false</code>; the reader then falls back to <code>lock.readLock()</code>, which blocks (if necessary) until any in-progress write finishes, and re-reads <code>x</code>/<code>y</code> under that genuine lock — guaranteeing a consistent pair of values this time. <code>optimisticFailures</code> is incremented in that branch. If no overlapping write occurred, <code>validate</code> returns <code>true</code>, the speculative read is trusted as-is, and <code>optimisticSuccesses</code> is incremented — no lock was ever taken for that read.</p>
+<p>The writer thread runs 200 <code>move(...)</code> calls, each acquiring the exclusive write lock briefly, mutating <code>x</code> and <code>y</code>, then releasing it. Because 200 writes are vastly outnumbered by <code>4 * 50,000 = 200,000</code> total reads, the overwhelming majority of optimistic reads complete before a concurrent write can invalidate them.</p>
+<p>After <code>done.await()</code> returns (all five threads finished), <code>main</code> checks two invariants: <code>successes &gt; 0</code> confirms that at least some reads took the fast, lock-free optimistic path (expected to be nearly all of them, though the exact count is nondeterministic and thus not asserted precisely), and <code>successes + failures == readerCount * readsPerThread</code> confirms every single read was accounted for by exactly one of the two counters — no read was silently lost or double-counted.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Inside an optimistic-read block, you must <strong>not</strong> perform any action that can&#x27;t be safely undone or that has externally visible side effects (printing to a log with values you haven&#x27;t validated yet, throwing based on a not-yet-validated invariant, etc.) — the values read may be torn or inconsistent until <code>validate(stamp)</code> confirms them. Only read plain fields into local variables, validate, and *then* act on the validated values (or fall back and re-read).</blockquote>
+<ul><li><code>StampedLock</code> is <strong>not reentrant</strong> — unlike <code>ReentrantLock</code> or <code>ReentrantReadWriteLock</code>, a thread that already holds the write lock and tries to acquire it again (even indirectly) will deadlock against itself.</li><li>Stamps are just <code>long</code> values; passing the wrong stamp to <code>unlockWrite</code>/<code>unlockRead</code> (e.g., from a different acquisition) is a programming error the lock does not fully guard against — always store and use the exact stamp returned by the matching lock call.</li><li><code>tryOptimisticRead()</code> can return <code>0</code> in rare internal states — the API contract is that you must still call <code>validate(0)</code>, which will correctly return <code>false</code>, triggering the same fallback path.</li><li><code>StampedLock</code> also supports lock <strong>conversion</strong> (<code>tryConvertToWriteLock</code>, etc.) for upgrading a read stamp to a write stamp without fully releasing and reacquiring — an advanced feature useful for read-modify-write sequences.</li><li>Use <code>StampedLock</code> when reads vastly outnumber writes and read code can be structured as &quot;read into locals, then validate&quot;; for read-heavy code that can&#x27;t easily be restructured that way (e.g., reads that must call out to other locking code), a plain <code>ReentrantReadWriteLock</code> is simpler and still safe.</li></ul>
+  <div class="nav"><a class="prv" href="0563-completablefuture.html"><span class="mini">← Previous</span>CompletableFuture</a><a class="nxt" href="0565-longadder-doubleadder-longaccumulator.html"><span class="mini">Next →</span>LongAdder / DoubleAdder / LongAccumulator</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t564";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

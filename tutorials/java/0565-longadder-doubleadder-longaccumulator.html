@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LongAdder / DoubleAdder / LongAccumulator — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 5. Java 8 (LTS)</div>
+  <div class="htitle">
+    <h1>LongAdder / DoubleAdder / LongAccumulator</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>LongAdder</code>, <code>DoubleAdder</code>, and <code>LongAccumulator</code> (<code>java.util.concurrent.atomic</code>) are Java 8 counters designed for <strong>high-contention concurrent updates</strong> — many threads incrementing or accumulating a shared value at once. They give up the ability to atomically read-and-update in a single step (which <code>AtomicLong</code> provides) in exchange for dramatically better throughput when many threads are hammering the same counter, by internally spreading updates across multiple memory cells instead of forcing every thread to contend for one.</p>
+<h2>2. Why &amp; when</h2>
+<p><code>AtomicLong.incrementAndGet()</code> is a single <code>long</code> variable updated via compare-and-swap (CAS). Under light contention that&#x27;s fast, but under <strong>heavy</strong> contention (many threads, all incrementing the same <code>AtomicLong</code> constantly) most CAS attempts fail and retry, and threads effectively serialize on that one memory location — throughput collapses as thread count rises. <code>LongAdder</code> solves this by maintaining an internal array of counter &quot;cells&quot;: under contention, different threads update different cells (avoiding collisions), and the total is only summed up (<code>sum()</code>) when someone actually needs to read it. This trades slower reads (summing several cells) for much faster, less-contended writes — exactly the right trade for a counter that&#x27;s updated far more often than it&#x27;s read, like a request counter or hit counter under load. <code>LongAccumulator</code> generalizes the same idea to any associative combining function, not just addition.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">LongAdder hits = new LongAdder();
+
+hits.increment();      // cheap, low-contention update
+hits.add(5);
+long total = hits.sum(); // reads (and internally combines) the current total
+
+LongAccumulator max = new LongAccumulator(Long::max, Long.MIN_VALUE);
+max.accumulate(42);
+max.accumulate(17);
+long biggest = max.get(); // 42</code></pre>
+<p><code>LongAdder</code> is specifically addition; <code>LongAccumulator</code> takes any <code>LongBinaryOperator</code> (like <code>Long::max</code>) plus an identity value, generalizing the same low-contention-write strategy to arbitrary associative operations.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AtomicLong forces all threads through one memory cell; LongAdder spreads updates across several cells">
+  <text x="20" y="25" fill="#8b949e" font-size="11" font-family="sans-serif">AtomicLong — every thread contends for ONE cell:</text>
+  <rect x="20" y="35" width="120" height="30" rx="6" fill="#1c2430" stroke="#f85149"/>
+  <text x="80" y="55" fill="#f85149" font-size="11" text-anchor="middle" font-family="monospace">value</text>
+  <text x="160" y="55" fill="#8b949e" font-size="9" font-family="sans-serif">&lt;- T1, T2, T3, T4 all CAS here</text>
+
+  <text x="20" y="100" fill="#8b949e" font-size="11" font-family="sans-serif">LongAdder — threads spread across multiple cells:</text>
+  <rect x="20" y="110" width="90" height="30" rx="6" fill="#1c2430" stroke="#6db33f"/><text x="65" y="130" fill="#6db33f" font-size="10" text-anchor="middle" font-family="monospace">cell[0]</text>
+  <rect x="120" y="110" width="90" height="30" rx="6" fill="#1c2430" stroke="#6db33f"/><text x="165" y="130" fill="#6db33f" font-size="10" text-anchor="middle" font-family="monospace">cell[1]</text>
+  <rect x="220" y="110" width="90" height="30" rx="6" fill="#1c2430" stroke="#6db33f"/><text x="265" y="130" fill="#6db33f" font-size="10" text-anchor="middle" font-family="monospace">cell[2]</text>
+  <rect x="320" y="110" width="90" height="30" rx="6" fill="#1c2430" stroke="#6db33f"/><text x="365" y="130" fill="#6db33f" font-size="10" text-anchor="middle" font-family="monospace">cell[3]</text>
+  <text x="20" y="160" fill="#8b949e" font-size="10" font-family="sans-serif">sum() adds all cells together only when a read is actually needed.</text>
+</svg>
+<p>Fewer collisions on writes means far higher throughput under contention; reads become slightly more work (summing cells) in exchange.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: counting page-view events and tracking the peak concurrent-request count in a simulated web server under load — starting with a basic single-threaded counter, then hammering it from many threads to compare <code>AtomicLong</code> vs <code>LongAdder</code>, then adding a <code>LongAccumulator</code> to track a running maximum alongside the count.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.atomic.LongAdder;
+
+public class HitCounterBasic {
+    public static void main(String[] args) {
+        LongAdder hits = new LongAdder();
+
+        hits.increment();
+        hits.increment();
+        hits.add(3);
+
+        System.out.println(&quot;Total hits: &quot; + hits.sum());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java HitCounterBasic.java</code></p>
+<p>Expected output:</p>
+<pre><code>Total hits: 5</code></pre>
+<p><code>hits.increment()</code> is shorthand for <code>add(1)</code>. <code>hits.add(3)</code> adds an arbitrary delta. <code>hits.sum()</code> returns the current total by combining all internal cells — in this single-threaded example there&#x27;s no contention, so it behaves identically to a simple counter, but the API is already the concurrency-ready one.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.CountDownLatch;
+
+public class HitCounterConcurrent {
+    static void hammer(Runnable incrementAction, int threadCount, int incrementsPerThread) throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(threadCount);
+        long start = System.nanoTime();
+        for (int i = 0; i &lt; threadCount; i++) {
+            new Thread(() -&gt; {
+                for (int j = 0; j &lt; incrementsPerThread; j++) incrementAction.run();
+                latch.countDown();
+            }).start();
+        }
+        latch.await();
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;  elapsed: &quot; + elapsedMs + &quot; ms&quot;);
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int threadCount = 8;
+        int incrementsPerThread = 500_000;
+
+        AtomicLong atomicHits = new AtomicLong();
+        System.out.println(&quot;AtomicLong:&quot;);
+        hammer(atomicHits::incrementAndGet, threadCount, incrementsPerThread);
+        System.out.println(&quot;  total: &quot; + atomicHits.get());
+
+        LongAdder adderHits = new LongAdder();
+        System.out.println(&quot;LongAdder:&quot;);
+        hammer(adderHits::increment, threadCount, incrementsPerThread);
+        System.out.println(&quot;  total: &quot; + adderHits.sum());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java HitCounterConcurrent.java</code></p>
+<p>Expected output (exact timings vary by machine; both totals are always exactly correct, and LongAdder is typically noticeably faster under contention on a multi-core machine):</p>
+<pre><code>AtomicLong:
+  elapsed: 210 ms
+  total: 4000000
+LongAdder:
+  elapsed: 60 ms
+  total: 4000000</code></pre>
+<p>The real-world concern this adds: <strong>genuine multi-threaded contention</strong>, where 8 threads each perform 500,000 increments concurrently on the same counter — 4,000,000 total increments. Both <code>AtomicLong</code> and <code>LongAdder</code> produce the exact same, fully correct total (no increments are lost to races), but <code>LongAdder</code> typically finishes faster because its internal cell-striping reduces contention between threads competing for the same memory location, which matters more as thread count and contention rise.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.LongAccumulator;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ThreadLocalRandom;
+
+public class ServerLoadStats {
+    static class LoadTracker {
+        private final LongAdder totalRequests = new LongAdder();
+        private final LongAccumulator peakLatencyMs = new LongAccumulator(Long::max, Long.MIN_VALUE);
+
+        void recordRequest(long latencyMs) {
+            totalRequests.increment();
+            peakLatencyMs.accumulate(latencyMs);
+        }
+
+        String report() {
+            return &quot;Total requests: &quot; + totalRequests.sum() + &quot;, Peak latency: &quot; + peakLatencyMs.get() + &quot; ms&quot;;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        LoadTracker tracker = new LoadTracker();
+        int threadCount = 6;
+        int requestsPerThread = 100_000;
+        CountDownLatch latch = new CountDownLatch(threadCount);
+
+        for (int i = 0; i &lt; threadCount; i++) {
+            new Thread(() -&gt; {
+                ThreadLocalRandom random = ThreadLocalRandom.current();
+                for (int j = 0; j &lt; requestsPerThread; j++) {
+                    long simulatedLatency = random.nextInt(1, 200);
+                    tracker.recordRequest(simulatedLatency);
+                }
+                latch.countDown();
+            }).start();
+        }
+
+        latch.await();
+        System.out.println(tracker.report());
+        System.out.println(&quot;Expected total: &quot; + (threadCount * requestsPerThread));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ServerLoadStats.java</code></p>
+<p>Expected output (peak latency value varies by run since it&#x27;s randomly generated, but is always between 1 and 199; total is deterministic):</p>
+<pre><code>Total requests: 600000, Peak latency: 199 ms
+Expected total: 600000</code></pre>
+<p>This combines a <code>LongAdder</code> (for a plain running count) with a <code>LongAccumulator</code> (for a running maximum) under real concurrent load — exactly the pattern a web server&#x27;s request-tracking middleware would use: cheaply incrementing a hit counter and cheaply tracking the worst-case latency seen so far, both updated on every single request from potentially many concurrent handler threads, without either counter becoming a contention bottleneck.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts in <code>main</code> of the Level 3 example. A single shared <code>LoadTracker</code> is created, holding a <code>LongAdder</code> (<code>totalRequests</code>) and a <code>LongAccumulator</code> configured with <code>Long::max</code> and an identity of <code>Long.MIN_VALUE</code> (<code>peakLatencyMs</code>) — the identity value is what <code>peakLatencyMs.get()</code> would return if <code>accumulate</code> were never called, chosen so that any real latency value is guaranteed to be larger.</p>
+<p>Six threads are started, each looping 100,000 times. Each iteration generates a random simulated latency between 1 and 199 (via <code>ThreadLocalRandom</code>, itself designed to avoid contention between threads — each thread gets its own generator instance) and calls <code>tracker.recordRequest(simulatedLatency)</code>.</p>
+<p>Inside <code>recordRequest</code>, two independent low-contention updates happen: <code>totalRequests.increment()</code> bumps the request counter using the cell-striping strategy from part 4, and <code>peakLatencyMs.accumulate(latencyMs)</code> combines the new latency with whatever the accumulator currently holds using the <code>Long::max</code> function, internally using the same kind of striped-cell strategy <code>LongAdder</code> uses — but combining via <code>max</code> instead of <code>+</code>.</p>
+<pre><code>Thread A: recordRequest(87)  -&gt; totalRequests: cellA += 1 | peakLatencyMs: cellA = max(cellA, 87)
+Thread B: recordRequest(150) -&gt; totalRequests: cellB += 1 | peakLatencyMs: cellB = max(cellB, 150)
+Thread C: recordRequest(42)  -&gt; totalRequests: cellC += 1 | peakLatencyMs: cellC = max(cellC, 42)
+...(600,000 such calls spread across 6 threads, largely non-colliding)...</code></pre>
+<p>Because six threads run concurrently and each is independently updating cells rather than one shared value, there&#x27;s little to no contention even with 600,000 total updates happening in a tight window.</p>
+<p>After <code>latch.await()</code> returns (all six threads finished their 100,000 iterations each), <code>tracker.report()</code> is called. <code>totalRequests.sum()</code> walks the internal cells and adds them together, producing the true total of <code>600,000</code> — exactly <code>6 * 100,000</code>, confirming no update was lost despite the concurrent, low-contention writes. <code>peakLatencyMs.get()</code> similarly combines the internal cells using <code>Long::max</code>, yielding the single highest latency value observed across all 600,000 simulated requests, which will be <code>199</code> with overwhelming probability given 600,000 draws from <code>[1, 199]</code>.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><code>LongAdder.sum()</code> (and <code>LongAccumulator.get()</code>) is <strong>not atomic with respect to concurrent updates</strong> — if writer threads are actively calling <code>increment()</code>/<code>accumulate()</code> while <code>sum()</code> runs, the returned total might not reflect every single one of those concurrent writes (it&#x27;s an approximation that becomes exact once writes stop). For a snapshot total during active writes, this is expected and acceptable for most metrics/counter use cases; if you need a value that&#x27;s guaranteed atomic at every instant, <code>LongAdder</code> is the wrong tool — use <code>AtomicLong</code> instead.</blockquote>
+<ul><li><code>LongAdder</code>/<code>DoubleAdder</code> are specifically for <strong>addition</strong>; use <code>LongAccumulator</code>/<code>DoubleAccumulator</code> for any other associative combining operation (max, min, bitwise OR, etc.) by supplying a <code>LongBinaryOperator</code>/<code>DoubleBinaryOperator</code> and an identity value.</li><li>Under <strong>low</strong> contention (few threads, infrequent updates), <code>AtomicLong</code> and <code>LongAdder</code> perform similarly — the advantage of <code>LongAdder</code> only shows up under genuinely high contention. Don&#x27;t reach for it reflexively; measure if it matters.</li><li><code>LongAdder</code> uses more memory than a single <code>AtomicLong</code> (it may allocate an array of cells internally, growing under contention), a reasonable trade for a counter but not for a value you need many independent instances of.</li><li>Neither <code>LongAdder</code> nor <code>AtomicLong</code> supports atomic &quot;compare and set to X only if currently Y&quot; semantics the way <code>AtomicLong</code> alone does with <code>compareAndSet</code> — <code>LongAdder</code> intentionally drops that capability in exchange for write throughput.</li><li>Both <code>LongAdder</code> and <code>LongAccumulator</code> extend <code>Number</code>, so <code>intValue()</code>, <code>longValue()</code>, etc. are available, but <code>sum()</code>/<code>get()</code> are the idiomatic accessors for their respective types.</li></ul>
+  <div class="nav"><a class="prv" href="0564-stampedlock.html"><span class="mini">← Previous</span>StampedLock</a><a class="nxt" href="0566-nashorn-javascript-engine.html"><span class="mini">Next →</span>Nashorn JavaScript engine</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t565";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
