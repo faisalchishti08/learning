@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Generational Shenandoah (experimental) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 21. Java 24</div>
+  <div class="htitle">
+    <h1>Generational Shenandoah (experimental)</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Java 24</strong> (JEP 404) adds an <strong>experimental generational mode</strong> to the Shenandoah garbage collector, enabled with <code>-XX:+UseShenandoahGC -XX:ShenandoahGCMode=generational</code>. Like <a href="0749-generational-zgc.md">generational ZGC</a>, it splits the heap into a <strong>young generation</strong> for newly allocated, short-lived objects and an <strong>old generation</strong> for longer-lived survivors, applying the generational hypothesis (most objects die young) to reduce the total collector work needed to keep pace with allocation — while preserving Shenandoah&#x27;s existing low-pause-time character. Being marked <strong>experimental</strong>, it must be explicitly unlocked with <code>-XX:+UnlockExperimentalVMOptions</code> and is not yet recommended for production use without careful evaluation.</p>
+<h2>2. Why &amp; when</h2>
+<p>Shenandoah, like ZGC, was originally built as a single-generation collector: the whole heap treated as one region, scanned in its entirety on every collection cycle. That design delivers Shenandoah&#x27;s headline feature — pause times that don&#x27;t scale with heap size — but at the cost of doing more total collection work than necessary for workloads where most objects genuinely die young and a smaller fraction survive long-term, which describes the overwhelming majority of real applications. Generational ZGC proved out this same idea for ZGC across several stable releases; generational Shenandoah applies the identical reasoning to Shenandoah&#x27;s collector, letting teams already committed to Shenandoah (rather than ZGC) get the same category of CPU-overhead improvement, without having to switch collectors entirely just to gain generational behavior. The experimental flag exists precisely because this is new: unlike ZGC&#x27;s now-default generational mode, Shenandoah&#x27;s generational mode needs its own round of real-world validation before the JDK team is ready to promote it, deprecate the old mode, or eventually flip the default the way JEP 474 did for ZGC.</p>
+<h2>3. Core concept</h2>
+<pre><code># Experimental generational Shenandoah — requires explicitly unlocking experimental options
+java -XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC -XX:ShenandoahGCMode=generational -Xmx4g -Xlog:gc MyApp
+
+# Compare against Shenandoah&#x27;s traditional single-generation mode
+java -XX:+UseShenandoahGC -XX:ShenandoahGCMode=satb -Xmx4g -Xlog:gc MyApp</code></pre>
+<p>Both modes share Shenandoah&#x27;s low-pause-time design; the generational mode changes how much total collection work is needed, not the pause-time guarantee itself.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Generational Shenandoah, like generational ZGC, splits the heap into a frequently-collected young generation and a rarely-collected old generation, but remains experimental and requires unlocking experimental VM options">
+  <rect x="20" y="20" width="600" height="40" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="320" y="45" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">-XX:+UnlockExperimentalVMOptions -XX:ShenandoahGCMode=generational</text>
+
+  <rect x="20" y="90" width="260" height="50" rx="8" fill="#0f1620" stroke="#79c0ff"/>
+  <text x="150" y="112" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="sans-serif">Young generation</text>
+  <text x="150" y="130" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">collected often, mostly garbage</text>
+
+  <rect x="300" y="90" width="320" height="50" rx="8" fill="#0f1620" stroke="#8b949e"/>
+  <text x="460" y="112" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Old generation</text>
+  <text x="460" y="130" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">collected rarely, mostly live</text>
+
+  <text x="320" y="175" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Same low-pause design as non-generational Shenandoah, less total collector work — still experimental</text>
+</svg>
+<p>*The same generational strategy proven by ZGC, now applied to Shenandoah, one release before it&#x27;s considered stable.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: the same short-lived-buffer-plus-small-cache workload used to demonstrate generational ZGC, run instead under generational Shenandoah, growing into a direct comparison against Shenandoah&#x27;s traditional mode.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ShenandoahGenBasic {
+    public static void main(String[] args) {
+        List&lt;byte[]&gt; shortLived;
+        for (int round = 0; round &lt; 200_000; round++) {
+            shortLived = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; 10; i++) {
+                shortLived.add(new byte[1024]);
+            }
+        }
+        System.out.println(&quot;done allocating&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xmx256m ShenandoahGenBasic.java</code> (JDK 24+; a baseline run with no special GC flags yet).</p>
+<p>The familiar &quot;most objects die young&quot; workload from earlier generational-collector examples — 2,000,000 short-lived 1 KB buffers, discarded almost immediately after allocation.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ShenandoahGenWithSurvivors {
+    static final List&lt;byte[]&gt; longLivedCache = new ArrayList&lt;&gt;();
+
+    public static void main(String[] args) {
+        for (int round = 0; round &lt; 200_000; round++) {
+            List&lt;byte[]&gt; shortLived = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; 10; i++) {
+                shortLived.add(new byte[1024]);
+            }
+            if (round % 1000 == 0) {
+                longLivedCache.add(new byte[1024]);
+            }
+        }
+        System.out.println(&quot;cache size (long-lived survivors): &quot; + longLivedCache.size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xmx256m -XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC -XX:ShenandoahGCMode=generational -Xlog:gc ShenandoahGenWithSurvivors.java</code>.</p>
+<p>The real-world concern added: a small, genuinely long-lived <code>longLivedCache</code> mixed in with the flood of short-lived garbage — under <code>-Xlog:gc</code>, generational Shenandoah&#x27;s log output should show frequent young-generation cycles and far rarer old-generation ones, mirroring what generational ZGC shows for the equivalent workload.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.*;
+
+public class ShenandoahGenProduction {
+    static final Map&lt;Integer, byte[]&gt; connectionPool = new ConcurrentHashMap&lt;&gt;();
+
+    static void handleRequest(int requestId) {
+        List&lt;byte[]&gt; buffers = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 20; i++) {
+            buffers.add(new byte[2048]);
+        }
+        if (requestId % 5000 == 0) {
+            connectionPool.put(requestId, new byte[4096]);
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        long start = System.nanoTime();
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i &lt; 500_000; i++) {
+                int requestId = i;
+                executor.submit(() -&gt; handleRequest(requestId));
+            }
+        }
+        double seconds = (System.nanoTime() - start) / 1e9;
+        System.out.printf(&quot;processed 500,000 requests in %.2fs, cache entries=%d%n&quot;,
+            seconds, connectionPool.size());
+    }
+}</code></pre>
+<p><strong>How to run — compare generational against traditional Shenandoah:</strong></p>
+<pre><code>java -Xmx512m -XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC -XX:ShenandoahGCMode=generational -Xlog:gc:file=gen.log ShenandoahGenProduction.java
+java -Xmx512m -XX:+UseShenandoahGC -XX:ShenandoahGCMode=satb -Xlog:gc:file=trad.log ShenandoahGenProduction.java</code></pre>
+<p>This adds the production-flavored hard case: 500,000 concurrent virtual-thread-backed requests, each allocating short-lived buffers with an occasional long-lived cache entry, run once under experimental generational Shenandoah and once under Shenandoah&#x27;s traditional (<code>satb</code>) mode — with GC log output from both compared directly, the same evaluation approach that would confirm (or refute) generational mode&#x27;s benefit for a specific real workload before committing to it in production.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing what happens during one run of <code>ShenandoahGenProduction</code> under experimental generational Shenandoah:</p>
+<ol><li><code>main</code> starts a timer, opens a virtual-thread-per-task executor, and submits 500,000 tasks, each calling <code>handleRequest</code>.</li><li>Each <code>handleRequest</code> allocates 20 short-lived <code>byte[2048]</code> buffers into a local list that goes out of scope immediately after the method returns — the dominant source of allocation, and nearly all of it dies within microseconds.</li><li>Every 5,000th request additionally inserts a <code>byte[4096]</code> entry into the shared <code>connectionPool</code>, representing a small trickle of genuinely long-lived state.</li><li>Under generational Shenandoah, the young-generation collector handles the flood of short-lived request buffers frequently and cheaply, since most of what it scans is already garbage by the time it runs; the old generation, holding the rare <code>connectionPool</code> survivors, is scanned far less often.</li><li>Once all 500,000 tasks complete, the executor&#x27;s try-with-resources block closes, <code>main</code> computes elapsed time, and prints the summary.</li><li>Comparing <code>gen.log</code> (generational) against <code>trad.log</code> (traditional <code>satb</code> mode) would typically show generational mode logging more frequent, cheaper young-generation cycles and less total GC CPU time for the same workload — the same qualitative pattern established by generational ZGC, now measured for Shenandoah specifically.</li></ol>
+<p>Expected output shape (exact timing varies by machine and JDK build; being experimental, results may also vary release to release as the implementation matures):</p>
+<pre><code>processed 500,000 requests in 1.9Xs, cache entries=100</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> &quot;experimental&quot; is a stronger caution here than it might sound — unlike generational ZGC (which spent time as an opt-in stable feature before becoming default), generational Shenandoah has not yet had that stabilization period. Treat any performance numbers you measure from it as provisional, re-validate after upgrading to newer JDK releases as the implementation continues to mature, and avoid depending on it for production workloads without your own careful evaluation and a fallback plan.</blockquote>
+<ul><li>Experimental in Java 24 (JEP 404) — requires both <code>-XX:+UnlockExperimentalVMOptions</code> and <code>-XX:+UseShenandoahGC -XX:ShenandoahGCMode=generational</code>.</li><li>Applies the same generational strategy as <a href="0749-generational-zgc.md">generational ZGC</a> to Shenandoah: frequent, cheap young-generation collections plus rare old-generation collections, same pause-time character as before.</li><li>Best suited to workloads matching the generational hypothesis — most objects short-lived, a smaller long-lived remainder — the same profile that benefits from generational ZGC.</li><li>Use <code>-Xlog:gc</code> to observe collection frequency and cost directly, and compare against Shenandoah&#x27;s traditional mode on your actual workload before adopting it.</li><li>Given its experimental status, expect continued changes before (if) it eventually stabilizes and potentially becomes Shenandoah&#x27;s default, mirroring ZGC&#x27;s own path from opt-in to default.</li></ul>
+  <div class="nav"><a class="prv" href="0791-ahead-of-time-class-loading-linking.html"><span class="mini">← Previous</span>Ahead-of-Time class loading & linking</a><a class="nxt" href="0793-compact-object-headers-experimental.html"><span class="mini">Next →</span>Compact object headers (experimental)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t792";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
