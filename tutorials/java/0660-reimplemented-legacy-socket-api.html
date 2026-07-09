@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reimplemented legacy Socket API — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 10. Java 13</div>
+  <div class="htitle">
+    <h1>Reimplemented legacy Socket API</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>JEP 353</strong>, delivered in <strong>Java 13</strong>, replaced the underlying implementation of the legacy <code>java.net.Socket</code> and <code>java.net.ServerSocket</code> APIs with a new implementation called <code>NioSocketImpl</code>, which is built on top of the same internal infrastructure as <code>java.nio</code>. The old implementation (<code>PlainSocketImpl</code>), dating back to Java 1.0, was written using thread-per-connection, native-heavy code that was difficult to maintain and, crucially, didn&#x27;t work well with fibers/virtual threads work happening in parallel OpenJDK projects (this was groundwork for what became Project Loom). The <code>Socket</code>/<code>ServerSocket</code> public APIs themselves <strong>did not change at all</strong> — same classes, same method signatures, same behavior from an application&#x27;s point of view. This is a &quot;replace the engine, keep the car&quot; change.</p>
+<h2>2. Why &amp; when</h2>
+<p><code>PlainSocketImpl</code> had accumulated decades of subtle behavior differences from its NIO-based counterpart, used stack sizes and thread-per-connection patterns poorly suited to high-connection-count servers, and its implementation in a mix of Java and old native (JNI) code made it hard to fix bugs or optimize without risking regressions. <code>NioSocketImpl</code> shares infrastructure with the already-well-tested, better-performing NIO channel implementation, giving <code>Socket</code>/<code>ServerSocket</code> improved scalability (particularly relevant for servers handling many concurrent connections with blocking I/O) and paving the way for future features like virtual threads to work correctly with classic blocking socket code. As an application developer using plain <code>Socket</code>/<code>ServerSocket</code>, you don&#x27;t need to change anything — your existing code just runs on a better-implemented, more scalable foundation starting in Java 13. This matters most if you write servers handling many simultaneous blocking-I/O connections, or if you were relying on any undocumented quirk of the old implementation (rare, but the JEP explicitly warns of a small number of edge-case behavior differences).</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">// Your code doesn&#x27;t change at all — same familiar Socket/ServerSocket API.
+try (ServerSocket server = new ServerSocket(8080)) {
+    while (true) {
+        Socket client = server.accept();      // blocks until a connection arrives
+        // handle client...
+    }
+}
+
+// What changed is invisible to you: internally, Socket now delegates to
+// NioSocketImpl instead of the old PlainSocketImpl, sharing infrastructure
+// with java.nio.channels.SocketChannel under the hood.</code></pre>
+<p>If you ever needed to opt back into the legacy implementation (e.g. to work around an unexpected behavior difference during the transition), the system property <code>-Djdk.net.usePlainSocketImpl=true</code> was provided as an escape hatch — later removed once the new implementation matured.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 620 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Socket and ServerSocket keep the same public API but switch their internal implementation from PlainSocketImpl to NioSocketImpl">
+  <rect x="10" y="20" width="220" height="130" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="120" y="45" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Public API (unchanged)</text>
+  <text x="25" y="75" fill="#e6edf3" font-size="10" font-family="monospace">java.net.Socket</text>
+  <text x="25" y="95" fill="#e6edf3" font-size="10" font-family="monospace">java.net.ServerSocket</text>
+  <text x="25" y="125" fill="#8b949e" font-size="9" font-family="sans-serif">Same methods, same</text>
+  <text x="25" y="138" fill="#8b949e" font-size="9" font-family="sans-serif">behavior for your code.</text>
+
+  <line x1="230" y1="85" x2="280" y2="85" stroke="#8b949e" stroke-width="2" marker-end="url(#si1)"/>
+
+  <rect x="290" y="20" width="150" height="55" rx="6" fill="#1c2430" stroke="#f85149" opacity="0.6"/>
+  <text x="365" y="42" fill="#f85149" font-size="10" text-anchor="middle" font-family="monospace">PlainSocketImpl</text>
+  <text x="365" y="58" fill="#f85149" font-size="8" text-anchor="middle" font-family="sans-serif">(pre-Java 13, retired)</text>
+
+  <rect x="290" y="95" width="150" height="55" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="365" y="117" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="monospace">NioSocketImpl</text>
+  <text x="365" y="133" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">(Java 13+, default)</text>
+
+  <text x="460" y="60" fill="#8b949e" font-size="9" font-family="sans-serif">shares infrastructure with</text>
+  <text x="460" y="118" fill="#79c0ff" font-size="9" font-family="sans-serif">java.nio.channels.SocketChannel</text>
+
+  <defs><marker id="si1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>The <code>Socket</code>/<code>ServerSocket</code> classes are a thin, stable public facade; Java 13 swapped what sits behind that facade without touching the facade itself.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a simple client-server exchange using plain blocking sockets — first the basic accept/read/write pattern (unchanged code that now runs on the new implementation), then adding proper timeout and multi-client handling, then a small multi-threaded echo server demonstrating the kind of many-concurrent-connections scenario the reimplementation specifically targets.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: SimpleEchoServer.java
+import java.io.*;
+import java.net.*;
+
+public class SimpleEchoServer {
+    public static void main(String[] args) throws IOException {
+        try (ServerSocket server = new ServerSocket(0)) { // port 0 = pick a free port
+            int port = server.getLocalPort();
+            System.out.println(&quot;Server listening on port &quot; + port);
+
+            Thread serverThread = new Thread(() -&gt; {
+                try (Socket client = server.accept();
+                     BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream()));
+                     PrintWriter out = new PrintWriter(client.getOutputStream(), true)) {
+                    String line = in.readLine();
+                    System.out.println(&quot;Server received: &quot; + line);
+                    out.println(&quot;echo: &quot; + line);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            serverThread.start();
+
+            try (Socket clientSocket = new Socket(&quot;localhost&quot;, port);
+                 PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true);
+                 BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()))) {
+                out.println(&quot;hello from client&quot;);
+                System.out.println(&quot;Client received: &quot; + in.readLine());
+            }
+
+            serverThread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java SimpleEchoServer.java</code> (no special flags — this is standard <code>Socket</code>/<code>ServerSocket</code> usage that automatically runs on <code>NioSocketImpl</code> in Java 13+).</p>
+<p>Expected output:</p>
+<pre><code>Server listening on port 54231
+Server received: hello from client
+Client received: echo: hello from client</code></pre>
+<p>(the port number will vary each run since <code>0</code> requests any free ephemeral port)</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: TimeoutEchoServer.java
+import java.io.*;
+import java.net.*;
+
+public class TimeoutEchoServer {
+    public static void main(String[] args) throws Exception {
+        try (ServerSocket server = new ServerSocket(0)) {
+            server.setSoTimeout(2000); // accept() gives up after 2 seconds if no client connects
+            int port = server.getLocalPort();
+            System.out.println(&quot;Server listening on port &quot; + port + &quot; with 2s accept timeout&quot;);
+
+            Thread serverThread = new Thread(() -&gt; {
+                try {
+                    Socket client = server.accept();
+                    client.setSoTimeout(1000); // reads also time out after 1 second
+                    try (BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream()));
+                         PrintWriter out = new PrintWriter(client.getOutputStream(), true)) {
+                        String line = in.readLine();
+                        out.println(&quot;echo: &quot; + line);
+                    }
+                } catch (SocketTimeoutException e) {
+                    System.out.println(&quot;Server: accept() or read timed out&quot;);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            serverThread.start();
+
+            try (Socket clientSocket = new Socket(&quot;localhost&quot;, port);
+                 PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true);
+                 BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()))) {
+                out.println(&quot;ping&quot;);
+                System.out.println(&quot;Client received: &quot; + in.readLine());
+            }
+
+            serverThread.join();
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java TimeoutEchoServer.java</code></p>
+<p>Expected output:</p>
+<pre><code>Server listening on port 54871 with 2s accept timeout
+Client received: echo: ping</code></pre>
+<p><code>setSoTimeout</code> makes blocking calls (<code>accept()</code>, socket reads) throw <code>SocketTimeoutException</code> instead of blocking forever — behavior fully preserved by <code>NioSocketImpl</code>, exercising exactly the kind of timeout semantics application code depends on.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: MultiClientEchoServer.java
+import java.io.*;
+import java.net.*;
+import java.util.concurrent.*;
+
+public class MultiClientEchoServer {
+    public static void main(String[] args) throws Exception {
+        try (ServerSocket server = new ServerSocket(0)) {
+            int port = server.getLocalPort();
+            System.out.println(&quot;Server listening on port &quot; + port);
+            ExecutorService pool = Executors.newFixedThreadPool(4);
+
+            Thread acceptorThread = new Thread(() -&gt; {
+                try {
+                    for (int i = 0; i &lt; 5; i++) {
+                        Socket client = server.accept();
+                        pool.submit(() -&gt; handle(client, &quot;client&quot;));
+                    }
+                } catch (IOException e) {
+                    // server socket closed after all clients handled — expected
+                }
+            });
+            acceptorThread.start();
+
+            CountDownLatch done = new CountDownLatch(5);
+            for (int i = 0; i &lt; 5; i++) {
+                final int id = i;
+                pool.submit(() -&gt; {
+                    try (Socket s = new Socket(&quot;localhost&quot;, port);
+                         PrintWriter out = new PrintWriter(s.getOutputStream(), true);
+                         BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()))) {
+                        out.println(&quot;message-&quot; + id);
+                        System.out.println(&quot;Client &quot; + id + &quot; got: &quot; + in.readLine());
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+
+            done.await(5, TimeUnit.SECONDS);
+            pool.shutdown();
+        }
+    }
+
+    static void handle(Socket client, String label) {
+        try (client; BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream()));
+             PrintWriter out = new PrintWriter(client.getOutputStream(), true)) {
+            String line = in.readLine();
+            out.println(&quot;echo: &quot; + line);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java MultiClientEchoServer.java</code></p>
+<p>Expected output (client order may interleave differently each run):</p>
+<pre><code>Server listening on port 55102
+Client 0 got: echo: message-0
+Client 1 got: echo: message-1
+Client 2 got: echo: message-2
+Client 3 got: echo: message-3
+Client 4 got: echo: message-4</code></pre>
+<p>Level 3 runs 5 concurrent blocking client connections against one server, each handled by a pooled thread doing blocking <code>accept()</code>/read/write calls — exactly the many-concurrent-blocking-connections pattern where <code>NioSocketImpl</code>&#x27;s improved internal scalability over the old <code>PlainSocketImpl</code> matters most, even though the code itself uses nothing but the familiar <code>Socket</code>/<code>ServerSocket</code> API.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>main</code> starts a <code>ServerSocket</code> on an OS-chosen free port and launches an <code>acceptorThread</code> that loops calling <code>server.accept()</code> up to 5 times — each call <strong>blocks</strong> the acceptor thread until a client connects; this blocking behavior is provided by <code>NioSocketImpl</code> under the hood but looks and behaves identically to the pre-Java-13 implementation from the caller&#x27;s perspective.</li><li>Concurrently, <code>main</code> submits 5 client tasks to the same thread pool. Each task opens <code>new Socket(&quot;localhost&quot;, port)</code>, which performs a TCP handshake against the listening server socket.</li><li>On the server side, each successful <code>accept()</code> call returns a connected <code>Socket</code> representing that specific client connection; the acceptor thread immediately hands it off to the pool via <code>pool.submit(() -&gt; handle(client, &quot;client&quot;))</code> and loops back to <code>accept()</code> again, ready for the next connection — this is what lets the server handle multiple clients without one client&#x27;s slow I/O blocking the acceptance of the next.</li><li>Inside <code>handle</code>, <code>in.readLine()</code> blocks until the corresponding client writes and flushes a line (via <code>PrintWriter</code>&#x27;s auto-flush, enabled by the <code>true</code> constructor argument). Once the client&#x27;s <code>out.println(&quot;message-&quot; + id)</code> sends its line, <code>readLine()</code> unblocks with that string.</li><li><code>handle</code> immediately writes back <code>&quot;echo: &quot; + line</code> via <code>out</code>, and the try-with-resources block closes <code>client</code>&#x27;s streams and the socket itself as <code>handle</code> returns.</li><li>Back on the client side, <code>in.readLine()</code> — which was blocked waiting for the server&#x27;s reply — unblocks with the echoed string, and <code>System.out.println(&quot;Client &quot; + id + &quot; got: &quot; + in.readLine())</code> prints it.</li><li>Each client task calls <code>done.countDown()</code> in its <code>finally</code> block regardless of success or failure, and <code>main</code>&#x27;s <code>done.await(5, TimeUnit.SECONDS)</code> blocks until all 5 clients have finished (or the 5-second timeout elapses), after which the thread pool shuts down and the program exits.</li></ol>
+<pre><code>acceptorThread:  accept()──►handle(c0)  accept()──►handle(c1)  accept()──►handle(c2) ...
+client tasks:     c0 connect→write→read reply     c1 connect→write→read reply   ... (concurrent)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>The JEP explicitly notes a small number of <strong>edge-case behavior differences</strong> between the old and new implementations (mostly around obscure timing/exception details in rarely-exercised paths). If a server exhibits an unexpected behavior change after upgrading to Java 13+, the <code>-Djdk.net.usePlainSocketImpl=true</code> system property was provided (in early Java 13/14 releases) as a temporary escape hatch to revert to the legacy implementation while you investigate — though this flag was eventually removed as <code>NioSocketImpl</code> matured, so it isn&#x27;t a long-term fix.</blockquote>
+<ul><li>Application code using <code>Socket</code>/<code>ServerSocket</code> requires <strong>zero changes</strong> — this is purely an internal implementation swap.</li><li>The new <code>NioSocketImpl</code> shares infrastructure with <code>java.nio.channels.SocketChannel</code>, giving better scalability for servers handling many concurrent blocking connections.</li><li>This reimplementation was explicitly groundwork for later virtual-threads (Project Loom) work — blocking socket calls needed an implementation compatible with lightweight thread scheduling.</li><li><code>setSoTimeout</code>, blocking semantics, and all standard <code>Socket</code>/<code>ServerSocket</code> behaviors are fully preserved — existing timeout- and exception-handling code continues to work unchanged.</li><li>If you rely on very obscure legacy socket edge-case behavior, test carefully on Java 13+; the vast majority of code is unaffected, but the JEP itself acknowledges rare corner cases.</li></ul>
+  <div class="nav"><a class="prv" href="0659-switch-expressions-yield-2nd-preview.html"><span class="mini">← Previous</span>Switch expressions yield (2nd preview)</a><a class="nxt" href="0661-dynamic-cds-archives.html"><span class="mini">Next →</span>Dynamic CDS archives</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t660";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
