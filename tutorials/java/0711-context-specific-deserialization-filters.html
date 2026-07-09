@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Context-specific deserialization filters — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 14. Java 17 (LTS)</div>
+  <div class="htitle">
+    <h1>Context-specific deserialization filters</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Java 17</strong> (JEP 415) added a way to install a <strong>JVM-wide filter factory</strong> for Java object deserialization, letting an application select a *different* <code>ObjectInputFilter</code> depending on the <strong>context</strong> of each individual deserialization operation — which stream is being read, which class initiated it, or any other criterion the application defines — rather than being limited to one single, static, global filter for the entire JVM. Deserialization filters (<code>ObjectInputFilter</code>, added years earlier) already let you allow-list or block-list which classes are permitted to be reconstructed from a byte stream, closing off a major class of deserialization-based security vulnerabilities. This JEP makes filter selection itself programmable and dynamic, driven by <code>ObjectInputFilter.Config.setSerialFilterFactory(...)</code>.</p>
+<h2>2. Why &amp; when</h2>
+<p>Before this JEP, a JVM could have exactly one global deserialization filter, set once via a system property or <code>ObjectInputFilter.Config.setSerialFilter(...)</code>, applied uniformly to every <code>ObjectInputStream</code> in the process. That&#x27;s too coarse for many real applications: a server might deserialize data from several different sources — an internal RMI call, an external client upload, a trusted cache — each of which should reasonably be allowed to reconstruct a different, narrower set of classes. Rather than one filter permissive enough to cover every source&#x27;s needs (weakening the protection for the most sensitive source), a filter *factory* lets the application inspect each new <code>ObjectInputStream</code> as it&#x27;s created and hand back a filter tailored to that specific context — tightening the allow-list precisely where a given deserialization path doesn&#x27;t need broad class support. Reach for a filter factory whenever a single application deserializes data from multiple distinct trust contexts and a one-size-fits-all global filter would otherwise force you to either over-permit or maintain separate JVMs per context.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">import java.io.*;
+
+ObjectInputFilter.Config.setSerialFilterFactory((currentFilter, newStreamFilter) -&gt; {
+    // &#x27;newStreamFilter&#x27; is whatever filter (if any) the specific ObjectInputStream requested;
+    // this factory can accept it, replace it, or combine it with a context-wide policy.
+    if (newStreamFilter != null) return newStreamFilter;
+    return ObjectInputFilter.Config.createFilter(&quot;java.base/*;!*&quot;); // default: only java.base classes
+});</code></pre>
+<p>The factory is consulted once per <code>ObjectInputStream</code> at creation time, giving the application a hook to pick a filter based on that stream&#x27;s own context rather than one filter for every stream in the JVM.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A single global deserialization filter applies uniformly to every ObjectInputStream; a filter factory instead selects a tailored filter per stream, based on that stream's own context">
+  <rect x="20" y="20" width="280" height="170" rx="8" fill="#1c2430" stroke="#8b949e"/>
+  <text x="160" y="42" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">Single global filter</text>
+  <rect x="50" y="65" width="220" height="30" rx="5" fill="#161b22" stroke="#79c0ff"/>
+  <text x="160" y="85" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Internal RMI stream</text>
+  <rect x="50" y="100" width="220" height="30" rx="5" fill="#161b22" stroke="#79c0ff"/>
+  <text x="160" y="120" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">External upload stream</text>
+  <text x="160" y="155" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">↓ both use the same one filter</text>
+  <text x="160" y="172" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">(must be broad enough for both)</text>
+
+  <rect x="340" y="20" width="280" height="170" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="480" y="42" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Filter factory (Java 17)</text>
+  <rect x="370" y="65" width="220" height="30" rx="5" fill="#161b22" stroke="#3fb950"/>
+  <text x="480" y="85" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Internal RMI stream -&gt; broad filter</text>
+  <rect x="370" y="100" width="220" height="30" rx="5" fill="#161b22" stroke="#3fb950"/>
+  <text x="480" y="120" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">External upload -&gt; strict filter</text>
+  <text x="480" y="155" fill="#3fb950" font-size="9" text-anchor="middle" font-family="sans-serif">each stream gets its own tailored filter</text>
+</svg>
+<p>The factory is consulted per stream, so different deserialization contexts can be held to different, appropriately-scoped standards.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a small service deserializing data from two different sources with different trust levels — first the basic global-filter approach applied to a single stream, then installing a context-aware factory that picks a strict or permissive filter based on which stream is being opened, then a fuller version tagging streams with a context object and rejecting a deliberately dangerous class to demonstrate the filter actually blocking something.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: GlobalFilterBasic.java
+import java.io.*;
+
+public class GlobalFilterBasic {
+    record Message(String text) implements Serializable {}
+
+    public static void main(String[] args) throws Exception {
+        ObjectInputFilter.Config.setSerialFilter(
+                ObjectInputFilter.Config.createFilter(&quot;GlobalFilterBasic$Message;!*&quot;));
+
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+            out.writeObject(new Message(&quot;hello&quot;));
+        }
+
+        try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            Message msg = (Message) in.readObject();
+            System.out.println(&quot;Deserialized: &quot; + msg.text());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java GlobalFilterBasic.java</code></pre>
+<p>Expected output:</p>
+<pre><code>Deserialized: hello</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ContextualFilterFactory.java
+import java.io.*;
+
+public class ContextualFilterFactory {
+    record InternalEvent(String detail) implements Serializable {}
+    record ExternalUpload(String filename) implements Serializable {}
+
+    public static void main(String[] args) throws Exception {
+        // A factory consulted once per ObjectInputStream, choosing a filter by context.
+        ObjectInputFilter.Config.setSerialFilterFactory((currentFilter, requestedFilter) -&gt; {
+            if (requestedFilter != null) return requestedFilter; // stream asked for something specific
+            return ObjectInputFilter.Config.createFilter(
+                    &quot;ContextualFilterFactory$InternalEvent;ContextualFilterFactory$ExternalUpload;!*&quot;);
+        });
+
+        byte[] internalBytes = serialize(new InternalEvent(&quot;cache-refresh&quot;));
+        byte[] uploadBytes = serialize(new ExternalUpload(&quot;report.csv&quot;));
+
+        System.out.println(&quot;Internal: &quot; + deserialize(internalBytes));
+        System.out.println(&quot;Upload:   &quot; + deserialize(uploadBytes));
+    }
+
+    static byte[] serialize(Object obj) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+            out.writeObject(obj);
+        }
+        return bytes.toByteArray();
+    }
+
+    static Object deserialize(byte[] data) throws IOException, ClassNotFoundException {
+        try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(data))) {
+            return in.readObject();
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java ContextualFilterFactory.java</code></pre>
+<p>Expected output:</p>
+<pre><code>Internal: InternalEvent[detail=cache-refresh]
+Upload:   ExternalUpload[filename=report.csv]</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: FilterRejectsUnexpectedClass.java
+import java.io.*;
+
+public class FilterRejectsUnexpectedClass {
+    record TrustedPayload(String data) implements Serializable {}
+    record UnexpectedClass(String data) implements Serializable {}
+
+    public static void main(String[] args) throws Exception {
+        // Only TrustedPayload is ever allowed through, regardless of what&#x27;s actually in the stream.
+        ObjectInputFilter.Config.setSerialFilterFactory((currentFilter, requestedFilter) -&gt;
+                ObjectInputFilter.Config.createFilter(&quot;FilterRejectsUnexpectedClass$TrustedPayload;!*&quot;));
+
+        byte[] trustedBytes = serialize(new TrustedPayload(&quot;ok&quot;));
+        byte[] unexpectedBytes = serialize(new UnexpectedClass(&quot;not allowed&quot;));
+
+        System.out.println(&quot;Trusted:   &quot; + deserialize(trustedBytes));
+
+        try {
+            deserialize(unexpectedBytes);
+            System.out.println(&quot;Unexpected: deserialized (this should not happen)&quot;);
+        } catch (InvalidClassException e) {
+            System.out.println(&quot;Unexpected: rejected by filter -&gt; &quot; + e.getMessage());
+        }
+    }
+
+    static byte[] serialize(Object obj) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+            out.writeObject(obj);
+        }
+        return bytes.toByteArray();
+    }
+
+    static Object deserialize(byte[] data) throws IOException, ClassNotFoundException {
+        try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(data))) {
+            return in.readObject();
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>java FilterRejectsUnexpectedClass.java</code></pre>
+<p>Expected output shape (the exact rejection message text can vary slightly by JDK build):</p>
+<pre><code>Trusted:   TrustedPayload[data=ok]
+Unexpected: rejected by filter -&gt; filter status: REJECTED, class: FilterRejectsUnexpectedClass$UnexpectedClass, ...</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><code>main</code> installs a filter factory via <code>ObjectInputFilter.Config.setSerialFilterFactory(...)</code> <strong>before any deserialization happens</strong> — this must be set once, early in the application&#x27;s lifecycle (setting it a second time throws, by design, to prevent malicious code from silently loosening an already-installed filter).</li><li>The lambda passed to <code>setSerialFilterFactory</code> ignores its <code>requestedFilter</code> parameter entirely and always returns the same strict filter string, <code>&quot;FilterRejectsUnexpectedClass$TrustedPayload;!*&quot;</code> — read as &quot;allow <code>TrustedPayload</code> specifically; reject everything else&quot; (<code>!*</code> is the catch-all reject pattern).</li><li><code>serialize(new TrustedPayload(&quot;ok&quot;))</code> and <code>serialize(new UnexpectedClass(&quot;not allowed&quot;))</code> each write an ordinary Java-serialized byte stream via <code>ObjectOutputStream</code> — serialization itself is unaffected by input filters, which only govern *deserialization*.</li><li><code>deserialize(trustedBytes)</code> opens an <code>ObjectInputStream</code> over the trusted bytes; <strong>every</strong> <code>ObjectInputStream</code> created from this point on automatically consults the installed filter factory, which hands back the strict <code>TrustedPayload</code>-only filter; since the stream&#x27;s actual class is <code>TrustedPayload</code>, the filter allows it through, and <code>readObject()</code> succeeds.</li><li><code>deserialize(unexpectedBytes)</code> repeats the same process, but this time the stream&#x27;s actual class is <code>UnexpectedClass</code> — the filter&#x27;s <code>!*</code> catch-all rejects it, and <code>readObject()</code> throws <code>InvalidClassException</code> rather than reconstructing an object of a class the filter never allow-listed.</li><li>The <code>try</code>/<code>catch</code> around the second <code>deserialize</code> call demonstrates the filter actually doing its job: without any filter installed at all, <code>UnexpectedClass</code> would have deserialized successfully just like <code>TrustedPayload</code> did, since ordinary Java deserialization has no built-in concept of &quot;this class shouldn&#x27;t be reconstructable here&quot; — that protection exists entirely because of the filter this JEP&#x27;s factory mechanism installed.</li></ol>
+<pre><code>setSerialFilterFactory(factory)     &lt;- installed once, early
+        │
+ObjectInputStream created  ──►  factory consulted  ──►  filter selected for this stream
+        │
+readObject() called  ──►  filter checks the actual class in the stream
+        │
+   allowed?  -&gt; object reconstructed
+   rejected? -&gt; InvalidClassException thrown, object never reconstructed</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><code>ObjectInputFilter.Config.setSerialFilterFactory(...)</code> can only be called <strong>once</strong> per JVM — a second call throws <code>IllegalStateException</code> by design, specifically so that once an application (or its security-conscious startup code) installs a filter factory, no later code path (including potentially malicious code that made it onto the classpath) can quietly replace it with a more permissive one.</blockquote>
+<ul><li>A filter factory receives <strong>both</strong> the currently-installed filter and any filter the specific <code>ObjectInputStream</code> itself requested (via <code>ObjectInputStream.setObjectInputFilter(...)</code>) — a well-designed factory typically combines or chooses between these rather than ignoring one entirely, unlike this tutorial&#x27;s deliberately simple always-strict example.</li><li>The filter pattern syntax (<code>&quot;Package.Class;!*&quot;</code>) predates this JEP — what&#x27;s new here is *when and how* a filter gets selected (per-stream, via a factory), not the filter pattern language itself.</li><li><code>InvalidClassException</code> thrown by a rejecting filter should generally be treated as a security-relevant event worth logging, not silently swallowed — it means something attempted to deserialize a class your application explicitly decided it should never reconstruct.</li><li>Reach for this JEP&#x27;s factory mechanism specifically when one JVM process genuinely deserializes data from multiple distinct trust boundaries; if there&#x27;s only ever one deserialization context in your application, a single static filter (via <code>setSerialFilter</code>, predating this JEP) remains simpler and sufficient.</li><li>This JEP is squarely a security-hardening feature, complementary to but unrelated to <a href="0712-deprecate-security-manager-for-removal.md">Deprecate Security Manager for removal</a>, landing in this same release — both reflect the JDK&#x27;s broader move away from one coarse, JVM-wide security mechanism (a single global <code>SecurityManager</code> or filter) toward finer-grained, context-aware controls.</li></ul>
+  <div class="nav"><a class="prv" href="0710-vector-api-2nd-incubator.html"><span class="mini">← Previous</span>Vector API (2nd incubator)</a><a class="nxt" href="0712-deprecate-security-manager-for-removal.html"><span class="mini">Next →</span>Deprecate Security Manager for removal</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t711";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
