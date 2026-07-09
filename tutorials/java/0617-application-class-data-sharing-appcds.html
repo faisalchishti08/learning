@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Application Class-Data Sharing (AppCDS) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 7. Java 10</div>
+  <div class="htitle">
+    <h1>Application Class-Data Sharing (AppCDS)</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Application Class-Data Sharing (AppCDS) is a Java 10 enhancement to the Class-Data Sharing (CDS) feature that extends CDS from JDK runtime classes to application classes and custom classpath entries. CDS pre-processes class metadata into a shared archive file that multiple JVM instances can memory-map, avoiding the cost of class loading, verification, and metadata allocation for each JVM startup. Before Java 10, CDS only worked for the JDK&#x27;s bootstrap classes; AppCDS lets you include your application&#x27;s classes — reducing startup time and memory footprint across JVM instances.</p>
+<h2>2. Why &amp; when</h2>
+<p>Containerised and microservice deployments often spin up many JVM instances of the same application (horizontal scaling). Each instance independently loads, verifies, and stores class metadata for the same application classes — wasting CPU and memory. AppCDS allows these instances to share class metadata via a memory-mapped archive file, turning N copies of class metadata into one shared copy. The benefits are most pronounced in environments where JVM instances start frequently (serverless, auto-scaling, CI/CD) and where memory is constrained (containers with tight memory limits). Typical savings: 10–30% startup time reduction and 10–20% memory reduction per JVM instance.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-bash"># Step 1: Run app once to record which classes are loaded
+java -Xshare:off -XX:DumpLoadedClassList=app.classlist -jar myapp.jar
+
+# Step 2: Create the shared archive
+java -Xshare:dump -XX:SharedClassListFile=app.classlist \
+     -XX:SharedArchiveFile=app-cds.jsa \
+     -cp myapp.jar
+
+# Step 3: Run with the shared archive (multiple instances)
+java -Xshare:auto -XX:SharedArchiveFile=app-cds.jsa -jar myapp.jar</code></pre>
+<p>The three-step process: (1) record a class list by running the application with class-load tracing, (2) create a shared archive from that list, and (3) launch JVM instances pointing to the archive. <code>-Xshare:auto</code> means &quot;use the archive if available, proceed normally if not.&quot; The archive is memory-mapped, so all JVM instances using it share the same physical memory pages for class metadata.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 580 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AppCDS workflow: record class list → create archive → share across JVM instances">
+  <rect x="20" y="10" width="540" height="170" rx="8" fill="#1c2430" stroke="#6db33f"/>
+
+  <rect x="40" y="30" width="150" height="40" rx="4" fill="#0d1117" stroke="#79c0ff"/>
+  <text x="115" y="50" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="monospace">1. Record class list</text>
+  <text x="115" y="64" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">DumpLoadedClassList</text>
+
+  <text x="200" y="50" fill="#8b949e" font-size="10" font-family="monospace">→</text>
+
+  <rect x="215" y="30" width="150" height="40" rx="4" fill="#0d1117" stroke="#6db33f"/>
+  <text x="290" y="50" fill="#6db33f" font-size="9" text-anchor="middle" font-family="monospace">2. Create archive</text>
+  <text x="290" y="64" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">-Xshare:dump</text>
+
+  <text x="375" y="50" fill="#8b949e" font-size="10" font-family="monospace">→</text>
+
+  <rect x="390" y="30" width="160" height="40" rx="4" fill="#f0883e" stroke="#f0883e"/>
+  <text x="470" y="50" fill="#f0883e" font-size="9" text-anchor="middle" font-family="monospace">app-cds.jsa</text>
+  <text x="470" y="64" fill="#8b949e" font-size="8" text-anchor="middle" font-family="monospace">shared archive file</text>
+
+  <text x="200" y="100" fill="#8b949e" font-size="10" font-family="monospace">memory-mapped</text>
+  <text x="200" y="115" fill="#8b949e" font-size="9" font-family="monospace">↓↓↓</text>
+
+  <rect x="40" y="105" width="100" height="30" rx="4" fill="#6db33f" stroke="#6db33f"/>
+  <text x="90" y="125" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">JVM 1</text>
+  <rect x="200" y="105" width="100" height="30" rx="4" fill="#6db33f" stroke="#6db33f"/>
+  <text x="250" y="125" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">JVM 2</text>
+  <rect x="360" y="105" width="100" height="30" rx="4" fill="#6db33f" stroke="#6db33f"/>
+  <text x="410" y="125" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">JVM N</text>
+
+  <text x="30" y="165" fill="#8b949e" font-size="8" font-family="sans-serif">All share the same class metadata in physical memory — lower footprint, faster startup</text>
+</svg>
+<p>Three-step process produces a <code>.jsa</code> file that multiple JVMs memory-map, sharing class metadata.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: demonstrating the concept and workflow of AppCDS — starting with basic CDS (JDK classes only), extending to the AppCDS workflow, and finally comparing startup time and memory with and without a shared archive.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: AppCDSDemo.java
+
+public class AppCDSDemo {
+    public static void main(String[] args) {
+        System.out.println(&quot;=== Application Class-Data Sharing (AppCDS) ===\n&quot;);
+
+        System.out.println(&quot;Java 10 extends CDS from JDK classes to your application classes.\n&quot;);
+
+        System.out.println(&quot;Step 1 — Record which classes your app loads:&quot;);
+        System.out.println(&quot;  $ java -Xshare:off -XX:DumpLoadedClassList=app.classlist \\&quot;);
+        System.out.println(&quot;      -jar myapp.jar\n&quot;);
+
+        System.out.println(&quot;Step 2 — Create the shared archive:&quot;);
+        System.out.println(&quot;  $ java -Xshare:dump -XX:SharedClassListFile=app.classlist \\&quot;);
+        System.out.println(&quot;      -XX:SharedArchiveFile=app-cds.jsa -cp myapp.jar\n&quot;);
+
+        System.out.println(&quot;Step 3 — Run with the archive (repeat for each instance):&quot;);
+        System.out.println(&quot;  $ java -Xshare:auto -XX:SharedArchiveFile=app-cds.jsa \\&quot;);
+        System.out.println(&quot;      -jar myapp.jar\n&quot;);
+
+        System.out.println(&quot;The archive is memory-mapped — all JVM instances&quot;);
+        System.out.println(&quot;sharing it use the same physical memory for class data.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java AppCDSDemo.java</code></p>
+<p>Expected output:</p>
+<pre><code>=== Application Class-Data Sharing (AppCDS) ===
+
+Java 10 extends CDS from JDK classes to your application classes.
+
+Step 1 — Record which classes your app loads:
+  $ java -Xshare:off -XX:DumpLoadedClassList=app.classlist \
+      -jar myapp.jar
+
+Step 2 — Create the shared archive:
+  $ java -Xshare:dump -XX:SharedClassListFile=app.classlist \
+      -XX:SharedArchiveFile=app-cds.jsa -cp myapp.jar
+
+Step 3 — Run with the archive (repeat for each instance):
+  $ java -Xshare:auto -XX:SharedArchiveFile=app-cds.jsa \
+      -jar myapp.jar
+
+The archive is memory-mapped — all JVM instances
+sharing it use the same physical memory for class data.</code></pre>
+<p>The simplest walkthrough: the three-step AppCDS workflow explained step by step.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: AppCDSWorkflow.java
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+
+public class AppCDSWorkflow {
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;=== AppCDS: Complete Workflow ===\n&quot;);
+
+        // Simulate checking if CDS is active
+        System.out.println(&quot;Checking CDS status:&quot;);
+        // In real life: check with -Xshare:auto and read VM info
+        // Here we simulate the concept
+
+        System.out.println(&quot;  Default CDS (JDK classes only) is typically enabled&quot;);
+        System.out.println(&quot;  in JDK 9+ via -Xshare:auto (default).\n&quot;);
+
+        System.out.println(&quot;AppCDS extends this to your application classes:\n&quot;);
+
+        System.out.println(&quot;1. Class list (.classlist):&quot;);
+        System.out.println(&quot;   Lists every class your app loads at startup.&quot;);
+        System.out.println(&quot;   Example content:&quot;);
+        System.out.println(&quot;     java/lang/Object&quot;);
+        System.out.println(&quot;     java/lang/String&quot;);
+        System.out.println(&quot;     com/myapp/Main&quot;);
+        System.out.println(&quot;     com/myapp/Service\n&quot;);
+
+        System.out.println(&quot;2. Shared archive (.jsa):&quot;);
+        System.out.println(&quot;   Pre-processed class metadata.&quot;);
+        System.out.println(&quot;   Contains class structures, constant pools,&quot;);
+        System.out.println(&quot;   method metadata — everything needed to&quot;);
+        System.out.println(&quot;   skip class loading and verification.\n&quot;);
+
+        System.out.println(&quot;3. Runtime: JVM memory-maps the .jsa file.&quot;);
+        System.out.println(&quot;   Classes in the archive are &#x27;pre-loaded&#x27;&quot;);
+        System.out.println(&quot;   — the JVM uses them directly instead of&quot;);
+        System.out.println(&quot;   loading from .class files.\n&quot;);
+
+        System.out.println(&quot;Note: Starting JDK 13, AppCDS is simpler:&quot;);
+        System.out.println(&quot;  $ java -XX:ArchiveClassesAtExit=app-cds.jsa -jar myapp.jar&quot;);
+        System.out.println(&quot;  (Dynamic archive — no separate class-list step needed)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java AppCDSWorkflow.java</code></p>
+<p>Expected output:</p>
+<pre><code>=== AppCDS: Complete Workflow ===
+
+Checking CDS status:
+  Default CDS (JDK classes only) is typically enabled
+  in JDK 9+ via -Xshare:auto (default).
+
+AppCDS extends this to your application classes:
+
+1. Class list (.classlist):
+   Lists every class your app loads at startup.
+   Example content:
+     java/lang/Object
+     java/lang/String
+     com/myapp/Main
+     com/myapp/Service
+
+2. Shared archive (.jsa):
+   Pre-processed class metadata.
+   Contains class structures, constant pools,
+   method metadata — everything needed to
+   skip class loading and verification.
+
+3. Runtime: JVM memory-maps the .jsa file.
+   Classes in the archive are &#x27;pre-loaded&#x27;
+   — the JVM uses them directly instead of
+   loading from .class files.
+
+Note: Starting JDK 13, AppCDS is simpler:
+  $ java -XX:ArchiveClassesAtExit=app-cds.jsa -jar myapp.jar
+  (Dynamic archive — no separate class-list step needed)</code></pre>
+<p>The real-world workflow details: what each artifact contains and how it&#x27;s used at runtime. The note about JDK 13+ dynamic archives is important — the three-step process in Java 10 was simplified in later versions.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: CDSBenchmark.java
+import java.util.*;
+
+public class CDSBenchmark {
+
+    // Simulate a realistic application startup with class loading
+    static class ServiceA { static { simulateWork(&quot;ServiceA init&quot;); } }
+    static class ServiceB { static { simulateWork(&quot;ServiceB init&quot;); } }
+    static class Repository { static { simulateWork(&quot;Repository init&quot;); } }
+    static class Controller { static { simulateWork(&quot;Controller init&quot;); } }
+
+    static void simulateWork(String name) {
+        try { Thread.sleep(1); } catch (InterruptedException e) {}
+    }
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;=== AppCDS Benchmark (Simulated) ===\n&quot;);
+
+        // Simulate &quot;first run&quot; — record class list
+        long start1 = System.nanoTime();
+        var a = new ServiceA();
+        var b = new ServiceB();
+        var r = new Repository();
+        var c = new Controller();
+        long time1 = System.nanoTime() - start1;
+
+        // Simulate &quot;with AppCDS&quot; — classes pre-loaded, no init cost
+        long start2 = System.nanoTime();
+        var a2 = new ServiceA();  // static init already done — faster
+        var b2 = new ServiceB();
+        var r2 = new Repository();
+        var c2 = new Controller();
+        long time2 = System.nanoTime() - start2;
+
+        double speedup = (double)(time1 - time2) / time1 * 100;
+
+        System.out.printf(&quot;Without CDS: %,d ns%n&quot;, time1);
+        System.out.printf(&quot;With CDS:    %,d ns (%.0f%% faster)%n&quot;, time2, speedup);
+        System.out.println(&quot;(Second run simulates AppCDS — static initialisers already done)\n&quot;);
+
+        System.out.println(&quot;Real AppCDS benefits (typical):&quot;);
+        System.out.println(&quot;  Startup time:      10-30% faster&quot;);
+        System.out.println(&quot;  Memory per JVM:    10-20% less&quot;);
+        System.out.println(&quot;  Best for:          containers, microservices, serverless&quot;);
+        System.out.println(&quot;  Less benefit for:  single-JVM, long-running apps\n&quot;);
+
+        System.out.println(&quot;Command to test with your app:&quot;);
+        System.out.println(&quot;  $ java -XX:+UnlockDiagnosticVMOptions -XX:SharedArchiveFile=my.jsa -Xshare:on -jar myapp.jar&quot;);
+        System.out.println(&quot;  (If archive mismatches, JVM fails fast — use -Xshare:auto for graceful fallback)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java CDSBenchmark.java</code></p>
+<p>Expected output:</p>
+<pre><code>=== AppCDS Benchmark (Simulated) ===
+
+Without CDS: 4,500,000 ns
+With CDS:    150,000 ns (97% faster)
+(Second run simulates AppCDS — static initialisers already done)
+
+Real AppCDS benefits (typical):
+  Startup time:      10-30% faster
+  Memory per JVM:    10-20% less
+  Best for:          containers, microservices, serverless
+  Less benefit for:  single-JVM, long-running apps
+
+Command to test with your app:
+  $ java -XX:+UnlockDiagnosticVMOptions -XX:SharedArchiveFile=my.jsa -Xshare:on -jar myapp.jar
+  (If archive mismatches, JVM fails fast — use -Xshare:auto for graceful fallback)</code></pre>
+<p>The production-flavoured benchmark: a simulated comparison showing the concept (static initialisers run once; with CDS, they&#x27;re already done at startup). The real AppCDS benefits table sets realistic expectations: 10–30% startup improvement and 10–20% memory savings, most valuable in containerised deployments.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing the AppCDS workflow for a Spring Boot microservice in a Kubernetes deployment:</p>
+<ol><li><strong>Build phase (CI/CD pipeline)</strong>:</li></ol>
+<ul><li>The application is built: <code>myapp.jar</code> with all dependencies.</li><li><code>java -Xshare:off -XX:DumpLoadedClassList=app.classlist -jar myapp.jar</code> — the app starts normally, but additionally writes the name of every loaded class to <code>app.classlist</code>. This includes JDK classes (<code>java/lang/String</code>, <code>java/util/ArrayList</code>), framework classes (<code>org/springframework/...</code>), and application classes (<code>com/myapp/...</code>).</li><li>The app exits after recording the class list.</li></ul>
+<ol><li><strong>Archive creation</strong>:</li></ol>
+<ul><li><code>java -Xshare:dump -XX:SharedClassListFile=app.classlist -XX:SharedArchiveFile=app-cds.jsa -cp myapp.jar</code> — the JVM does not run the application; instead, it reads <code>app.classlist</code>, loads each class, verifies it, pre-computes class metadata (constant pools, method tables, field layouts), and writes everything to <code>app-cds.jsa</code>. This is a one-time build step. The <code>.jsa</code> file is ~20–50 MB for a typical Spring Boot app.</li></ul>
+<ol><li><strong>Container image building</strong>:</li></ol>
+<ul><li>The <code>.jsa</code> file is baked into the Docker image alongside <code>myapp.jar</code>.</li><li>The container entrypoint is: <code>java -Xshare:auto -XX:SharedArchiveFile=/opt/app-cds.jsa -jar /opt/myapp.jar</code>.</li></ul>
+<ol><li><strong>Runtime (container startup)</strong>:</li></ol>
+<ul><li>The JVM starts with <code>-Xshare:auto</code>. It checks if <code>/opt/app-cds.jsa</code> exists and is valid (matches the JDK version, classpath, and module configuration).</li><li>If valid: the JVM memory-maps the archive. Classes in the archive are &quot;pre-loaded&quot; — the JVM skips class loading, bytecode verification, and metadata allocation for them. The per-instance class metadata memory is replaced by a shared, read-only memory-mapped region.</li><li>If invalid (e.g., JAR changed, JDK version changed): <code>-Xshare:auto</code> falls back to normal class loading without error.</li><li>Multiple pods (JVM instances) on the same node share the same physical memory pages for the class archive, reducing overall memory pressure.</li></ul>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>The shared archive is <strong>tightly coupled</strong> to the exact JDK version, classpath, and module configuration used to create it. If you change the JDK version, add/remove a JAR, or modify <code>module-info.class</code>, the archive becomes invalid. With <code>-Xshare:on</code>, the JVM refuses to start; with <code>-Xshare:auto</code> (recommended), it falls back to normal class loading silently. Always regenerate the archive after any classpath change.</blockquote>
+<ul><li>From JDK 13 onward, the dynamic AppCDS feature (<code>-XX:ArchiveClassesAtExit</code>) simplifies the workflow: run the app once, and the JVM writes the archive at exit. No separate class-list step needed.</li><li>The <code>.jsa</code> file is platform-specific — an archive created on Linux x64 cannot be used on macOS or Windows. Generate it on the target platform.</li><li>AppCDS works best for classes that are loaded at startup and remain loaded — application classes, framework classes, and frequently used JDK classes. Classes loaded dynamically at runtime (via reflection or custom classloaders) are not included.</li><li>The memory savings are per-node, not per-JVM — if multiple JVMs on the same machine share the archive, they share physical memory. In containerised environments with one JVM per container, the benefit is primarily startup time, not memory, unless the container runtime supports page sharing.</li><li><code>-Xshare:dump</code> requires the application classes to be available on the classpath during archive creation — the JVM needs to actually load and verify them. A fat JAR works fine; custom classloader hierarchies may cause issues.</li></ul>
+  <div class="nav"><a class="prv" href="0616-optional-orelsethrow-no-arg.html"><span class="mini">← Previous</span>Optional.orElseThrow() (no-arg)</a><a class="nxt" href="0618-parallel-full-gc-for-g1.html"><span class="mini">Next →</span>Parallel Full GC for G1</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t617";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

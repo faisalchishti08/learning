@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Parallel Full GC for G1 — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 7. Java 10</div>
+  <div class="htitle">
+    <h1>Parallel Full GC for G1</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Java 10 improved the G1 garbage collector by making its full (stop-the-world) collections <strong>parallel</strong>, using multiple threads to mark and compact the heap. Before Java 10, G1&#x27;s full GC was single-threaded — it used a single thread to mark live objects and compact the heap, causing full GC pauses to scale linearly with heap size. With parallel full GC, the marking and compaction phases use the same thread pool as G1&#x27;s young and mixed collections, dramatically reducing full GC pause times on large heaps and multi-core machines.</p>
+<h2>2. Why &amp; when</h2>
+<p>A full GC in G1 is a fallback mechanism — it happens when concurrent marking cannot keep up with the allocation rate, when the heap is nearly exhausted, or when a <code>System.gc()</code> call forces a full collection. Before Java 10, even a machine with 32 cores would use only 1 core for G1&#x27;s full GC, turning an already-bad situation into a catastrophic pause (multi-second or even multi-minute on large heaps). Parallelising the full GC means that when the worst-case scenario does happen, the JVM recovers faster — the pause is still a full GC, but it&#x27;s over sooner because all cores participate. This is critical for production systems where a full GC is a &quot;surge protect&quot; event: it should be rare, but when it happens, it must not take the service offline for minutes.</p>
+<h2>3. Core concept</h2>
+<pre><code>G1 Full GC (JDK 9):
+  Stop-the-world → 1 thread marks → 1 thread compacts → resume
+  Pause ~ heap_size / single_thread_speed
+
+G1 Full GC (JDK 10+):
+  Stop-the-world → N threads mark → N threads compact → resume
+  Pause ~ heap_size / (N × thread_speed)
+
+Parallelism controlled by:
+  -XX:ParallelGCThreads=N  (default: number of CPU cores ≤ 8)</code></pre>
+<p>The same <code>-XX:ParallelGCThreads</code> flag that controls G1&#x27;s young and mixed collection parallelism now also applies to full GCs. No new flags needed — the improvement is automatic.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 560 180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="JDK 10 parallelises G1 full GC marking and compaction across multiple threads">
+  <rect x="20" y="10" width="520" height="160" rx="8" fill="#1c2430" stroke="#6db33f"/>
+
+  <text x="30" y="35" fill="#f85149" font-size="11" font-family="sans-serif">JDK 9 — Single-threaded Full GC</text>
+  <rect x="30" y="45" width="80" height="20" rx="3" fill="#f85149" stroke="#f85149"/>
+  <text x="70" y="60" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">Thread 1</text>
+  <text x="120" y="60" fill="#8b949e" font-size="9" font-family="monospace">mark → compact → done</text>
+  <text x="330" y="60" fill="#8b949e" font-size="9" font-family="monospace">Thread 2–N: idle</text>
+
+  <rect x="30" y="75" width="80" height="20" rx="3" fill="#8b949e" stroke="#8b949e" opacity="0.3"/>
+  <text x="70" y="90" fill="#8b949e" font-size="9" text-anchor="middle" font-family="monospace">Thread 2</text>
+  <rect x="30" y="100" width="80" height="20" rx="3" fill="#8b949e" stroke="#8b949e" opacity="0.3"/>
+  <text x="70" y="115" fill="#8b949e" font-size="9" text-anchor="middle" font-family="monospace">Thread N</text>
+
+  <line x1="30" y1="125" x2="540" y2="125" stroke="#8b949e" stroke-width="0.5"/>
+
+  <text x="30" y="145" fill="#6db33f" font-size="11" font-family="sans-serif">JDK 10+ — Parallel Full GC</text>
+  <rect x="30" y="155" width="80" height="20" rx="3" fill="#6db33f" stroke="#6db33f"/>
+  <text x="70" y="170" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">Thread 1</text>
+  <rect x="120" y="155" width="80" height="20" rx="3" fill="#6db33f" stroke="#6db33f"/>
+  <text x="160" y="170" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">Thread 2</text>
+  <rect x="210" y="155" width="80" height="20" rx="3" fill="#6db33f" stroke="#6db33f"/>
+  <text x="250" y="170" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="monospace">Thread N</text>
+  <text x="300" y="170" fill="#8b949e" font-size="9" font-family="monospace">all mark + compact together</text>
+</svg>
+<p>Single-threaded full GC (JDK 9) versus parallel full GC (JDK 10+). All threads participate, reducing pause time.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: demonstrating the concept and monitoring of G1 full GC parallelism — starting with checking GC configuration, extending to simulating memory pressure that triggers a full GC, and finally comparing the parallelism controls.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: G1ParallelFullGCDemo.java
+import java.lang.management.*;
+
+public class G1ParallelFullGCDemo {
+    public static void main(String[] args) {
+        System.out.println(&quot;=== G1 Parallel Full GC (JDK 10+) ===\n&quot;);
+
+        System.out.println(&quot;In JDK 9, G1 full GC used a single thread.&quot;);
+        System.out.println(&quot;In JDK 10+, G1 full GC is parallel — all cores help.\n&quot;);
+
+        // Check available processors
+        int cores = Runtime.getRuntime().availableProcessors();
+        System.out.println(&quot;Available CPU cores: &quot; + cores);
+        System.out.println(&quot;G1 will use up to &quot; + cores + &quot; threads for full GC.&quot;);
+
+        // Check which GC is active
+        for (var gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+            if (gc.getName().contains(&quot;G1 Old&quot;)) {
+                System.out.println(&quot;\nG1 Old Generation collector detected.&quot;);
+                System.out.println(&quot;  Collections: &quot; + gc.getCollectionCount());
+                System.out.println(&quot;  Total time:  &quot; + gc.getCollectionTime() + &quot;ms&quot;);
+            }
+        }
+
+        System.out.println(&quot;\nTo observe full GC with -Xlog:&quot;);
+        System.out.println(&quot;  $ java -Xlog:gc*=info -Xmx256m &quot; +
+            G1ParallelFullGCDemo.class.getSimpleName() + &quot;.java&quot;);
+        System.out.println(&quot;  Look for: &#x27;Pause Full (G1 Compaction Pause)&#x27;&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java G1ParallelFullGCDemo.java</code></p>
+<p>Expected output (varies):</p>
+<pre><code>=== G1 Parallel Full GC (JDK 10+) ===
+
+In JDK 9, G1 full GC used a single thread.
+In JDK 10+, G1 full GC is parallel — all cores help.
+
+Available CPU cores: 8
+G1 will use up to 8 threads for full GC.
+
+G1 Old Generation collector detected.
+  Collections: 0
+  Total time:  0ms
+
+To observe full GC with -Xlog:
+  $ java -Xlog:gc*=info -Xmx256m G1ParallelFullGCDemo.java
+  Look for: &#x27;Pause Full (G1 Compaction Pause)&#x27;</code></pre>
+<p>The simplest demonstration: checking available cores (which G1 uses for parallelism) and the G1 Old Generation collector status.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: FullGCTrigger.java
+import java.util.*;
+
+public class FullGCTrigger {
+
+    // Fill memory to trigger GC pressure
+    static void allocateUntilFull() {
+        List&lt;byte[]&gt; mem = new ArrayList&lt;&gt;();
+        try {
+            for (int i = 0; ; i++) {
+                mem.add(new byte[10_000_000]); // 10 MB each
+                if (i % 10 == 0) {
+                    Runtime rt = Runtime.getRuntime();
+                    long used = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
+                    System.out.printf(&quot;  Allocated %d MB...%n&quot;, used);
+                }
+            }
+        } catch (OutOfMemoryError e) {
+            System.out.println(&quot;  OutOfMemoryError — GC could not recover&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;=== Triggering Full GC (G1 Parallel) ===\n&quot;);
+
+        System.out.println(&quot;This program allocates memory rapidly to trigger GC.&quot;);
+        System.out.println(&quot;G1 will attempt young GCs first, then concurrent marking,&quot;);
+        System.out.println(&quot;and if memory pressure is too high, a parallel full GC.\n&quot;);
+
+        System.out.println(&quot;GC thread configuration:&quot;);
+        int cores = Runtime.getRuntime().availableProcessors();
+        System.out.println(&quot;  -XX:ParallelGCThreads=&quot; + Math.min(cores, 8) + &quot; (default: min(cores, 8))&quot;);
+        System.out.println(&quot;  -XX:ConcGCThreads=&quot; + Math.max(1, cores / 4) + &quot; (default: cores/4)\n&quot;);
+
+        System.out.println(&quot;Flags to control parallelism:&quot;);
+        System.out.println(&quot;  -XX:ParallelGCThreads=N    — threads for stop-the-world phases&quot;);
+        System.out.println(&quot;  -XX:ConcGCThreads=N        — threads for concurrent marking&quot;);
+        System.out.println(&quot;  -XX:+UseG1GC               — force G1 (default since JDK 9)\n&quot;);
+
+        System.out.println(&quot;Starting allocation...&quot;);
+        allocateUntilFull();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xmx256m FullGCTrigger.java</code></p>
+<p>Expected output:</p>
+<pre><code>=== Triggering Full GC (G1 Parallel) ===
+
+This program allocates memory rapidly to trigger GC.
+G1 will attempt young GCs first, then concurrent marking,
+and if memory pressure is too high, a parallel full GC.
+
+GC thread configuration:
+  -XX:ParallelGCThreads=8 (default: min(cores, 8))
+  -XX:ConcGCThreads=2 (default: cores/4)
+
+Flags to control parallelism:
+  -XX:ParallelGCThreads=N    — threads for stop-the-world phases
+  -XX:ConcGCThreads=N        — threads for concurrent marking
+  -XX:+UseG1GC               — force G1 (default since JDK 9)
+
+Starting allocation...
+  Allocated 10 MB...
+  Allocated 20 MB...
+  ...
+  OutOfMemoryError — GC could not recover</code></pre>
+<p>The real-world concern: a program that intentionally triggers GC pressure to demonstrate the GC hierarchy (young GC → concurrent marking → full GC). The parallel full GC only kicks in as a last resort — it&#x27;s the safety net when all other GC mechanisms can&#x27;t keep up.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: GCParallelismComparison.java
+
+public class GCParallelismComparison {
+    public static void main(String[] args) {
+        System.out.println(&quot;=== G1 Parallel Full GC: JDK 9 vs JDK 10+ ===\n&quot;);
+
+        int cores = Runtime.getRuntime().availableProcessors();
+
+        System.out.printf(&quot;%-25s %-15s %-15s%n&quot;, &quot;Aspect&quot;, &quot;JDK 9&quot;, &quot;JDK 10+&quot;);
+        System.out.println(&quot;─&quot;.repeat(55));
+
+        System.out.printf(&quot;%-25s %-15s %-15s%n&quot;,
+            &quot;Full GC threads&quot;, &quot;1 (single)&quot;, cores + &quot; (parallel)&quot;);
+        System.out.printf(&quot;%-25s %-15s %-15s%n&quot;,
+            &quot;Young GC&quot;, &quot;Parallel&quot;, &quot;Parallel (same)&quot;);
+        System.out.printf(&quot;%-25s %-15s %-15s%n&quot;,
+            &quot;Mixed GC&quot;, &quot;Parallel&quot;, &quot;Parallel (same)&quot;);
+        System.out.printf(&quot;%-25s %-15s %-15s%n&quot;,
+            &quot;Concurrent marking&quot;, &quot;Concurrent&quot;, &quot;Concurrent (same)&quot;);
+        System.out.printf(&quot;%-25s %-15s %-15s%n&quot;,
+            &quot;Full GC speedup&quot;, &quot;baseline&quot;, cores + &quot;× (theoretical)&quot;);
+
+        System.out.println(&quot;\nReal-world impact (16 GB heap, 8 cores):&quot;);
+        System.out.println(&quot;  JDK 9  full GC: ~12 seconds  (single thread)&quot;);
+        System.out.println(&quot;  JDK 10 full GC: ~3 seconds   (8 threads)&quot;);
+        System.out.println(&quot;  Difference: 4× faster, still a full GC but over faster\n&quot;);
+
+        System.out.println(&quot;Key points:&quot;);
+        System.out.println(&quot;  1. Parallel full GC does NOT make full GCs happen less often&quot;);
+        System.out.println(&quot;     — it only makes them finish faster when they do happen.&quot;);
+        System.out.println(&quot;  2. The goal is still to AVOID full GCs entirely through&quot;);
+        System.out.println(&quot;     proper heap sizing and G1 tuning.&quot;);
+        System.out.println(&quot;  3. Parallel full GC is automatic — no new flags needed.&quot;);
+        System.out.println(&quot;  4. -XX:ParallelGCThreads controls the thread count.&quot;);
+        System.out.println(&quot;  5. This was backported to JDK 8u40+ for G1 as well.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java GCParallelismComparison.java</code></p>
+<p>Expected output:</p>
+<pre><code>=== G1 Parallel Full GC: JDK 9 vs JDK 10+ ===
+
+Aspect                    JDK 9           JDK 10+        
+───────────────────────────────────────────────────────
+Full GC threads           1 (single)      8 (parallel)  
+Young GC                  Parallel        Parallel (same)
+Mixed GC                  Parallel        Parallel (same)
+Concurrent marking        Concurrent      Concurrent (same)
+Full GC speedup           baseline        8× (theoretical)
+
+Real-world impact (16 GB heap, 8 cores):
+  JDK 9  full GC: ~12 seconds  (single thread)
+  JDK 10 full GC: ~3 seconds   (8 threads)
+  Difference: 4× faster, still a full GC but over faster
+
+Key points:
+  1. Parallel full GC does NOT make full GCs happen less often
+     — it only makes them finish faster when they do happen.
+  2. The goal is still to AVOID full GCs entirely through
+     proper heap sizing and G1 tuning.
+  3. Parallel full GC is automatic — no new flags needed.
+  4. -XX:ParallelGCThreads controls the thread count.
+  5. This was backported to JDK 8u40+ for G1 as well.</code></pre>
+<p>The production-flavoured comparison: JDK 9 vs JDK 10+ full GC performance across all dimensions. The table shows that only full GC changed — young, mixed, and concurrent phases were already parallel.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing a full GC event in JDK 10+ with G1:</p>
+<ol><li><strong>Trigger</strong>: The application&#x27;s allocation rate exceeds G1&#x27;s ability to reclaim memory through young and mixed collections. The old generation is nearly full, and concurrent marking cannot complete in time. G1 decides a full GC is the only option.</li></ol>
+<ol><li><strong>Stop-the-world</strong>: All application threads are brought to a safepoint. This is the &quot;stop&quot; in stop-the-world.</li></ol>
+<ol><li><strong>Parallel marking</strong> (all <code>ParallelGCThreads</code> threads):</li></ol>
+<ul><li>The heap is divided into work chunks.</li><li>Each thread takes a chunk, traces live objects starting from GC roots (thread stacks, static fields, JNI references).</li><li>Threads coordinate via work-stealing: if one thread finishes its chunk early, it takes work from another thread&#x27;s queue.</li><li>In JDK 9, only one thread did this — the other threads were paused but idle.</li></ul>
+<ol><li><strong>Parallel compaction</strong> (all <code>ParallelGCThreads</code> threads):</li></ol>
+<ul><li>After marking, the heap is compacted to eliminate fragmentation.</li><li>Live objects are moved toward the start of the heap, creating contiguous free space.</li><li>Each thread handles a portion of the heap, moving objects and updating references.</li><li>In JDK 9, only one thread performed compaction.</li></ul>
+<ol><li><strong>Resume</strong>: Application threads are released from the safepoint. The heap now has a large contiguous free region, and allocation can resume.</li></ol>
+<pre><code>Full GC timeline (JDK 10, 8 cores):
+  Stop → [T1 marks] [T2 marks] ... [T8 marks]  ← parallel
+       → [T1 compacts] [T2 compacts] ... [T8 compacts]  ← parallel
+       → Resume
+
+Full GC timeline (JDK 9, same heap):
+  Stop → [T1 marks]  [T2 idle] ... [T8 idle]  ← single-threaded
+       → [T1 compacts]  [T2 idle] ... [T8 idle]  ← single-threaded
+       → Resume</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Parallel full GC is a <strong>mitigation</strong>, not a solution — full GCs are still bad. A parallel full GC on a 16 GB heap still takes seconds (just fewer seconds). The correct approach is to avoid full GCs entirely through proper heap sizing (<code>-Xmx</code>, <code>-Xms</code>), tuning <code>-XX:MaxGCPauseMillis</code>, and monitoring with <code>-Xlog:gc*=info</code>. Use parallel full GC as insurance, not as a design target.</blockquote>
+<ul><li>Parallel full GC uses the same <code>-XX:ParallelGCThreads</code> as young and mixed collections. The default is <code>min(cores, 8)</code> for small machines, <code>cores * 5/8 + 3</code> for larger machines. You rarely need to tune this.</li><li>This improvement was <strong>backported to JDK 8</strong> (JDK 8u40+) for G1 as well — it was considered important enough to bring back to the LTS release. If you&#x27;re on JDK 8 with G1, check your update version.</li><li>The parallelism is for <strong>stop-the-world full GCs</strong> specifically. Concurrent marking (which runs while the application runs) uses <code>-XX:ConcGCThreads</code> (default ~25% of <code>ParallelGCThreads</code>).</li><li>A full GC log line with G1 in JDK 10+ looks like: <code>[123.456s][info][gc] GC(42) Pause Full (G1 Compaction Pause) 3500M-&gt;2100M(4096M) 2345.678ms</code> — the parallel nature is not explicitly logged but the reduced pause time reflects it.</li></ul>
+  <div class="nav"><a class="prv" href="0617-application-class-data-sharing-appcds.html"><span class="mini">← Previous</span>Application Class-Data Sharing (AppCDS)</a><a class="nxt" href="0619-time-based-release-versioning-feature-interim-update.html"><span class="mini">Next →</span>Time-based release versioning ($FEATURE.$INTERIM.$UPDATE)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t618";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
