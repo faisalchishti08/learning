@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>jdeps for module migration — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 6. Java 9</div>
+  <div class="htitle">
+    <h1>jdeps for module migration</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>jdeps</code> is a JDK-bundled static analysis tool that scans compiled <code>.class</code> files or JARs and reports their dependencies — which packages and modules they reference, including (critically, for migration purposes) any internal, JDK-implementation-detail APIs they depend on. Beyond plain dependency reporting, <code>jdeps</code> has a <code>--generate-module-info</code> mode that can automatically draft a <code>module-info.java</code> for an existing, non-modular JAR by analyzing what it actually uses.</p>
+<h2>2. Why &amp; when</h2>
+<p>Modularizing an existing, non-trivial codebase by hand is tedious and error-prone: you&#x27;d have to manually trace every <code>import</code> across every source file to figure out which packages need to be exported, which JDK modules need to be required, and — the hardest part — whether any code relies on internal, unsupported JDK APIs that will break under strong encapsulation on a modern JDK. <code>jdeps</code> automates exactly this analysis. It&#x27;s the standard first step in any &quot;modularize this project&quot; or &quot;upgrade this old JAR to a modern JDK&quot; task: run <code>jdeps</code> before touching any code, and let it tell you exactly what dependencies exist, what&#x27;s missing, and what&#x27;s likely to break.</p>
+<h2>3. Core concept</h2>
+<pre><code>jdeps --jdk-internals mylib.jar</code></pre>
+<pre><code>mylib.jar -&gt; java.base
+   com.mylib.Utils -&gt; sun.misc.Unsafe   java.base
+      JDK internal API (jdk.unsupported)</code></pre>
+<pre><code>jdeps --generate-module-info out-dir mylib.jar</code></pre>
+<pre><code>writing to out-dir/mylib/module-info.java</code></pre>
+<p><code>--jdk-internals</code> specifically filters the report down to JDK-internal API usage — exactly the dependencies most likely to break when moving to a stricter, more strongly-encapsulated JDK version. <code>--generate-module-info</code> goes further, analyzing the JAR&#x27;s actual <code>import</code>/reference graph and writing out a best-effort <code>module-info.java</code> draft (with <code>requires</code> for everything it detects being used, and <code>exports</code> for every package the JAR contains) as a starting point for manual review and refinement.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="jdeps scans a compiled JAR and reports its dependencies, flags internal API usage, and can draft a module-info.java automatically">
+  <rect x="20" y="20" width="180" height="50" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="110" y="50" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="monospace">mylib.jar</text>
+
+  <line x1="200" y1="45" x2="280" y2="45" stroke="#8b949e" stroke-width="2" marker-end="url(#j1)"/>
+  <text x="240" y="35" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">jdeps</text>
+
+  <rect x="280" y="20" width="160" height="50" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="360" y="42" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">dependency report</text>
+  <text x="360" y="58" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">+ flagged internals</text>
+
+  <rect x="460" y="20" width="160" height="50" rx="8" fill="#1c2430" stroke="#f0883e"/>
+  <text x="540" y="42" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">draft module-info.java</text>
+  <text x="540" y="58" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">(--generate-module-info)</text>
+
+  <line x1="200" y1="60" x2="460" y2="60" stroke="#f0883e" stroke-width="1" stroke-dasharray="3,3"/>
+</svg>
+<p>Analysis first, code changes second — <code>jdeps</code> never modifies the JAR itself, only reports on it or writes a separate draft file.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a small pre-existing &quot;reporting&quot; library JAR (no <code>module-info.java</code>) that depends on another library and on <code>java.sql</code> — starting with a plain dependency summary, then flagging any JDK-internal API usage specifically, then generating a draft <code>module-info.java</code> and using it as the real starting point for turning the JAR into a genuine named module.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: reportlib/com/reportlib/ReportBuilder.java — a plain library, no module-info.java
+package com.reportlib;
+import java.sql.Timestamp;
+import java.util.List;
+
+public class ReportBuilder {
+    public String build(List&lt;String&gt; lines, Timestamp generatedAt) {
+        return &quot;Report (&quot; + generatedAt + &quot;):\n&quot; + String.join(&quot;\n&quot;, lines);
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>javac -d out reportlib/com/reportlib/ReportBuilder.java
+jar --create --file reportlib.jar -C out .
+jdeps reportlib.jar</code></pre>
+<p>Expected output:</p>
+<pre><code>reportlib.jar -&gt; java.base
+reportlib.jar -&gt; java.sql
+   com.reportlib                                      -&gt; java.lang                                          java.base
+   com.reportlib                                      -&gt; java.lang.invoke                                   java.base
+   com.reportlib                                      -&gt; java.sql                                           java.sql
+   com.reportlib                                      -&gt; java.util                                          java.base</code></pre>
+<p>Plain <code>jdeps reportlib.jar</code> (no extra flags) reports the JAR&#x27;s package-level dependency graph: <code>com.reportlib</code> (the only package in this JAR) depends on <code>java.lang</code>, <code>java.lang.invoke</code> (pulled in implicitly by the compiler for <code>String.join</code>&#x27;s use of invokedynamic under the hood), and <code>java.util</code> — all supplied by <code>java.base</code> — plus <code>java.sql</code>, which is its own separate JDK module. The two summary lines at the top (<code>reportlib.jar -&gt; java.base</code> and <code>reportlib.jar -&gt; java.sql</code>) roll this up to module granularity: these are the two modules <code>reportlib.jar</code> as a whole depends on. This is the baseline: a complete, automatically-derived picture of what the JAR actually needs, without reading a single line of its source code by hand.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: reportlib/com/reportlib/LegacyHelper.java — uses a JDK-internal API
+package com.reportlib;
+import sun.misc.Unsafe;
+import java.lang.reflect.Field;
+
+public class LegacyHelper {
+    public static Unsafe getUnsafe() throws Exception {
+        Field f = Unsafe.class.getDeclaredField(&quot;theUnsafe&quot;);
+        f.setAccessible(true);
+        return (Unsafe) f.get(null);
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code>javac -d out reportlib/com/reportlib/ReportBuilder.java reportlib/com/reportlib/LegacyHelper.java
+jar --create --file reportlib.jar -C out .
+jdeps --jdk-internals reportlib.jar</code></pre>
+<p>Expected output:</p>
+<pre><code>reportlib.jar -&gt; jdk.unsupported
+   com.reportlib.LegacyHelper                         -&gt; sun.misc.Unsafe                                    JDK internal API (jdk.unsupported)
+
+Warning: JDK internal APIs are unsupported and private to JDK implementation that are
+subject to be removed or changed incompatibly and could break your application.
+Please modify your code to eliminate dependence on any JDK internal APIs.
+For the most recent update on JDK internal API replacements, please check:
+https://wiki.openjdk.org/display/JDK8/Java+Dependency+Analysis+Tool
+
+JDK Internal API                         Suggested Replacement
+----------------                         ---------------------
+sun.misc.Unsafe                          See https://openjdk.org/jeps/260</code></pre>
+<p>The real-world concern this adds: <code>--jdk-internals</code> specifically isolates and flags dependencies on internal, unsupported JDK APIs — here, <code>LegacyHelper</code>&#x27;s use of <code>sun.misc.Unsafe</code> — with an explicit warning that such dependencies are exactly the kind that break or change across JDK versions, plus a suggested-replacement table pointing at the sanctioned public alternative (JEP 260, which documents <code>Unsafe</code>&#x27;s replacements including <code>VarHandle</code>, as covered in the strong-encapsulation topic). <code>reportlib.jar</code> still contains <code>ReportBuilder</code> alongside <code>LegacyHelper</code>, but <code>--jdk-internals</code> filters the report down to *only* internal-API dependencies — <code>ReportBuilder</code>&#x27;s ordinary <code>java.sql</code>/<code>java.util</code> usage from Level 1 simply doesn&#x27;t appear in this filtered view, since it isn&#x27;t an internal-API concern. This is the precise first step recommended before modularizing or upgrading any older codebase: run <code>--jdk-internals</code> and treat every flagged usage as a required fix before proceeding further.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: reportlib/com/reportlib/ReportBuilder.java — remove the internal-API dependency first
+package com.reportlib;
+import java.sql.Timestamp;
+import java.util.List;
+
+public class ReportBuilder {
+    public String build(List&lt;String&gt; lines, Timestamp generatedAt) {
+        return &quot;Report (&quot; + generatedAt + &quot;):\n&quot; + String.join(&quot;\n&quot;, lines);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> with <code>LegacyHelper.java</code> removed (its internal-API dependency fixed or eliminated first, per Level 2&#x27;s guidance), generate a draft <code>module-info.java</code> for the now-clean JAR:</p>
+<pre><code>javac -d out reportlib/com/reportlib/ReportBuilder.java
+jar --create --file reportlib.jar -C out .
+jdeps --generate-module-info generated reportlib.jar
+cat generated/reportlib/module-info.java</code></pre>
+<p>Expected output:</p>
+<pre><code>writing to generated/reportlib/module-info.java</code></pre>
+<pre><code class="lang-java">module reportlib {
+    requires transitive java.sql;
+
+    exports com.reportlib;
+
+}</code></pre>
+<p>This handles the production-flavoured payoff: <code>--generate-module-info generated</code> analyzes <code>reportlib.jar</code>&#x27;s actual dependency graph (post-cleanup, with no more internal-API usage to complicate things) and writes a real, syntactically-correct <code>module-info.java</code> draft to <code>generated/reportlib/module-info.java</code> — <code>requires transitive java.sql;</code> because <code>ReportBuilder</code>&#x27;s own public method <code>build(...)</code> takes a <code>Timestamp</code> parameter directly in its signature, so <code>jdeps</code> correctly infers that <code>java.sql</code> isn&#x27;t just an internal implementation detail but part of <code>reportlib</code>&#x27;s own exported public API surface (exactly the <code>requires transitive</code> scenario covered in its own topic), and <code>exports com.reportlib;</code> because that&#x27;s the JAR&#x27;s one and only package. This draft can now be copied into the project, recompiled together with the rest of the source, and refined by hand (double-checking that <code>transitive</code> is genuinely warranted, tightening <code>exports</code> to hide any packages that shouldn&#x27;t be public) — turning what would otherwise be manual, error-prone analysis into a verified, generated starting point.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts with the build and <code>jdeps</code> invocation in Level 3, run against the cleaned-up <code>reportlib.jar</code> (with <code>LegacyHelper</code> and its <code>sun.misc.Unsafe</code> dependency already removed, following Level 2&#x27;s diagnostic).</p>
+<p><code>jdeps --generate-module-info generated reportlib.jar</code> performs a full static analysis of every class file inside <code>reportlib.jar</code>. For each class, <code>jdeps</code> inspects the constant pool (the part of a compiled <code>.class</code> file listing every external symbol — class names, method signatures — the class references) to determine exactly which other classes and packages it depends on, then maps each of those packages back to the JDK (or other) module that actually supplies it.</p>
+<pre><code>jdeps&#x27;s analysis of ReportBuilder.class:
+
+references java.sql.Timestamp   -&gt; supplied by module java.sql   -&gt; needs &quot;requires ... java.sql;&quot;
+   AND Timestamp appears directly in build(...)&#x27;s PUBLIC signature -&gt; mark it &quot;transitive&quot;
+references java.util.List       -&gt; supplied by module java.base  -&gt; implicit, no requires line needed
+references java.lang.String     -&gt; supplied by module java.base  -&gt; implicit
+
+Package com.reportlib itself: the only package in this JAR -&gt; gets &quot;exports com.reportlib;&quot;</code></pre>
+<p>Having built this picture, <code>jdeps</code> writes a draft <code>module-info.java</code> to <code>generated/reportlib/module-info.java</code>: <code>requires transitive java.sql;</code> for the one genuine external module-level dependency it found (<code>java.base</code> is never written explicitly, since it&#x27;s always implicit for every module, exactly as covered in the <code>requires</code> directive topic) — <code>jdeps</code> specifically detects that <code>Timestamp</code>, a <code>java.sql</code> type, appears directly in <code>build(...)</code>&#x27;s own public parameter list, and infers that any consumer of <code>reportlib</code>&#x27;s public API will also need to name <code>Timestamp</code>, exactly the scenario the <code>requires transitive</code> topic covers, so it marks the dependency <code>transitive</code> automatically rather than requiring a human to notice this. <code>exports com.reportlib;</code> covers the JAR&#x27;s single package, since <code>--generate-module-info</code> defaults to exporting every package a JAR contains — on the reasonable assumption that everything in a JAR with no existing <code>module-info.java</code> was previously reachable by any classpath consumer, so exporting everything preserves that prior, fully-open visibility as the safest starting point.</p>
+<p><code>cat generated/reportlib/module-info.java</code> displays the generated file&#x27;s contents, confirming both lines are present and syntactically valid Java module-declaration syntax — ready to be copied directly into <code>reportlib</code>&#x27;s own source tree, after which <code>reportlib.jar</code> becomes a genuine named module rather than merely an automatic module (as it would be if simply placed on the module path without ever generating and adding this file).</p>
+<p>The key insight this whole three-level progression demonstrates: <code>jdeps</code> is meant to be run in this order — first, plain dependency reporting (Level 1) for basic understanding; second, <code>--jdk-internals</code> (Level 2) to find and fix anything that would break under strong encapsulation *before* generating a module declaration around it; third, <code>--generate-module-info</code> (Level 3) only once the JAR&#x27;s dependencies are clean, producing a draft that accurately reflects the JAR&#x27;s real, sanctioned dependency graph rather than one polluted by internal APIs that shouldn&#x27;t be depended on in the first place.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><code>--generate-module-info</code>&#x27;s draft is a <strong>starting point, not a finished product</strong> — it exports every package unconditionally by default (since it can&#x27;t know which packages were meant to be genuinely public API versus merely reachable-by-accident on the old classpath), and it cannot detect dependencies reached only through reflection, <code>Class.forName(...)</code> with a dynamically-computed name, or <code>ServiceLoader</code>-based service loading, all of which are invisible to <code>jdeps</code>&#x27;s static constant-pool analysis. Always review and refine the generated file by hand — tightening <code>exports</code> to the genuinely intended public API, and adding any <code>uses</code>/<code>provides</code> directives <code>jdeps</code> couldn&#x27;t infer.</blockquote>
+<ul><li><code>jdeps -s</code> (or <code>--summary</code>) prints a condensed, module-to-module-only summary without the full per-class breakdown — useful for a quick, high-level view of a large JAR&#x27;s dependencies before drilling into specifics.</li><li><code>jdeps --jdk-internals</code> is specifically the recommended first command to run before any JDK version upgrade, not just before modularizing — it surfaces every internal-API dependency that&#x27;s a genuine risk of breaking on the target JDK version, regardless of whether you ever intend to add a <code>module-info.java</code> at all.</li><li><code>jdeps</code> can analyze an entire classpath or a directory of JARs at once (<code>jdeps -cp lib/*.jar myapp.jar</code>), useful for auditing a whole application&#x27;s dependency tree rather than one library JAR in isolation.</li><li>The generated <code>module-info.java</code>&#x27;s <code>requires</code> lines only cover what <code>jdeps</code> can statically observe in the compiled bytecode — if a dependency is only reached conditionally (a feature flag, an optional integration only exercised at runtime under specific conditions), it may still show up as a <code>requires</code> if the *reference* exists in the bytecode at all, even if that code path is rarely or never actually executed in practice.</li><li>Running <code>jdeps</code> as part of a CI pipeline (failing the build if <code>--jdk-internals</code> reports any new internal-API usage) is a practical way to prevent a codebase from silently reaccumulating exactly the kind of unsupported-API dependency that made past JDK upgrades painful in the first place.</li></ul>
+  <div class="nav"><a class="prv" href="0582-jlink-custom-runtime-images.html"><span class="mini">← Previous</span>jlink custom runtime images</a><a class="nxt" href="0584-private-methods-in-interfaces.html"><span class="mini">Next →</span>Private methods in interfaces</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t583";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
