@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Structured concurrency — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>Structured concurrency</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Structured concurrency treats a group of related concurrent subtasks as a single unit of work with a well-defined lifetime: they&#x27;re all started together, and the code that started them cannot proceed past the point where it waits for them until *all* of them have either completed, failed, or been explicitly cancelled — mirroring how structured programming treats a block of sequential code as having one entry point and one exit point. In Java, this is realized through <code>StructuredTaskScope</code> (introduced as a preview/incubating API alongside virtual threads): you open a scope, <code>fork()</code> several subtasks onto it (each running on its own virtual thread), call <code>join()</code> to wait for them according to the scope&#x27;s policy, and the scope&#x27;s <code>close()</code> (typically via try-with-resources) guarantees that no subtask can outlive the scope, even if one of them fails.</p>
+<h2>2. Why &amp; when</h2>
+<p>Unstructured concurrency — firing off tasks via a raw <code>ExecutorService</code> and separately, loosely tracking their <code>Future</code>s — has a well-known failure mode: if one subtask fails and you decide to abandon the whole operation, nothing automatically stops the *other* still-running subtasks; they keep consuming resources (threads, memory, backend connections) even though their result is now irrelevant, and if a bug leaves a <code>Future</code> un-awaited entirely, that subtask can leak indefinitely with no supervising code aware it&#x27;s still running. Structured concurrency fixes this by construction: forked subtasks are scoped to their parent block, so cancelling or exiting the scope reliably cancels every subtask still running within it — you can never accidentally leave an orphaned subtask running past the point where its parent operation has moved on. Use it whenever you fan out to several concurrent subtasks that logically belong to one request or operation — fetching a user&#x27;s profile and their preferences concurrently to build one page, where either failing should cancel the other rather than let it run to a now-useless completion.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    Subtask&lt;String&gt; userTask = scope.fork(() -&gt; fetchUser(userId));
+    Subtask&lt;String&gt; prefsTask = scope.fork(() -&gt; fetchPreferences(userId));
+
+    scope.join();            // waits for BOTH to finish (or one to fail, triggering shutdown of the other)
+    scope.throwIfFailed();   // if either failed, rethrow that failure now
+
+    String user = userTask.get();
+    String prefs = prefsTask.get();
+    // both succeeded -- combine and use them
+} // scope.close(): guarantees NEITHER subtask can still be running past this point</code></pre>
+<p><code>ShutdownOnFailure</code> is one built-in policy: the instant any forked subtask fails, it cancels every other subtask still running in the same scope, rather than waiting for them to finish pointlessly.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A structured task scope forks two subtasks; if one fails, the scope cancels the other immediately rather than letting it run to a useless completion, and the scope cannot close until both are accounted for">
+  <rect x="240" y="15" width="160" height="30" rx="8" fill="#1c2430" stroke="#8b949e"/>
+  <text x="320" y="35" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">StructuredTaskScope</text>
+
+  <rect x="60" y="70" width="200" height="40" rx="8" fill="#1c2430" stroke="#f85149"/>
+  <text x="160" y="95" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Subtask A: FAILS</text>
+
+  <rect x="380" y="70" width="200" height="40" rx="8" fill="#1c2430" stroke="#f0883e"/>
+  <text x="480" y="95" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Subtask B: CANCELLED promptly</text>
+
+  <line x1="320" y1="45" x2="160" y2="68" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a33)"/>
+  <line x1="320" y1="45" x2="480" y2="68" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a33)"/>
+  <line x1="160" y1="110" x2="480" y2="108" stroke="#f85149" stroke-width="2" stroke-dasharray="4" marker-end="url(#a33)"/>
+  <text x="320" y="130" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">A's failure triggers immediate cancellation of B -- no orphaned, useless work</text>
+
+  <rect x="180" y="150" width="280" height="30" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="320" y="170" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">scope.close() -- guarantees BOTH are done</text>
+  <defs><marker id="a33" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*A failure in one forked subtask immediately cancels its siblings, and the scope cannot be exited until every subtask is accounted for — no orphaned work escapes the block.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: building a user dashboard by fetching a profile and preferences concurrently, growing from unstructured <code>ExecutorService</code>/<code>Future</code> code that leaks a subtask on failure, to <code>StructuredTaskScope.ShutdownOnFailure</code> fixing that leak, to a version using <code>ShutdownOnSuccess</code> to race redundant lookups and take the first success.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class UnstructuredConcurrencyLeak {
+    static String fetchUser(int id) throws InterruptedException {
+        Thread.sleep(50);
+        if (id == 999) throw new RuntimeException(&quot;user not found&quot;);
+        return &quot;User#&quot; + id;
+    }
+    static String fetchPreferences(int id) throws InterruptedException {
+        Thread.sleep(300); // deliberately slow, to expose the leak
+        return &quot;Preferences#&quot; + id;
+    }
+
+    public static void main(String[] args) throws Exception {
+        ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor();
+        Future&lt;String&gt; userFuture = pool.submit(() -&gt; fetchUser(999)); // WILL fail
+        Future&lt;String&gt; prefsFuture = pool.submit(() -&gt; fetchPreferences(999)); // keeps running regardless
+
+        try {
+            String user = userFuture.get(); // throws ExecutionException immediately
+            String prefs = prefsFuture.get();
+            System.out.println(user + &quot;, &quot; + prefs);
+        } catch (ExecutionException e) {
+            System.out.println(&quot;user fetch failed: &quot; + e.getCause().getMessage());
+            System.out.println(&quot;but prefsFuture is STILL RUNNING in the background, unsupervised, for no useful purpose&quot;);
+        }
+        pool.shutdown(); // does NOT cancel already-submitted, in-flight tasks
+        pool.awaitTermination(1, TimeUnit.SECONDS);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java UnstructuredConcurrencyLeak.java</code> (JDK 21+, <code>StructuredTaskScope</code> used in later levels is a preview API — run with <code>--enable-preview</code> if required by your JDK version).</p>
+<p>Expected output:</p>
+<pre><code>user fetch failed: user not found
+but prefsFuture is STILL RUNNING in the background, unsupervised, for no useful purpose</code></pre>
+<p>The user-fetch failure is handled, but nothing stops <code>prefsFuture</code>&#x27;s already-submitted task from continuing to run its full 300ms in the background — wasted work that nobody is waiting for or will use, and in more complex real systems, a resource (a connection, a lock) that stays held longer than necessary.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.StructuredTaskScope;
+
+public class StructuredShutdownOnFailure {
+    static String fetchUser(int id) throws InterruptedException {
+        Thread.sleep(50);
+        if (id == 999) throw new RuntimeException(&quot;user not found&quot;);
+        return &quot;User#&quot; + id;
+    }
+    static String fetchPreferences(int id) throws InterruptedException {
+        Thread.sleep(300);
+        System.out.println(&quot;prefs fetch completed (should NOT print if properly cancelled early)&quot;);
+        return &quot;Preferences#&quot; + id;
+    }
+
+    public static void main(String[] args) throws Exception {
+        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+            var userTask = scope.fork(() -&gt; fetchUser(999));       // WILL fail quickly
+            var prefsTask = scope.fork(() -&gt; fetchPreferences(999)); // would take much longer
+
+            scope.join(); // waits for completion OR failure -- failure here cancels prefsTask promptly
+            scope.throwIfFailed(e -&gt; new RuntimeException(&quot;dashboard load failed: &quot; + e.getMessage(), e));
+
+            System.out.println(userTask.get() + &quot;, &quot; + prefsTask.get()); // unreachable -- throwIfFailed already threw
+        } catch (RuntimeException e) {
+            System.out.println(&quot;caught: &quot; + e.getMessage());
+            System.out.println(&quot;prefsTask was cancelled promptly -- no orphaned background work&quot;);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java --enable-preview StructuredShutdownOnFailure.java</code> (JDK 21+; flag requirement depends on your specific JDK version&#x27;s preview status for this API).</p>
+<p>Expected output:</p>
+<pre><code>caught: dashboard load failed: user not found
+prefsTask was cancelled promptly -- no orphaned background work</code></pre>
+<p>The real-world concern added: the instant <code>userTask</code> fails, <code>ShutdownOnFailure</code>&#x27;s policy cancels every other subtask in the same scope — <code>prefsTask</code> is interrupted before its 300ms sleep completes, so the &quot;prefs fetch completed&quot; message correctly never prints, and <code>scope.close()</code> (via try-with-resources) doesn&#x27;t return control to the caller until both subtasks are fully accounted for, whether by completion or cancellation.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.TimeUnit;
+
+public class StructuredShutdownOnSuccess {
+    static String queryMirror(String name, int delayMs, boolean shouldFail) throws InterruptedException {
+        Thread.sleep(delayMs);
+        if (shouldFail) throw new RuntimeException(name + &quot; unavailable&quot;);
+        return name + &quot; responded&quot;;
+    }
+
+    public static void main(String[] args) throws Exception {
+        // ShutdownOnSuccess: races several redundant subtasks, takes the FIRST successful result,
+        // and cancels the rest -- ideal for redundant, competing lookups where any success suffices.
+        try (var scope = new StructuredTaskScope.ShutdownOnSuccess&lt;String&gt;()) {
+            scope.fork(() -&gt; queryMirror(&quot;mirror-A&quot;, 300, true));  // will fail
+            scope.fork(() -&gt; queryMirror(&quot;mirror-B&quot;, 100, false)); // expected winner
+            scope.fork(() -&gt; queryMirror(&quot;mirror-C&quot;, 250, false)); // would also succeed, but slower
+
+            scope.join();
+            String result = scope.result(); // the first SUCCESSFUL result; cancels the rest automatically
+            System.out.println(&quot;winning result: &quot; + result);
+        } catch (Exception e) {
+            System.out.println(&quot;all mirrors failed: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java --enable-preview StructuredShutdownOnSuccess.java</code> (JDK 21+).</p>
+<p>Expected output:</p>
+<pre><code>winning result: mirror-B responded</code></pre>
+<p>This adds the production-flavored hard case: <code>ShutdownOnSuccess</code> races three redundant subtasks (mirror-A, which will fail; mirror-B, the fastest to succeed; mirror-C, slower but would also succeed) and takes the first one that completes *successfully* — mirror-A&#x27;s failure alone doesn&#x27;t end the race (unlike <code>ShutdownOnFailure</code>&#x27;s policy), since other subtasks might still succeed, but as soon as mirror-B succeeds, the scope cancels mirror-C&#x27;s still-in-flight work rather than waiting for it pointlessly, demonstrating a second, distinct cancellation policy suited to a different concurrency pattern (racing for the first success, rather than failing fast together).</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>StructuredShutdownOnSuccess.main</code>:</p>
+<ol><li>Three subtasks are forked onto the scope essentially simultaneously, each running on its own virtual thread: mirror-A (300ms delay, will throw), mirror-B (100ms delay, will succeed), mirror-C (250ms delay, will succeed).</li><li>At around the 100ms mark, mirror-B&#x27;s <code>queryMirror</code> call returns successfully with <code>&quot;mirror-B responded&quot;</code> — since the scope&#x27;s policy is <code>ShutdownOnSuccess</code>, this first success triggers the scope to begin shutting down: any subtask still running (mirror-C, which still has roughly 150ms left; mirror-A, which still has roughly 200ms left) is interrupted/cancelled.</li><li><code>scope.join()</code> returns once the scope has either recorded a success or determined every subtask has failed — here, it returns promptly after mirror-B&#x27;s success is recorded and the cancellation of the others is underway.</li><li><code>scope.result()</code> retrieves the first successful result recorded — <code>&quot;mirror-B responded&quot;</code> — without needing to wait for mirror-A&#x27;s failure or mirror-C&#x27;s would-be success to ever actually resolve, since both are cancelled as soon as mirror-B&#x27;s success is recorded.</li><li>Because the scope is used inside a try-with-resources block, <code>scope.close()</code> runs automatically when the block exits, which enforces that no subtask (including the cancelled mirror-A and mirror-C) can still be running past this point — guaranteeing no orphaned virtual threads are left doing pointless work in the background, exactly the structural guarantee that unstructured <code>ExecutorService</code>/<code>Future</code> code cannot provide without significant extra manual bookkeeping.</li><li>The printed result confirms the race was won by the fastest successful subtask, with the other two definitively cleaned up rather than left to run to their own eventual (successful or failed) completion unsupervised.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>StructuredTaskScope</code> (as of the versions where it has shipped as a preview/incubating API) may require an <code>--enable-preview</code> flag and its exact API surface has evolved across JDK releases — check the specific JDK version&#x27;s documentation for the current method names and required flags, since this is one of the more actively-evolving newer JDK APIs.</blockquote>
+<ul><li>Structured concurrency guarantees that a group of forked subtasks cannot outlive the scope that created them — the scope&#x27;s <code>close()</code> (typically via try-with-resources) ensures every subtask is completed or cancelled before control returns to the caller.</li><li><code>ShutdownOnFailure</code>: the first subtask to fail cancels all its siblings — ideal for &quot;all of these must succeed together&quot; scenarios like fetching several pieces of data needed to build one response.</li><li><code>ShutdownOnSuccess</code>: the first subtask to succeed cancels all its siblings — ideal for racing redundant, competing operations where any single success is sufficient.</li><li>Unstructured concurrency (raw <code>ExecutorService</code> + loosely-tracked <code>Future</code>s) has no equivalent built-in guarantee — a failed or abandoned operation can easily leave sibling subtasks running unsupervised, wasting resources with no code aware they&#x27;re still active.</li><li>Structured concurrency and virtual threads are designed to complement each other closely — forking many subtasks is cheap precisely because each one typically runs on its own virtual thread; see <a href="0904-scoped-values.md">scoped values</a> for a related newer API designed to safely pass context into these forked subtasks without the pitfalls of <code>ThreadLocal</code>.</li></ul>
+  <div class="nav"><a class="prv" href="0902-carrier-threads-pinning.html"><span class="mini">← Previous</span>Carrier threads & pinning</a><a class="nxt" href="0904-scoped-values.html"><span class="mini">Next →</span>Scoped values</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t903";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

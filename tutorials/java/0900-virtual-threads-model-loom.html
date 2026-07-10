@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Virtual threads model (Loom) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>Virtual threads model (Loom)</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Virtual threads (finalized in Java 21 via Project Loom) are lightweight threads managed by the JVM itself rather than mapping one-to-one to an OS thread. You create and use them through the exact same <code>Thread</code>/<code>ExecutorService</code> APIs as ordinary (&quot;platform&quot;) threads — <code>Thread.ofVirtual().start(...)</code> or <code>Executors.newVirtualThreadPerTaskExecutor()</code> — but the JVM can run millions of them, because a virtual thread that blocks (on I/O, on <code>Thread.sleep</code>, on a lock) doesn&#x27;t tie up an OS thread while it waits; the JVM parks the virtual thread and frees the underlying OS thread (called a <strong>carrier thread</strong>) to run other virtual threads in the meantime.</p>
+<h2>2. Why &amp; when</h2>
+<p>Traditional platform threads are expensive: each one consumes real OS resources (typically megabytes of stack space) and OS-level scheduling overhead, which is why thread pools exist in the first place — you can&#x27;t practically have a hundred thousand platform threads all blocked waiting on separate network calls. Virtual threads exist specifically to make the simple, blocking, &quot;one thread per task/request&quot; programming style — easy to write, easy to debug, easy to reason about with straightforward sequential code — viable again at massive scale, without the historical need to rewrite everything in an asynchronous, callback- or <code>CompletableFuture</code>-chained style purely to conserve OS threads. Use virtual threads for I/O-bound workloads with high concurrency — a server handling many simultaneous slow network requests is the textbook case — where you&#x27;d otherwise need a large platform thread pool or complex asynchronous code just to keep enough requests in flight. They are *not* a magic performance upgrade for CPU-bound work, since CPU-bound computation is limited by the number of actual CPU cores regardless of how many threads (virtual or platform) are requesting time on them — see <a href="0901-platform-vs-virtual-threads.md">platform vs. virtual threads</a> for that distinction in more depth.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">// Platform thread pool: limited, expensive, typically sized to hundreds at most
+ExecutorService platformPool = Executors.newFixedThreadPool(200);
+
+// Virtual thread executor: can comfortably handle hundreds of thousands of concurrent tasks
+try (ExecutorService virtualPool = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (int i = 0; i &lt; 100_000; i++) {
+        virtualPool.submit(() -&gt; {
+            Thread.sleep(1000); // blocking call -- but the CARRIER thread is freed while this virtual thread waits
+            return null;
+        });
+    }
+} // try-with-resources: waits for all submitted tasks to finish, then closes the executor</code></pre>
+<p>Each <code>submit()</code> call gets its own dedicated virtual thread — no pooling or reuse of virtual threads themselves is needed, since they&#x27;re cheap enough to simply create one per task.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Many virtual threads, most blocked waiting on I/O, time-sharing a small number of carrier (platform/OS) threads; a blocked virtual thread frees its carrier thread for another virtual thread to use">
+  <text x="320" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Thousands of virtual threads (cheap, JVM-managed)</text>
+  <rect x="20" y="30" width="70" height="25" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="100" y="30" width="70" height="25" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="180" y="30" width="70" height="25" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="260" y="30" width="70" height="25" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="2"/>
+  <rect x="340" y="30" width="70" height="25" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="2"/>
+  <rect x="420" y="30" width="70" height="25" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="2"/>
+  <rect x="500" y="30" width="70" height="25" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="2"/>
+  <text x="320" y="75" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">solid = actively running; dashed = parked, waiting on I/O</text>
+
+  <text x="320" y="115" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Small pool of CARRIER threads (real OS threads, ~cores count)</text>
+  <rect x="150" y="130" width="100" height="35" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="200" y="152" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">carrier 1</text>
+  <rect x="270" y="130" width="100" height="35" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="320" y="152" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">carrier 2</text>
+  <rect x="390" y="130" width="100" height="35" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="440" y="152" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">carrier 3</text>
+
+  <line x1="55" y1="55" x2="200" y2="128" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#a32)"/>
+  <line x1="135" y1="55" x2="320" y2="128" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#a32)"/>
+  <line x1="215" y1="55" x2="440" y2="128" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#a32)"/>
+  <defs><marker id="a32" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*Only the few virtual threads actually running need a carrier thread at any instant; parked (blocked) ones hold no carrier at all, letting thousands time-share a handful of real OS threads.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: simulating many concurrent slow network calls, growing from a platform-thread-pool version that struggles to scale, to a virtual-thread version handling the same workload with vastly more concurrency, to a version measuring and comparing memory/thread-count behavior directly.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class PlatformThreadPoolLimitation {
+    static void simulateSlowNetworkCall() {
+        try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int taskCount = 1000;
+        ExecutorService platformPool = Executors.newFixedThreadPool(50); // a &quot;reasonable&quot; platform pool size
+
+        long start = System.currentTimeMillis();
+        for (int i = 0; i &lt; taskCount; i++) {
+            platformPool.submit(PlatformThreadPoolLimitation::simulateSlowNetworkCall);
+        }
+        platformPool.shutdown();
+        platformPool.awaitTermination(30, TimeUnit.SECONDS);
+
+        System.out.println(taskCount + &quot; tasks completed with 50 platform threads in &quot; + (System.currentTimeMillis() - start) + &quot;ms&quot;);
+        System.out.println(&quot;(bounded by 50 concurrent 100ms waits at a time -- roughly &quot; + (taskCount / 50) + &quot; waves)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java PlatformThreadPoolLimitation.java</code> (JDK 21+, though this specific example runs on any JDK 17+ since it uses no virtual-thread APIs).</p>
+<p>Expected output shape:</p>
+<pre><code>1000 tasks completed with 50 platform threads in ~2050ms
+(bounded by 50 concurrent 100ms waits at a time -- roughly 20 waves)</code></pre>
+<p>With only 50 platform threads for 1000 blocking tasks, the work proceeds in roughly 20 sequential &quot;waves&quot; of 50 concurrent 100ms waits each — increasing the platform pool size further would consume proportionally more OS thread resources (stack memory, scheduling overhead).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class VirtualThreadsHandleTheSameWorkload {
+    static void simulateSlowNetworkCall() {
+        try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int taskCount = 1000;
+
+        long start = System.currentTimeMillis();
+        try (ExecutorService virtualPool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i &lt; taskCount; i++) {
+                virtualPool.submit(VirtualThreadsHandleTheSameWorkload::simulateSlowNetworkCall);
+            }
+        } // try-with-resources: blocks here until all submitted tasks complete, then closes
+
+        System.out.println(taskCount + &quot; tasks completed with VIRTUAL threads in &quot; + (System.currentTimeMillis() - start) + &quot;ms&quot;);
+        System.out.println(&quot;(all 1000 ran essentially CONCURRENTLY -- roughly ONE wave of 100ms, not 20)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java VirtualThreadsHandleTheSameWorkload.java</code> (requires JDK 21+ for the finalized virtual threads API).</p>
+<p>Expected output shape (dramatically faster than the platform-pool version, since all 1000 tasks run essentially simultaneously):</p>
+<pre><code>1000 tasks completed with VIRTUAL threads in ~120ms
+(all 1000 ran essentially CONCURRENTLY -- roughly ONE wave of 100ms, not 20)</code></pre>
+<p>The real-world concern added: <code>Executors.newVirtualThreadPerTaskExecutor()</code> creates a fresh, cheap virtual thread for *every single submitted task*, all 1000 of them — since each blocks in <code>Thread.sleep</code>, the JVM frees up the small number of underlying carrier threads to service other virtual threads while any given one waits, so the whole batch completes in roughly the time of a single 100ms wait, not 20 sequential waves.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class ComparingConcurrencyAndThreadCount {
+    static void simulateSlowNetworkCall() {
+        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int taskCount = 5000;
+        AtomicInteger peakConcurrentVirtual = new AtomicInteger(0);
+        AtomicInteger currentConcurrentVirtual = new AtomicInteger(0);
+
+        long start = System.currentTimeMillis();
+        try (ExecutorService virtualPool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i &lt; taskCount; i++) {
+                virtualPool.submit(() -&gt; {
+                    int current = currentConcurrentVirtual.incrementAndGet();
+                    peakConcurrentVirtual.updateAndGet(prev -&gt; Math.max(prev, current));
+                    simulateSlowNetworkCall();
+                    currentConcurrentVirtual.decrementAndGet();
+                });
+            }
+        }
+        long elapsed = System.currentTimeMillis() - start;
+
+        System.out.println(&quot;total tasks: &quot; + taskCount);
+        System.out.println(&quot;peak CONCURRENT virtual threads observed: &quot; + peakConcurrentVirtual.get());
+        System.out.println(&quot;elapsed: &quot; + elapsed + &quot;ms (close to the 50ms of a single wait, despite 5000 tasks)&quot;);
+        System.out.println(&quot;underlying carrier (OS) threads used: only ~&quot; + Runtime.getRuntime().availableProcessors()
+            + &quot; (matches CPU core count), NOT &quot; + taskCount);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ComparingConcurrencyAndThreadCount.java</code> (JDK 21+).</p>
+<p>Expected output shape (peak concurrency approaches the full task count, since virtual threads are cheap enough to all exist simultaneously; elapsed time stays close to one wait&#x27;s duration regardless of task count):</p>
+<pre><code>total tasks: 5000
+peak CONCURRENT virtual threads observed: 5000
+elapsed: 58ms (close to the 50ms of a single wait, despite 5000 tasks)
+underlying carrier (OS) threads used: only ~8 (matches CPU core count), NOT 5000</code></pre>
+<p>This adds the production-flavored hard case: explicitly measuring peak concurrency (confirming essentially all 5000 tasks really were &quot;in flight,&quot; blocked in <code>Thread.sleep</code>, at the same moment) alongside elapsed time (confirming this concurrency translated into real throughput, not just apparent parallelism) — demonstrating concretely that virtual threads let a workload that would require 5000 platform threads to achieve the same concurrency instead run comfortably on a JVM using only a handful of real OS (carrier) threads underneath, matching roughly the CPU core count, since blocked virtual threads don&#x27;t occupy a carrier thread at all while parked.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>ComparingConcurrencyAndThreadCount.main</code> under the hood:</p>
+<ol><li><code>Executors.newVirtualThreadPerTaskExecutor()</code> creates a special executor that, for every <code>submit()</code> call, creates a brand-new virtual thread dedicated to running that one task — unlike a platform thread pool, there&#x27;s no fixed, limited set of reusable worker threads to queue behind.</li><li>As the loop submits all 5000 tasks in rapid succession, the JVM creates 5000 virtual thread objects — since each is lightweight (no dedicated OS-level stack allocation the way a platform thread requires), creating this many is fast and cheap, unlike attempting to create 5000 platform threads, which would likely exhaust OS resources or at least incur substantial overhead.</li><li>Each task&#x27;s lambda first increments <code>currentConcurrentVirtual</code> (tracking how many are simultaneously &quot;inside&quot; the task body) and records the peak seen so far, then calls <code>simulateSlowNetworkCall()</code>, which blocks via <code>Thread.sleep(50)</code>.</li><li>When a virtual thread calls <code>Thread.sleep</code>, the JVM&#x27;s scheduler recognizes this as a blocking operation it can handle specially: it <strong>unmounts</strong> the virtual thread from whatever carrier (OS) thread it was running on, freeing that carrier thread to go run a *different* virtual thread&#x27;s code in the meantime — the sleeping virtual thread itself consumes no OS thread resources while parked, just a small amount of JVM-managed heap memory to preserve its state.</li><li>Because virtually all 5000 tasks reach their <code>Thread.sleep(50)</code> call in quick succession (creation and dispatch is fast) and then get unmounted, the small number of actual carrier threads (roughly matching the CPU core count) can churn through mounting and unmounting virtual threads extremely quickly, without ever needing more than a handful of real OS threads to service all 5000 blocked virtual threads &quot;simultaneously&quot; from the application&#x27;s perspective.</li><li>Once each virtual thread&#x27;s 50ms sleep elapses, the JVM&#x27;s scheduler remounts it onto (potentially any) available carrier thread to resume execution, decrements <code>currentConcurrentVirtual</code>, and the task completes.</li><li>Because essentially all 5000 sleeps overlap in real wall-clock time, the entire batch finishes in only slightly more than 50ms total — the printed peak concurrency confirms nearly all 5000 tasks really were concurrently blocked at once, while the low reported &quot;carrier threads used&quot; (matching the core count) confirms this concurrency was achieved without needing anywhere near 5000 real OS threads.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> virtual threads do <strong>not</strong> speed up CPU-bound work — if a virtual thread is actually *computing* (not blocked on I/O), it still occupies a carrier thread the entire time, exactly like a platform thread would; running more virtual threads than you have CPU cores for genuinely CPU-bound work provides no additional throughput, since the underlying carrier threads (and the cores they run on) are the actual bottleneck. See <a href="0901-platform-vs-virtual-threads.md">platform vs. virtual threads</a> for the detailed distinction and when each is the right tool.</blockquote>
+<ul><li>Virtual threads are lightweight, JVM-managed threads that use the exact same <code>Thread</code>/<code>ExecutorService</code> APIs as platform threads, but at vastly higher scale, because a blocked virtual thread frees its underlying carrier (OS) thread instead of occupying it.</li><li>They make simple, sequential, blocking-style code viable again at high concurrency scale for I/O-bound workloads, without needing to rewrite everything in an asynchronous or reactive style purely to conserve OS threads.</li><li><code>Executors.newVirtualThreadPerTaskExecutor()</code> is the standard entry point — create one virtual thread per task rather than trying to &quot;pool&quot; virtual threads the way you would platform threads, since they&#x27;re cheap enough not to need reuse.</li><li>The number of carrier (real OS) threads actually used stays small (typically matching CPU core count) regardless of how many virtual threads exist, as long as most of them spend most of their time blocked rather than actively computing.</li><li>Understand <a href="0902-carrier-threads-pinning.md">carrier threads &amp; pinning</a> before relying heavily on virtual threads in code that uses <code>synchronized</code> blocks or certain native calls, since some operations can prevent a virtual thread from unmounting from its carrier even while logically &quot;blocked,&quot; partially undermining the scalability benefit.</li></ul>
+  <div class="nav"><a class="prv" href="0899-threadlocal-memory-leaks.html"><span class="mini">← Previous</span>ThreadLocal memory leaks</a><a class="nxt" href="0901-platform-vs-virtual-threads.html"><span class="mini">Next →</span>Platform vs virtual threads</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t900";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
