@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JDBC & connection pooling — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 26. Best Practices, Patterns & Tooling</div>
+  <div class="htitle">
+    <h1>JDBC & connection pooling</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>JDBC</strong> (Java Database Connectivity) is the standard API for talking to a relational database from Java: obtain a <code>Connection</code>, create a <code>Statement</code> or <code>PreparedStatement</code>, execute SQL, and read results from a <code>ResultSet</code>. Opening a database connection is genuinely expensive — a TCP handshake, authentication, session setup on the database server — expensive enough that opening a fresh one for every single query would dominate an application&#x27;s response time. A <strong>connection pool</strong> (HikariCP being the current de facto standard) solves this by opening a fixed number of connections once, up front, and handing them out to application code on request, taking each one back into the pool (not actually closing it) when the code calls <code>.close()</code>.</p>
+<h2>2. Why &amp; when</h2>
+<p>Opening a raw JDBC connection for every database operation means paying that connection-establishment cost — often tens of milliseconds — on every single request, which for a web application handling many requests per second turns &quot;wait for the database&quot; into &quot;wait for the database *and* a fresh connection setup&quot; every time. A connection pool amortizes that cost: connections are established once, at startup (or lazily on first use), and reused across thousands of subsequent operations — calling <code>.close()</code> on a pooled connection doesn&#x27;t tear down the underlying TCP connection at all, it just returns the connection object to the pool so the next caller can reuse it immediately.</p>
+<p>Always use a connection pool in any real application talking to a relational database — the cost of connection establishment is high enough, and the pooling mechanism transparent enough (code still calls <code>.close()</code> exactly as with a raw connection), that there&#x27;s essentially no reason to manage raw JDBC connections directly outside of the simplest throwaway scripts. Configure the pool&#x27;s size based on the actual concurrency your database and application can sustain — too small a pool serializes requests waiting for a free connection; too large a pool can overwhelm the database with more concurrent connections than it can efficiently handle.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+
+// Raw JDBC: a NEW physical connection is opened and closed for every single call --
+// expensive if this method is called frequently.
+String findUserName(String jdbcUrl, String id) throws Exception {
+    try (Connection conn = DriverManager.getConnection(jdbcUrl);
+         PreparedStatement stmt = conn.prepareStatement(&quot;SELECT name FROM users WHERE id = ?&quot;)) {
+        stmt.setString(1, id);
+        try (ResultSet rs = stmt.executeQuery()) {
+            return rs.next() ? rs.getString(&quot;name&quot;) : null;
+        }
+    } // conn.close() here tears down the ACTUAL physical connection
+}
+
+// With a connection pool (HikariCP): conn.close() returns the connection to
+// the POOL for reuse -- the underlying physical connection stays open.
+import com.zaxxer.hikari.HikariDataSource;
+
+HikariDataSource dataSource = new HikariDataSource(); // configured once, at startup
+String findUserNamePooled(HikariDataSource dataSource, String id) throws Exception {
+    try (Connection conn = dataSource.getConnection(); // borrowed from the pool, not opened fresh
+         PreparedStatement stmt = conn.prepareStatement(&quot;SELECT name FROM users WHERE id = ?&quot;)) {
+        stmt.setString(1, id);
+        try (ResultSet rs = stmt.executeQuery()) {
+            return rs.next() ? rs.getString(&quot;name&quot;) : null;
+        }
+    } // conn.close() here just returns it to the pool -- the physical connection stays open
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Raw JDBC opening and tearing down a new physical connection for every call versus a connection pool borrowing and returning connections from a fixed set of already-open physical connections">
+  <text x="150" y="24" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">Raw JDBC: open + close every call</text>
+  <rect x="30" y="40" width="230" height="34" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="145" y="61" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">handshake + auth EVERY call</text>
+
+  <text x="480" y="24" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">Pooled: borrow + return</text>
+  <rect x="360" y="40" width="90" height="70" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="405" y="65" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">conn A</text>
+  <text x="405" y="80" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">conn B</text>
+  <text x="405" y="95" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">conn C</text>
+  <text x="405" y="30" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">pool (pre-opened)</text>
+  <rect x="490" y="60" width="120" height="34" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="550" y="81" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">borrow / return</text>
+  <line x1="450" y1="77" x2="490" y2="77" stroke="#79c0ff" marker-end="url(#a)"/>
+  <defs><marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Raw JDBC pays connection-setup cost on every call; a pool pays it once and reuses already-open connections.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: querying an in-memory H2 database repeatedly, evolving from raw per-call connections into a HikariCP-pooled data source, with measured timing showing the actual difference.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: RawJdbcBasic.java
+// Requires the H2 database driver on the classpath (see Level 3&#x27;s pom.xml
+// snippet -- for this single-file example, download h2-2.2.224.jar and run:
+// java -cp .:h2-2.2.224.jar RawJdbcBasic
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
+
+public class RawJdbcBasic {
+    static final String URL = &quot;jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1&quot;;
+
+    static void setup() throws Exception {
+        try (Connection conn = DriverManager.getConnection(URL);
+             Statement stmt = conn.createStatement()) {
+            stmt.execute(&quot;CREATE TABLE users (id VARCHAR(20), name VARCHAR(50))&quot;);
+            stmt.execute(&quot;INSERT INTO users VALUES (&#x27;u1&#x27;, &#x27;Ana&#x27;)&quot;);
+        }
+    }
+
+    static String findUserName(String id) throws Exception {
+        // A NEW raw connection opened (and torn down) for EVERY call.
+        try (Connection conn = DriverManager.getConnection(URL);
+             PreparedStatement stmt = conn.prepareStatement(&quot;SELECT name FROM users WHERE id = ?&quot;)) {
+            stmt.setString(1, id);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() ? rs.getString(&quot;name&quot;) : null;
+            }
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        setup();
+        long start = System.nanoTime();
+        for (int i = 0; i &lt; 100; i++) {
+            findUserName(&quot;u1&quot;);
+        }
+        long elapsed = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;100 raw-connection lookups took &quot; + elapsed + &quot; ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> download <code>h2-2.2.224.jar</code>, then <code>javac -cp h2-2.2.224.jar RawJdbcBasic.java &amp;&amp; java -cp .:h2-2.2.224.jar RawJdbcBasic</code> (JDK 17+; on Windows use <code>;</code> instead of <code>:</code> in the classpath).</p>
+<p>Expected output (exact timing varies by machine, but is noticeably slower than the pooled version below):</p>
+<pre><code>100 raw-connection lookups took &lt;some number, generally the slowest of the three levels&gt; ms</code></pre>
+<p>Every one of the 100 lookups opens and tears down a brand-new connection — for a real network-based database (unlike this in-memory H2 example, which is unusually fast to &quot;connect&quot; to), this cost would be dramatically higher and would dominate total response time under any real load.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: PooledBasic.java
+// Requires HikariCP and the H2 driver on the classpath.
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
+
+public class PooledBasic {
+    public static void main(String[] args) throws Exception {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(&quot;jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1&quot;);
+        config.setMaximumPoolSize(5); // up to 5 connections kept ready in the pool
+
+        try (HikariDataSource dataSource = new HikariDataSource(config)) {
+            try (Connection conn = dataSource.getConnection();
+                 Statement stmt = conn.createStatement()) {
+                stmt.execute(&quot;CREATE TABLE users (id VARCHAR(20), name VARCHAR(50))&quot;);
+                stmt.execute(&quot;INSERT INTO users VALUES (&#x27;u1&#x27;, &#x27;Ana&#x27;)&quot;);
+            }
+
+            long start = System.nanoTime();
+            for (int i = 0; i &lt; 100; i++) {
+                try (Connection conn = dataSource.getConnection(); // BORROWED from the pool, not opened fresh
+                     PreparedStatement stmt = conn.prepareStatement(&quot;SELECT name FROM users WHERE id = ?&quot;)) {
+                    stmt.setString(1, &quot;u1&quot;);
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        rs.next();
+                    }
+                } // conn.close() here returns it to the pool -- doesn&#x27;t tear it down
+            }
+            long elapsed = (System.nanoTime() - start) / 1_000_000;
+            System.out.println(&quot;100 pooled lookups took &quot; + elapsed + &quot; ms&quot;);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> with HikariCP and H2 JARs on the classpath, <code>javac -cp HikariCP-5.1.0.jar:h2-2.2.224.jar PooledBasic.java &amp;&amp; java -cp .:HikariCP-5.1.0.jar:h2-2.2.224.jar:slf4j-api-2.0.13.jar PooledBasic</code> (JDK 17+; HikariCP requires an SLF4J API JAR on the classpath even without a logging backend configured).</p>
+<p>Expected output (noticeably faster than Level 1, especially pronounced against a real network database rather than in-memory H2):</p>
+<pre><code>100 pooled lookups took &lt;some number, generally faster than Level 1&gt; ms</code></pre>
+<p>The real-world concern added: <code>dataSource.getConnection()</code> borrows an already-established connection from the pool rather than opening a fresh one — <code>conn.close()</code> returns it for the next iteration to reuse, meaning the actual expensive connection-establishment work happens only up to <code>maximumPoolSize</code> times total, not once per loop iteration.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-xml">&lt;!-- Minimal pom.xml for the pooled example --&gt;
+&lt;dependencies&gt;
+    &lt;dependency&gt;
+        &lt;groupId&gt;com.zaxxer&lt;/groupId&gt;
+        &lt;artifactId&gt;HikariCP&lt;/artifactId&gt;
+        &lt;version&gt;5.1.0&lt;/version&gt;
+    &lt;/dependency&gt;
+    &lt;dependency&gt;
+        &lt;groupId&gt;com.h2database&lt;/groupId&gt;
+        &lt;artifactId&gt;h2&lt;/artifactId&gt;
+        &lt;version&gt;2.2.224&lt;/version&gt;
+        &lt;scope&gt;runtime&lt;/scope&gt;
+    &lt;/dependency&gt;
+&lt;/dependencies&gt;</code></pre>
+<pre><code class="lang-java">// File: src/main/java/PooledAdvanced.java
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+public class PooledAdvanced {
+    public static void main(String[] args) throws Exception {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(&quot;jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1&quot;);
+        // A DELIBERATELY small pool -- only 2 connections -- to observe what
+        // happens when concurrent demand exceeds the pool&#x27;s capacity.
+        config.setMaximumPoolSize(2);
+        config.setConnectionTimeout(3000); // fail fast if no connection frees up in time
+
+        try (HikariDataSource dataSource = new HikariDataSource(config)) {
+            try (Connection conn = dataSource.getConnection();
+                 Statement stmt = conn.createStatement()) {
+                stmt.execute(&quot;CREATE TABLE users (id VARCHAR(20), name VARCHAR(50))&quot;);
+                stmt.execute(&quot;INSERT INTO users VALUES (&#x27;u1&#x27;, &#x27;Ana&#x27;)&quot;);
+            }
+
+            // Simulate 5 CONCURRENT requests competing for only 2 pooled connections.
+            ExecutorService executor = Executors.newFixedThreadPool(5);
+            for (int i = 0; i &lt; 5; i++) {
+                int requestId = i;
+                executor.submit(() -&gt; {
+                    try (Connection conn = dataSource.getConnection();
+                         PreparedStatement stmt = conn.prepareStatement(&quot;SELECT name FROM users WHERE id = ?&quot;)) {
+                        stmt.setString(1, &quot;u1&quot;);
+                        try (ResultSet rs = stmt.executeQuery()) {
+                            rs.next();
+                            Thread.sleep(200); // hold the connection briefly, simulating real work
+                            System.out.println(&quot;request &quot; + requestId + &quot; completed, active connections: &quot;
+                                + dataSource.getHikariPoolMXBean().getActiveConnections());
+                        }
+                    } catch (SQLException | InterruptedException e) {
+                        System.out.println(&quot;request &quot; + requestId + &quot; failed: &quot; + e.getMessage());
+                    }
+                });
+            }
+            executor.shutdown();
+            executor.awaitTermination(10, TimeUnit.SECONDS);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> with the dependencies above, <code>mvn compile exec:java -Dexec.mainClass=PooledAdvanced</code>.</p>
+<p>Expected output (exact request completion order may vary, but never more than 2 requests report active simultaneously):</p>
+<pre><code>request 0 completed, active connections: &lt;at most 2 at any point in time&gt;
+request 1 completed, active connections: &lt;at most 2 at any point in time&gt;
+request 2 completed, active connections: &lt;at most 2 at any point in time&gt;
+request 3 completed, active connections: &lt;at most 2 at any point in time&gt;
+request 4 completed, active connections: &lt;at most 2 at any point in time&gt;</code></pre>
+<p>The production-flavored hard case: with <code>maximumPoolSize</code> deliberately set to <code>2</code> and 5 concurrent requests submitted, HikariCP naturally serializes access — only 2 requests can hold a connection at any instant, and the remaining 3 wait (up to <code>connectionTimeout</code>) until one is returned to the pool. This demonstrates the real tradeoff of pool sizing: too small, and concurrent demand queues up waiting for a free connection.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing what happens as the 5 submitted tasks compete for the pool of 2 connections:</p>
+<ol><li><code>dataSource.getConnection()</code> is called by the first two submitted tasks (say, request 0 and request 1, though actual scheduling order isn&#x27;t guaranteed) — since the pool has 2 available connections and neither is currently borrowed, both calls succeed immediately, each receiving one of the pool&#x27;s two physical connections.</li><li>A third task (say, request 2) calls <code>dataSource.getConnection()</code> while both pooled connections are still held by requests 0 and 1 — since <code>maximumPoolSize</code> is <code>2</code> and neither existing connection has been returned yet, this call <strong>blocks</strong>, waiting for one to become available, up to the configured <code>connectionTimeout</code> of 3000ms.</li><li>Request 0 finishes its query, executes <code>Thread.sleep(200)</code> (simulating real work being done while holding the connection), then reaches the end of its <code>try-with-resources</code> block — <code>conn.close()</code> runs, which (because <code>conn</code> is a pooled connection, not a raw JDBC one) returns it to the pool rather than tearing it down.</li><li>The moment that connection is returned, the blocked <code>getConnection()</code> call from step 2 (request 2) unblocks and receives that now-available connection, proceeding with its own query.</li><li>This same borrow-block-return cycle repeats for the remaining requests (3 and 4), each waiting for whichever of the two connections is returned soonest, until all 5 requests have eventually completed.</li><li>At any given instant during this whole process, <code>dataSource.getHikariPoolMXBean().getActiveConnections()</code> never reports more than <code>2</code> — confirming the pool genuinely enforced its configured maximum size, serializing excess concurrent demand rather than allowing more physical connections to be opened than configured.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> forgetting to call <code>.close()</code> on a pooled connection (or letting an exception skip it, without using <code>try-with-resources</code>) doesn&#x27;t just leak that one connection for the current request — it permanently shrinks the pool&#x27;s effective capacity for every future request, since that connection is never returned and the pool has no way to reclaim it automatically until the pool itself times it out or the application restarts.</blockquote>
+<ul><li>Opening a raw JDBC connection is expensive; a connection pool amortizes that cost by opening a fixed set of connections once and reusing them across many subsequent operations.</li><li>Calling <code>.close()</code> on a pooled connection returns it to the pool for reuse — it does not tear down the underlying physical database connection, unlike closing a raw JDBC connection.</li><li>HikariCP is the current de facto standard connection pool for Java, known for its performance and being the default choice in frameworks like Spring Boot.</li><li>Pool size is a genuine tradeoff: too small serializes concurrent requests waiting for a free connection (as demonstrated above); too large risks overwhelming the database server with more concurrent connections than it can handle efficiently.</li><li>Always use <code>try-with-resources</code> (or equivalent guaranteed cleanup) for pooled connections — a connection that&#x27;s never returned to the pool permanently reduces its effective capacity, a subtle and cumulative resource leak.</li><li>See <a href="1045-jpa-hibernate-orm.md">JPA / Hibernate ORM</a> for the higher-level abstraction typically built on top of a pooled <code>DataSource</code> in real applications, sparing most application code from writing raw JDBC directly.</li></ul>
+  <div class="nav"><a class="prv" href="1043-benchmarking-with-jmh.html"><span class="mini">← Previous</span>Benchmarking with JMH</a><a class="nxt" href="1045-jpa-hibernate-orm.html"><span class="mini">Next →</span>JPA / Hibernate ORM</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t1044";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
