@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Context propagation (Reactor Context)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 7. Spring WebFlux (Reactive)</div>
+  <div class="htitle">
+    <h1>"Context propagation (Reactor Context)"</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Reactor <code>Context</code> is a per-subscription, immutable key-value store that travels *alongside* a <code>Mono</code>/<code>Flux</code> chain — the reactive replacement for <code>ThreadLocal</code>, which doesn&#x27;t work reliably in reactive code because a single logical operation can genuinely execute across multiple different threads over its lifetime (as noted in the WebHandler API card). <code>Context</code> is written using <code>.contextWrite(...)</code> and read using <code>Mono.deferContextual(...)</code>/<code>Flux.deferContextual(...)</code>, propagating automatically downstream-to-upstream through an operator chain.</p>
+<pre><code class="lang-java">Mono&lt;String&gt; withContext = Mono.deferContextual(ctx -&gt;
+        Mono.just(&quot;Hello, &quot; + ctx.get(&quot;username&quot;)))
+    .contextWrite(Context.of(&quot;username&quot;, &quot;Alice&quot;));</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Common cross-cutting needs — a request&#x27;s correlation/trace ID, the current authenticated user, a tenant identifier in a multi-tenant system — are traditionally carried via <code>ThreadLocal</code> in imperative Java code, set once at the start of request processing and implicitly available anywhere downstream on the *same thread*. Reactive pipelines break this assumption: <code>subscribeOn</code>/<code>publishOn</code> can move execution to different threads mid-chain, and a single subscription might interleave with others on a shared thread pool — a <code>ThreadLocal</code> value set in a <code>WebFilter</code> might simply not be visible by the time a downstream operator or service method actually runs, because it&#x27;s executing on a different thread entirely.</p>
+<p>Reactor <code>Context</code> solves this by attaching contextual data to the <strong>subscription</strong> itself, not the thread — it&#x27;s carried through the reactive chain&#x27;s own internal machinery, correctly available regardless of which thread ends up executing any given operator. Use it whenever you need request-scoped data (correlation IDs, security context, tenant info) accessible deep within a reactive call chain, especially across multiple layers (controller → service → repository) that might not share a thread.</p>
+<h2>3. Core concept</h2>
+<pre><code>Context propagates DOWNSTREAM-TO-UPSTREAM at SUBSCRIPTION time,
+then READS flow UPSTREAM-TO-DOWNSTREAM as data flows through:
+
+  Mono.deferContextual(ctx -&gt; {
+      String value = ctx.get(&quot;key&quot;);     &lt;- READ the context here
+      return Mono.just(value);
+  })
+  .map(...)
+  .contextWrite(Context.of(&quot;key&quot;, &quot;value&quot;))   &lt;- WRITE happens here,
+                                                   but is visible to
+                                                   EVERYTHING UPSTREAM
+                                                   of this point in the chain
+
+CRITICAL RULE: .contextWrite(...) only makes its values visible to
+operators ABOVE it (earlier in the chain, closer to the source) —
+NOT to operators below/after it. This is the OPPOSITE of how you&#x27;d
+intuitively expect a &quot;write&quot; to propagate in a top-to-bottom reading
+of the code, and is the single most common source of confusion.
+
+  source.doSomething()
+      .contextWrite(ctx -&gt; ctx.put(&quot;k&quot;,&quot;v&quot;))   &lt;- writes here
+  .subscribe()
+
+  Everything ABOVE (earlier/upstream of) contextWrite CAN see &quot;k&quot;.
+  Anything chained AFTER subscribe() or in a SEPARATE, later
+  .map()/.flatMap() appended AFTER contextWrite cannot see it
+  unless contextWrite is placed even later still.
+
+In WebFlux: the ServerWebExchange&#x27;s context is automatically
+merged into the Reactor Context for the request&#x27;s processing chain,
+letting exchange attributes be accessible via Context reads too.</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 720 210" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <rect width="720" height="210" fill="#0d1117"/>
+  <text x="360" y="22" text-anchor="middle" fill="#8b949e">Context flows UPWARD from contextWrite to earlier operators</text>
+
+  <rect x="60" y="50" width="180" height="40" rx="4" fill="#1c2430" stroke="#6db33f"/>
+  <text x="150" y="75" text-anchor="middle" fill="#6db33f" font-size="10">deferContextual (READS)</text>
+
+  <line x1="150" y1="90" x2="150" y2="130" stroke="#8b949e" stroke-dasharray="2,2"/>
+  <text x="230" y="115" fill="#8b949e" font-size="9">context VISIBLE here (upstream)</text>
+
+  <rect x="60" y="130" width="180" height="40" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="150" y="155" text-anchor="middle" fill="#79c0ff" font-size="10">.contextWrite(...)</text>
+
+  <rect x="320" y="130" width="180" height="40" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,3"/>
+  <text x="410" y="155" text-anchor="middle" fill="#8b949e" font-size="9">operators AFTER — NOT visible</text>
+
+  <line x1="240" y1="150" x2="320" y2="150" stroke="#8b949e" marker-end="url(#a63)"/>
+
+  <defs>
+    <marker id="a63" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+</svg>
+<p>*<code>contextWrite</code> only makes its values visible to operators earlier in the chain (upstream), not later ones — a frequently counterintuitive rule.*</p>
+<h2>5. Runnable example</h2>
+<h3>Level 1 — Basic</h3>
+<p>A minimal demonstration of the write-then-read pattern and the upstream-only visibility rule:</p>
+<pre><code class="lang-java">// ContextDemo.java
+import reactor.core.publisher.Mono;
+import reactor.util.context.Context;
+
+public class ContextDemo {
+    public static void main(String[] args) {
+        Mono&lt;String&gt; withValue = Mono.deferContextual(ctx -&gt;
+                Mono.just(&quot;Hello, &quot; + ctx.get(&quot;username&quot;)))
+            .contextWrite(Context.of(&quot;username&quot;, &quot;Alice&quot;));
+
+        withValue.subscribe(System.out::println);
+        // Hello, Alice
+
+        Mono&lt;String&gt; wrongOrder = Mono.deferContextual(ctx -&gt;
+                Mono.just(&quot;Hello, &quot; + ctx.getOrDefault(&quot;username&quot;, &quot;UNKNOWN&quot;)))
+            .map(s -&gt; s)   // an operator...
+            .contextWrite(Context.of(&quot;username&quot;, &quot;Bob&quot;));
+        // contextWrite is placed AFTER (downstream of) map, but deferContextual
+        // is EARLIER (upstream) than BOTH — so the write is still visible here,
+        // since contextWrite&#x27;s placement relative to the SOURCE matters, not
+        // its position relative to any specific intermediate operator alone.
+
+        wrongOrder.subscribe(System.out::println);
+        // Hello, Bob    (the write DOES reach the upstream deferContextual)
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">java ContextDemo.java
+# Hello, Alice
+# Hello, Bob</code></pre>
+<p>Both examples succeed here because <code>contextWrite</code> is placed at the very end of each chain, making its written value visible to every operator earlier in that same chain, including <code>deferContextual</code> at the source — the confusion in practice typically arises when <code>contextWrite</code> is placed on a *different*, unrelated chain, or after a point where the read has *already* happened via a different mechanism (demonstrated in Level 2).</p>
+<h3>Level 2 — Intermediate</h3>
+<p>The classic mistake — <code>contextWrite</code> placed too late to be visible where it&#x27;s needed — followed by the corrected version:</p>
+<pre><code class="lang-java">// ContextMistakeDemo.java
+import reactor.core.publisher.Mono;
+import reactor.util.context.Context;
+
+public class ContextMistakeDemo {
+
+    static Mono&lt;String&gt; greet() {
+        return Mono.deferContextual(ctx -&gt; Mono.just(&quot;Hello, &quot; + ctx.getOrDefault(&quot;username&quot;, &quot;UNKNOWN&quot;)));
+    }
+
+    public static void main(String[] args) {
+        // MISTAKE: contextWrite is on a SEPARATE Mono entirely (subscribe() ends
+        // the chain before contextWrite ever gets a chance to affect greet()&#x27;s OWN read).
+        Mono&lt;String&gt; broken = greet();
+        broken.subscribe(System.out::println);
+        // Hello, UNKNOWN     &lt;- greet() subscribed with NO context attached at all
+
+        // CORRECTED: contextWrite is chained AFTER greet(), so it becomes visible
+        // to greet()&#x27;s internal deferContextual read (which is UPSTREAM of this write).
+        Mono&lt;String&gt; fixed = greet().contextWrite(Context.of(&quot;username&quot;, &quot;Alice&quot;));
+        fixed.subscribe(System.out::println);
+        // Hello, Alice
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">java ContextMistakeDemo.java
+# Hello, UNKNOWN
+# Hello, Alice</code></pre>
+<p><strong>What changed:</strong> <code>broken</code> calls <code>greet()</code> and subscribes directly, with no <code>contextWrite</code> anywhere in that specific chain — the internal <code>deferContextual</code> read finds no <code>&quot;username&quot;</code> key and falls back to <code>&quot;UNKNOWN&quot;</code>. <code>fixed</code> chains <code>.contextWrite(...)</code> immediately after <code>greet()</code>&#x27;s returned <code>Mono</code>, making it visible to that <code>Mono</code>&#x27;s own internal, upstream <code>deferContextual</code> call — this is the correct pattern: <code>contextWrite</code> must appear somewhere in the *same* chain, downstream of (i.e., chained after) the operator whose read needs to see it.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Production pattern: a correlation ID set by a <code>WebFilter</code> (per the WebHandler API card) and propagated via Reactor <code>Context</code> all the way down through a controller and a service layer, demonstrating the realistic, multi-layer use case this mechanism exists for:</p>
+<pre><code class="lang-java">// CorrelationIdWebFilter.java
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.server.WebFilter;
+import org.springframework.web.server.WebFilterChain;
+import reactor.core.publisher.Mono;
+import reactor.util.context.Context;
+
+import java.util.UUID;
+
+@Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
+public class CorrelationIdWebFilter implements WebFilter {
+    @Override
+    public Mono&lt;Void&gt; filter(ServerWebExchange exchange, WebFilterChain chain) {
+        String correlationId = UUID.randomUUID().toString();
+        return chain.filter(exchange)
+            .contextWrite(Context.of(&quot;correlationId&quot;, correlationId));
+    }
+}</code></pre>
+<pre><code class="lang-java">// ProductService.java — reads the correlation ID DEEP within a service layer,
+// with NO explicit parameter passing needed to get it there.
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
+
+@Service
+public class ProductService {
+
+    private static final Logger log = LoggerFactory.getLogger(ProductService.class);
+    record Product(long id, String name) {}
+
+    public Mono&lt;Product&gt; findById(long id) {
+        return Mono.deferContextual(ctx -&gt; {
+            String correlationId = ctx.getOrDefault(&quot;correlationId&quot;, &quot;none&quot;);
+            log.info(&quot;[{}] Looking up product {}&quot;, correlationId, id);
+            return Mono.just(new Product(id, &quot;Drill&quot;));
+        });
+    }
+}</code></pre>
+<pre><code class="lang-java">// ProductController.java
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+
+@RestController
+public class ProductController {
+
+    private final ProductService productService;
+    public ProductController(ProductService productService) { this.productService = productService; }
+
+    @GetMapping(&quot;/products/{id}&quot;)
+    public Mono&lt;ProductService.Product&gt; get(@PathVariable long id) {
+        return productService.findById(id);   // NO correlationId parameter passed explicitly
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">./mvnw spring-boot:run
+
+curl http://localhost:8080/products/1
+# {&quot;id&quot;:1,&quot;name&quot;:&quot;Drill&quot;}
+# server log: &quot;[7c9e6679-...] Looking up product 1&quot;</code></pre>
+<p><strong>What changed and why:</strong></p>
+<ul><li><code>CorrelationIdWebFilter</code> writes the correlation ID via <code>.contextWrite(...)</code> chained onto <code>chain.filter(exchange)</code> — the entire rest of the request-handling chain (everything <code>chain.filter(exchange)</code> eventually triggers, including <code>DispatcherHandler</code>&#x27;s dispatch to the controller and the controller&#x27;s own call into the service) is upstream of this write, so the value is visible everywhere downstream in the actual request-processing sense (even though &quot;upstream&quot; in Reactor&#x27;s own operator terminology), because <code>chain.filter(exchange)</code> represents the entire remaining pipeline as a single upstream <code>Mono</code>.</li><li><code>ProductService.findById</code> reads the correlation ID via <code>Mono.deferContextual(...)</code>, with <strong>zero explicit parameter passing</strong> required through <code>ProductController.get</code> — the correlation ID travels implicitly through the Reactor <code>Context</code> mechanism, exactly mirroring how a <code>ThreadLocal</code>-based correlation ID would travel implicitly in imperative Spring MVC code, but correctly working even though WebFlux&#x27;s execution can genuinely span multiple threads.</li><li>This is the realistic, production-relevant use case Reactor <code>Context</code> exists for: cross-cutting, request-scoped data (correlation IDs, tenant IDs, security principals) needing to be accessible at arbitrary depth within a reactive call chain, without polluting every method signature along the way with an extra parameter purely to thread that data through.</li></ul>
+<h2>6. Walkthrough</h2>
+<p><strong>Request: <code>GET /products/1</code> (Level 3 code), tracing the correlation ID&#x27;s journey.</strong></p>
+<ol><li>WebFlux&#x27;s <code>WebFilter</code> chain processes the request. <code>CorrelationIdWebFilter.filter(exchange, chain)</code> executes: generates <code>correlationId = &quot;7c9e6679-...&quot;</code>, then constructs <code>chain.filter(exchange).contextWrite(Context.of(&quot;correlationId&quot;, correlationId))</code> — this composed <code>Mono&lt;Void&gt;</code> is what the filter returns.</li><li>Because <code>.contextWrite(...)</code> is chained *after* <code>chain.filter(exchange)</code> (which represents everything downstream — <code>DispatcherHandler</code>&#x27;s dispatch, the controller, the service, all the way to response completion), the written <code>correlationId</code> value becomes visible to every operator within that entire downstream (in request-processing terms) chain, per the upstream-visibility rule from the core concept section.</li><li><code>DispatcherHandler</code> proceeds with its normal handler resolution (per the earlier <code>DispatcherHandler</code> card), eventually invoking <code>ProductController.get(1)</code>.</li><li><code>get(1)</code> calls <code>productService.findById(1)</code>, returning the <code>Mono&lt;Product&gt;</code> this method produces — no correlation ID is passed as an explicit argument anywhere in this call.</li><li>Inside <code>findById</code>, <code>Mono.deferContextual(ctx -&gt; {...})</code> is subscribed to as part of the overall chain&#x27;s execution. Because this <code>Mono</code> sits somewhere within the chain that <code>CorrelationIdWebFilter</code>&#x27;s <code>.contextWrite(...)</code> wraps (transitively, through the whole <code>DispatcherHandler</code> → controller → service call chain), the <code>ctx</code> parameter this lambda receives genuinely contains the <code>&quot;correlationId&quot;</code> key written back in step 1.</li><li><code>ctx.getOrDefault(&quot;correlationId&quot;, &quot;none&quot;)</code> retrieves <code>&quot;7c9e6679-...&quot;</code> — the log line <code>&quot;[7c9e6679-...] Looking up product 1&quot;</code> is written, demonstrating the correlation ID successfully traveled from the <code>WebFilter</code> (where it was generated) down through <code>DispatcherHandler</code>&#x27;s internal dispatch machinery, the controller, and finally into the service layer — entirely via Reactor <code>Context</code>, with no explicit parameter threading anywhere along that path.</li><li><code>findById</code> returns <code>Mono.just(new Product(1, &quot;Drill&quot;))</code>, which resolves and is serialized as the response body.</li><li>Response:</li></ol>
+<pre><code>   HTTP/1.1 200 OK
+   Content-Type: application/json
+
+   {&quot;id&quot;:1,&quot;name&quot;:&quot;Drill&quot;}</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>**<code>.contextWrite(...)</code> placement relative to the *specific read* it needs to reach is the single most common source of confusion** — always verify the write is chained onto (or wraps) the *same* <code>Mono</code>/<code>Flux</code> instance whose upstream operators need to see it, not a separate, unrelated chain, even if that other chain seems related in application logic.</blockquote>
+<blockquote><strong><code>ThreadLocal</code> genuinely does not work reliably across a reactive pipeline</strong> — a value set via <code>ThreadLocal.set(...)</code> before subscribing might simply not be visible in a <code>map</code>/<code>flatMap</code> lambda that Reactor happens to execute on a different thread (due to <code>subscribeOn</code>/<code>publishOn</code>, or scheduler reuse across unrelated subscriptions). This is precisely the class of bug Reactor <code>Context</code> exists to prevent — always use <code>Context</code> (or, for logging specifically, Micrometer&#x27;s context-propagation-aware MDC integration) for reactive request-scoped data, never <code>ThreadLocal</code>.</blockquote>
+<blockquote><strong>Reactor <code>Context</code> is immutable — each <code>.contextWrite(...)</code> call produces a NEW context, layered on top of (not mutating) whatever context already existed at that point in the chain.</strong> This is a deliberate design choice enabling safe, concurrent sharing of context data across multiple, independent subscriptions to related publishers, but it means &quot;adding a value to the context&quot; is conceptually a functional transformation, not an in-place mutation.</blockquote>
+<ul><li>Reactor <code>Context</code> is the reactive replacement for <code>ThreadLocal</code>, attaching request-scoped data to a subscription rather than a thread, correctly surviving <code>subscribeOn</code>/<code>publishOn</code> thread hops.</li><li><code>.contextWrite(...)</code> only makes its values visible to operators *upstream* of (earlier in the chain than) where it&#x27;s placed — a frequently counterintuitive rule that causes real bugs when misunderstood.</li><li><code>Mono.deferContextual(...)</code>/<code>Flux.deferContextual(...)</code> is how a reactive pipeline reads values previously written via <code>contextWrite</code> anywhere upstream in the same logical chain.</li><li>WebFlux&#x27;s own request-processing chain (via <code>WebFilter</code>s wrapping <code>chain.filter(exchange)</code>) is a natural, realistic place to write cross-cutting, request-scoped context (correlation IDs, tenant info) that needs to reach arbitrarily deep into a controller/service call chain without explicit parameter threading.</li></ul>
+  <div class="nav"><a class="prv" href="0386-reactive-testing-webtestclient.html"><span class="mini">← Previous</span>Reactive testing (WebTestClient)</a><a class="nxt" href="0388-reactive-libraries-adaptation-rxjava-etc.html"><span class="mini">Next →</span>Reactive libraries adaptation (RxJava, etc.)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t387";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
