@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Derived query methods (JPA)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-data.html">Spring Data</a> › 2. Spring Data JPA</div>
+  <div class="htitle">
+    <h1>"Derived query methods (JPA)"</h1>
+    <a class="back" href="../../spring-data.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This card looks at query derivation (the general mechanism covered in depth in the Commons section) specifically through the lens of what JPA does with it: the exact JPQL a derived method compiles into, how derivation handles <code>@Column</code>-renamed fields and <code>@ManyToOne</code>/<code>@OneToMany</code> associations (producing real SQL <code>JOIN</code>s), and what happens when a derived method&#x27;s generated JPQL would be genuinely inefficient — the point where understanding the generated query matters for real applications, not just for correctness.</p>
+<pre><code class="lang-java">// Derives to: select o from Order o join o.customer c where c.email = ?1
+List&lt;Order&gt; findByCustomerEmail(String email);</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>The Commons section established the naming grammar; this card is about reading the *result* — knowing what JPQL (and therefore what SQL, what joins, what potential N+1 problems) a given derived method name actually produces. This matters because a derived method that looks simple can generate a join across several tables, and a derived method returning a collection of entities with lazy associations can trigger the classic N+1 query problem the moment calling code iterates and accesses those associations.</p>
+<p>Understanding JPA-specific derivation behavior matters specifically when:</p>
+<ul><li>You&#x27;re reviewing or writing a derived method that traverses a relationship (<code>findByCustomerEmail</code>, from <code>Order</code> through <code>Customer</code>) and want to know exactly what SQL join it produces, to judge whether it&#x27;s efficient for the actual table sizes involved.</li><li>You&#x27;re debugging an N+1 query problem — often traced back to a derived method returning entities whose lazily-loaded associations get accessed in a loop afterward, each access triggering its own additional query.</li><li>You&#x27;re deciding whether a derived method&#x27;s generated query is efficient enough, or whether the same logical query needs a hand-written <code>@Query</code> with an explicit <code>JOIN FETCH</code> to eagerly load an association in the same round-trip.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> findByCustomerEmail(String email)
+        |
+        v
+ JPQL:  select o from Order o join o.customer c where c.email = ?1
+        |
+        v
+ SQL (Hibernate-generated, roughly):
+   SELECT o.* FROM order o
+   INNER JOIN customer c ON o.customer_id = c.id
+   WHERE c.email = ?
+
+ If Order.customer is LAZY (the JPA default for @ManyToOne is actually EAGER,
+ but @OneToMany/@ManyToMany default to LAZY):
+   the JOIN above is only for FILTERING -- customer.* columns may or may not
+   be selected/populated depending on the association&#x27;s fetch type;
+   accessing order.getCustomer().getName() afterward, if lazy, triggers
+   a SEPARATE query PER order in a loop -- the classic N+1 problem</code></pre>
+<p>A derived method&#x27;s JOIN exists to filter, not necessarily to eagerly populate the joined association — those are two separate concerns easy to conflate.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.v3.org/2000/svg" role="img" aria-label="A derived query filtering through an association produces a JOIN for filtering, but accessing a lazy association afterward triggers separate N+1 queries">
+  <rect x="10" y="20" width="280" height="55" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="150" y="42" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">findByCustomerEmail(email)</text>
+  <text x="150" y="58" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">1 query, JOIN used for filtering</text>
+
+  <rect x="350" y="20" width="280" height="55" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="490" y="42" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">for(Order o : results) o.getLineItems()</text>
+  <text x="490" y="58" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">N extra queries if lineItems is LAZY</text>
+</svg>
+<p>The filtering join and the eventual association access are two independent query concerns.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: an <code>Order</code>/<code>Customer</code> relationship, evolving from confirming a derived-traversal method&#x27;s generated join, to observing the N+1 problem concretely via query counts, to fixing it with <code>JOIN FETCH</code> inside an explicit <code>@Query</code>.</p>
+<h3>Level 1 — Basic</h3>
+<p>Confirm <code>findByCustomerEmail</code> correctly filters through the <code>customer</code> association, producing one query.</p>
+<pre><code class="lang-java">import jakarta.persistence.*;
+import org.hibernate.SessionFactory;
+import org.hibernate.stat.Statistics;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+
+@SpringBootApplication
+public class JpaDerivationLevel1 {
+
+    @Entity
+    public static class Customer {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String email;
+        protected Customer() {}
+        public Customer(String email) { this.email = email; }
+    }
+
+    @Entity
+    public static class Order {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        @ManyToOne
+        private Customer customer;
+        private double total;
+        protected Order() {}
+        public Order(Customer customer, double total) { this.customer = customer; this.total = total; }
+        public double getTotal() { return total; }
+    }
+
+    public interface OrderRepository extends JpaRepository&lt;Order, Long&gt; {
+        List&lt;Order&gt; findByCustomerEmail(String email);
+    }
+
+    public static void main(String[] args) {
+        ConfigurableApplicationContext ctx = SpringApplication.run(JpaDerivationLevel1.class,
+            &quot;--spring.datasource.url=jdbc:h2:mem:jpaderiv1&quot;,
+            &quot;--spring.jpa.hibernate.ddl-auto=create-drop&quot;,
+            &quot;--spring.jpa.properties.hibernate.generate_statistics=true&quot;);
+
+        EntityManager em = ctx.getBean(EntityManagerFactory.class).createEntityManager();
+        em.getTransaction().begin();
+        Customer ada = new Customer(&quot;ada@example.com&quot;);
+        em.persist(ada);
+        em.persist(new Order(ada, 100.0));
+        em.persist(new Order(ada, 50.0));
+        em.getTransaction().commit();
+        em.close();
+
+        Statistics stats = ctx.getBean(EntityManagerFactory.class).unwrap(SessionFactory.class).getStatistics();
+        stats.clear();
+
+        OrderRepository repo = ctx.getBean(OrderRepository.class);
+        List&lt;Order&gt; result = repo.findByCustomerEmail(&quot;ada@example.com&quot;);
+
+        System.out.println(&quot;found &quot; + result.size() + &quot; orders, queries executed = &quot; + stats.getQueryExecutionCount());
+
+        if (result.size() != 2) throw new AssertionError(&quot;Expected 2 orders for ada@example.com&quot;);
+        if (stats.getQueryExecutionCount() != 1) throw new AssertionError(&quot;Expected exactly 1 query for the join-filtered derived method&quot;);
+        System.out.println(&quot;findByCustomerEmail used a single JOIN-based query to filter through the association -- PASS&quot;);
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: put <code>spring-boot-starter-data-jpa</code> and <code>com.h2database:h2</code> on the classpath, then <code>java JpaDerivationLevel1.java</code> on JDK 17+.</p>
+<p><code>findByCustomerEmail(String email)</code> traverses the <code>customer</code> association purely to filter — one query, one join, confirmed directly via Hibernate&#x27;s statistics counter, which reports exactly <code>1</code> query execution for the whole call.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add a <code>@OneToMany</code> (lazy by JPA default) association and observe the N+1 problem when iterating and accessing it after a derived query.</p>
+<pre><code class="lang-java">import jakarta.persistence.*;
+import org.hibernate.SessionFactory;
+import org.hibernate.stat.Statistics;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@SpringBootApplication
+public class JpaDerivationLevel2 {
+
+    @Entity
+    public static class LineItem {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String description;
+        @ManyToOne
+        private Order order;
+        protected LineItem() {}
+        public LineItem(Order order, String description) { this.order = order; this.description = description; }
+    }
+
+    @Entity
+    public static class Order {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String status;
+        @OneToMany(mappedBy = &quot;order&quot;)
+        private List&lt;LineItem&gt; lineItems = new ArrayList&lt;&gt;();
+        protected Order() {}
+        public Order(String status) { this.status = status; }
+        public String getStatus() { return status; }
+        public List&lt;LineItem&gt; getLineItems() { return lineItems; }
+    }
+
+    public interface OrderRepository extends JpaRepository&lt;Order, Long&gt; {
+        List&lt;Order&gt; findByStatus(String status);
+    }
+
+    public static void main(String[] args) {
+        ConfigurableApplicationContext ctx = SpringApplication.run(JpaDerivationLevel2.class,
+            &quot;--spring.datasource.url=jdbc:h2:mem:jpaderiv2&quot;,
+            &quot;--spring.jpa.hibernate.ddl-auto=create-drop&quot;,
+            &quot;--spring.jpa.properties.hibernate.generate_statistics=true&quot;);
+
+        EntityManager em = ctx.getBean(EntityManagerFactory.class).createEntityManager();
+        em.getTransaction().begin();
+        for (int i = 0; i &lt; 3; i++) {
+            Order o = new Order(&quot;pending&quot;);
+            em.persist(o);
+            em.persist(new LineItem(o, &quot;item-&quot; + i + &quot;-a&quot;));
+            em.persist(new LineItem(o, &quot;item-&quot; + i + &quot;-b&quot;));
+        }
+        em.getTransaction().commit();
+        em.close();
+
+        Statistics stats = ctx.getBean(EntityManagerFactory.class).unwrap(SessionFactory.class).getStatistics();
+        stats.clear();
+
+        OrderRepository repo = ctx.getBean(OrderRepository.class);
+        List&lt;Order&gt; orders = repo.findByStatus(&quot;pending&quot;); // 1 query so far
+        long afterDerivedQuery = stats.getQueryExecutionCount();
+
+        int totalLineItems = 0;
+        for (Order o : orders) {
+            totalLineItems += o.getLineItems().size(); // each access, for a LAZY collection, triggers ANOTHER query
+        }
+        long afterAccessingLineItems = stats.getQueryExecutionCount();
+
+        System.out.println(&quot;queries after derived findByStatus alone = &quot; + afterDerivedQuery);
+        System.out.println(&quot;queries after accessing lineItems in a loop = &quot; + afterAccessingLineItems);
+        System.out.println(&quot;total line items counted = &quot; + totalLineItems);
+
+        if (afterDerivedQuery != 1) throw new AssertionError(&quot;Expected exactly 1 query for the derived findByStatus call&quot;);
+        if (afterAccessingLineItems - afterDerivedQuery != 3)
+            throw new AssertionError(&quot;Expected exactly 3 ADDITIONAL queries (N+1), one per order&#x27;s lazy lineItems access&quot;);
+
+        System.out.println(&quot;Demonstrated the N+1 problem concretely: 1 + 3 extra queries for 3 orders -- PASS (problem confirmed)&quot;);
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: same classpath as Level 1, <code>java JpaDerivationLevel2.java</code>.</p>
+<p><code>findByStatus(&quot;pending&quot;)</code> itself is one query, returning 3 <code>Order</code> entities with their <code>lineItems</code> collections left unloaded (JPA&#x27;s default <code>FetchType.LAZY</code> for <code>@OneToMany</code>). Looping over the results and calling <code>o.getLineItems().size()</code> triggers, for each order, a separate <code>SELECT</code> to fetch that specific order&#x27;s line items — the query count jumps by exactly 3 (one per order), the textbook N+1 pattern, confirmed here by directly measuring query counts rather than merely asserting it happens.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Fix the N+1 problem from Level 2 using an explicit <code>@Query</code> with <code>JOIN FETCH</code>, confirming the same data now loads in a single query.</p>
+<pre><code class="lang-java">import jakarta.persistence.*;
+import org.hibernate.SessionFactory;
+import org.hibernate.stat.Statistics;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+
+import java.util.ArrayList;
+import java.util.List;
+
+@SpringBootApplication
+public class JpaDerivationLevel3 {
+
+    @Entity
+    public static class LineItem {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        @ManyToOne
+        private Order order;
+        protected LineItem() {}
+        public LineItem(Order order) { this.order = order; }
+    }
+
+    @Entity
+    public static class Order {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String status;
+        @OneToMany(mappedBy = &quot;order&quot;)
+        private List&lt;LineItem&gt; lineItems = new ArrayList&lt;&gt;();
+        protected Order() {}
+        public Order(String status) { this.status = status; }
+        public List&lt;LineItem&gt; getLineItems() { return lineItems; }
+    }
+
+    public interface OrderRepository extends JpaRepository&lt;Order, Long&gt; {
+        // JOIN FETCH eagerly loads lineItems in the SAME query, avoiding N+1.
+        @Query(&quot;select distinct o from Order o join fetch o.lineItems where o.status = :status&quot;)
+        List&lt;Order&gt; findByStatusWithLineItems(@org.springframework.data.repository.query.Param(&quot;status&quot;) String status);
+    }
+
+    public static void main(String[] args) {
+        ConfigurableApplicationContext ctx = SpringApplication.run(JpaDerivationLevel3.class,
+            &quot;--spring.datasource.url=jdbc:h2:mem:jpaderiv3&quot;,
+            &quot;--spring.jpa.hibernate.ddl-auto=create-drop&quot;,
+            &quot;--spring.jpa.properties.hibernate.generate_statistics=true&quot;);
+
+        EntityManager em = ctx.getBean(EntityManagerFactory.class).createEntityManager();
+        em.getTransaction().begin();
+        for (int i = 0; i &lt; 3; i++) {
+            Order o = new Order(&quot;pending&quot;);
+            em.persist(o);
+            em.persist(new LineItem(o));
+            em.persist(new LineItem(o));
+        }
+        em.getTransaction().commit();
+        em.close();
+
+        Statistics stats = ctx.getBean(EntityManagerFactory.class).unwrap(SessionFactory.class).getStatistics();
+        stats.clear();
+
+        OrderRepository repo = ctx.getBean(OrderRepository.class);
+        List&lt;Order&gt; orders = repo.findByStatusWithLineItems(&quot;pending&quot;);
+
+        int totalLineItems = 0;
+        for (Order o : orders) {
+            totalLineItems += o.getLineItems().size(); // already loaded -- NO additional queries
+        }
+
+        long totalQueries = stats.getQueryExecutionCount();
+        System.out.println(&quot;total queries for fetch + full access = &quot; + totalQueries);
+        System.out.println(&quot;total line items counted = &quot; + totalLineItems);
+
+        if (totalQueries != 1) throw new AssertionError(&quot;Expected exactly 1 query total, thanks to JOIN FETCH&quot;);
+        if (totalLineItems != 6) throw new AssertionError(&quot;Expected 6 total line items across 3 orders&quot;);
+
+        System.out.println(&quot;JOIN FETCH eliminated the N+1 problem -- single query for everything -- PASS&quot;);
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: same classpath as Level 1 and 2, <code>java JpaDerivationLevel3.java</code>.</p>
+<p><code>join fetch o.lineItems</code> in the <code>@Query</code> string tells Hibernate to eagerly load each order&#x27;s line items in the *same* SQL query, via a genuine SQL <code>JOIN</code>, rather than leaving them lazy. <code>distinct</code> is necessary because the join produces one result row per line item (multiplying each order&#x27;s row for every line item it has), and without <code>distinct</code>, the same <code>Order</code> would appear duplicated in the returned <code>List</code>. Accessing <code>o.getLineItems()</code> afterward triggers zero additional queries — the total query count for the whole operation stays at exactly <code>1</code>, directly fixing the N+1 problem demonstrated in Level 2.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace Level 3&#x27;s single query and its downstream effect.</p>
+<ol><li><strong><code>repo.findByStatusWithLineItems(&quot;pending&quot;)</code></strong> executes the declared JPQL: <code>select distinct o from Order o join fetch o.lineItems where o.status = :status</code>.</li><li><strong>SQL generation</strong>: Hibernate translates this into a single SQL query with a genuine <code>INNER JOIN</code> between <code>order</code> and <code>line_item</code>, selecting columns from *both* tables in one round-trip — unlike Level 1&#x27;s join (used purely for filtering), this join&#x27;s purpose is to populate <code>lineItems</code> too.</li><li><strong>Result set shape</strong>: because of the join, the raw SQL result has one row per <code>(order, lineItem)</code> pair — for 3 orders with 2 line items each, that&#x27;s 6 raw rows.</li><li><strong>Hibernate&#x27;s row-to-object mapping</strong>: as it processes these 6 rows, Hibernate recognizes repeated <code>order</code> data (the same order&#x27;s columns appearing twice, once per line item) and correctly assembles it into just 3 distinct <code>Order</code> objects, each with its <code>lineItems</code> collection *already fully populated* from the join results — no separate query needed for this.</li><li><strong><code>distinct</code> in the JPQL</strong>: ensures the <code>List&lt;Order&gt;</code> returned to the caller contains exactly 3 entries, not 6 duplicated ones, even though the underlying SQL result set had 6 rows.</li><li><strong>Loop over <code>orders</code></strong>: <code>o.getLineItems().size()</code> for each order reads directly from the already-populated in-memory collection — no lazy-loading trigger, no additional query, since the data arrived already attached during step 4.</li><li><strong>Verification</strong>: <code>stats.getQueryExecutionCount()</code> confirms exactly <code>1</code> query total for the entire operation — the derived-method fetch and every subsequent line-item access combined — a stark contrast to Level 2&#x27;s <code>1 + 3</code> query total for the equivalent (unfetched) data access pattern.</li></ol>
+<pre><code> Level 2 (lazy, no fetch):     1 query (orders) + 3 queries (lineItems, one per order) = 4 total
+ Level 3 (JOIN FETCH):          1 query (orders AND lineItems together)                = 1 total</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>JOIN FETCH</code> on a <code>@OneToMany</code>/<code>@ManyToMany</code> collection, combined with <code>Pageable</code>-based pagination, produces a well-known Hibernate warning/limitation — pagination applied *in memory* after the join (since <code>LIMIT</code>/<code>OFFSET</code> on the raw, multiplied SQL rows would incorrectly cut off an order&#x27;s line items partway through) can be a serious, silent performance problem for large result sets. <code>JOIN FETCH</code> and pagination don&#x27;t combine safely without extra care (such as a two-query approach: paginate ids first, then fetch with the join for just those ids).</blockquote>
+<ul><li>Query derivation traversing a JPA association (<code>findByCustomerEmail</code>, reaching <code>Order</code> through <code>Customer</code>) produces a real SQL <code>JOIN</code> used purely for filtering — it does not automatically mean the joined association&#x27;s data is eagerly loaded into the result.</li><li>Lazy associations (<code>@OneToMany</code>/<code>@ManyToMany</code>, JPA&#x27;s default fetch type for these) accessed after a query returns trigger a separate query *per entity* in a loop — the classic N+1 problem, directly measurable via Hibernate statistics as this card&#x27;s examples demonstrated.</li><li><code>JOIN FETCH</code> inside an explicit <code>@Query</code> (with <code>distinct</code> to avoid row-multiplication duplicates in the returned list) is the standard fix, loading an association eagerly in the same query as the main entity fetch.</li><li>Understanding what SQL a derived method actually produces — not just trusting that &quot;it returns the right data&quot; — is essential for catching N+1 problems and other efficiency issues before they surface as production performance incidents.</li></ul>
+  <div class="nav"><a class="prv" href="0046-persisting-deleting-entities.html"><span class="mini">← Previous</span>Persisting & deleting entities</a><a class="nxt" href="0048-query-with-jpql.html"><span class="mini">Next →</span>@Query with JPQL</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-data.html", ID = "t47";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
