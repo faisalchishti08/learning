@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backpressure — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 25. Advanced Language & APIs</div>
+  <div class="htitle">
+    <h1>Backpressure</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Backpressure is the general strategy of letting a slow consumer signal to a fast producer, &quot;slow down, I can&#x27;t keep up,&quot; rather than letting the producer push data unconditionally and forcing the consumer (or some buffer in between) to deal with the overflow however it can. It&#x27;s a concept that appears across many layers of computing — TCP&#x27;s own flow-control window is a form of backpressure at the network layer, an <code>Executor</code>&#x27;s bounded task queue rejecting new work once full is a form of backpressure at the thread-pool layer, and, most directly relevant here, the <a href="0974-reactive-streams-spec-flow-api.md">Reactive Streams specification&#x27;s <code>Subscription.request(n)</code></a> mechanism is backpressure applied specifically to asynchronous data-stream processing. Without any backpressure mechanism, a mismatch between producer and consumer speed has only a few possible outcomes, all bad: an unbounded buffer growing until memory is exhausted, data being silently dropped, or the producer blocking in an uncontrolled, unpredictable way.</p>
+<h2>2. Why &amp; when</h2>
+<p>Backpressure matters anywhere the rate at which data becomes available is not naturally matched to the rate at which it can be processed — a fast network connection streaming data into a service whose downstream database write is comparatively slow, a UI event stream producing mouse-move events far faster than a listener can meaningfully react to each one, or a batch job reading rows from a source system faster than a rate-limited external API it must call for each row. The three broad strategies for handling this mismatch — buffer (accept everything and queue it, accepting the risk of unbounded memory growth if the mismatch is sustained), drop (discard excess items, accepting data loss to bound memory usage), or signal-and-slow-down (explicit backpressure, having the consumer tell the producer to actually stop or slow producing) — are not equally appropriate in every situation: buffering suits short, bursty mismatches with a bounded, known maximum burst size; dropping suits scenarios where losing some data (an intermediate mouse-move event, a metric sample) is acceptable; and genuine backpressure suits scenarios where every item matters and neither unbounded memory growth nor data loss is acceptable, at the cost of needing the producer itself to be capable of actually pausing or slowing down when asked.</p>
+<h2>3. Core concept</h2>
+<pre><code>WITHOUT backpressure (producer pushes unconditionally):
+  Producer: item, item, item, item, item, item, item, ...  (fast)
+  Consumer:   process...........................  (slow)
+  Result: unbounded buffer growth, OR dropped items, OR producer blocks unpredictably
+
+WITH backpressure (consumer explicitly controls pace):
+  Consumer: &quot;I&#x27;m ready for 2 more&quot;  --&gt;  Producer sends exactly 2  --&gt;  Consumer processes them
+  Consumer: &quot;I&#x27;m ready for 2 more&quot;  --&gt;  Producer sends exactly 2  --&gt;  ... (repeat)
+  Result: producer&#x27;s rate is GENUINELY governed by consumer&#x27;s actual processing speed
+
+Three broad strategies for a producer/consumer speed mismatch:
+  1. BUFFER   -- queue excess items; risks unbounded memory growth if sustained
+  2. DROP     -- discard excess items; risks data loss, but bounds memory
+  3. BACKPRESSURE -- consumer signals producer to slow down; no data loss, no unbounded growth,
+                     but requires the producer to be capable of actually pausing</code></pre>
+<p>Genuine backpressure is distinguished from buffering or dropping by making the *rate itself* — not just what happens to excess data — a negotiated, explicit part of the producer/consumer contract.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Three strategies for a producer faster than its consumer: an unbounded buffer growing without limit, items being dropped, and explicit backpressure where the consumer's request governs the producer's actual rate" >
+  <text x="110" y="16" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">Buffer (unbounded)</text>
+  <rect x="20" y="30" width="180" height="30" fill="#1c2430" stroke="#f0883e"/>
+  <text x="110" y="49" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">queue keeps GROWING</text>
+
+  <text x="320" y="16" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Drop</text>
+  <rect x="230" y="30" width="180" height="30" fill="#1c2430" stroke="#8b949e"/>
+  <text x="320" y="49" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">excess items DISCARDED</text>
+
+  <text x="530" y="16" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">Backpressure</text>
+  <rect x="440" y="30" width="180" height="30" fill="#1c2430" stroke="#6db33f"/>
+  <text x="530" y="49" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">rate genuinely SLOWED</text>
+
+  <text x="320" y="100" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Only backpressure changes the PRODUCER's actual rate --</text>
+  <text x="320" y="115" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">buffering and dropping just change what happens to the MISMATCH after the fact</text>
+</svg>
+<p>*Buffering and dropping cope with a speed mismatch after the fact; backpressure resolves it by actually slowing the producer down.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: simulate a fast data source feeding a slower consumer, demonstrating all three strategies on the identical underlying mismatch — starting with a basic unbounded-buffer approach and observing its growth, then a bounded, dropping alternative, then a genuinely backpressure-respecting version using the <code>Flow</code> API&#x27;s request mechanism.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class BackpressureUnboundedBuffer {
+    public static void main(String[] args) throws InterruptedException {
+        BlockingQueue&lt;Integer&gt; buffer = new LinkedBlockingQueue&lt;&gt;(); // UNBOUNDED -- no capacity limit
+
+        Thread producer = new Thread(() -&gt; {
+            for (int i = 1; i &lt;= 10; i++) {
+                buffer.offer(i); // never blocks -- unbounded queue always accepts
+            }
+        });
+
+        Thread consumer = new Thread(() -&gt; {
+            try {
+                for (int i = 0; i &lt; 10; i++) {
+                    Integer item = buffer.take();
+                    Thread.sleep(100); // SLOW consumer
+                    System.out.println(&quot;processed: &quot; + item);
+                }
+            } catch (InterruptedException ignored) {}
+        });
+
+        producer.start();
+        Thread.sleep(50); // let producer get ahead
+        System.out.println(&quot;buffer size after producer got a head start: &quot; + buffer.size());
+        consumer.start();
+        producer.join();
+        consumer.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java BackpressureUnboundedBuffer.java</code> (JDK 17+).</p>
+<p>Expected output shape (illustrative — the exact buffer size at the print point may vary slightly by timing):</p>
+<pre><code>buffer size after producer got a head start: 10
+processed: 1
+processed: 2
+...
+processed: 10</code></pre>
+<p>Because <code>buffer</code> has no capacity limit, the fast producer finishes submitting all 10 items almost instantly, well before the slow consumer (100ms per item) has processed even one — the buffer&#x27;s size grows to hold every unprocessed item simultaneously; for a genuinely unbounded, sustained producer/consumer speed mismatch, this pattern would eventually exhaust available memory.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class BackpressureBoundedDropping {
+    public static void main(String[] args) throws InterruptedException {
+        BlockingQueue&lt;Integer&gt; buffer = new ArrayBlockingQueue&lt;&gt;(3); // BOUNDED capacity of 3
+
+        Thread producer = new Thread(() -&gt; {
+            for (int i = 1; i &lt;= 10; i++) {
+                boolean accepted = buffer.offer(i); // offer() does NOT block -- returns false if full
+                if (!accepted) {
+                    System.out.println(&quot;DROPPED item &quot; + i + &quot; -- buffer full&quot;);
+                }
+            }
+        });
+
+        Thread consumer = new Thread(() -&gt; {
+            try {
+                for (int i = 0; i &lt; 10; i++) {
+                    Integer item = buffer.poll(500, TimeUnit.MILLISECONDS);
+                    if (item == null) break;
+                    Thread.sleep(100);
+                    System.out.println(&quot;processed: &quot; + item);
+                }
+            } catch (InterruptedException ignored) {}
+        });
+
+        producer.start();
+        producer.join(); // let the (fast) producer finish completely first, to demonstrate dropping clearly
+        consumer.start();
+        consumer.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java BackpressureBoundedDropping.java</code> (JDK 17+).</p>
+<p>Expected output shape (illustrative):</p>
+<pre><code>DROPPED item 4 -- buffer full
+DROPPED item 5 -- buffer full
+DROPPED item 6 -- buffer full
+DROPPED item 7 -- buffer full
+DROPPED item 8 -- buffer full
+DROPPED item 9 -- buffer full
+DROPPED item 10 -- buffer full
+processed: 1
+processed: 2
+processed: 3</code></pre>
+<p>The real-world concern added: bounding the buffer&#x27;s capacity to 3 and using non-blocking <code>offer</code> means the producer never waits, but items beyond the buffer&#x27;s capacity are silently dropped rather than accumulating without bound — this trades data loss for a hard, predictable memory ceiling, appropriate when losing some items is acceptable but unbounded memory growth is not.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.Flow.*;
+import java.util.concurrent.SubmissionPublisher;
+import java.util.concurrent.CountDownLatch;
+
+public class BackpressureGenuine {
+    public static void main(String[] args) throws InterruptedException {
+        SubmissionPublisher&lt;Integer&gt; publisher = new SubmissionPublisher&lt;&gt;();
+        CountDownLatch done = new CountDownLatch(1);
+
+        Subscriber&lt;Integer&gt; subscriber = new Subscriber&lt;&gt;() {
+            Subscription subscription;
+
+            public void onSubscribe(Subscription subscription) {
+                this.subscription = subscription;
+                subscription.request(1);
+            }
+
+            public void onNext(Integer item) {
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                System.out.println(&quot;processed: &quot; + item);
+                subscription.request(1); // only ask for more once genuinely ready
+            }
+
+            public void onError(Throwable t) { done.countDown(); }
+            public void onComplete() { System.out.println(&quot;all done, nothing dropped or unbounded&quot;); done.countDown(); }
+        };
+
+        publisher.subscribe(subscriber);
+        for (int i = 1; i &lt;= 10; i++) {
+            publisher.submit(i); // publisher itself can submit fast -- SubmissionPublisher
+                                   // buffers internally, but delivery is STILL request-gated
+        }
+        publisher.close();
+        done.await();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java BackpressureGenuine.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>processed: 1
+processed: 2
+processed: 3
+processed: 4
+processed: 5
+processed: 6
+processed: 7
+processed: 8
+processed: 9
+processed: 10
+all done, nothing dropped or unbounded</code></pre>
+<p>The production-flavored hard case: using the <a href="0974-reactive-streams-spec-flow-api.md">Reactive Streams <code>Flow</code> API</a>, every single item submitted by the fast producer is eventually processed, with none dropped, and — critically — <code>onNext</code> is never invoked faster than the subscriber&#x27;s own <code>request(1)</code> calls allow, since a well-behaved <code>Publisher</code> (which <code>SubmissionPublisher</code> is) never delivers more than has been requested; this achieves what neither the unbounded-buffer nor the dropping approach could: zero data loss *and* no risk of unbounded memory growth, because the actual delivery rate is genuinely governed by the consumer&#x27;s own processing speed, not just buffered or discarded after the fact.</p>
+<h2>6. Walkthrough</h2>
+<p>Comparing the three examples&#x27; handling of the identical underlying &quot;fast producer, slow consumer&quot; scenario, in the order their strategies diverge:</p>
+<ol><li>In <code>BackpressureUnboundedBuffer</code>, the producer&#x27;s ten <code>offer</code> calls all succeed immediately and unconditionally, since the <code>LinkedBlockingQueue</code> has no capacity limit — all ten items sit in the buffer simultaneously before the slow consumer has processed even the first one; for this small, bounded example, ten items is harmless, but the same pattern with a sustained, much larger mismatch (millions of items, or an unbounded stream) would grow the buffer without limit, eventually exhausting available heap memory.</li><li>In <code>BackpressureBoundedDropping</code>, the same fast producer instead uses a capacity-limited <code>ArrayBlockingQueue</code> of size 3 — once the buffer fills after the first three <code>offer</code> calls succeed, every subsequent <code>offer</code> call (for items 4 through 10) returns <code>false</code> immediately rather than blocking or growing the buffer, and the producer&#x27;s logic explicitly logs each of these as dropped; memory usage is now bounded and predictable (never more than 3 buffered items), but at the direct cost of losing 7 of the original 10 items entirely.</li><li>In <code>BackpressureGenuine</code>, the fast producer still submits all ten items to <code>SubmissionPublisher</code> quickly — but <code>SubmissionPublisher</code>&#x27;s internal delivery mechanism is itself request-gated: it will buffer submitted-but-not-yet-requested items internally (up to its own configurable buffer capacity), but it will only ever *deliver* an item to the subscriber&#x27;s <code>onNext</code> once the subscriber has actually requested it.</li><li>Because the subscriber requests exactly one item at a time, and only calls <code>request(1)</code> again after its own 100ms simulated processing of the current item has fully completed, <code>onNext</code> is invoked at a rate genuinely bounded by the subscriber&#x27;s actual processing speed — not by however fast the producer happened to submit items.</li><li>This means all ten items are eventually processed, one every roughly 100ms, with none dropped and no risk of an ever-growing buffer, since the publisher&#x27;s internal buffering is itself bounded by the specification&#x27;s requirement to respect outstanding requests rather than deliver unconditionally.</li><li><code>onComplete()</code> fires only after every submitted item has been delivered and the publisher has been closed — printing <code>&quot;all done, nothing dropped or unbounded&quot;</code>, which summarizes the core structural difference: genuine backpressure resolves the producer/consumer speed mismatch by governing the *actual delivery rate* itself, rather than choosing between accepting unbounded growth (buffering) or accepting data loss (dropping) as a consequence of that mismatch.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> genuine backpressure requires the producer to actually be capable of pausing or slowing its own rate of production — for some data sources (a live sensor feed, a real-time video stream) this may not be physically possible at all, in which case buffering (with a deliberately chosen, bounded capacity) or dropping (with a deliberately chosen, acceptable loss policy) become the only realistic options, and understanding which of the three strategies is actually appropriate for a given data source&#x27;s own constraints is as important as knowing how to implement any one of them.</blockquote>
+<ul><li>Backpressure is the strategy of letting a slow consumer explicitly control a fast producer&#x27;s rate, rather than letting the producer push unconditionally and forcing an unbounded buffer, dropped data, or unpredictable blocking to absorb the mismatch.</li><li>The three broad strategies for a producer/consumer speed mismatch — buffer, drop, or genuine backpressure — trade off memory bound, data loss, and producer-pausing capability differently; choose based on which of these costs is actually acceptable for a given data source.</li><li>Only genuine backpressure changes the producer&#x27;s actual delivery rate; buffering and dropping both just determine what happens to the mismatch after the fact, without altering how fast the producer is actually allowed to go.</li><li>Java&#x27;s <a href="0974-reactive-streams-spec-flow-api.md">Reactive Streams <code>Flow</code> API</a> implements genuine backpressure via <code>Subscription.request(n)</code>, guaranteeing a well-behaved publisher never delivers more items than have been explicitly requested.</li><li>Genuine backpressure requires the producer to be capable of actually pausing — for data sources that cannot pause (live feeds, real-time streams), buffering or dropping with a deliberately chosen policy may be the only realistic options.</li><li>See <a href="0974-reactive-streams-spec-flow-api.md">Reactive Streams spec (Flow API)</a> for the concrete Java implementation of the backpressure mechanism explored conceptually here.</li></ul>
+  <div class="nav"><a class="prv" href="0974-reactive-streams-spec-flow-api.html"><span class="mini">← Previous</span>Reactive Streams spec (Flow API)</a><a class="nxt" href="0976-memory-mapped-files-mappedbytebuffer.html"><span class="mini">Next →</span>Memory-mapped files (MappedByteBuffer)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t975";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
