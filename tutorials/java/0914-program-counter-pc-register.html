@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Program Counter (PC) register — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Program Counter (PC) register</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Every thread has its own private Program Counter (PC) register — a small piece of per-thread state that tracks the address of the bytecode instruction currently being executed within that thread&#x27;s current <a href="0913-jvm-stacks-stack-frames.md">stack frame</a>. If the method currently executing is a regular (non-native) Java method, the PC register holds the offset of the current instruction within that method&#x27;s bytecode; if the currently executing method is native (implemented outside the JVM, typically in C/C++ via JNI), the PC register&#x27;s value is undefined by the JVM Specification, since native code isn&#x27;t tracked at the bytecode-instruction level the JVM itself manages.</p>
+<h2>2. Why &amp; when</h2>
+<p>The PC register is not something Java application code ever directly reads or manipulates — there&#x27;s no public API to inspect &quot;what is my PC register right now&quot; — but understanding its existence and role explains two things that *are* directly observable: how the JVM correctly resumes execution at the right instruction after a thread is context-switched away and later switched back (each thread&#x27;s own PC register preserves exactly where it left off, independent of every other thread&#x27;s), and why stack traces reliably report a precise source line and bytecode offset for where execution currently is within each frame (that reporting is derived directly from each frame&#x27;s associated PC value). It&#x27;s genuinely low-level JVM-internal state — this tutorial exists to complete the mental model of &quot;what per-thread execution state exists,&quot; alongside the <a href="0913-jvm-stacks-stack-frames.md">JVM stack</a> and <a href="0915-native-method-stacks.md">native method stack</a>, rather than to teach an API you&#x27;ll use directly.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">// You never read/write the PC register directly -- but its EFFECT is visible
+// in every stack trace: each frame&#x27;s reported line number corresponds to
+// where that frame&#x27;s own PC register was pointing at the moment the trace was captured.
+
+void methodA() {
+    methodB(); // PC in methodA&#x27;s frame points here while methodB executes
+}
+void methodB() {
+    throw new RuntimeException(&quot;boom&quot;); // PC in methodB&#x27;s frame points HERE at the moment of the throw
+}
+// The resulting stack trace&#x27;s line numbers are a direct, human-readable reflection
+// of each frame&#x27;s own PC register value at that instant.</code></pre>
+<p>Each thread&#x27;s PC register is entirely private to that thread — two threads executing the &quot;same&quot; method concurrently each have their own independent PC register tracking their own, independent progress through that method&#x27;s bytecode.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two threads executing the same method concurrently, each with its own independent PC register pointing at a different bytecode offset within that shared method's code">
+  <rect x="220" y="20" width="200" height="50" rx="8" fill="#1c2430" stroke="#8b949e"/>
+  <text x="320" y="45" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">shared bytecode: sameMethod()</text>
+  <text x="320" y="60" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">[instr0][instr1][instr2][instr3]</text>
+
+  <rect x="40" y="110" width="180" height="40" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="130" y="135" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Thread 1's PC -&gt; instr1</text>
+
+  <rect x="420" y="110" width="180" height="40" rx="8" fill="#1c2430" stroke="#f0883e"/>
+  <text x="510" y="135" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Thread 2's PC -&gt; instr3</text>
+
+  <line x1="130" y1="108" x2="280" y2="72" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#a42)"/>
+  <line x1="510" y1="108" x2="360" y2="72" stroke="#f0883e" stroke-width="1.5" marker-end="url(#a42)"/>
+  <defs><marker id="a42" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*The same bytecode can be &quot;in progress&quot; at completely different points for different threads simultaneously — each thread&#x27;s private PC register is what makes that independent progress possible.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: making the PC register&#x27;s *effect* observable indirectly through stack traces from concurrently-executing threads, growing from a single-threaded demonstration of line-precise stack traces, to two threads independently executing the same shared method and capturing traces showing different in-progress points, to using <code>Thread.getStackTrace()</code> to sample a running thread&#x27;s current execution position from outside that thread.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class LinePreciseStackTraces {
+    static void level1() {
+        level2();
+    }
+    static void level2() {
+        level3();
+    }
+    static void level3() {
+        throw new RuntimeException(&quot;boom&quot;); // exact line where THIS frame&#x27;s PC was pointing
+    }
+
+    public static void main(String[] args) {
+        try {
+            level1();
+        } catch (RuntimeException e) {
+            for (StackTraceElement frame : e.getStackTrace()) {
+                System.out.println(frame); // each line reflects that frame&#x27;s PC-derived position
+            }
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java LinePreciseStackTraces.java</code> (JDK 17+).</p>
+<p>Expected output shape (exact line numbers depend on the file&#x27;s actual formatting):</p>
+<pre><code>LinePreciseStackTraces.level3(LinePreciseStackTraces.java:9)
+LinePreciseStackTraces.level2(LinePreciseStackTraces.java:6)
+LinePreciseStackTraces.level1(LinePreciseStackTraces.java:3)
+LinePreciseStackTraces.main(LinePreciseStackTraces.java:15)</code></pre>
+<p>Every single line in this stack trace is a direct, human-readable report of where each frame&#x27;s own PC register was pointing at the moment the exception was constructed — <code>level3</code>&#x27;s frame at the exact <code>throw</code> line, <code>level2</code>&#x27;s frame at the exact line it called <code>level3</code> from, and so on.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">public class ConcurrentThreadsIndependentProgress {
+    static void sharedMethod(String label, int iterations) {
+        for (int i = 0; i &lt; iterations; i++) {
+            if (i == iterations / 2) {
+                // Different threads reach THIS exact line at different real times,
+                // each with its OWN PC register independently tracking its own progress
+                // through this SAME shared bytecode.
+                System.out.println(label + &quot; reached the midpoint (own independent PC position)&quot;);
+            }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread t1 = new Thread(() -&gt; sharedMethod(&quot;Thread-1&quot;, 50_000_000));
+        Thread t2 = new Thread(() -&gt; sharedMethod(&quot;Thread-2&quot;, 10_000_000)); // fewer iterations -- finishes sooner
+        t1.start();
+        t2.start();
+        t1.join();
+        t2.join();
+        System.out.println(&quot;both threads executed the SAME sharedMethod bytecode, independently and concurrently&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ConcurrentThreadsIndependentProgress.java</code>.</p>
+<p>Expected output shape (order depends on relative timing, since the two threads run genuinely independently):</p>
+<pre><code>Thread-2 reached the midpoint (own independent PC position)
+Thread-1 reached the midpoint (own independent PC position)
+both threads executed the SAME sharedMethod bytecode, independently and concurrently</code></pre>
+<p>The real-world concern added: both threads execute the exact same <code>sharedMethod</code> bytecode concurrently, but each reaches its own &quot;midpoint&quot; at a different real time, entirely independently of the other — this is only possible because each thread maintains its own private PC register (and stack), tracking its own progress through the shared bytecode without any interference between the two.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">public class SamplingAnotherThreadsPosition {
+    static volatile boolean keepRunning = true;
+
+    static void busyLoop() {
+        long counter = 0;
+        while (keepRunning) {
+            counter++;
+            if (counter % 100_000_000 == 0) {
+                doSomeWork(); // a distinct method call, so sampled traces show DIFFERENT frames over time
+            }
+        }
+    }
+
+    static void doSomeWork() {
+        // deliberately tiny amount of work, so this frame is only BRIEFLY on the stack
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread worker = new Thread(SamplingAnotherThreadsPosition::busyLoop, &quot;worker-thread&quot;);
+        worker.start();
+
+        // Sample the worker thread&#x27;s CURRENT execution position from OUTSIDE it, several times,
+        // observing that its reported &quot;top frame&quot; (reflecting its PC register&#x27;s current
+        // position) genuinely changes between samples, since it&#x27;s actively executing.
+        for (int i = 0; i &lt; 5; i++) {
+            Thread.sleep(20);
+            StackTraceElement[] trace = worker.getStackTrace(); // a snapshot of worker&#x27;s CURRENT frames
+            if (trace.length &gt; 0) {
+                System.out.println(&quot;sample &quot; + i + &quot;: worker&#x27;s current top frame = &quot; + trace[0]);
+            }
+        }
+
+        keepRunning = false;
+        worker.join();
+        System.out.println(&quot;worker thread stopped&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java SamplingAnotherThreadsPosition.java</code>.</p>
+<p>Expected output shape (the reported top frame may vary between <code>busyLoop</code> and <code>doSomeWork</code> across samples, reflecting the worker thread&#x27;s genuinely changing execution position over time):</p>
+<pre><code>sample 0: worker&#x27;s current top frame = SamplingAnotherThreadsPosition.busyLoop(SamplingAnotherThreadsPosition.java:6)
+sample 1: worker&#x27;s current top frame = SamplingAnotherThreadsPosition.busyLoop(SamplingAnotherThreadsPosition.java:9)
+sample 2: worker&#x27;s current top frame = SamplingAnotherThreadsPosition.doSomeWork(SamplingAnotherThreadsPosition.java:14)
+sample 3: worker&#x27;s current top frame = SamplingAnotherThreadsPosition.busyLoop(SamplingAnotherThreadsPosition.java:6)
+sample 4: worker&#x27;s current top frame = SamplingAnotherThreadsPosition.busyLoop(SamplingAnotherThreadsPosition.java:9)
+worker thread stopped</code></pre>
+<p>This adds the production-flavored hard case: using <code>Thread.getStackTrace()</code> to sample a *different*, concurrently-running thread&#x27;s current execution position from <code>main</code>, at several distinct real-time moments — each sample is effectively a snapshot derived from the worker thread&#x27;s own current PC register (and stack), and since the worker genuinely continues executing between samples, successive samples can (and typically do) show different top frames, directly demonstrating that the underlying position being reported is real, live, per-thread state that changes continuously as that thread runs, not a static or cached value.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing what happens conceptually during <code>SamplingAnotherThreadsPosition.main</code>&#x27;s sampling loop:</p>
+<ol><li><code>worker.start()</code> begins running <code>busyLoop</code> on its own thread, with its own private PC register beginning to advance through that method&#x27;s bytecode instructions as the loop iterates.</li><li><code>main</code>&#x27;s loop calls <code>Thread.sleep(20)</code>, yielding <code>main</code>&#x27;s own execution for roughly 20ms while <code>worker</code> continues running independently, its PC register advancing the entire time.</li><li><code>worker.getStackTrace()</code> — called from <code>main</code>, targeting a *different* thread object — asks the JVM to produce a snapshot of <code>worker</code>&#x27;s current call stack, which internally reflects exactly where <code>worker</code>&#x27;s PC register (and the PC-equivalent position within each of its stack frames) currently sits at the moment the snapshot is taken.</li><li>Because <code>worker</code> is genuinely still running (not paused or waiting for this sampling), by the time <code>main</code> requests the *next* sample 20ms later, <code>worker</code>&#x27;s PC register has advanced further — potentially still within the same method (<code>busyLoop</code>, at a different line), or possibly into a different method entirely (<code>doSomeWork</code>, if <code>worker</code> happened to be executing that call at the sampled instant).</li><li>Each printed sample line is therefore a real, live report of <code>worker</code>&#x27;s current execution position at that specific moment — not a static value, and not something <code>main</code> computed itself, but something the JVM derived from <code>worker</code>&#x27;s own private, continuously-advancing PC register.</li><li>Once <code>keepRunning</code> is set to <code>false</code>, <code>worker</code>&#x27;s loop condition eventually evaluates to false (thanks to <code>volatile</code>&#x27;s visibility guarantee), <code>busyLoop</code> returns, and <code>worker.join()</code> in <code>main</code> returns once the thread has fully terminated — its PC register (along with the rest of its now-discarded stack) ceasing to exist along with the thread itself.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> there is no public Java API to directly read a thread&#x27;s PC register value as a raw number or bytecode offset — everything demonstrated here observes its *effect* (via stack traces and line numbers) rather than the register itself; treat the PC register as a conceptual, JVM-internal detail useful for understanding *why* stack traces and thread sampling behave the way they do, not as something you&#x27;ll ever manipulate directly in application code.</blockquote>
+<ul><li>Each thread maintains its own private PC register, tracking the current bytecode instruction position within that thread&#x27;s currently executing frame.</li><li>For native (JNI) methods, the PC register&#x27;s value is undefined by the JVM Specification, since native code execution isn&#x27;t tracked at the bytecode-instruction level the JVM itself manages.</li><li>The PC register&#x27;s effect is directly visible in every stack trace&#x27;s line numbers, and in tools like <code>Thread.getStackTrace()</code> that sample another thread&#x27;s current execution position — both are ultimately derived from this per-thread state.</li><li>Two threads executing the identical shared method bytecode concurrently make independent progress through it, entirely thanks to each maintaining its own separate PC register (and stack) — there&#x27;s no shared &quot;current position&quot; for a method across threads.</li><li>See <a href="0913-jvm-stacks-stack-frames.md">JVM stacks &amp; stack frames</a> and <a href="0915-native-method-stacks.md">native method stacks</a> for the other per-thread runtime data areas that, together with the PC register, constitute a thread&#x27;s complete private execution state.</li></ul>
+  <div class="nav"><a class="prv" href="0913-jvm-stacks-stack-frames.html"><span class="mini">← Previous</span>JVM stacks & stack frames</a><a class="nxt" href="0915-native-method-stacks.html"><span class="mini">Next →</span>Native method stacks</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t914";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

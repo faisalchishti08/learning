@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loading, linking (verify/prepare/resolve), initialization — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Loading, linking (verify/prepare/resolve), initialization</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Before any class&#x27;s code can run, the JVM takes it through three broad phases, each with its own well-defined sub-steps. <strong>Loading</strong> reads the class&#x27;s bytecode (from a <code>.class</code> file, a JAR, or elsewhere) and constructs an in-memory representation of it. <strong>Linking</strong> has three parts: <strong>verification</strong> (checking the bytecode is structurally valid and doesn&#x27;t violate the JVM&#x27;s safety rules, so it never accidentally causes memory corruption or type confusion), <strong>preparation</strong> (allocating storage for the class&#x27;s static fields and setting them to their default zero-equivalent values — <code>0</code>, <code>false</code>, <code>null</code> — not their programmer-specified initial values yet), and <strong>resolution</strong> (converting symbolic references in the bytecode, like <code>&quot;java/lang/String&quot;</code>, into actual, direct references to the real loaded classes and members, which the JVM is allowed to do lazily, the first time each reference is actually used). <strong>Initialization</strong> is the final phase: running the class&#x27;s static initializer blocks and assigning the actual programmer-specified values to static fields, in source-code order — this is when the class becomes fully ready for real use.</p>
+<h2>2. Why &amp; when</h2>
+<p>Understanding this pipeline matters because it explains several behaviors that otherwise look mysterious: why a static field can briefly be seen at its default value (<code>0</code>) before its real initializer runs (during a narrow window between preparation and initialization, in circular-initialization scenarios); why symbolic references can fail lazily, at first actual use, with a <code>NoClassDefFoundError</code> or similar, rather than immediately when a class is loaded (resolution is lazy); and why the exact moment a class &quot;runs its static block&quot; is a well-defined, specifiable event (initialization), not just &quot;whenever the JVM feels like it&quot; (see <a href="0909-class-initialization-triggers-order.md">class initialization triggers &amp; order</a> for exactly which actions trigger it). This pipeline is also the reason class loading failures show up as distinct exception types depending on which phase failed — a <code>ClassNotFoundException</code> (can&#x27;t even locate the bytecode, during loading), a <code>VerifyError</code> (bytecode is structurally invalid, during linking), or an <code>ExceptionInInitializerError</code> (a static initializer itself threw, during initialization) — which is genuinely useful for diagnosing exactly where in the pipeline something went wrong.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">class Config {
+    static int maxRetries = computeDefault(); // ASSIGNED during INITIALIZATION, not preparation
+    static { System.out.println(&quot;Config&#x27;s static initializer running&quot;); } // also part of initialization
+
+    static int computeDefault() { return 5; }
+}
+// LOADING: JVM reads Config.class bytecode into memory
+// LINKING - verify: bytecode is structurally valid
+// LINKING - prepare: maxRetries allocated, temporarily = 0 (the int default), NOT 5 yet
+// LINKING - resolve: symbolic refs (lazily, e.g. on first real use of another class from this bytecode)
+// INITIALIZATION: static block runs, maxRetries actually becomes 5</code></pre>
+<p>Between preparation and initialization, <code>maxRetries</code> technically exists with the value <code>0</code> — a detail that matters specifically in circular class-initialization scenarios, covered concretely below.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The class lifecycle pipeline: loading reads bytecode, linking verifies prepares and resolves, initialization runs static blocks and assigns real static field values">
+  <rect x="10" y="60" width="110" height="50" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="65" y="90" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Loading</text>
+
+  <rect x="150" y="20" width="330" height="130" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="315" y="35" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">Linking</text>
+  <rect x="165" y="50" width="90" height="35" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="210" y="72" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Verify</text>
+  <rect x="270" y="50" width="90" height="35" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="315" y="72" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Prepare</text>
+  <rect x="375" y="50" width="90" height="35" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="420" y="72" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Resolve (lazy)</text>
+  <text x="315" y="105" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">static fields = 0/null/false here</text>
+
+  <rect x="520" y="60" width="110" height="50" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="575" y="90" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Initialization</text>
+
+  <line x1="120" y1="85" x2="148" y2="85" stroke="#8b949e" stroke-width="2" marker-end="url(#a35)"/>
+  <line x1="480" y1="85" x2="518" y2="85" stroke="#8b949e" stroke-width="2" marker-end="url(#a35)"/>
+  <text x="575" y="140" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">real values assigned, static blocks run</text>
+  <defs><marker id="a35" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*Loading, linking (verify/prepare/resolve), and initialization run in this order for every class — resolution alone is allowed to happen lazily, on demand.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: observing the class lifecycle directly through a static initializer, growing from a simple demonstration of when initialization fires, to exposing the default-value window between preparation and initialization via circular class references, to a version that deliberately triggers each of the distinct lifecycle-related error types.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class BasicInitializationTiming {
+    static class Config {
+        static {
+            System.out.println(&quot;Config class initializing NOW&quot;);
+        }
+        static int maxRetries = 5;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;main started -- Config has NOT been initialized yet&quot;);
+        System.out.println(&quot;about to access Config.maxRetries...&quot;);
+        int retries = Config.maxRetries; // THIS triggers Config&#x27;s initialization
+        System.out.println(&quot;Config.maxRetries = &quot; + retries);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java BasicInitializationTiming.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>main started -- Config has NOT been initialized yet
+about to access Config.maxRetries...
+Config class initializing NOW
+Config.maxRetries = 5</code></pre>
+<p><code>Config</code>&#x27;s static initializer runs precisely at the moment its static field is first genuinely accessed (<code>Config.maxRetries</code>), not when <code>BasicInitializationTiming</code> itself starts — loading and linking of <code>Config</code> may have already happened by then, but initialization is deferred until first real use.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">public class CircularInitializationDefaultWindow {
+    static class A {
+        static int value = B.getValueFromA(); // triggers B&#x27;s initialization DURING A&#x27;s own initialization
+        static int getValueFromB() { return 100; }
+    }
+    static class B {
+        static int value = A.getValueFromB(); // A is still MID-initialization here -- sees A&#x27;s DEFAULT value
+        static int getValueFromA() { return 200; }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;A.value = &quot; + A.value);
+        System.out.println(&quot;B.value = &quot; + B.value + &quot; (expected 0 -- A.getValueFromB WAS available, but A.value itself&quot;);
+        System.out.println(&quot;was still in its PREPARATION-phase default when B&#x27;s initializer ran and read it indirectly)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java CircularInitializationDefaultWindow.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>A.value = 200
+B.value = 0 (expected 0 -- A.getValueFromB WAS available, but A.value itself
+was still in its PREPARATION-phase default when B&#x27;s initializer ran and read it indirectly)</code></pre>
+<p>The real-world concern added: <code>A</code>&#x27;s initialization triggers <code>B</code>&#x27;s initialization (via <code>B.getValueFromA()</code>), and <code>B</code>&#x27;s initializer, in turn, calls back into <code>A</code> (<code>A.getValueFromB()</code>) — but at that exact moment, <code>A</code> is still mid-initialization (its own <code>value</code> field assignment hasn&#x27;t completed yet), so any attempt to read <code>A.value</code> directly during this window would see its preparation-phase default (<code>0</code>), not its true final value (<code>200</code>) — a subtle, well-defined consequence of the JVM&#x27;s circular-initialization handling (each class initializes at most once, and re-entrant initialization requests during an in-progress initialization simply proceed without re-running it, seeing whatever state exists at that moment).</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">public class LifecyclePhaseErrors {
+    static class BadStaticInit {
+        static int value = 10 / 0; // throws ArithmeticException DURING initialization
+    }
+
+    public static void main(String[] args) {
+        // Demonstrates ExceptionInInitializerError: a failure specifically during the
+        // INITIALIZATION phase (running static field initializers / static blocks).
+        try {
+            int v = BadStaticInit.value;
+            System.out.println(&quot;unreachable: &quot; + v);
+        } catch (ExceptionInInitializerError e) {
+            System.out.println(&quot;caught ExceptionInInitializerError, cause: &quot; + e.getCause());
+        }
+
+        // Once a class&#x27;s initialization has FAILED, the JVM marks it as erroneous --
+        // ANY subsequent attempt to use it throws NoClassDefFoundError, WITHOUT re-attempting
+        // initialization (initialization is guaranteed to be attempted AT MOST ONCE per class).
+        try {
+            int v2 = BadStaticInit.value; // second attempt -- does NOT re-run the static initializer
+            System.out.println(&quot;unreachable: &quot; + v2);
+        } catch (NoClassDefFoundError e) {
+            System.out.println(&quot;caught NoClassDefFoundError on second attempt: &quot; + e.getMessage());
+        }
+
+        // A ClassNotFoundException, by contrast, happens during LOADING -- the bytecode
+        // itself can&#x27;t be located at all. Simulated here via reflection with a bogus name.
+        try {
+            Class.forName(&quot;com.example.DoesNotExist&quot;);
+        } catch (ClassNotFoundException e) {
+            System.out.println(&quot;caught ClassNotFoundException (a LOADING-phase failure): &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java LifecyclePhaseErrors.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>caught ExceptionInInitializerError, cause: java.lang.ArithmeticException: / by zero
+caught NoClassDefFoundError on second attempt: Could not initialize class LifecyclePhaseErrors$BadStaticInit
+caught ClassNotFoundException (a LOADING-phase failure): com.example.DoesNotExist</code></pre>
+<p>This adds the production-flavored hard case: three distinct exception types, each corresponding to a failure in a *different* lifecycle phase — <code>ClassNotFoundException</code> from a failed <strong>loading</strong> attempt (the bytecode simply isn&#x27;t found), <code>ExceptionInInitializerError</code> from a failure during the actual <strong>initialization</strong> phase (a static initializer threw), and <code>NoClassDefFoundError</code> on any *subsequent* attempt to use a class whose initialization has already failed once — since the JVM specification guarantees a class&#x27;s initialization is attempted at most once, a prior failure permanently marks the class as unusable for the remainder of that JVM&#x27;s run, without ever re-attempting the failed static block.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>LifecyclePhaseErrors.main</code>&#x27;s first two <code>try</code> blocks:</p>
+<ol><li><code>int v = BadStaticInit.value;</code> is the first genuine access to <code>BadStaticInit</code>, triggering its full lifecycle: loading (reading its bytecode), linking (verifying it, preparing <code>value</code> to its default <code>0</code>), and finally initialization — running the static field initializer <code>value = 10 / 0</code>.</li><li>That expression throws <code>ArithmeticException</code> during initialization. Per the JVM specification, any exception thrown during a class&#x27;s static initialization (other than <code>Error</code> and its subclasses directly) is wrapped in an <code>ExceptionInInitializerError</code> and propagated to whoever triggered the initialization — here, that&#x27;s <code>main</code>&#x27;s own attempted access.</li><li><code>main</code>&#x27;s first <code>catch (ExceptionInInitializerError e)</code> block catches this and prints the wrapped cause, confirming the underlying <code>ArithmeticException</code>.</li><li>Crucially, <code>BadStaticInit</code>&#x27;s initialization is now permanently recorded by the JVM as having <strong>failed</strong> — the class enters an &quot;erroneous&quot; state.</li><li>The second <code>int v2 = BadStaticInit.value;</code> attempt does not get a fresh chance to re-run the static initializer (which might, in some hypothetical retry scenario, behave differently) — instead, because the class is already marked erroneous, the JVM immediately throws <code>NoClassDefFoundError</code> without attempting initialization again at all.</li><li>This is caught by the second <code>catch</code> block, confirming that a class&#x27;s initialization failure is final and permanent for the remainder of that JVM process&#x27;s lifetime — there is no way to &quot;retry&quot; a class&#x27;s static initialization once it has failed.</li><li>The third block demonstrates a completely different lifecycle phase&#x27;s failure: <code>Class.forName(&quot;com.example.DoesNotExist&quot;)</code> fails at the <strong>loading</strong> phase, since the JVM can&#x27;t even locate bytecode for a class with that name — this produces the checked <code>ClassNotFoundException</code>, distinct in both timing and exception type from the two initialization-related failures above.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a class&#x27;s static initialization is guaranteed to happen <strong>at most once</strong>, and a failed initialization permanently poisons the class for the remainder of the JVM&#x27;s lifetime — every subsequent access throws <code>NoClassDefFoundError</code>, never re-attempting the static block, even if whatever caused the original failure (a missing config file, a transient resource) would no longer be a problem on a later attempt.</blockquote>
+<ul><li>Loading reads bytecode into memory; linking verifies it, prepares static fields to their default zero-equivalent values, and (lazily) resolves symbolic references; initialization runs static initializers and assigns real static field values, in source order.</li><li>Between preparation and initialization, and during any circular initialization dependency, a static field can be observed at its default value even though its &quot;real&quot; initializer exists in the source — a subtle, specification-guaranteed behavior worth knowing when debugging surprising <code>0</code>/<code>null</code>/<code>false</code> values from classes with circular static dependencies.</li><li>Distinct exception/error types map to distinct lifecycle phases: <code>ClassNotFoundException</code> (loading), <code>VerifyError</code> (linking/verification), <code>ExceptionInInitializerError</code> (initialization) — useful for diagnosing exactly where a class-loading-related failure actually occurred.</li><li>A class&#x27;s initialization is attempted at most once per JVM run; a failure permanently marks it erroneous, and all future access attempts fail fast with <code>NoClassDefFoundError</code> rather than retrying.</li><li>See <a href="0909-class-initialization-triggers-order.md">class initialization triggers &amp; order</a> for the precise list of actions that actually trigger a class&#x27;s initialization (as opposed to merely its loading or linking), which is a distinct and commonly-misunderstood question in its own right.</li></ul>
+  <div class="nav"><a class="prv" href="0904-scoped-values.html"><span class="mini">← Previous</span>Scoped values</a><a class="nxt" href="0906-classloader-hierarchy-bootstrap-platform-application.html"><span class="mini">Next →</span>ClassLoader hierarchy (bootstrap/platform/application)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t905";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

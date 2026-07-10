@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Method area / Metaspace — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Method area / Metaspace</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The method area is the JVM Specification&#x27;s name for the runtime data area that stores per-class structure: each loaded class&#x27;s metadata (its name, its superclass, the interfaces it implements), the bytecode for its methods, its <a href="0916-runtime-constant-pool.md">runtime constant pool</a>, and static field storage. <strong>Metaspace</strong> is HotSpot&#x27;s (the reference JVM implementation&#x27;s) concrete realization of the method area since Java 8, replacing the older &quot;PermGen&quot; (permanent generation) design — the key practical difference being that metaspace, by default, is allocated from <strong>native memory</strong> (outside the regular Java heap) and, unlike the old fixed-size PermGen, can grow dynamically as needed, up to an optional configured limit.</p>
+<h2>2. Why &amp; when</h2>
+<p>Understanding metaspace matters specifically when working with systems that load many classes dynamically — application servers hosting many deployed applications, systems that generate bytecode at runtime (proxies, ORMs), or anything using <a href="0908-custom-class-loaders.md">custom class loaders</a> heavily — because metaspace has its own memory limit (<code>-XX:MaxMetaspaceSize</code>, unlimited by default in most modern JVM configurations, but still bounded by available system memory) and its own distinct exhaustion error: <code>OutOfMemoryError: Metaspace</code>, which is a completely different problem from running out of heap space and requires a different diagnosis (typically, a <a href="0910-class-unloading.md">classloader leak</a> that keeps loading new classes without ever unloading old ones, rather than too many live object instances). Recognizing this distinction — heap holds *instances*, metaspace holds *class metadata* — is the key to correctly diagnosing which kind of memory problem you&#x27;re actually looking at.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">// Loading a class stores its metadata in METASPACE, not the heap:
+Class&lt;?&gt; clazz = SomeClass.class; // the CLASS METADATA itself lives in metaspace
+
+// Creating instances of that class stores the OBJECTS in the HEAP:
+Object instance = clazz.getDeclaredConstructor().newInstance(); // this instance lives in the heap
+
+// A system that keeps loading NEW classes (via distinct class loaders) without ever
+// unloading old ones grows METASPACE usage, regardless of how few object instances exist.</code></pre>
+<p>The class&#x27;s own metadata (method bytecode, field layout descriptions, the constant pool) is a one-time cost per distinct loaded class, stored in metaspace; every instance created from that class is a separate, additional cost in the heap.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Metaspace stores class metadata such as bytecode and constant pools, growing with each distinct class loaded; the heap separately stores object instances, growing with each object created, regardless of how many classes exist">
+  <rect x="20" y="20" width="270" height="120" rx="10" fill="#1c2430" stroke="#f0883e" stroke-width="2"/>
+  <text x="155" y="40" fill="#f0883e" font-size="11" text-anchor="middle" font-family="sans-serif">Metaspace (native memory)</text>
+  <rect x="40" y="55" width="100" height="30" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="90" y="75" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Class A metadata</text>
+  <rect x="150" y="55" width="100" height="30" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="200" y="75" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Class B metadata</text>
+  <text x="155" y="110" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">grows with DISTINCT LOADED CLASSES</text>
+
+  <rect x="350" y="20" width="270" height="120" rx="10" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="485" y="40" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif">Heap (Java memory)</text>
+  <rect x="370" y="55" width="70" height="30" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="405" y="75" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">instance 1</text>
+  <rect x="450" y="55" width="70" height="30" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="485" y="75" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">instance 2</text>
+  <rect x="530" y="55" width="70" height="30" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="565" y="75" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">instance N</text>
+  <text x="485" y="110" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">grows with OBJECT INSTANCES created</text>
+</svg>
+<p>*Metaspace grows with distinct loaded classes; the heap grows with object instances — two entirely separate memory pools with independent limits and independent failure modes.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: distinguishing metaspace exhaustion from heap exhaustion directly, growing from observing metaspace usage as classes are dynamically loaded, to deliberately exhausting metaspace via repeated custom-loader class definitions, to demonstrating that unloading (via dropping loader references) reverses the growth, tying directly back to <a href="0910-class-unloading.md">class unloading</a>.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.lang.management.*;
+
+public class ObservingMetaspaceUsage {
+    public static void main(String[] args) {
+        MemoryPoolMXBean metaspacePool = ManagementFactory.getMemoryPoolMXBeans().stream()
+            .filter(pool -&gt; pool.getName().contains(&quot;Metaspace&quot;))
+            .findFirst()
+            .orElseThrow();
+
+        System.out.println(&quot;metaspace used before: &quot; + metaspacePool.getUsage().getUsed() / 1024 + &quot;KB&quot;);
+
+        // Force loading of several distinct classes we haven&#x27;t touched yet
+        for (Class&lt;?&gt; c : new Class&lt;?&gt;[]{
+            java.util.TreeMap.class, java.util.LinkedList.class, java.util.PriorityQueue.class,
+            java.time.LocalDate.class, java.time.LocalTime.class, java.util.regex.Pattern.class
+        }) {
+            System.out.println(&quot;touched: &quot; + c.getSimpleName());
+        }
+
+        System.out.println(&quot;metaspace used after: &quot; + metaspacePool.getUsage().getUsed() / 1024 + &quot;KB&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ObservingMetaspaceUsage.java</code> (JDK 17+).</p>
+<p>Expected output shape (metaspace usage grows as each class&#x27;s metadata is loaded, though the exact amounts are JVM/version-dependent):</p>
+<pre><code>metaspace used before: 8452KB
+touched: TreeMap
+touched: LinkedList
+touched: PriorityQueue
+touched: LocalDate
+touched: LocalTime
+touched: Pattern
+metaspace used after: 9103KB</code></pre>
+<p>Simply referencing each class (triggering its loading, even without creating any instances) grows metaspace usage — this is entirely separate from heap usage, which wouldn&#x27;t change at all from this code alone.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.net.*;
+import java.nio.file.*;
+import java.util.*;
+
+public class ExhaustingMetaspace {
+    public static void main(String[] args) throws Exception {
+        // Re-load the SAME .class file&#x27;s bytes repeatedly, but through a BRAND NEW,
+        // never-reused ClassLoader instance each time. Since (name, defining loader) is
+        // what determines class identity, each loader produces a genuinely DISTINCT Class
+        // object and its own metadata entry in metaspace -- even though the bytecode is
+        // identical every time. Keeping every loader in `keepAlive` prevents any of them
+        // from ever being unloaded, so metaspace usage only ever grows.
+        URL classesDir = ExhaustingMetaspace.class.getProtectionDomain().getCodeSource().getLocation();
+        List&lt;ClassLoader&gt; keepAlive = new ArrayList&lt;&gt;();
+        int classesLoaded = 0;
+        try {
+            while (true) {
+                URLClassLoader loader = new URLClassLoader(new URL[]{classesDir}, null);
+                Class&lt;?&gt; loaded = loader.loadClass(&quot;Reloadable&quot;); // same class, fresh loader every time
+                keepAlive.add(loader); // never released -- nothing here can be unloaded
+                classesLoaded++;
+                if (classesLoaded % 2000 == 0) System.out.println(&quot;loaded &quot; + classesLoaded + &quot; distinct Class objects so far...&quot;);
+            }
+        } catch (OutOfMemoryError e) {
+            System.out.println(&quot;caught OutOfMemoryError after loading roughly &quot; + classesLoaded + &quot; distinct Class objects&quot;);
+            System.out.println(&quot;message: &quot; + e.getMessage());
+        }
+    }
+}
+
+class Reloadable {}</code></pre>
+<p><strong>How to run:</strong> compile both classes (<code>javac ExhaustingMetaspace.java</code>), then <code>java -XX:MaxMetaspaceSize=32m ExhaustingMetaspace</code> (JDK 17+; capping metaspace explicitly makes exhaustion happen quickly and deterministically).</p>
+<p>Expected output shape (exact class count before failure depends on the configured cap and average per-class metadata size):</p>
+<pre><code>loaded 2000 distinct Class objects so far...
+loaded 4000 distinct Class objects so far...
+caught OutOfMemoryError after loading roughly 6482 distinct Class objects
+message: Metaspace</code></pre>
+<p>The real-world concern added: repeatedly loading the *same* bytecode through a brand-new, permanently-referenced loader each time still produces a genuinely distinct <code>Class</code> object (and its own metadata) every iteration, exhausting metaspace specifically — note the error message is literally <code>&quot;Metaspace&quot;</code>, distinct from <code>&quot;Java heap space&quot;</code>, confirming this is a class-metadata capacity problem, not an object-instance capacity problem, even though no unusually large objects were ever created.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.net.*;
+import java.lang.ref.*;
+import java.lang.management.*;
+
+public class UnloadingReclaimsMetaspace {
+    public static void main(String[] args) throws Exception {
+        MemoryPoolMXBean metaspacePool = ManagementFactory.getMemoryPoolMXBeans().stream()
+            .filter(pool -&gt; pool.getName().contains(&quot;Metaspace&quot;))
+            .findFirst()
+            .orElseThrow();
+
+        long before = metaspacePool.getUsage().getUsed();
+
+        URL classesDir = UnloadingReclaimsMetaspace.class.getProtectionDomain().getCodeSource().getLocation();
+        URLClassLoader loader = new URLClassLoader(new URL[]{classesDir}, null);
+        Class&lt;?&gt; loadedClass = loader.loadClass(&quot;ThrowawayClass&quot;);
+        Object instance = loadedClass.getDeclaredConstructor().newInstance();
+
+        long afterLoad = metaspacePool.getUsage().getUsed();
+        System.out.println(&quot;metaspace grew by &quot; + (afterLoad - before) / 1024 + &quot;KB after loading ThrowawayClass&quot;);
+
+        WeakReference&lt;ClassLoader&gt; loaderRef = new WeakReference&lt;&gt;(loader);
+        instance = null;
+        loadedClass = null;
+        loader = null;
+
+        System.gc();
+        Thread.sleep(300);
+
+        System.out.println(&quot;loader unloaded? &quot; + (loaderRef.get() == null));
+        long afterUnload = metaspacePool.getUsage().getUsed();
+        System.out.println(&quot;metaspace usage after unload attempt: &quot; + afterUnload / 1024 + &quot;KB (should be closer to the &#x27;before&#x27; baseline)&quot;);
+    }
+}
+
+class ThrowawayClass {
+    public String toString() { return &quot;ThrowawayClass instance&quot;; }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java UnloadingReclaimsMetaspace.java</code> (JDK 17+).</p>
+<p>Expected output shape (metaspace usage after unload should drop back close to the original baseline, though exact numbers vary by JVM and version):</p>
+<pre><code>metaspace grew by 4KB after loading ThrowawayClass
+loader unloaded? true
+metaspace usage after unload attempt: 8460KB (should be closer to the &#x27;before&#x27; baseline)</code></pre>
+<p>This adds the production-flavored hard case: confirming that metaspace usage genuinely goes back down once a class loader (and the classes it defined) becomes unreachable and is collected — directly tying <a href="0910-class-unloading.md">class unloading</a>&#x27;s reachability rules to the concrete memory region (metaspace) that actually shrinks as a result, and demonstrating that metaspace growth from dynamic class loading is not necessarily permanent, as long as loaders are properly dereferenced when no longer needed.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>UnloadingReclaimsMetaspace.main</code>:</p>
+<ol><li><code>loader.loadClass(&quot;ThrowawayClass&quot;)</code> triggers loading, linking, and (upon instantiation) initialization of <code>ThrowawayClass</code> through the newly-constructed, isolated <code>loader</code> — this stores <code>ThrowawayClass</code>&#x27;s metadata (its bytecode, constant pool, field/method descriptors) in metaspace, increasing <code>metaspacePool.getUsage().getUsed()</code> by a measurable amount.</li><li><code>instance</code> holds the only strong reference to an actual <code>ThrowawayClass</code> object (in the heap); <code>loadedClass</code> holds a strong reference to its <code>Class</code> object; <code>loader</code> holds a strong reference to the class loader itself — all three are, for now, reachable from <code>main</code>&#x27;s local variables.</li><li>Setting all three to <code>null</code> removes every direct reference this code holds — since nothing else in the JVM references <code>ThrowawayClass</code>, its instance, or <code>loader</code> (it was constructed with <code>null</code> as its parent, and nothing else was told about it), the entire object/class/loader graph becomes unreachable.</li><li><code>System.gc()</code> triggers a collection cycle; finding this graph unreachable, the collector reclaims the heap-resident instance and — crucially, since the class loader itself is also now unreachable — the metaspace-resident class metadata for <code>ThrowawayClass</code> as well, exactly the class-unloading process described in the prior tutorial.</li><li><code>loaderRef.get() == null</code> confirms the loader itself was indeed collected.</li><li>The final metaspace usage reading, measured via the same <code>MemoryPoolMXBean</code> used at the start, drops back down close to the original <code>before</code> baseline — direct, measured confirmation that the metadata genuinely was reclaimed, not merely marked as logically unused while still consuming memory.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> metaspace&#x27;s default configuration in modern JVMs is effectively unbounded (limited only by available native/system memory, not a small fixed size the way old PermGen was) — this removed one common historical failure mode (a small, fixed PermGen filling up from ordinary application class loading) but replaced it with a different risk: a genuine classloader leak in an unbounded-metaspace configuration can consume all available system memory rather than failing fast with a small, easily-noticed limit, making the underlying leak potentially harder to notice until it affects the whole machine, not just the JVM process.</blockquote>
+<ul><li>The method area (realized as metaspace in HotSpot since Java 8) stores per-class metadata — bytecode, constant pools, static field storage — entirely separate from the heap, which stores object instances.</li><li>Metaspace is allocated from native memory by default and can grow dynamically, bounded only by <code>-XX:MaxMetaspaceSize</code> (if set) or available system memory.</li><li><code>OutOfMemoryError: Metaspace</code> specifically indicates class-metadata exhaustion — typically caused by a <a href="0910-class-unloading.md">classloader leak</a> (repeatedly loading new classes/loaders that are never unloaded), not by too many object instances, which would instead manifest as heap exhaustion.</li><li>Metaspace usage does genuinely decrease once class loaders and the classes they defined become unreachable and are collected — dynamic class loading is not inherently a one-way, ever-growing cost, as long as loaders are correctly dereferenced when their classes are no longer needed.</li><li><code>java.lang.management.MemoryPoolMXBean</code> (queryable via <code>ManagementFactory.getMemoryPoolMXBeans()</code>) is a useful, standard way to directly observe metaspace (and heap) usage at runtime, without needing external profiling tools for basic diagnostics.</li></ul>
+  <div class="nav"><a class="prv" href="0911-heap.html"><span class="mini">← Previous</span>Heap</a><a class="nxt" href="0913-jvm-stacks-stack-frames.html"><span class="mini">Next →</span>JVM stacks & stack frames</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t912";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

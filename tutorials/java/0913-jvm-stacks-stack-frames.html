@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JVM stacks & stack frames — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>JVM stacks & stack frames</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Every thread has its own private JVM stack — a memory region entirely separate from the shared <a href="0911-heap.md">heap</a> — that tracks the sequence of method calls currently in progress on that thread. Each time a method is called, a new <strong>stack frame</strong> is pushed onto that thread&#x27;s stack; each frame holds the method&#x27;s local variables (including primitive values and object references — though the *objects* those references point to live on the heap), an operand stack (used internally by the JVM to evaluate expressions and pass arguments), and a reference back to the calling frame&#x27;s constant pool for resolving symbolic references. When a method returns, its frame is popped and discarded.</p>
+<h2>2. Why &amp; when</h2>
+<p>Understanding stack frames explains two everyday phenomena directly: why <code>StackOverflowError</code> happens (each thread&#x27;s stack has a bounded size, and deep or unbounded recursion keeps pushing frames until that bound is exceeded), and why a stack trace — the sequence of &quot;at com.example.Foo.bar(Foo.java:42)&quot; lines printed with every exception — is simply a snapshot of the frames currently on the stack at the moment the exception was created, read from the top (innermost, currently-executing call) down to the bottom (the outermost call, typically <code>main</code>). It matters directly whenever you&#x27;re debugging a <code>StackOverflowError</code> (is there a legitimate deep call chain, or a broken recursive base case?), tuning thread stack size for a program that needs deeper recursion than the default allows (<code>-Xss</code>), or simply reading a stack trace and understanding exactly what it represents — an ordered record of &quot;what called what,&quot; not an arbitrary log.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">void methodA() {
+    int x = 5;          // local variable in methodA&#x27;s stack frame
+    methodB();           // pushes a NEW frame for methodB onto THIS thread&#x27;s stack
+}
+void methodB() {
+    int y = 10;          // local variable in methodB&#x27;s OWN, separate stack frame
+    // methodA&#x27;s frame (and its x) still exists below this one, on the same stack
+}
+// When methodB returns, its frame is popped; methodA&#x27;s frame (and x) is still there, resuming execution.</code></pre>
+<p>Each thread has its own entirely separate stack — one thread&#x27;s stack frames are never visible to or shared with another thread, which is exactly why local variables never need synchronization the way shared, heap-resident objects do.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A thread's stack growing as methods call other methods, each getting its own frame with local variables, and shrinking as methods return and their frames are popped">
+  <text x="160" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">One thread's private stack</text>
+  <rect x="60" y="30" width="200" height="35" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="160" y="52" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">main() frame</text>
+
+  <rect x="60" y="75" width="200" height="35" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="160" y="97" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">methodA() frame -- x=5</text>
+
+  <rect x="60" y="120" width="200" height="35" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="160" y="142" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">methodB() frame -- y=10 (TOP)</text>
+
+  <text x="450" y="55" fill="#8b949e" font-size="10" font-family="sans-serif">grows DOWN as calls nest deeper</text>
+  <line x1="270" y1="47" x2="400" y2="47" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="450" y="140" fill="#8b949e" font-size="10" font-family="sans-serif">shrinks UP as methods return</text>
+  <line x1="270" y1="137" x2="400" y2="137" stroke="#8b949e" stroke-width="1.5"/>
+</svg>
+<p>*Each nested call pushes a new frame on top; each return pops the topmost frame — the stack trace of an exception is exactly this structure, read top to bottom.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: observing stack depth directly through recursion, growing from a basic recursive function printing its own depth, to deliberately triggering and inspecting a <code>StackOverflowError</code>, to comparing default versus explicitly-configured thread stack sizes to allow deeper recursion.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class ObservingStackDepth {
+    static int countDown(int n) {
+        if (n &lt;= 0) return 0;
+        int result = 1 + countDown(n - 1); // each call PUSHES a new frame
+        return result;
+    }
+
+    public static void main(String[] args) {
+        int depth = 1000;
+        int result = countDown(depth);
+        System.out.println(&quot;recursed &quot; + depth + &quot; levels deep, final result = &quot; + result);
+        System.out.println(&quot;(each level was its own stack frame, all on THIS thread&#x27;s stack)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ObservingStackDepth.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>recursed 1000 levels deep, final result = 1000
+(each level was its own stack frame, all on THIS thread&#x27;s stack)</code></pre>
+<p>Each recursive call to <code>countDown</code> pushes a new frame holding its own <code>n</code> and <code>result</code> locals — 1000 nested frames exist simultaneously on the stack at the deepest point, before any of them return and get popped.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">public class TriggeringStackOverflow {
+    static int recurseForever(int depth) {
+        return 1 + recurseForever(depth + 1); // NO base case -- will recurse until the stack is exhausted
+    }
+
+    public static void main(String[] args) {
+        try {
+            recurseForever(0);
+        } catch (StackOverflowError e) {
+            StackTraceElement[] trace = e.getStackTrace();
+            System.out.println(&quot;StackOverflowError caught -- stack trace has &quot; + trace.length + &quot; frames captured&quot;);
+            System.out.println(&quot;top frame: &quot; + trace[0]);
+            System.out.println(&quot;(the thread&#x27;s stack ran out of space for MORE frames, since this recursion has no base case)&quot;);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java TriggeringStackOverflow.java</code>.</p>
+<p>Expected output shape (exact frame count varies by default stack size and per-frame overhead, but is a large, consistent number reflecting how many <code>recurseForever</code> frames fit before exhaustion):</p>
+<pre><code>StackOverflowError caught -- stack trace has 1024 frames captured
+top frame: TriggeringStackOverflow.recurseForever(TriggeringStackOverflow.java:3)</code></pre>
+<p>The real-world concern added: an unbounded recursive call chain (no base case) keeps pushing new frames until the thread&#x27;s stack — a fixed-size region — has no room left, producing <code>StackOverflowError</code>; the caught error&#x27;s own stack trace is itself a direct, inspectable record of (a truncated view of) exactly which frames were on the stack at the moment of exhaustion.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">public class ComparingStackSizes {
+    static int countDeepestPossible(int n) {
+        try {
+            return countDeepestPossible(n + 1);
+        } catch (StackOverflowError e) {
+            return n; // report how deep we got before overflowing
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int[] defaultDepth = new int[1];
+        Thread defaultStackThread = new Thread(() -&gt; defaultDepth[0] = countDeepestPossible(0));
+        defaultStackThread.start();
+        defaultStackThread.join();
+        System.out.println(&quot;default stack size reached depth: &quot; + defaultDepth[0]);
+
+        int[] largeDepth = new int[1];
+        // Explicitly requesting a LARGER stack size for this specific thread via the
+        // Thread constructor overload that accepts a stack size hint (JVM-dependent, best-effort).
+        Thread largeStackThread = new Thread(null, () -&gt; largeDepth[0] = countDeepestPossible(0),
+            &quot;large-stack-thread&quot;, 16 * 1024 * 1024); // 16MB requested stack size
+        largeStackThread.start();
+        largeStackThread.join();
+        System.out.println(&quot;16MB stack size reached depth: &quot; + largeDepth[0] + &quot; (typically much deeper)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ComparingStackSizes.java</code> (JDK 17+).</p>
+<p>Expected output shape (exact depths are highly JVM/platform-dependent, but the larger-stack thread should reach a substantially greater depth):</p>
+<pre><code>default stack size reached depth: 10842
+16MB stack size reached depth: 87213 (typically much deeper)</code></pre>
+<p>This adds the production-flavored hard case: explicitly configuring a larger stack size for a specific thread (via the <code>Thread</code> constructor overload accepting a stack-size hint, which the JVM treats as a best-effort request, not an absolute guarantee) — demonstrating concretely that recursion depth before <code>StackOverflowError</code> is not some fixed universal Java limit, but is directly determined by the actual configured stack size of the specific thread doing the recursing, since a larger stack simply has room for more simultaneously-pending frames before exhaustion.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing why <code>largeStackThread</code> reaches a much greater recursion depth than <code>defaultStackThread</code>:</p>
+<ol><li><code>defaultStackThread</code> is created with the ordinary <code>Thread(Runnable)</code> constructor, which uses the JVM&#x27;s default per-thread stack size (commonly around 512KB–1MB on typical desktop JVM configurations, though this varies by platform and JVM settings).</li><li>Each nested call to <code>countDeepestPossible</code> pushes a new stack frame consuming some fixed amount of space (holding its own <code>n</code> parameter, its own tiny operand-stack usage for the arithmetic, and bookkeeping); with a smaller total stack budget, only a limited number of such frames fit before the JVM detects the stack is exhausted and throws <code>StackOverflowError</code>.</li><li>The <code>catch (StackOverflowError e) { return n; }</code> block runs in a context where the stack has *just* been detected as exhausted — the JVM typically reserves a small margin so that at least a modest amount of further execution (like this catch block, a few more method calls) remains possible immediately after the error is thrown, without immediately overflowing again.</li><li><code>largeStackThread</code> is created via the <code>Thread(ThreadGroup, Runnable, String, long)</code> constructor, explicitly passing <code>16 * 1024 * 1024</code> (16MB) as a *requested* stack size — since this thread&#x27;s total per-frame budget is dramatically larger than the default, substantially more nested <code>countDeepestPossible</code> frames fit before the same exhaustion condition is reached.</li><li>Both threads run the exact same recursive method with the exact same per-frame memory cost — the only variable is the total stack size available to each thread, which is precisely why the reported depths differ so significantly between them.</li><li>This demonstrates directly that <code>StackOverflowError</code>&#x27;s trigger point is a property of the specific thread&#x27;s configured stack size, not an inherent property of the Java language or a fixed constant — code that overflows on one thread configuration might run successfully to a much greater depth on a thread configured with a larger stack.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the <code>Thread</code> constructor&#x27;s stack-size parameter is explicitly documented as a hint the JVM is free to ignore or adjust — some JVM implementations or platforms may not honor it precisely, or may round it to a platform-specific minimum/maximum; never assume it as a hard guarantee, only as a best-effort request.</blockquote>
+<ul><li>Each thread has its own private stack, entirely separate from the shared heap; each method call pushes a new stack frame holding that call&#x27;s local variables and operand-stack workspace, popped when the method returns.</li><li><code>StackOverflowError</code> occurs when a thread&#x27;s stack has no room left for another frame — almost always caused by excessively deep or genuinely unbounded (missing base case) recursion.</li><li>A stack trace is literally a snapshot of the frames present on a thread&#x27;s stack at a given moment (typically, when an exception object is constructed) — reading one top-to-bottom is reading the call chain from innermost to outermost.</li><li>A thread&#x27;s stack size can be explicitly requested via a <code>Thread</code> constructor overload, allowing deeper recursion than the JVM&#x27;s platform default, though this is a best-effort hint, not a guarantee, and is JVM/platform-dependent.</li><li>See <a href="0914-program-counter-pc-register.md">the program counter register</a> and <a href="0915-native-method-stacks.md">native method stacks</a> for the other two per-thread runtime data areas that, together with the JVM stack, make up a thread&#x27;s complete private execution state.</li></ul>
+  <div class="nav"><a class="prv" href="0912-method-area-metaspace.html"><span class="mini">← Previous</span>Method area / Metaspace</a><a class="nxt" href="0914-program-counter-pc-register.html"><span class="mini">Next →</span>Program Counter (PC) register</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t913";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

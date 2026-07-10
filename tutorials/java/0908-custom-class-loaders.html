@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Custom class loaders — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Custom class loaders</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A custom class loader is a subclass of <code>java.lang.ClassLoader</code> that supplies its own logic for finding and defining classes — typically by overriding <code>findClass(String name)</code> (the recommended extension point, which preserves the standard <a href="0907-parent-delegation-model.md">parent delegation</a> behavior in <code>loadClass()</code>) to locate bytecode from some non-standard source: a network location, an encrypted file, a database blob, or a dynamically-generated array of bytes never backed by any file at all. Once bytecode bytes are obtained, <code>defineClass(name, bytes, offset, length)</code> — a <code>protected final</code> method inherited from <code>ClassLoader</code> — turns those raw bytes into an actual, usable <code>Class</code> object.</p>
+<h2>2. Why &amp; when</h2>
+<p>Reach for a custom class loader whenever classes need to come from somewhere the standard classpath/module-path mechanism doesn&#x27;t reach, or when you need genuine isolation between groups of classes — a plugin system where each plugin&#x27;s classes should be loadable and unloadable independently (see <a href="0910-class-unloading.md">class unloading</a>), a hot-reloading development tool that needs to load a fresh version of a class without restarting the JVM, an application server hosting multiple independently-deployed applications that must not see each other&#x27;s classes even if they happen to share class names, or a framework that generates bytecode at runtime (dynamic proxies, ORMs generating entity subclasses) and needs somewhere to load that generated bytecode from. The overwhelming majority of ordinary application code never needs a custom loader at all — this is a specialized tool for specific architectural needs, not a general-purpose technique.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">class CustomSourceClassLoader extends ClassLoader {
+    @Override
+    protected Class&lt;?&gt; findClass(String name) throws ClassNotFoundException {
+        byte[] bytecode = loadBytecodeFromSomewhere(name); // your own logic: network, DB, decryption, etc.
+        if (bytecode == null) throw new ClassNotFoundException(name);
+        return defineClass(name, bytecode, 0, bytecode.length); // turn raw bytes into a real Class object
+    }
+}</code></pre>
+<p>Overriding <code>findClass()</code> (rather than <code>loadClass()</code>) means the inherited <code>loadClass()</code> still runs its normal parent-delegation logic first, and only calls your <code>findClass()</code> as the last resort, after every ancestor has failed — giving you custom loading behavior without accidentally breaking delegation&#x27;s core JDK protection.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A custom class loader's findClass method reads bytes from a non-standard source, such as a network location or generated bytecode, and calls defineClass to turn them into a usable Class object">
+  <rect x="20" y="30" width="180" height="40" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="110" y="55" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Non-standard source</text>
+
+  <rect x="240" y="30" width="180" height="40" rx="8" fill="#1c2430" stroke="#f0883e"/>
+  <text x="330" y="55" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">findClass(): read bytes</text>
+
+  <rect x="460" y="30" width="160" height="40" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="540" y="55" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">defineClass(bytes)</text>
+
+  <line x1="200" y1="50" x2="236" y2="50" stroke="#8b949e" stroke-width="2" marker-end="url(#a38)"/>
+  <line x1="420" y1="50" x2="456" y2="50" stroke="#8b949e" stroke-width="2" marker-end="url(#a38)"/>
+
+  <rect x="240" y="110" width="380" height="35" rx="8" fill="#1c2430" stroke="#8b949e"/>
+  <text x="430" y="132" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">usable Class&lt;?&gt; object, ready to instantiate/reflect on</text>
+  <line x1="540" y1="70" x2="430" y2="108" stroke="#8b949e" stroke-width="2" marker-end="url(#a38)"/>
+  <defs><marker id="a38" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*<code>findClass()</code> is where your own bytecode-sourcing logic lives; <code>defineClass()</code> is the standard JVM method that turns raw bytes into a real, usable class.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a simple plugin system loading plugin classes from an arbitrary directory outside the normal classpath, growing from a basic custom loader reading <code>.class</code> files from a chosen directory, to loading multiple plugins each with their own isolated loader instance, to a version that supports reloading a plugin by discarding the old loader and creating a fresh one.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.io.*;
+import java.nio.file.*;
+
+public class DirectoryClassLoader extends ClassLoader {
+    private final Path directory;
+
+    public DirectoryClassLoader(Path directory, ClassLoader parent) {
+        super(parent); // preserves normal parent delegation for everything except what THIS loader finds itself
+        this.directory = directory;
+    }
+
+    @Override
+    protected Class&lt;?&gt; findClass(String name) throws ClassNotFoundException {
+        try {
+            Path classFile = directory.resolve(name.replace(&#x27;.&#x27;, &#x27;/&#x27;) + &quot;.class&quot;);
+            byte[] bytecode = Files.readAllBytes(classFile);
+            return defineClass(name, bytecode, 0, bytecode.length);
+        } catch (IOException e) {
+            throw new ClassNotFoundException(name, e);
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // Assumes a compiled Plugin1.class already exists in the given directory (e.g. &quot;plugins/&quot;).
+        Path pluginDir = Path.of(&quot;plugins&quot;);
+        DirectoryClassLoader loader = new DirectoryClassLoader(pluginDir, DirectoryClassLoader.class.getClassLoader());
+
+        Class&lt;?&gt; pluginClass = loader.loadClass(&quot;Plugin1&quot;);
+        Object instance = pluginClass.getDeclaredConstructor().newInstance();
+        System.out.println(&quot;loaded and instantiated: &quot; + instance);
+        System.out.println(&quot;loader used: &quot; + pluginClass.getClassLoader());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> first compile a trivial <code>Plugin1.java</code> (e.g. <code>public class Plugin1 { public String toString() { return &quot;Plugin1 instance&quot;; } }</code>) into a <code>plugins/</code> subdirectory relative to where you run from (<code>javac -d plugins Plugin1.java</code>), then <code>javac DirectoryClassLoader.java &amp;&amp; java DirectoryClassLoader</code> (JDK 17+).</p>
+<p>Expected output shape:</p>
+<pre><code>loaded and instantiated: Plugin1 instance
+loader used: DirectoryClassLoader@...</code></pre>
+<p>The class is loaded from an arbitrary directory that isn&#x27;t on the normal application classpath at all — <code>findClass()</code> reads the raw <code>.class</code> file bytes directly from disk and hands them to <code>defineClass()</code>, demonstrating the minimal custom-loader pattern.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.nio.file.*;
+import java.util.*;
+
+public class MultiplePluginsIsolatedLoaders {
+    public static void main(String[] args) throws Exception {
+        // Two SEPARATE plugin directories, each loaded through its OWN DirectoryClassLoader instance --
+        // giving each plugin its own isolated class namespace, even if they define same-named classes.
+        Map&lt;String, DirectoryClassLoader&gt; loaders = new LinkedHashMap&lt;&gt;();
+        loaders.put(&quot;pluginA&quot;, new DirectoryClassLoader(Path.of(&quot;plugins/a&quot;), MultiplePluginsIsolatedLoaders.class.getClassLoader()));
+        loaders.put(&quot;pluginB&quot;, new DirectoryClassLoader(Path.of(&quot;plugins/b&quot;), MultiplePluginsIsolatedLoaders.class.getClassLoader()));
+
+        for (var entry : loaders.entrySet()) {
+            Class&lt;?&gt; pluginClass = entry.getValue().loadClass(&quot;PluginEntry&quot;); // same class NAME in both directories
+            Object instance = pluginClass.getDeclaredConstructor().newInstance();
+            System.out.println(entry.getKey() + &quot; -&gt; &quot; + instance + &quot; (loader: &quot; + pluginClass.getClassLoader() + &quot;)&quot;);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> compile two different <code>PluginEntry.java</code> files (with different <code>toString()</code> messages) into <code>plugins/a/</code> and <code>plugins/b/</code> respectively, then <code>javac MultiplePluginsIsolatedLoaders.java &amp;&amp; java MultiplePluginsIsolatedLoaders</code>.</p>
+<p>Expected output shape (two distinct instances, from two distinct <code>PluginEntry</code> classes, despite sharing a name):</p>
+<pre><code>pluginA -&gt; PluginEntry from A (loader: DirectoryClassLoader@1b6d3586)
+pluginB -&gt; PluginEntry from B (loader: DirectoryClassLoader@4554617c)</code></pre>
+<p>The real-world concern added: two plugins with a same-named class (<code>PluginEntry</code>) are loaded through two separate <code>DirectoryClassLoader</code> instances, giving each an isolated namespace — exactly the pattern real plugin systems use to let independently-developed plugins avoid class-name collisions with each other.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.nio.file.*;
+
+public class ReloadablePlugin {
+    static DirectoryClassLoader currentLoader;
+    static Object currentInstance;
+
+    static void loadOrReload(Path pluginDir, ClassLoader parent) throws Exception {
+        // Discard the OLD loader entirely and create a FRESH one -- this is what makes
+        // reloading possible: the JVM treats classes from the new loader as genuinely
+        // DIFFERENT types from the old ones, so there&#x27;s no stale static state or cached
+        // class-level data left over from the previous version.
+        currentLoader = new DirectoryClassLoader(pluginDir, parent);
+        Class&lt;?&gt; pluginClass = currentLoader.loadClass(&quot;ReloadableEntry&quot;);
+        currentInstance = pluginClass.getDeclaredConstructor().newInstance();
+    }
+
+    public static void main(String[] args) throws Exception {
+        ClassLoader parent = ReloadablePlugin.class.getClassLoader();
+
+        loadOrReload(Path.of(&quot;plugins/v1&quot;), parent);
+        System.out.println(&quot;version 1: &quot; + currentInstance);
+        DirectoryClassLoader firstLoader = currentLoader;
+
+        // Simulate a code change: reload from a DIFFERENT directory representing &quot;version 2&quot;
+        // of the same logical plugin.
+        loadOrReload(Path.of(&quot;plugins/v2&quot;), parent);
+        System.out.println(&quot;version 2: &quot; + currentInstance);
+
+        System.out.println(&quot;first loader still referenced? &quot; + (firstLoader != currentLoader));
+        System.out.println(&quot;(the OLD loader and its classes are now eligible for garbage collection,&quot;);
+        System.out.println(&quot; since nothing in this program still references them)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> compile a <code>ReloadableEntry.java</code> with one message into <code>plugins/v1/</code> and a different message into <code>plugins/v2/</code>, then <code>javac ReloadablePlugin.java &amp;&amp; java ReloadablePlugin</code>.</p>
+<p>Expected output shape (two distinct outputs, confirming a genuine reload rather than a cached, stale version):</p>
+<pre><code>version 1: ReloadableEntry v1 message
+version 2: ReloadableEntry v2 message
+first loader still referenced? true
+(the OLD loader and its classes are now eligible for garbage collection,
+ since nothing in this program still references them)</code></pre>
+<p>This adds the production-flavored hard case: implementing hot-reload by *discarding the entire old class loader* and creating a fresh one, rather than trying to somehow &quot;redefine&quot; an already-loaded class in place (which the JVM generally does not allow for normal class loading — see <a href="0910-class-unloading.md">class unloading</a> for what actually makes the old classes eligible for garbage collection once nothing references their loader anymore). This is the standard technique behind development-time hot-reloading tools and certain plugin frameworks: a &quot;new version&quot; of a class is, from the JVM&#x27;s perspective, an entirely different, unrelated type loaded by an entirely different loader instance — there&#x27;s no in-place mutation of an existing class involved.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>ReloadablePlugin.main</code>&#x27;s two calls to <code>loadOrReload</code>:</p>
+<ol><li><code>loadOrReload(Path.of(&quot;plugins/v1&quot;), parent)</code> constructs a brand-new <code>DirectoryClassLoader</code> (call it loader-1) and uses it to load <code>ReloadableEntry</code> from the <code>v1</code> directory — this produces a <code>Class</code> object whose identity is tied specifically to loader-1, per the <code>(name, loader)</code> identity rule covered in <a href="0906-classloader-hierarchy-bootstrap-platform-application.md">the classloader hierarchy tutorial</a>.</li><li><code>currentInstance</code> now holds an instance of &quot;loader-1&#x27;s <code>ReloadableEntry</code>,&quot; and <code>main</code> prints its message, confirming version 1&#x27;s behavior.</li><li><code>firstLoader = currentLoader</code> captures a reference to loader-1 specifically so the later comparison can demonstrate that a *new* loader is genuinely created on reload, not the same one reused.</li><li><code>loadOrReload(Path.of(&quot;plugins/v2&quot;), parent)</code> constructs an entirely new <code>DirectoryClassLoader</code> (loader-2) and loads <code>ReloadableEntry</code> from the <code>v2</code> directory through it — even though the class name is identical to before, this produces a completely distinct <code>Class</code> object, tied to loader-2&#x27;s identity, with no relationship to loader-1&#x27;s earlier <code>ReloadableEntry</code> at the JVM level.</li><li><code>currentInstance</code> is reassigned to hold an instance of this new, &quot;version 2&quot; class — <code>main</code>&#x27;s second print confirms the updated behavior took effect.</li><li><code>firstLoader != currentLoader</code> evaluates to <code>true</code>, confirming loader-1 and loader-2 are genuinely separate <code>ClassLoader</code> instances, and that <code>currentLoader</code> (the field actually used going forward) no longer refers to loader-1 at all.</li><li>Because nothing in the running program retains any reference to loader-1 (it was only ever held by the now-reassigned <code>currentLoader</code> field, briefly captured in the local <code>firstLoader</code> variable which itself goes out of scope after <code>main</code> returns), loader-1 and every class it defined (<code>ReloadableEntry</code> version 1) become eligible for garbage collection — this is precisely the mechanism <a href="0910-class-unloading.md">class unloading</a> describes in more depth: an entire class loader and everything it defined can be reclaimed together, once nothing references the loader itself.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> overriding <code>findClass()</code> preserves normal parent delegation (your logic only runs after every ancestor has failed to find the class); overriding <code>loadClass()</code> directly bypasses that safety net entirely, and is almost always the wrong extension point unless you specifically intend to break delegation for a well-understood reason — accidentally overriding <code>loadClass()</code> instead of <code>findClass()</code> is one of the most common mistakes when first writing a custom class loader.</blockquote>
+<ul><li>Extend <code>ClassLoader</code> and override <code>findClass()</code> to supply custom logic for locating bytecode, then call the inherited <code>defineClass()</code> to turn raw bytes into a usable <code>Class</code> object.</li><li>Custom loaders are the standard mechanism behind plugin systems (isolated per-plugin loaders, as shown), hot-reloading tools (discard the old loader, create a fresh one), application servers (isolating deployed applications from each other), and frameworks that generate bytecode dynamically.</li><li>Each distinct loader instance defines its own separate namespace — same-named classes loaded through different loader instances are genuinely different, incompatible types at the JVM level.</li><li>&quot;Reloading&quot; a class in practice means creating an entirely new loader and loading a fresh <code>Class</code> object through it, not mutating an existing, already-loaded class in place.</li><li>An entire class loader (and every class it defined) becomes eligible for garbage collection once nothing in the running program references it anymore — see <a href="0910-class-unloading.md">class unloading</a> for exactly what conditions must hold for this to actually happen.</li></ul>
+  <div class="nav"><a class="prv" href="0907-parent-delegation-model.html"><span class="mini">← Previous</span>Parent delegation model</a><a class="nxt" href="0909-class-initialization-triggers-order.html"><span class="mini">Next →</span>Class initialization triggers & order</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t908";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
