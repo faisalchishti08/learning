@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ABA problem & AtomicStampedReference — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>ABA problem & AtomicStampedReference</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>ABA problem</strong> is a subtle failure mode of plain compare-and-swap: a thread reads a value <code>A</code>, and before it completes its CAS, some *other* thread changes the value from <code>A</code> to <code>B</code> and then back to <code>A</code> again. The first thread&#x27;s CAS then succeeds — because the value it compares against (<code>A</code>) does match the current value (<code>A</code>) — even though the state actually changed and changed back in between, which might have violated an invariant the first thread was relying on (like &quot;this specific object hasn&#x27;t been freed and reused since I last looked at it&quot;). <code>AtomicStampedReference&lt;V&gt;</code> fixes this by pairing every reference with an integer <strong>stamp</strong> (a version number) that must also match for the CAS to succeed — so a value that returns to <code>A</code> but with a *different* stamp is correctly detected as having changed, even though the reference itself looks identical.</p>
+<h2>2. Why &amp; when</h2>
+<p>Plain CAS on a reference only compares object identity — it has no way to know &quot;has this been touched since I last read it,&quot; only &quot;is it currently equal to what I expect.&quot; For many simple algorithms (like a basic atomic counter or a straightforward compare-and-set flag) this distinction never matters, since the algorithm&#x27;s correctness doesn&#x27;t depend on detecting intermediate changes. It becomes a real bug specifically in lock-free algorithms that manage mutable structures with reused nodes or pooled objects — a classic example is a lock-free stack where a node gets popped, its memory gets reused for a newly pushed node with the exact same reference value (via an object pool or by coincidence), and a thread&#x27;s stale CAS based on the old reference succeeds incorrectly against the &quot;new&quot; node that merely happens to have the same identity. Use <code>AtomicStampedReference</code> (or <code>AtomicMarkableReference</code>, a lighter variant with a boolean mark instead of an integer stamp) whenever your CAS-based algorithm&#x27;s correctness genuinely depends on knowing not just &quot;is the value still A&quot; but &quot;has anyone touched this since I looked.&quot;</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">AtomicStampedReference&lt;Node&gt; topOfStack = new AtomicStampedReference&lt;&gt;(initialNode, 0); // reference + stamp
+
+int[] stampHolder = new int[1];
+Node current = topOfStack.get(stampHolder);   // reads BOTH the reference and its current stamp
+int currentStamp = stampHolder[0];
+
+// compareAndSet checks BOTH the reference AND the stamp -- succeeds only if NEITHER changed
+boolean success = topOfStack.compareAndSet(current, newNode, currentStamp, currentStamp + 1);</code></pre>
+<p>Even if the reference somehow reverts to the exact same object (<code>A</code> → <code>B</code> → <code>A</code>), the stamp keeps incrementing on every successful update, so a stale CAS attempt using an outdated stamp correctly fails, unlike a plain <code>AtomicReference</code>&#x27;s CAS, which would incorrectly succeed.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Thread reads reference A with stamp 5; meanwhile another thread changes it to B (stamp 6) and back to A (stamp 7); the first thread's stale CAS using stamp 5 fails even though the reference value is again A">
+  <rect x="20" y="20" width="180" height="35" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="110" y="42" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">T1 reads: ref=A, stamp=5</text>
+
+  <rect x="240" y="20" width="150" height="30" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="315" y="40" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">T2: A -&gt; B, stamp=6</text>
+  <rect x="240" y="60" width="150" height="30" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="315" y="80" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">T2: B -&gt; A, stamp=7</text>
+
+  <rect x="20" y="110" width="300" height="35" rx="6" fill="#1c2430" stroke="#f85149"/>
+  <text x="170" y="132" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">T1 CAS(A, X, expectedStamp=5, ...) FAILS</text>
+  <text x="170" y="160" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">reference is A again, but stamp is 7, not 5 -- CORRECTLY detected as changed</text>
+
+  <line x1="110" y1="55" x2="170" y2="108" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#a28)"/>
+  <defs><marker id="a28" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*The reference alone looks unchanged (A, then A again) — but the stamp reveals that something happened in between, which a plain <code>AtomicReference</code> CAS would have missed entirely.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a simplified lock-free stack with node reuse (simulating the classic ABA scenario), growing from a plain <code>AtomicReference</code>-based version that&#x27;s vulnerable to ABA, to demonstrating the ABA failure concretely, to fixing it with <code>AtomicStampedReference</code>.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.atomic.*;
+
+public class PlainAtomicReferenceStack {
+    static class Node {
+        final int value;
+        Node next;
+        Node(int value, Node next) { this.value = value; this.next = next; }
+    }
+
+    static AtomicReference&lt;Node&gt; top = new AtomicReference&lt;&gt;(null);
+
+    static void push(int value) {
+        Node newNode = new Node(value, null);
+        Node currentTop;
+        do {
+            currentTop = top.get();
+            newNode.next = currentTop;
+        } while (!top.compareAndSet(currentTop, newNode));
+    }
+
+    static Node pop() {
+        Node currentTop;
+        Node newTop;
+        do {
+            currentTop = top.get();
+            if (currentTop == null) return null;
+            newTop = currentTop.next;
+        } while (!top.compareAndSet(currentTop, newTop));
+        return currentTop;
+    }
+
+    public static void main(String[] args) {
+        push(1); push(2); push(3);
+        System.out.println(&quot;popped: &quot; + pop().value); // 3
+        System.out.println(&quot;popped: &quot; + pop().value); // 2
+        push(4);
+        System.out.println(&quot;popped: &quot; + pop().value); // 4
+        System.out.println(&quot;(single-threaded: works fine -- ABA only manifests under real concurrent interleaving)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java PlainAtomicReferenceStack.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>popped: 3
+popped: 2
+popped: 4
+(single-threaded: works fine -- ABA only manifests under real concurrent interleaving)</code></pre>
+<p>Correct in this single-threaded demonstration — the ABA vulnerability is latent and only manifests under a very specific concurrent interleaving where a node gets popped, reused, and pushed back with the same reference while another thread&#x27;s CAS is still in flight.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.atomic.*;
+
+public class DemonstratingAbaFailure {
+    static class Node {
+        final int value;
+        Node next;
+        Node(int value, Node next) { this.value = value; this.next = next; }
+    }
+
+    static AtomicReference&lt;Node&gt; top = new AtomicReference&lt;&gt;(null);
+
+    public static void main(String[] args) {
+        Node a = new Node(1, null);
+        Node b = new Node(2, a);
+        top.set(b); // stack: b -&gt; a -&gt; null
+
+        // Thread 1&#x27;s pop() begins: reads currentTop=b, newTop=a, but PAUSES here (simulated)
+        Node t1_currentTop = top.get(); // = b
+        Node t1_newTop = t1_currentTop.next; // = a
+
+        // Meanwhile, thread 2 does a full pop() and push() cycle:
+        top.compareAndSet(b, a);       // pop b -&gt; stack is now: a -&gt; null
+        Node c = new Node(3, a);
+        top.compareAndSet(a, c);       // push c -&gt; stack is now: c -&gt; a -&gt; null
+        top.compareAndSet(c, a);       // pop c (simulating reuse) -&gt; stack is BACK to: a -&gt; null
+
+        // Thread 1 RESUMES: its stale CAS still thinks top should be `b` -- but top is `a` now, not `b`,
+        // so in THIS specific case the CAS correctly fails. The real danger is when `b`&#x27;s memory gets
+        // reused for a NEW node with the SAME reference (e.g. via pooling) -- then top.get() could
+        // literally equal `b` again despite the stack having changed underneath, and T1&#x27;s CAS would
+        // incorrectly succeed, corrupting the stack by installing the WRONG next pointer (T1&#x27;s stale `a`).
+        boolean t1Succeeded = top.compareAndSet(t1_currentTop, t1_newTop);
+        System.out.println(&quot;thread 1&#x27;s stale CAS succeeded? &quot; + t1Succeeded + &quot; (false here, but pooled-node reuse can make this true incorrectly)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java DemonstratingAbaFailure.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>thread 1&#x27;s stale CAS succeeded? false (false here, but pooled-node reuse can make this true incorrectly)</code></pre>
+<p>This specific run happens not to trigger the failure, since <code>b</code> itself (not a reused-identity replacement) is the object compared — but it illustrates exactly the sequence of intervening pop/push/pop operations that, combined with object pooling or memory reuse (common in high-performance lock-free data structure implementations, especially in languages/runtimes with manual memory management, and reproducible in Java via object pools), causes the stale CAS to incorrectly succeed against a reference that merely *looks* like the one originally read.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.atomic.*;
+
+public class AtomicStampedReferenceFix {
+    static class Node {
+        final int value;
+        Node next;
+        Node(int value, Node next) { this.value = value; this.next = next; }
+    }
+
+    static AtomicStampedReference&lt;Node&gt; top = new AtomicStampedReference&lt;&gt;(null, 0);
+
+    static void push(int value) {
+        int[] stampHolder = new int[1];
+        Node newNode = new Node(value, null);
+        Node currentTop;
+        int currentStamp;
+        do {
+            currentTop = top.get(stampHolder);
+            currentStamp = stampHolder[0];
+            newNode.next = currentTop;
+        } while (!top.compareAndSet(currentTop, newNode, currentStamp, currentStamp + 1)); // stamp MUST also match
+    }
+
+    static Node pop() {
+        int[] stampHolder = new int[1];
+        Node currentTop;
+        Node newTop;
+        int currentStamp;
+        do {
+            currentTop = top.get(stampHolder);
+            if (currentTop == null) return null;
+            currentStamp = stampHolder[0];
+            newTop = currentTop.next;
+        } while (!top.compareAndSet(currentTop, newTop, currentStamp, currentStamp + 1)); // stamp catches ABA
+        return currentTop;
+    }
+
+    public static void main(String[] args) {
+        push(1); push(2); push(3);
+
+        int[] stampHolder = new int[1];
+        Node t1_currentTop = top.get(stampHolder);
+        int t1_stamp = stampHolder[0]; // T1 captures the stamp ALONG with the reference
+
+        // Simulate the same pop/push/pop interleaving as before, which changes the STAMP each time,
+        // even in the case where the reference value itself would coincidentally return to the same node:
+        pop(); // stamp advances
+        push(99); // stamp advances again
+        pop(); // stamp advances yet again
+
+        // Thread 1 resumes with its STALE stamp -- even if the reference happened to match again,
+        // the stamp no longer does, so the CAS correctly fails, protecting against ABA.
+        boolean t1Succeeded = top.compareAndSet(t1_currentTop, t1_currentTop.next, t1_stamp, t1_stamp + 1);
+        System.out.println(&quot;thread 1&#x27;s stale CAS (stamped) succeeded? &quot; + t1Succeeded + &quot; (correctly false -- stamp mismatch detected)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java AtomicStampedReferenceFix.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>thread 1&#x27;s stale CAS (stamped) succeeded? false (correctly false -- stamp mismatch detected)</code></pre>
+<p>This adds the production-flavored hard case: even under the exact same pop/push/pop interleaving that could fool a plain <code>AtomicReference</code> if node identities happened to be reused, <code>AtomicStampedReference</code> correctly rejects the stale CAS, because the stamp has advanced with every intervening successful update — the reference alone is not sufficient evidence that nothing changed; the stamp provides the missing piece of information that closes the ABA hole entirely.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing the key comparison in <code>AtomicStampedReferenceFix.main</code>:</p>
+<ol><li><code>top.get(stampHolder)</code> reads both the current top node reference and its associated stamp in one atomic operation, storing the stamp into the caller-provided <code>stampHolder</code> array (an output-parameter idiom, since Java methods can&#x27;t return two values directly) — thread 1 captures both <code>t1_currentTop</code> and <code>t1_stamp</code> at this point.</li><li>Three subsequent operations (<code>pop()</code>, <code>push(99)</code>, <code>pop()</code>) each internally perform their own <code>compareAndSet(currentTop, newTop/newNode, currentStamp, currentStamp + 1)</code> calls — every one of these, upon success, increments the stamp by exactly 1, regardless of what the reference value itself ends up being.</li><li>By the time thread 1 attempts its own (stale) <code>compareAndSet(t1_currentTop, t1_currentTop.next, t1_stamp, t1_stamp + 1)</code> call, the stamp has advanced by 3 from three successful intervening operations — even in a hypothetical scenario where the actual reference value coincidentally matched <code>t1_currentTop</code> again (the classic ABA setup), the *stamp* would no longer match <code>t1_stamp</code>.</li><li><code>AtomicStampedReference.compareAndSet</code> requires <strong>both</strong> the reference and the stamp to match the expected values for the swap to succeed — since the stamp alone already fails to match, the CAS is rejected regardless of what the reference comparison would have concluded on its own.</li><li>This is the crucial difference from a plain <code>AtomicReference</code>: the stamp acts as an always-incrementing &quot;version counter&quot; that makes every successful update distinguishable from every other, even when the reference itself might coincidentally cycle back to an earlier value — closing the exact hole that allows the classic ABA problem to occur.</li><li>The printed result confirms the stale CAS was correctly rejected — thread 1&#x27;s outdated understanding of the stack&#x27;s state is detected and its incorrect update attempt is safely blocked, forcing it to re-read the current state and retry with fresh information instead.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the ABA problem is easy to dismiss as &quot;theoretical&quot; because it requires a very specific interleaving (change, then change back) to actually manifest — but it&#x27;s a real, documented source of subtle corruption bugs in lock-free data structures that reuse or pool objects, and it&#x27;s notoriously hard to reproduce and diagnose after the fact, since by the time you observe the corrupted state, the &quot;ABA moment&quot; itself is long gone with no trace.</blockquote>
+<ul><li>The ABA problem: a value changes from A to B and back to A between a thread&#x27;s read and its CAS attempt — the CAS succeeds because the *value* matches, even though the state genuinely changed in between, which can violate assumptions the algorithm depends on.</li><li><code>AtomicStampedReference&lt;V&gt;</code> pairs a reference with an integer stamp that must also match for CAS to succeed, correctly detecting intervening changes even when the reference value itself returns to its original identity.</li><li><code>AtomicMarkableReference&lt;V&gt;</code> is a lighter-weight sibling using a single boolean &quot;mark&quot; instead of an integer stamp, useful when you only need to detect &quot;has this been touched&quot; rather than track a full version count.</li><li>Reach for these specifically when implementing or reasoning about lock-free algorithms with object reuse or pooling — most everyday <code>AtomicReference</code> usage (simple flags, straightforward hot-swaps) never encounters the conditions needed to trigger ABA at all.</li><li>The stamp-comparison pattern is conceptually the same discipline as optimistic-locking version columns in databases (<code>WHERE id = ? AND version = ?</code>) — both detect &quot;did anything change since I last looked,&quot; not just &quot;is the current value what I expect.&quot;</li></ul>
+  <div class="nav"><a class="prv" href="0895-longadder-longaccumulator.html"><span class="mini">← Previous</span>LongAdder / LongAccumulator</a><a class="nxt" href="0897-threadlocal.html"><span class="mini">Next →</span>ThreadLocal</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t896";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
