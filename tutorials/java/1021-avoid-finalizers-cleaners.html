@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Avoid finalizers/cleaners — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 26. Best Practices, Patterns & Tooling</div>
+  <div class="htitle">
+    <h1>Avoid finalizers/cleaners</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>Object.finalize()</code> (deprecated since Java 9, slated for removal) and <code>java.lang.ref.Cleaner</code> (its safer successor, added in Java 9) are both mechanisms for running cleanup code when an object becomes unreachable and is garbage-collected. Both are widely considered a trap for resource cleanup: <strong>the JVM gives no guarantee about when — or even whether — a finalizer or cleaner action ever runs</strong>, since it depends entirely on when (or if) garbage collection happens to reclaim that particular object. For anything that needs to reliably release a resource (a file handle, a network socket, a database connection), the correct tool is <code>try-with-resources</code> with <code>AutoCloseable</code>, not a finalizer or cleaner.</p>
+<h2>2. Why &amp; when</h2>
+<p>A file handle left open because a finalizer hasn&#x27;t run yet (and may never run before the JVM exits) can exhaust the operating system&#x27;s limit on open file descriptors well before garbage collection ever gets around to it — the resource leak happens in real time, on a schedule finalizers and cleaners simply don&#x27;t guarantee. Finalizers have additional serious problems: they run on a separate, unpredictable finalizer thread that can be starved indefinitely if other finalizers hang, an exception thrown during finalization is silently swallowed, and a subclass can even &quot;resurrect&quot; an object from within <code>finalize()</code>, keeping it reachable forever and defeating the point of cleanup entirely. <code>Cleaner</code> fixes several of these problems (no resurrection risk, runs on a dedicated thread you don&#x27;t share with unrelated finalizers) but keeps the fundamental one: timing is still not guaranteed.</p>
+<p>Use <code>try-with-resources</code> and <code>AutoCloseable</code> for anything that needs deterministic, reliable cleanup — which is nearly everything: files, sockets, database connections, locks. Reserve <code>Cleaner</code> (never <code>finalize()</code>, which should be avoided entirely) purely as a <strong>safety net</strong> — a backstop that catches resource leaks caused by a caller forgetting to close a resource, logging or cleaning up eventually, not as the primary cleanup mechanism.</p>
+<h2>3. Core concept</h2>
+<pre><code>// Wrong: relying on finalize() for cleanup -- deprecated, unpredictable, and dangerous
+class LeakyFileHandle {
+    private final java.io.FileInputStream stream;
+    LeakyFileHandle(String path) throws java.io.IOException { stream = new java.io.FileInputStream(path); }
+    @Override protected void finalize() throws Throwable {
+        stream.close(); // MIGHT run eventually... or MIGHT NOT run before the JVM exits at all
+    }
+}
+
+// Right: AutoCloseable + try-with-resources -- deterministic, guaranteed cleanup
+class SafeFileHandle implements AutoCloseable {
+    private final java.io.FileInputStream stream;
+    SafeFileHandle(String path) throws java.io.IOException { stream = new java.io.FileInputStream(path); }
+    @Override public void close() throws java.io.IOException { stream.close(); }
+}
+
+try (SafeFileHandle handle = new SafeFileHandle(&quot;data.txt&quot;)) {
+    // use handle
+} // close() is GUARANTEED to run here, even if an exception is thrown inside the block</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A finalizer's cleanup timing depending on an unpredictable garbage collection cycle versus try-with-resources guaranteeing close is called the instant the block exits">
+  <text x="150" y="24" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">finalize(): unpredictable</text>
+  <rect x="30" y="40" width="230" height="34" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="145" y="61" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">object becomes unreachable</text>
+  <rect x="30" y="100" width="230" height="34" rx="6" fill="#1c2430" stroke="#f0883e" stroke-dasharray="4"/>
+  <text x="145" y="121" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">finalize() runs... eventually? never?</text>
+  <line x1="145" y1="74" x2="145" y2="100" stroke="#f0883e" stroke-dasharray="4" marker-end="url(#a)"/>
+
+  <text x="480" y="24" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">try-with-resources: guaranteed</text>
+  <rect x="380" y="40" width="230" height="34" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="495" y="61" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">try block exits (normally or via exception)</text>
+  <rect x="380" y="100" width="230" height="34" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="495" y="121" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">close() runs IMMEDIATELY</text>
+  <line x1="495" y1="74" x2="495" y2="100" stroke="#6db33f" marker-end="url(#a)"/>
+  <defs><marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p><code>finalize()</code> waits on an unpredictable garbage-collection cycle that may never come; <code>try-with-resources</code> calls <code>close()</code> the instant the block exits.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a resource wrapper needing reliable cleanup, evolving from a finalizer-based approach whose timing can&#x27;t be trusted into <code>try-with-resources</code>, with <code>Cleaner</code> shown only as a last-resort safety net.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: FinalizerBasic.java
+class LeakyResource {
+    private final String name;
+    private boolean closed = false;
+
+    LeakyResource(String name) {
+        this.name = name;
+        System.out.println(&quot;Opened: &quot; + name);
+    }
+
+    void use() { System.out.println(&quot;Using: &quot; + name); }
+
+    @Override
+    @SuppressWarnings(&quot;deprecation&quot;)
+    protected void finalize() throws Throwable {
+        if (!closed) {
+            System.out.println(&quot;finalize() closing: &quot; + name + &quot; (if this ever runs at all)&quot;);
+            closed = true;
+        }
+    }
+}
+
+public class FinalizerBasic {
+    public static void main(String[] args) {
+        LeakyResource resource = new LeakyResource(&quot;file-A&quot;);
+        resource.use();
+        // No explicit close -- relying entirely on finalize(), whenever (if ever)
+        // garbage collection decides to reclaim this object.
+        System.out.println(&quot;main() finished; cleanup timing is now completely out of our hands&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>FinalizerBasic.java</code>, then <code>javac FinalizerBasic.java &amp;&amp; java FinalizerBasic</code> (JDK 17+, <code>finalize()</code> still compiles with a deprecation warning through Java 17).</p>
+<p>Expected output:</p>
+<pre><code>Opened: file-A
+Using: file-A
+main() finished; cleanup timing is now completely out of our hands</code></pre>
+<p>Notice the <code>finalize()</code> cleanup message never even prints — the JVM exits before garbage collection ever gets around to (or bothers to) finalize <code>resource</code>, which is exactly the failure mode that makes finalizers unsuitable for resource cleanup: there&#x27;s no guarantee it runs before the program ends.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: FinalizerIntermediate.java
+class SafeResource implements AutoCloseable {
+    private final String name;
+
+    SafeResource(String name) {
+        this.name = name;
+        System.out.println(&quot;Opened: &quot; + name);
+    }
+
+    void use() { System.out.println(&quot;Using: &quot; + name); }
+
+    @Override
+    public void close() {
+        System.out.println(&quot;Closed: &quot; + name);
+    }
+}
+
+public class FinalizerIntermediate {
+    public static void main(String[] args) {
+        try (SafeResource resource = new SafeResource(&quot;file-A&quot;)) {
+            resource.use();
+        } // close() is guaranteed to run right here, deterministically
+        System.out.println(&quot;main() finished; cleanup already happened&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>FinalizerIntermediate.java</code>, then <code>javac FinalizerIntermediate.java &amp;&amp; java FinalizerIntermediate</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Opened: file-A
+Using: file-A
+Closed: file-A
+main() finished; cleanup already happened</code></pre>
+<p>The real-world concern added: <code>close()</code> runs deterministically the moment the <code>try</code> block exits — no dependency on garbage collection timing at all. <code>&quot;Closed: file-A&quot;</code> is guaranteed to print before <code>&quot;main() finished&quot;</code>, unlike the finalizer version where cleanup might never print at all.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: FinalizerAdvanced.java
+import java.lang.ref.Cleaner;
+
+class RobustResource implements AutoCloseable {
+    private static final Cleaner CLEANER = Cleaner.create();
+
+    // The cleanup logic MUST NOT reference the RobustResource instance itself --
+    // only this static inner class and its own fields, to avoid keeping the
+    // resource reachable (which would defeat garbage collection entirely).
+    private static class ResourceState implements Runnable {
+        private final String name;
+        private boolean closed = false;
+        ResourceState(String name) { this.name = name; }
+
+        @Override public void run() { // the CLEANER&#x27;s safety-net action
+            if (!closed) {
+                System.out.println(&quot;SAFETY NET: &quot; + name + &quot; was never explicitly closed! Cleaning up now.&quot;);
+                closed = true;
+            }
+        }
+    }
+
+    private final ResourceState state;
+    private final Cleaner.Cleanable cleanable;
+
+    RobustResource(String name) {
+        this.state = new ResourceState(name);
+        this.cleanable = CLEANER.register(this, state); // registers the safety net
+        System.out.println(&quot;Opened: &quot; + name);
+    }
+
+    void use() { System.out.println(&quot;Using: &quot; + state.name); }
+
+    @Override
+    public void close() {
+        state.closed = true; // mark it closed FIRST so the safety net knows not to act
+        System.out.println(&quot;Explicitly closed: &quot; + state.name);
+        cleanable.clean(); // run the cleanup action NOW, deterministically
+    }
+}
+
+public class FinalizerAdvanced {
+    public static void main(String[] args) {
+        // The correct path: explicit try-with-resources -- the safety net never fires.
+        try (RobustResource resource = new RobustResource(&quot;file-A&quot;)) {
+            resource.use();
+        }
+
+        System.out.println(&quot;---&quot;);
+
+        // A forgotten resource -- close() never called. The Cleaner is a LAST-RESORT
+        // safety net; its timing is still not guaranteed, but at least it doesn&#x27;t
+        // depend on the fragile, deprecated finalize() mechanism.
+        RobustResource forgotten = new RobustResource(&quot;file-B&quot;);
+        forgotten.use();
+        forgotten = null; // drop the only reference; eligible for GC
+        System.gc(); // NOTE: forcing GC like this is only for demonstration -- never rely on
+                      // System.gc() in real code, since the JVM is free to ignore the request
+        try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>FinalizerAdvanced.java</code>, then <code>javac FinalizerAdvanced.java &amp;&amp; java FinalizerAdvanced</code> (JDK 17+). Note: the safety-net line&#x27;s exact timing (or whether it appears at all before the program exits) is not guaranteed even with <code>System.gc()</code> — this demonstrates the *mechanism*, not a timing guarantee.</p>
+<p>Expected output (the safety-net line may or may not appear, and its exact position isn&#x27;t guaranteed):</p>
+<pre><code>Opened: file-A
+Using: file-A
+Explicitly closed: file-A
+---
+Opened: file-B
+Using: file-B
+SAFETY NET: file-B was never explicitly closed! Cleaning up now.</code></pre>
+<p>The production-flavored hard case: <code>RobustResource</code> uses <code>Cleaner</code> purely as a backstop — the *correct* usage (<code>try-with-resources</code>) never triggers the safety net at all (<code>state.closed = true</code> is set before <code>cleanable.clean()</code> runs), while the *forgotten* resource (<code>forgotten</code>, never explicitly closed) relies on the safety net to eventually catch the leak — demonstrating why <code>Cleaner</code> is a last line of defense, not a substitute for calling <code>close()</code>.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing the <code>try (RobustResource resource = new RobustResource(&quot;file-A&quot;)) { resource.use(); }</code> block in <code>FinalizerAdvanced.main</code>:</p>
+<ol><li><code>new RobustResource(&quot;file-A&quot;)</code> constructs a <code>ResourceState</code> holding <code>name = &quot;file-A&quot;</code>, <code>closed = false</code>, then calls <code>CLEANER.register(this, state)</code> — this tells the JVM&#x27;s <code>Cleaner</code> mechanism &quot;when the <code>RobustResource</code> instance becomes unreachable, run <code>state.run()</code>,&quot; without <code>state</code> itself ever holding a reference back to the <code>RobustResource</code> (avoiding a reference cycle that would prevent garbage collection).</li><li>The constructor prints <code>&quot;Opened: file-A&quot;</code>. <code>resource.use()</code> prints <code>&quot;Using: file-A&quot;</code>.</li><li>The <code>try</code> block ends (no exception thrown), so Java&#x27;s <code>try-with-resources</code> mechanism automatically calls <code>resource.close()</code>.</li><li>Inside <code>close()</code>, <code>state.closed = true</code> runs *first*, marking the state as already handled. Then <code>&quot;Explicitly closed: file-A&quot;</code> prints. Then <code>cleanable.clean()</code> is called, which runs <code>state.run()</code> immediately, deterministically, right here — but since <code>state.closed</code> is already <code>true</code>, the <code>if (!closed)</code> check inside <code>run()</code> is <code>false</code>, so the safety-net message is skipped entirely.</li><li>Compare with <code>forgotten</code>: its <code>close()</code> is never called at all. <code>forgotten = null</code> drops the only reference to it, making it eligible for garbage collection. <code>System.gc()</code> is a *request* (not a guarantee) that the JVM run garbage collection soon.</li><li>If and when the JVM actually collects <code>forgotten</code>&#x27;s underlying <code>RobustResource</code> object, the <code>Cleaner</code> mechanism invokes <code>state.run()</code> on its own dedicated thread — since <code>state.closed</code> is still <code>false</code> (nobody ever called <code>close()</code>), the <code>if (!closed)</code> check passes, printing <code>&quot;SAFETY NET: file-B was never explicitly closed! Cleaning up now.&quot;</code> — catching the leak that <code>try-with-resources</code> was never used to prevent, but with no guarantee of exactly when this happens relative to the rest of the program.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the cleanup logic registered with a <code>Cleaner</code> (here, <code>ResourceState</code>) must <strong>never</strong> hold a reference back to the object being cleaned up (<code>RobustResource</code> itself) — doing so creates a reference cycle that keeps the object permanently reachable, meaning it can never become eligible for collection and the cleanup action never fires at all, silently defeating both the primary cleanup path and the safety net.</blockquote>
+<ul><li><code>finalize()</code> is deprecated and dangerous: it runs (if at all) at an unpredictable time, on a separate thread that can be starved, silently swallows exceptions, and can even be abused to resurrect an unreachable object.</li><li><code>Cleaner</code> fixes several of <code>finalize()</code>&#x27;s specific dangers (no resurrection, dedicated thread) but keeps the fundamental problem — timing is still not guaranteed, so it must never be the primary way a resource gets released.</li><li><code>try-with-resources</code> with <code>AutoCloseable</code> is the correct, deterministic mechanism for anything that needs guaranteed cleanup — files, sockets, connections, locks — and should be the default choice for essentially all resource-management code.</li><li><code>Cleaner</code> is appropriate only as a last-resort safety net catching a caller&#x27;s mistake (forgetting to close a resource), logging or cleaning up eventually as a backstop — never as the sole cleanup mechanism.</li><li>A <code>Cleaner</code>&#x27;s registered cleanup action must not reference the object it&#x27;s cleaning up, to avoid a reference cycle that would prevent the object (and therefore the cleanup) from ever running.</li><li>Don&#x27;t call <code>System.gc()</code> in real production code expecting it to force collection — the JVM is free to ignore the request entirely; it&#x27;s shown here purely to illustrate the mechanism for a tutorial example.</li></ul>
+  <div class="nav"><a class="prv" href="1020-minimize-mutability-accessibility.html"><span class="mini">← Previous</span>Minimize mutability & accessibility</a><a class="nxt" href="1022-prefer-enums-enumset.html"><span class="mini">Next →</span>Prefer enums & EnumSet</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t1021";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
