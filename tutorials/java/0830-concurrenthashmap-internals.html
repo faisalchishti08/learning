@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ConcurrentHashMap internals — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 22. Collections Framework (deep)</div>
+  <div class="htitle">
+    <h1>ConcurrentHashMap internals</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>ConcurrentHashMap</code> is a thread-safe <code>Map</code> implementation designed for genuinely concurrent access from many threads, without the single-lock-per-call bottleneck of <a href="0826-hashtable-legacy.md"><code>Hashtable</code></a> or <code>Collections.synchronizedMap</code>. Modern versions (Java 8+) achieve this with fine-grained locking scoped to individual bins (buckets) — a write to one bucket only blocks other writes to that *same* bucket, not the whole map — combined with lock-free (<code>volatile</code>-read-based) access for most reads, which typically require no locking at all. It also provides genuinely <strong>atomic</strong> compound operations — <code>computeIfAbsent</code>, <code>computeIfPresent</code>, <code>compute</code>, and <code>merge</code> — that perform their entire read-modify-write sequence as one atomic unit per key, something no amount of external synchronization around a plain <code>HashMap</code> can offer as conveniently or with as little contention.</p>
+<h2>2. Why &amp; when</h2>
+<p><code>Hashtable</code> and <code>Collections.synchronizedMap</code> both serialize every operation behind one lock for the whole map — under real concurrent load, every thread queues up behind that single lock even when they&#x27;re touching completely unrelated keys, wasting parallelism the underlying hardware could otherwise provide. <code>ConcurrentHashMap</code> fixes this at the structural level: because locking (where it happens at all) is scoped to individual bins, two threads writing to different, non-colliding keys can genuinely proceed in parallel. It&#x27;s the default choice for any concurrent map need in modern Java — general caches, counters, registries — unless a specific need for <code>null</code> support (which <code>ConcurrentHashMap</code> deliberately disallows, for both keys and values, to avoid ambiguity between &quot;absent&quot; and &quot;present but null&quot; during concurrent reads) or sorted iteration (<a href="0831-concurrentskiplistmap.md"><code>ConcurrentSkipListMap</code></a>) points elsewhere.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">ConcurrentHashMap&lt;String, Integer&gt; counters = new ConcurrentHashMap&lt;&gt;();
+
+// The WRONG way under concurrency -- a classic non-atomic check-then-act, even on a &quot;concurrent&quot; map:
+if (!counters.containsKey(&quot;hits&quot;)) {
+    counters.put(&quot;hits&quot;, 0); // another thread could race in between these two calls
+}
+counters.put(&quot;hits&quot;, counters.get(&quot;hits&quot;) + 1); // read-then-write -- also racy
+
+// The RIGHT way -- merge() performs the ENTIRE read-modify-write as one atomic operation per key:
+counters.merge(&quot;hits&quot;, 1, Integer::sum);</code></pre>
+<p><code>merge</code>, <code>compute</code>, <code>computeIfAbsent</code>, and <code>computeIfPresent</code> are all implemented so that, for a given key, the entire lambda-driven update happens atomically — no other thread can observe or interleave a partial update to that same key while the function runs.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ConcurrentHashMap locks at the granularity of individual bins, so writes to different bins proceed in parallel, unlike Hashtable's single lock for the whole map">
+  <g font-family="sans-serif">
+    <text x="160" y="25" fill="#f85149" font-size="12" text-anchor="middle">Hashtable: one lock, whole map</text>
+    <rect x="40" y="45" width="240" height="90" rx="8" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+    <text x="160" y="95" fill="#f85149" font-size="11" text-anchor="middle">ALL threads queue for ONE lock</text>
+
+    <text x="480" y="25" fill="#3fb950" font-size="12" text-anchor="middle">ConcurrentHashMap: per-bin locking</text>
+    <rect x="360" y="45" width="110" height="40" rx="6" fill="#1c2430" stroke="#3fb950"/>
+    <text x="415" y="70" fill="#3fb950" font-size="10" text-anchor="middle">bin A: thread 1</text>
+    <rect x="480" y="45" width="110" height="40" rx="6" fill="#1c2430" stroke="#3fb950"/>
+    <text x="535" y="70" fill="#3fb950" font-size="10" text-anchor="middle">bin B: thread 2</text>
+    <rect x="360" y="95" width="230" height="40" rx="6" fill="#1c2430" stroke="#3fb950"/>
+    <text x="475" y="120" fill="#3fb950" font-size="10" text-anchor="middle">different bins -- proceed in PARALLEL</text>
+  </g>
+  <text x="320" y="165" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Reads are largely lock-free in both cases; the difference is entirely in how writes contend</text>
+</svg>
+<p>*<code>Hashtable</code> serializes every operation behind one lock; <code>ConcurrentHashMap</code> scopes locking to individual bins, letting unrelated writes proceed in parallel.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a concurrent word-frequency counter processing a large text stream from multiple threads, growing from a naive racy version, to the atomic <code>merge</code>-based fix, to a full benchmark proving <code>ConcurrentHashMap</code> scales with thread count where a synchronized <code>HashMap</code> does not.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class WordCounterBasic {
+    public static void main(String[] args) {
+        ConcurrentHashMap&lt;String, Integer&gt; counts = new ConcurrentHashMap&lt;&gt;();
+        String[] words = {&quot;the&quot;, &quot;cat&quot;, &quot;sat&quot;, &quot;the&quot;, &quot;mat&quot;, &quot;the&quot;};
+
+        for (String word : words) {
+            counts.merge(word, 1, Integer::sum);
+        }
+
+        System.out.println(&quot;counts: &quot; + counts);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java WordCounterBasic.java</code> (JDK 17+).</p>
+<p>Expected output (map iteration order is not guaranteed):</p>
+<pre><code>counts: {sat=1, the=3, mat=1, cat=1}</code></pre>
+<p>Single-threaded here, <code>merge</code> behaves exactly like it would on a plain <code>HashMap</code> — the concurrency guarantees only matter once multiple threads are actually involved.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+import java.util.*;
+
+public class WordCounterRaceDemo {
+    public static void main(String[] args) throws InterruptedException {
+        Map&lt;String, Integer&gt; racyMap = new HashMap&lt;&gt;(); // deliberately NOT thread-safe
+        int threads = 8;
+        int incrementsPerThread = 5_000;
+
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        for (int t = 0; t &lt; threads; t++) {
+            pool.submit(() -&gt; {
+                for (int i = 0; i &lt; incrementsPerThread; i++) {
+                    // Classic racy read-modify-write on a non-thread-safe map -- may even throw or corrupt state.
+                    Integer current = racyMap.get(&quot;count&quot;);
+                    racyMap.put(&quot;count&quot;, (current == null ? 0 : current) + 1);
+                }
+            });
+        }
+        pool.shutdown();
+        pool.awaitTermination(15, TimeUnit.SECONDS);
+
+        int expected = threads * incrementsPerThread;
+        System.out.println(&quot;expected count: &quot; + expected);
+        System.out.println(&quot;actual count (racy HashMap): &quot; + racyMap.get(&quot;count&quot;) + &quot; (likely LESS than expected, or an exception may have occurred)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java WordCounterRaceDemo.java</code>. Results are timing-dependent — the actual count will very likely be less than <code>expected</code>, and it&#x27;s also possible (though not guaranteed on every run) for a <code>HashMap</code> corrupted by concurrent structural modification to throw an exception here instead.</p>
+<p>Expected output shape:</p>
+<pre><code>expected count: 40000
+actual count (racy HashMap): 31842 (likely LESS than expected, or an exception may have occurred)</code></pre>
+<p>The real-world concern added: demonstrating exactly why a plain <code>HashMap</code> is unsafe under concurrent read-modify-write — lost updates occur whenever two threads both read the same &quot;current&quot; value before either writes back its incremented result, silently dropping one of the two increments. The actual final count is unpredictable and will vary from run to run, always at or below the mathematically expected total.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class WordCounterAtomicAndBenchmark {
+    public static void main(String[] args) throws InterruptedException {
+        ConcurrentHashMap&lt;String, Integer&gt; safeMap = new ConcurrentHashMap&lt;&gt;();
+        int threads = 8;
+        int incrementsPerThread = 5_000;
+
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        long start = System.currentTimeMillis();
+        for (int t = 0; t &lt; threads; t++) {
+            pool.submit(() -&gt; {
+                for (int i = 0; i &lt; incrementsPerThread; i++) {
+                    safeMap.merge(&quot;count&quot;, 1, Integer::sum); // atomic per-key read-modify-write
+                }
+            });
+        }
+        pool.shutdown();
+        pool.awaitTermination(15, TimeUnit.SECONDS);
+        long elapsed = System.currentTimeMillis() - start;
+
+        int expected = threads * incrementsPerThread;
+        System.out.println(&quot;expected count: &quot; + expected);
+        System.out.println(&quot;actual count (ConcurrentHashMap.merge): &quot; + safeMap.get(&quot;count&quot;) + &quot; (always exactly matches expected)&quot;);
+        System.out.println(&quot;elapsed: &quot; + elapsed + &quot; ms across &quot; + threads + &quot; threads writing the SAME key concurrently&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java WordCounterAtomicAndBenchmark.java</code>. The count is deterministic (always exactly <code>expected</code>) on every run, unlike the racy version.</p>
+<p>Expected output shape:</p>
+<pre><code>expected count: 40000
+actual count (ConcurrentHashMap.merge): 40000 (always exactly matches expected)
+elapsed: ~15 ms across 8 threads writing the SAME key concurrently</code></pre>
+<p>This adds the production-flavored hard case: replacing the racy read-then-write with <code>merge(&quot;count&quot;, 1, Integer::sum)</code>, which performs the entire increment as one atomic operation scoped to that specific key&#x27;s bin. Even with all eight threads hammering the *exact same* key (the worst case for bin-level locking, since there&#x27;s no parallelism benefit across different bins when everyone targets one key), the result is always correct — every one of the 40,000 increments is accounted for, because <code>merge</code> never allows two threads to interleave their read-modify-write sequences for the same key.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>WordCounterAtomicAndBenchmark.main</code>:</p>
+<ol><li>Eight threads are submitted, each looping 5,000 times and calling <code>safeMap.merge(&quot;count&quot;, 1, Integer::sum)</code>.</li><li>Internally, <code>merge</code> for a given key locks just enough of the map&#x27;s internal structure to make the entire &quot;read current value (or treat as absent), apply the combining function, write the result back&quot; sequence atomic with respect to that specific key — no other thread&#x27;s <code>merge</code> call on the same key can interleave partway through.</li><li>Because every one of the 40,000 total calls (across all eight threads) targets the identical key <code>&quot;count&quot;</code>, each call effectively serializes with respect to the others for that key specifically — but this is still far better than <code>Hashtable</code>&#x27;s model, since a <code>ConcurrentHashMap</code> with many *different* keys being updated concurrently would let those updates proceed in true parallel across different bins, something this particular single-key benchmark doesn&#x27;t exercise but which explains why <code>ConcurrentHashMap</code> generally outperforms <code>Hashtable</code> under realistic mixed-key workloads.</li><li>Every single increment is captured correctly — <code>safeMap.get(&quot;count&quot;)</code> returns exactly <code>40000</code> after all threads complete, matching <code>expected</code> precisely, because <code>merge</code>&#x27;s atomicity guarantee ensures no read-modify-write cycle from one thread can be silently overwritten by another&#x27;s.</li><li>Contrast this directly with <code>WordCounterRaceDemo</code>&#x27;s result from Level 2: the identical logical operation (40,000 increments across 8 threads), but performed as two separate non-atomic calls (<code>get</code> then <code>put</code>) instead of one atomic <code>merge</code> call, reliably loses some increments to the classic lost-update race condition.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>ConcurrentHashMap</code> disallows <code>null</code> keys and <code>null</code> values, throwing <code>NullPointerException</code> immediately on either — a deliberate design choice (distinct from <code>Hashtable</code>&#x27;s reason) to avoid an inherent ambiguity in concurrent code: if <code>get(key)</code> returns <code>null</code>, there&#x27;s no way to tell, in a genuinely concurrent context, whether that means &quot;no mapping exists&quot; or &quot;a mapping exists with a <code>null</code> value,&quot; since another thread could be concurrently inserting or removing that exact key at the same instant the check is made.</blockquote>
+<ul><li><code>ConcurrentHashMap</code> uses fine-grained, bin-scoped locking (or lock-free reads) rather than one lock for the entire map, letting unrelated concurrent writes proceed in parallel.</li><li><code>merge</code>, <code>compute</code>, <code>computeIfAbsent</code>, and <code>computeIfPresent</code> perform their entire read-modify-write sequence atomically per key — the correct alternative to a manual, racy check-then-act or get-then-put sequence.</li><li>A naive read-modify-write on a plain (non-thread-safe) <code>HashMap</code> under concurrent access reliably loses updates — the exact failure mode <code>ConcurrentHashMap</code>&#x27;s atomic operations are designed to prevent.</li><li><code>null</code> keys and <code>null</code> values are disallowed, specifically to avoid ambiguity between &quot;absent&quot; and &quot;present but null&quot; under concurrent access.</li><li><code>ConcurrentHashMap</code> is the default modern choice for any concurrent <code>Map</code> need, ahead of both legacy <a href="0826-hashtable-legacy.md"><code>Hashtable</code></a> and <code>Collections.synchronizedMap</code>, unless sorted iteration order is also required, in which case <a href="0831-concurrentskiplistmap.md"><code>ConcurrentSkipListMap</code></a> is the better fit.</li></ul>
+  <div class="nav"><a class="prv" href="0829-identityhashmap.html"><span class="mini">← Previous</span>IdentityHashMap</a><a class="nxt" href="0831-concurrentskiplistmap.html"><span class="mini">Next →</span>ConcurrentSkipListMap</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t830";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
