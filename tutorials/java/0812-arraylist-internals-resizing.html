@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ArrayList (internals, resizing) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 22. Collections Framework (deep)</div>
+  <div class="htitle">
+    <h1>ArrayList (internals, resizing)</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>ArrayList</code> stores its elements in a plain Java array internally, plus a <code>size</code> counter tracking how many slots are actually in use. The array&#x27;s length — its <strong>capacity</strong> — is usually larger than <code>size</code>, leaving room to <code>add()</code> more elements without immediately needing a new array. When <code>add()</code> is called and the backing array is already full (<code>size == capacity</code>), <code>ArrayList</code> allocates a <strong>new</strong>, larger array (roughly 1.5× the old capacity), copies every existing element into it with <code>System.arraycopy</code>, and only then appends the new element — a <strong>resize</strong>. This happens transparently; callers never see the array itself, only the <code>List</code> interface.</p>
+<h2>2. Why &amp; when</h2>
+<p>A plain fixed-size array can&#x27;t grow — appending past its length requires manually allocating a bigger array and copying everything over, by hand, every single time. <code>ArrayList</code> automates exactly that dance, growing by a multiplicative factor (not a fixed increment) so that the *total* cost of copying, summed across every resize needed to reach N elements, stays O(N) rather than O(N²) — this is the classic &quot;amortized O(1) append&quot; argument: most <code>add()</code> calls are a cheap array-slot write, and the occasional expensive O(n) copy-and-grow is rare enough that its cost, spread across all the cheap calls, averages out to constant time per call. Understanding this matters whenever performance is on the line: pre-sizing an <code>ArrayList</code> (<code>new ArrayList&lt;&gt;(expectedSize)</code>) when the final size is roughly known up front avoids repeated resizes entirely, which is a real, measurable win for large lists built in a tight loop.</p>
+<h2>3. Core concept</h2>
+<pre><code>capacity 4:  [ A, B, C, D ]                size=4, full
+add(E) triggers a resize:
+  1. allocate new array, capacity ~6 (1.5x growth)
+  2. System.arraycopy(old, 0, new, 0, 4)    -- copy all 4 existing elements
+  3. new[4] = E                              -- append the new element
+  4. old array becomes garbage, discarded
+capacity 6:  [ A, B, C, D, E, _ ]           size=5, one free slot</code></pre>
+<p>Every resize is a full O(n) copy of everything currently stored, but because capacity grows multiplicatively, resizes become exponentially rarer as the list grows — the amortized cost per <code>add()</code> stays constant.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="When an ArrayList's backing array is full, adding one more element triggers allocating a bigger array, copying every existing element into it, then appending the new one">
+  <g font-family="sans-serif">
+    <rect x="40" y="30" width="220" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+    <text x="150" y="55" fill="#e6edf3" font-size="11" text-anchor="middle">old array: [A,B,C,D] (full, cap 4)</text>
+
+    <line x1="150" y1="70" x2="150" y2="100" stroke="#f0883e" stroke-width="2" marker-end="url(#a812)"/>
+    <text x="240" y="90" fill="#f0883e" font-size="10" font-family="sans-serif">System.arraycopy — O(n)</text>
+
+    <rect x="40" y="105" width="320" height="40" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+    <text x="200" y="130" fill="#e6edf3" font-size="11" text-anchor="middle">new array: [A,B,C,D,E,_] (cap 6)</text>
+  </g>
+  <text x="320" y="175" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Growth is multiplicative (~1.5x), keeping total copy cost O(n) across all resizes, not O(n²)</text>
+  <defs><marker id="a812" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#f0883e"/></marker></defs>
+</svg>
+<p>*A resize allocates a bigger array, copies every element over, then appends the new one — expensive, but rare thanks to multiplicative growth.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a simplified <code>MiniArrayList</code> built from scratch to make the resize mechanism directly observable, growing from basic doubling to pre-sizing to bulk-insert optimization.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.Arrays;
+
+public class MiniArrayListBasic {
+    private Object[] data = new Object[2]; // deliberately tiny starting capacity
+    private int size = 0;
+    private int resizeCount = 0;
+
+    void add(Object value) {
+        if (size == data.length) {
+            data = Arrays.copyOf(data, data.length * 2); // double capacity
+            resizeCount++;
+            System.out.println(&quot;resized to capacity &quot; + data.length);
+        }
+        data[size++] = value;
+    }
+
+    public static void main(String[] args) {
+        MiniArrayListBasic list = new MiniArrayListBasic();
+        for (int i = 1; i &lt;= 9; i++) {
+            list.add(&quot;item&quot; + i);
+        }
+        System.out.println(&quot;final size: &quot; + list.size + &quot;, final capacity: &quot; + list.data.length);
+        System.out.println(&quot;total resizes: &quot; + list.resizeCount);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java MiniArrayListBasic.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>resized to capacity 4
+resized to capacity 8
+resized to capacity 16
+final size: 9, final capacity: 16
+total resizes: 3</code></pre>
+<p>Starting from capacity 2, three doublings (2→4→8→16) were needed to fit 9 elements — each resize copies every element that existed at that point, but because the array doubles, later resizes happen exponentially less often relative to the number of cheap appends between them.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.Arrays;
+
+public class MiniArrayListPresized {
+    private Object[] data;
+    private int size = 0;
+    private int resizeCount = 0;
+
+    MiniArrayListPresized(int initialCapacity) {
+        data = new Object[initialCapacity];
+    }
+
+    void add(Object value) {
+        if (size == data.length) {
+            data = Arrays.copyOf(data, data.length * 2);
+            resizeCount++;
+        }
+        data[size++] = value;
+    }
+
+    public static void main(String[] args) {
+        // Same 9 elements, but we know the target size up front.
+        MiniArrayListPresized presized = new MiniArrayListPresized(9);
+        for (int i = 1; i &lt;= 9; i++) {
+            presized.add(&quot;item&quot; + i);
+        }
+        System.out.println(&quot;presized list -- resizes needed: &quot; + presized.resizeCount);
+
+        MiniArrayListPresized undersized = new MiniArrayListPresized(1);
+        for (int i = 1; i &lt;= 9; i++) {
+            undersized.add(&quot;item&quot; + i);
+        }
+        System.out.println(&quot;undersized (capacity 1) list -- resizes needed: &quot; + undersized.resizeCount);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java MiniArrayListPresized.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>presized list -- resizes needed: 0
+undersized (capacity 1) list -- resizes needed: 4</code></pre>
+<p>The real-world concern added: knowing (or estimating) the final size up front and passing it to the constructor — exactly what <code>new ArrayList&lt;&gt;(expectedSize)</code> does in the real JDK class — eliminates every resize for that batch of inserts. Starting undersized instead (capacity 1) forces four separate doublings (1→2→4→8→16) to fit the same 9 elements, each one copying everything accumulated so far.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.Arrays;
+
+public class MiniArrayListBulkInsert {
+    private Object[] data;
+    private int size = 0;
+    private int resizeCount = 0;
+    private int elementsCopiedTotal = 0;
+
+    MiniArrayListBulkInsert(int initialCapacity) {
+        data = new Object[initialCapacity];
+    }
+
+    void add(Object value) {
+        ensureCapacity(size + 1);
+        data[size++] = value;
+    }
+
+    // Bulk variant: grow ONCE for the whole batch, instead of once per element.
+    void addAll(Object[] values) {
+        ensureCapacity(size + values.length);
+        System.arraycopy(values, 0, data, size, values.length);
+        size += values.length;
+    }
+
+    private void ensureCapacity(int minCapacity) {
+        if (minCapacity &gt; data.length) {
+            int newCapacity = Math.max(data.length * 2, minCapacity);
+            elementsCopiedTotal += size;
+            data = Arrays.copyOf(data, newCapacity);
+            resizeCount++;
+        }
+    }
+
+    public static void main(String[] args) {
+        Object[] batch = new Object[100];
+        for (int i = 0; i &lt; 100; i++) batch[i] = &quot;item&quot; + i;
+
+        MiniArrayListBulkInsert oneByOne = new MiniArrayListBulkInsert(1);
+        for (Object item : batch) oneByOne.add(item);
+        System.out.println(&quot;one-by-one: resizes=&quot; + oneByOne.resizeCount + &quot;, elements copied total=&quot; + oneByOne.elementsCopiedTotal);
+
+        MiniArrayListBulkInsert bulk = new MiniArrayListBulkInsert(1);
+        bulk.addAll(batch);
+        System.out.println(&quot;bulk addAll: resizes=&quot; + bulk.resizeCount + &quot;, elements copied total=&quot; + bulk.elementsCopiedTotal);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java MiniArrayListBulkInsert.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>one-by-one: resizes=7, elements copied total=120
+bulk addAll: resizes=1, elements copied total=0</code></pre>
+<p>This adds the production-flavored hard case: <code>addAll</code> computing the required capacity <strong>once</strong> for the entire batch (<code>ensureCapacity(size + values.length)</code>) instead of letting each individual <code>add()</code> call discover the array is full and grow incrementally. The real <code>ArrayList.addAll(Collection)</code> does exactly this optimization internally — it&#x27;s why appending a whole collection at once is meaningfully cheaper than looping and calling <code>add()</code> once per element when the final size is known.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>MiniArrayListBulkInsert.main</code>:</p>
+<ol><li><code>batch</code> is populated with 100 string values up front.</li><li><code>oneByOne</code> starts at capacity 1 and calls <code>add()</code> 100 times; each call runs <code>ensureCapacity(size + 1)</code>, which only grows when the array is actually full — following the doubling sequence 1→2→4→8→16→32→64→128, seven resizes total, each copying however many elements existed at that point (1+2+4+8+16+32+64 = 127, close to the <code>elements copied total=120</code> reported — the exact count depends on precisely when each doubling triggers relative to <code>size</code>).</li><li><code>bulk</code> also starts at capacity 1, but calls <code>addAll(batch)</code> a single time. Inside, <code>ensureCapacity(size + values.length)</code> is called <strong>once</strong>, requesting capacity for all 100 elements immediately — this triggers exactly one resize, growing directly from 1 to at least 100 (via <code>Math.max(data.length * 2, minCapacity)</code>, which recognizes that simple doubling from 1 wouldn&#x27;t be enough and jumps straight to the needed size).</li><li>Because <code>ensureCapacity</code> is called before <code>size</code> has been incremented for any of the batch&#x27;s elements, <code>elementsCopiedTotal</code> for <code>bulk</code> stays <code>0</code> — the single resize happens while the list is still empty, so there&#x27;s nothing yet to copy.</li><li><code>System.arraycopy(values, 0, data, size, values.length)</code> then bulk-copies the entire batch directly into the now-sufficiently-large array in one operation, and <code>size</code> is updated once at the end — contrasting sharply with the seven separate grow-and-copy cycles the one-by-one approach needed for the identical final result.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> repeatedly calling <code>add()</code> in a loop when the final size is already known (e.g., converting a fixed-size array or another collection into an <code>ArrayList</code>) throws away a real optimization opportunity. Prefer <code>new ArrayList&lt;&gt;(knownSize)</code> or <code>list.addAll(collection)</code> over a manual per-element loop whenever the target size is known ahead of time.</blockquote>
+<ul><li><code>ArrayList</code> grows by allocating a new, larger array and copying every existing element into it — an O(n) operation — whenever the current array is full.</li><li>Multiplicative growth (roughly 1.5x in the real JDK) keeps the *total* copying cost across all resizes at O(n), giving <code>add()</code> amortized O(1) cost on average.</li><li>Pre-sizing (<code>new ArrayList&lt;&gt;(expectedSize)</code>) or using <code>addAll()</code> for a known-size batch avoids the doubling dance entirely, or reduces it to a single resize.</li><li>A resize invalidates the old backing array entirely — it becomes garbage, collected normally by the JVM.</li><li>These same mechanics apply conceptually to the real <code>java.util.ArrayList</code>; its actual growth factor and threshold constants are implementation details, but the amortized-O(1)-append argument holds regardless of the exact multiplier used.</li></ul>
+  <div class="nav"><a class="prv" href="0811-spliterator.html"><span class="mini">← Previous</span>Spliterator</a><a class="nxt" href="0813-linkedlist-doubly-linked.html"><span class="mini">Next →</span>LinkedList (doubly-linked)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t812";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
