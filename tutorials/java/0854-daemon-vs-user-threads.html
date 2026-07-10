@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Daemon vs user threads — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>Daemon vs user threads</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Every Java thread is either a <strong>user thread</strong> (the default) or a <strong>daemon thread</strong>, set via <code>thread.setDaemon(true)</code> <strong>before</strong> calling <code>start()</code> (changing it afterward throws <code>IllegalThreadStateException</code>). The distinction determines what keeps the JVM process alive: the JVM continues running as long as <strong>any</strong> user thread is still alive, but exits automatically the moment <strong>only</strong> daemon threads remain, regardless of whether those daemon threads have finished their work. Daemon threads are meant for background support tasks that should never, by their mere existence, prevent the application from shutting down — the JVM&#x27;s own garbage collector thread is a classic example of an internal daemon thread.</p>
+<h2>2. Why &amp; when</h2>
+<p>An application with genuine &quot;real work&quot; happening on user threads should keep the JVM running until that work completes — that&#x27;s the default, and it&#x27;s correct for most threads most of the time. But some threads exist purely to support other work — a periodic cache-cleanup task, a metrics-reporting heartbeat, a connection-pool idle-timeout monitor — and none of these should be the *reason* the JVM stays alive if every actual piece of application work has already finished. Marking such a thread as a daemon means the JVM can exit cleanly once the real work (on user threads) is done, without needing to explicitly signal every background helper thread to stop first. The critical caveat: daemon threads are terminated <strong>abruptly</strong> when the JVM decides to exit — no guarantee that a <code>finally</code> block, a <code>try</code>-with-resources close, or any cleanup logic inside that daemon thread actually gets to run. Daemon threads are for work whose incompleteness at shutdown time is genuinely acceptable, never for anything that must complete or clean up reliably.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">Thread userThread = new Thread(() -&gt; {
+    try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
+    System.out.println(&quot;user thread finished its 2-second task&quot;);
+});
+// userThread.isDaemon() is false by default -- the JVM will wait for it.
+
+Thread daemonThread = new Thread(() -&gt; {
+    while (true) {
+        try { Thread.sleep(500); } catch (InterruptedException ignored) { return; }
+        System.out.println(&quot;daemon heartbeat...&quot;);
+    }
+});
+daemonThread.setDaemon(true); // MUST be set before start()
+daemonThread.start();
+userThread.start();
+
+// If userThread were the ONLY thread besides main and daemonThread, the JVM would exit
+// as soon as main() returns and userThread finishes -- daemonThread would be killed mid-loop,
+// with no guarantee its current iteration (or any cleanup) completes.</code></pre>
+<p><code>daemonThread</code>&#x27;s infinite loop never naturally terminates on its own — it relies entirely on the JVM&#x27;s shutdown behavior (or an explicit interrupt) to stop, which is exactly the intended usage pattern for a background daemon.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The JVM stays alive as long as any user thread is running, but exits immediately once only daemon threads remain, abruptly terminating them mid-execution">
+  <rect x="40" y="30" width="240" height="55" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="160" y="55" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">user thread (default)</text>
+  <text x="160" y="72" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">JVM waits for it to finish</text>
+
+  <rect x="340" y="30" width="240" height="55" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="460" y="55" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">daemon thread</text>
+  <text x="460" y="72" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">killed abruptly when JVM exits</text>
+
+  <text x="320" y="130" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">JVM exits the instant only daemon threads remain — no cleanup guarantee for them</text>
+</svg>
+<p>*The JVM waits for every user thread but abandons daemon threads instantly once no user threads remain.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an application with a real background task and a heartbeat monitor, growing from basic daemon-vs-user contrast, through observing the JVM exit abruptly killing a daemon mid-loop, to a cautionary demonstration of why cleanup logic must never rely on a daemon thread finishing gracefully.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class DaemonBasic {
+    public static void main(String[] args) throws InterruptedException {
+        Thread userThread = new Thread(() -&gt; {
+            System.out.println(&quot;user thread: default isDaemon() = &quot; + Thread.currentThread().isDaemon());
+        });
+
+        Thread daemonThread = new Thread(() -&gt; {
+            System.out.println(&quot;daemon thread: isDaemon() = &quot; + Thread.currentThread().isDaemon());
+        });
+        daemonThread.setDaemon(true); // must be set BEFORE start()
+
+        userThread.start();
+        daemonThread.start();
+        userThread.join();
+        daemonThread.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java DaemonBasic.java</code> (JDK 17+).</p>
+<p>Expected output (order may vary slightly):</p>
+<pre><code>user thread: default isDaemon() = false
+daemon thread: isDaemon() = true</code></pre>
+<p>Setting daemon status is straightforward — the important behavior difference only becomes visible once the JVM is deciding whether to keep running or exit, which this basic example doesn&#x27;t yet exercise (since both threads finish quickly and both are joined).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">public class DaemonAbruptTermination {
+    public static void main(String[] args) throws InterruptedException {
+        Thread heartbeat = new Thread(() -&gt; {
+            int beat = 0;
+            while (true) {
+                beat++;
+                System.out.println(&quot;heartbeat #&quot; + beat);
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        });
+        heartbeat.setDaemon(true);
+        heartbeat.start();
+
+        // The &quot;real work&quot; -- a short-lived user thread (main itself counts as a user thread too).
+        System.out.println(&quot;main thread doing its work...&quot;);
+        Thread.sleep(350); // simulate ~3-4 heartbeats&#x27; worth of &quot;real work&quot; time
+        System.out.println(&quot;main thread finishing -- JVM will exit now, killing the daemon abruptly&quot;);
+        // No join() on heartbeat -- main simply returns, and the JVM exits immediately since
+        // heartbeat is the ONLY other thread, and it&#x27;s a daemon.
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java DaemonAbruptTermination.java</code>. The exact number of heartbeats printed can vary slightly by timing, but the program always exits immediately once <code>main</code> returns, never waiting for <code>heartbeat</code> to run any further iterations.</p>
+<p>Expected output shape:</p>
+<pre><code>main thread doing its work...
+heartbeat #1
+heartbeat #2
+heartbeat #3
+main thread finishing -- JVM will exit now, killing the daemon abruptly</code></pre>
+<p>The real-world concern added: <code>main</code> returns without ever calling <code>heartbeat.join()</code> or otherwise waiting for it — and the JVM exits immediately anyway, since <code>main</code> (a user thread) was the only thing keeping the process alive, and <code>heartbeat</code> being a daemon means its infinite loop is simply abandoned mid-execution, with no &quot;heartbeat #4&quot; or any further output ever appearing, no matter how the loop&#x27;s logic might have wanted to continue.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">public class DaemonCleanupCaveat {
+    public static void main(String[] args) throws InterruptedException {
+        Thread daemonWithCleanup = new Thread(() -&gt; {
+            try {
+                int iteration = 0;
+                while (true) {
+                    iteration++;
+                    System.out.println(&quot;daemon working, iteration &quot; + iteration);
+                    Thread.sleep(100);
+                }
+            } finally {
+                // THIS IS THE CAVEAT: this finally block is NOT guaranteed to run if the JVM
+                // exits because main() finished while this daemon thread was still in its loop.
+                System.out.println(&quot;daemon cleanup running -- but this line may NEVER print!&quot;);
+            }
+        });
+        daemonWithCleanup.setDaemon(true);
+        daemonWithCleanup.start();
+
+        System.out.println(&quot;main doing brief work...&quot;);
+        Thread.sleep(250);
+        System.out.println(&quot;main exiting now -- watch whether the daemon&#x27;s &#x27;finally&#x27; cleanup message appears below&quot;);
+        // No join(), no interrupt -- main simply returns. The daemon&#x27;s finally block
+        // is abandoned along with everything else, since the JVM does not wait for daemons.
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java DaemonCleanupCaveat.java</code>. On virtually every JVM, the <code>&quot;daemon cleanup running&quot;</code> message from the <code>finally</code> block will <strong>not</strong> appear, because the JVM exits the instant <code>main</code> finishes, abandoning the daemon thread mid-<code>sleep</code> without ever letting its <code>finally</code> block execute.</p>
+<p>Expected output shape:</p>
+<pre><code>main doing brief work...
+daemon working, iteration 1
+daemon working, iteration 2
+main exiting now -- watch whether the daemon&#x27;s &#x27;finally&#x27; cleanup message appears below</code></pre>
+<p>Notice: the <code>&quot;daemon cleanup running...&quot;</code> line from the <code>finally</code> block is absent — this is the deliberate point of the example, demonstrating that daemon thread termination bypasses even <code>finally</code> blocks, <code>try</code>-with-resources cleanup, and any other cleanup mechanism, because the JVM&#x27;s exit process does not politely unwind daemon threads&#x27; call stacks the way a normal method return or exception would.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>DaemonCleanupCaveat.main</code>:</p>
+<ol><li><code>daemonWithCleanup</code> is started, marked as a daemon before <code>start()</code> was called. Its <code>run()</code> method contains a <code>try { infinite loop } finally { cleanup }</code> structure — under *normal* circumstances (like an uncaught exception breaking the loop, or the loop returning via some other path), the <code>finally</code> block would reliably execute, exactly as <code>finally</code> blocks always do for ordinary control flow.</li><li><code>main</code> sleeps briefly (250ms — roughly 2 heartbeat-loop iterations), then prints its final message and returns.</li><li>Once <code>main</code> returns, the JVM checks: are there any remaining <strong>user</strong> threads still running? <code>main</code> itself has just finished; <code>daemonWithCleanup</code> is the only other thread, and it&#x27;s a daemon. Since no user threads remain, the JVM begins its exit process immediately.</li><li>The JVM&#x27;s exit process does <strong>not</strong> involve gracefully unwinding daemon threads&#x27; stacks — it does not throw an exception into <code>daemonWithCleanup</code> to trigger its <code>finally</code> block, nor does it wait for the thread&#x27;s current <code>Thread.sleep(100)</code> call to complete. The daemon thread is simply abandoned mid-execution, wherever it happens to be at that exact instant.</li><li>Consequently, the <code>finally</code> block&#x27;s <code>System.out.println(&quot;daemon cleanup running...&quot;)</code> line never executes — the process terminates before that code ever gets a chance to run, definitively demonstrating that daemon-thread termination is fundamentally different from (and offers none of) the cleanup guarantees normal Java control flow (including exception handling) otherwise provides.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> never place cleanup logic that matters (closing a file handle that must be flushed, releasing an external resource, completing a database transaction) inside a daemon thread&#x27;s <code>finally</code> block or shutdown path, expecting it to run reliably — daemon threads can be abandoned by the JVM at any point, with zero cleanup guarantee. If a background task&#x27;s cleanup genuinely matters, either use a user thread (and ensure it&#x27;s properly joined or signaled to finish before the application intends to exit) or register a proper JVM shutdown hook (<code>Runtime.getRuntime().addShutdownHook(...)</code>), which the JVM does make a best effort to run during a normal (non-forcible) shutdown.</blockquote>
+<ul><li>A thread is a user thread by default; <code>setDaemon(true)</code>, called before <code>start()</code>, marks it as a daemon instead.</li><li>The JVM continues running as long as any user thread is alive, and exits automatically the instant only daemon threads remain — regardless of whether those daemons have completed their work.</li><li>Daemon threads are terminated abruptly on JVM exit — <code>finally</code> blocks, <code>try</code>-with-resources cleanup, and any other in-thread cleanup logic are not guaranteed to run.</li><li>Reach for daemon threads specifically for background support tasks whose incompleteness at shutdown time is genuinely acceptable — never for work whose completion or cleanup actually matters.</li><li>For cleanup that must reliably happen at shutdown, use a JVM shutdown hook or a properly joined user thread instead of relying on a daemon thread&#x27;s own internal cleanup code.</li></ul>
+  <div class="nav"><a class="prv" href="0853-thread-scheduling-priorities.html"><span class="mini">← Previous</span>Thread scheduling & priorities</a><a class="nxt" href="0855-thread-sleep-yield-join.html"><span class="mini">Next →</span>Thread.sleep / yield / join</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t854";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
