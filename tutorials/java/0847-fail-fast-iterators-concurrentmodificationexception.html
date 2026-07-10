@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fail-fast iterators & ConcurrentModificationException — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 22. Collections Framework (deep)</div>
+  <div class="htitle">
+    <h1>Fail-fast iterators & ConcurrentModificationException</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Most standard collection iterators (<code>ArrayList</code>, <code>HashMap</code>, <code>HashSet</code>, and the rest — everything <strong>except</strong> the explicitly concurrent collections like <a href="0830-concurrenthashmap-internals.md"><code>ConcurrentHashMap</code></a> or <a href="0815-copyonwritearraylist.md"><code>CopyOnWriteArrayList</code></a>) are <strong>fail-fast</strong>: each collection tracks an internal <code>modCount</code> field, incremented on every structural modification (add/remove, but not a mere <code>set</code>/replace). Every iterator captures the collection&#x27;s <code>modCount</code> at creation time, and every <code>next()</code> call re-checks that the collection&#x27;s current <code>modCount</code> still matches what it captured — if a structural modification happened outside the iterator&#x27;s own <code>remove()</code> method, the counts diverge, and <code>next()</code> throws <code>ConcurrentModificationException</code> immediately, rather than continuing to operate on data whose internal layout may have shifted underneath it.</p>
+<h2>2. Why &amp; when</h2>
+<p>Continuing to iterate a collection whose structure changed mid-traversal (elements shifted, resized, or rehashed) risks skipping elements, revisiting elements, or in more severe cases, corrupting the iteration entirely — silent incorrectness that could go completely unnoticed. Fail-fast behavior trades that silent risk for a loud, immediate, unambiguous signal: <code>ConcurrentModificationException</code> the moment an unexpected structural change is detected, making bugs (a <code>remove()</code> call made directly on the collection instead of through the iterator, or accidental concurrent modification from another thread) visible during development and testing rather than manifesting as subtle data corruption in production. It&#x27;s important to understand this is explicitly a <strong>best-effort</strong> mechanism, not a hard guarantee — the JDK documentation itself states fail-fast behavior &quot;should be used only to detect bugs,&quot; never relied upon for program correctness, because there are specific situations where a genuine concurrent modification occurs but <code>ConcurrentModificationException</code> is *not* thrown.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">List&lt;String&gt; items = new ArrayList&lt;&gt;(List.of(&quot;a&quot;, &quot;b&quot;, &quot;c&quot;));
+
+for (String item : items) {
+    if (item.equals(&quot;b&quot;)) {
+        items.remove(item); // modifies the list DIRECTLY, bypassing the iterator&#x27;s own bookkeeping
+    }
+}
+// throws ConcurrentModificationException on the loop&#x27;s NEXT next() call after the remove --
+// the for-each loop&#x27;s hidden iterator detects modCount changed unexpectedly.</code></pre>
+<p>The exception is thrown by the iterator&#x27;s <code>next()</code> (or sometimes <code>hasNext()</code>, depending on the specific case), not by the <code>remove()</code> call itself — the <code>remove()</code> succeeds and the modification actually happens; it&#x27;s the *following* iteration step that discovers the mismatch and reports it.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An iterator captures the collection's modCount at creation; each next call compares it against the collection's current modCount, throwing ConcurrentModificationException on a mismatch">
+  <rect x="40" y="30" width="200" height="45" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="140" y="57" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">iterator created</text>
+  <text x="140" y="20" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">captures modCount = 3</text>
+
+  <line x1="140" y1="75" x2="140" y2="105" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a847)"/>
+
+  <rect x="40" y="110" width="200" height="45" rx="6" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+  <text x="140" y="137" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">list.remove(x) directly</text>
+  <text x="140" y="100" fill="#f85149" font-size="9" text-anchor="middle" font-family="sans-serif">collection's modCount -&gt; 4</text>
+
+  <rect x="380" y="70" width="220" height="45" rx="6" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+  <text x="490" y="97" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">next() checks: 4 != 3 -&gt; throw CME</text>
+
+  <line x1="240" y1="132" x2="375" y2="95" stroke="#f85149" stroke-width="1.5" marker-end="url(#a847r)"/>
+
+  <text x="320" y="170" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">The mismatch is detected on the NEXT call to next(), not at the moment of the actual modification</text>
+
+  <defs>
+    <marker id="a847" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="a847r" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#f85149"/></marker>
+  </defs>
+</svg>
+<p>*The iterator&#x27;s captured <code>modCount</code> is compared against the collection&#x27;s current one on every <code>next()</code> call — a mismatch throws immediately.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: exploring the exact boundaries of fail-fast detection, growing from the standard detected case, through a documented edge case where detection surprisingly does NOT fire, to a genuine cross-thread scenario proving the mechanism is best-effort, not a hard guarantee.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class StandardDetectionCase {
+    public static void main(String[] args) {
+        List&lt;String&gt; items = new ArrayList&lt;&gt;(List.of(&quot;a&quot;, &quot;b&quot;, &quot;c&quot;, &quot;d&quot;));
+
+        try {
+            for (String item : items) {
+                if (item.equals(&quot;b&quot;)) {
+                    items.remove(item); // direct removal, bypassing the iterator
+                }
+            }
+        } catch (ConcurrentModificationException e) {
+            System.out.println(&quot;caught: &quot; + e.getClass().getSimpleName() + &quot; (the standard, expected case)&quot;);
+        }
+
+        System.out.println(&quot;list after the failed attempt: &quot; + items);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java StandardDetectionCase.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>caught: ConcurrentModificationException (the standard, expected case)
+list after the failed attempt: [a, c, d]</code></pre>
+<p>This is the standard, reliably-detected case: removing <code>&quot;b&quot;</code> directly (not through the iterator) is caught on the very next <code>next()</code> call the for-each loop makes, exactly as fail-fast detection is designed to work.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class SecondToLastElementQuirk {
+    public static void main(String[] args) {
+        // A DOCUMENTED quirk: removing the SECOND-TO-LAST element can fail to throw CME at all,
+        // because hasNext() returns false (correctly, by coincidence) BEFORE the modCount check
+        // inside next() would have caught the problem -- the loop simply ends early, silently.
+        List&lt;String&gt; items = new ArrayList&lt;&gt;(List.of(&quot;a&quot;, &quot;b&quot;, &quot;c&quot;));
+
+        for (String item : items) {
+            System.out.println(&quot;visiting: &quot; + item);
+            if (item.equals(&quot;b&quot;)) { // &quot;b&quot; is the SECOND-TO-LAST element in a 3-element list
+                items.remove(item); // removes &quot;b&quot; -- list becomes [&quot;a&quot;, &quot;c&quot;], size drops from 3 to 2
+            }
+        }
+        // NOTICE: &quot;c&quot; is silently never visited, and NO exception was thrown at all!
+
+        System.out.println(&quot;final list: &quot; + items);
+        System.out.println(&quot;-&gt; &#x27;c&#x27; was silently skipped, and no ConcurrentModificationException occurred&quot;);
+        System.out.println(&quot;-&gt; this is a DOCUMENTED best-effort limitation, not a bug in your code&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java SecondToLastElementQuirk.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>visiting: a
+visiting: b
+final list: [a, c]
+-&gt; &#x27;c&#x27; was silently skipped, and no ConcurrentModificationException occurred
+-&gt; this is a DOCUMENTED best-effort limitation, not a bug in your code</code></pre>
+<p>The real-world concern added: a well-known, documented <code>ArrayList</code> iterator quirk. After removing <code>&quot;b&quot;</code> (the second-to-last of three elements), the list&#x27;s size drops to 2. The for-each loop&#x27;s next check is <code>hasNext()</code>, which compares the iterator&#x27;s internal cursor position against the list&#x27;s (now-smaller) size — and by coincidence, that check correctly (from <code>hasNext</code>&#x27;s narrow perspective) reports <code>false</code>, ending the loop *before* the <code>modCount</code> mismatch would ever have been checked inside a <code>next()</code> call. The result: <code>&quot;c&quot;</code> is silently never visited, and no exception warns that anything unusual happened at all — proof that fail-fast detection is a best-effort heuristic, not a guarantee that covers every case.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.*;
+
+public class CrossThreadModification {
+    public static void main(String[] args) throws InterruptedException {
+        List&lt;Integer&gt; sharedList = Collections.synchronizedList(new ArrayList&lt;&gt;());
+        for (int i = 0; i &lt; 1000; i++) sharedList.add(i);
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        int[] outcome = {0}; // 0 = not yet determined, 1 = CME thrown, 2 = completed without CME
+
+        Future&lt;?&gt; iterationTask = pool.submit(() -&gt; {
+            try {
+                int count = 0;
+                for (Integer value : sharedList) { // fail-fast iteration, no external synchronized block (deliberately, to show the risk)
+                    count++;
+                }
+                outcome[0] = 2;
+                System.out.println(&quot;iteration completed without exception, count: &quot; + count);
+            } catch (ConcurrentModificationException e) {
+                outcome[0] = 1;
+                System.out.println(&quot;caught ConcurrentModificationException from cross-thread modification&quot;);
+            }
+        });
+
+        pool.submit(() -&gt; {
+            for (int i = 0; i &lt; 50; i++) {
+                sharedList.add(9999); // concurrent structural modification from ANOTHER thread
+            }
+        });
+
+        pool.shutdown();
+        pool.awaitTermination(10, TimeUnit.SECONDS);
+        iterationTask.get();
+
+        System.out.println(&quot;-&gt; CME is POSSIBLE here but NOT GUARANTEED -- outcome depends on precise thread timing&quot;);
+        System.out.println(&quot;-&gt; this is exactly why the JDK docs say: never rely on CME for correctness, only for bug-detection&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java CrossThreadModification.java</code>. This is genuinely non-deterministic — depending on exact thread scheduling, this may print either outcome, and could even occasionally complete without any exception despite the concurrent modification actually happening, or throw some other unusual exception, since the JDK explicitly does not guarantee well-defined behavior once fail-fast is violated from another thread.</p>
+<p>Expected output shape (either outcome is a &quot;correct&quot; demonstration of the point):</p>
+<pre><code>caught ConcurrentModificationException from cross-thread modification
+-&gt; CME is POSSIBLE here but NOT GUARANTEED -- outcome depends on precise thread timing
+-&gt; this is exactly why the JDK docs say: never rely on CME for correctness, only for bug-detection</code></pre>
+<p>This adds the production-flavored hard case: a genuine cross-thread structural modification during iteration, with no external synchronization protecting the loop (a violation of the exact discipline required by <a href="0844-collections-synchronized-wrappers.md"><code>Collections.synchronizedList</code></a>&#x27;s own documentation). <code>ConcurrentModificationException</code> is a *likely*, but explicitly not *guaranteed*, outcome here — the JDK documentation states fail-fast behavior &quot;cannot be guaranteed&quot; in the presence of unsynchronized concurrent modification, precisely because the underlying <code>modCount</code> check itself isn&#x27;t atomic with respect to other threads, and could theoretically miss a modification, or the collection&#x27;s internal state could be observed in a genuinely inconsistent, undefined way.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>SecondToLastElementQuirk.main</code>, the quirk that best illustrates fail-fast&#x27;s best-effort nature:</p>
+<ol><li><code>items</code> starts as <code>[&quot;a&quot;, &quot;b&quot;, &quot;c&quot;]</code>, a 3-element <code>ArrayList</code>. The for-each loop&#x27;s hidden iterator begins with <code>cursor = 0</code>.</li><li>First iteration: <code>hasNext()</code> checks <code>cursor (0) != size (3)</code> — true, so <code>next()</code> returns <code>&quot;a&quot;</code> and advances <code>cursor</code> to 1. The <code>modCount</code> check inside <code>next()</code> passes (nothing has been modified yet). <code>&quot;a&quot;</code> is printed.</li><li>Second iteration: <code>hasNext()</code> checks <code>cursor (1) != size (3)</code> — true, <code>next()</code> returns <code>&quot;b&quot;</code> and advances <code>cursor</code> to 2, <code>modCount</code> check passes. <code>&quot;b&quot;</code> is printed, and because <code>item.equals(&quot;b&quot;)</code>, <code>items.remove(&quot;b&quot;)</code> is called directly — this removes the element at index 1, shifting <code>&quot;c&quot;</code> down to index 1, shrinking <code>size</code> from 3 to 2, and incrementing the list&#x27;s internal <code>modCount</code>.</li><li>Third iteration: <code>hasNext()</code> is checked next — it compares <code>cursor (2) != size (2)</code>. Since the list&#x27;s <code>remove</code> call just shrank <code>size</code> to 2, and <code>cursor</code> is also 2, this comparison is <code>false</code> — <code>hasNext()</code> reports the iteration is complete, and the for-each loop exits normally, <strong>without ever calling <code>next()</code> again</strong>.</li><li>Because the <code>modCount</code> mismatch is only ever checked *inside* <code>next()</code> (not inside <code>hasNext()</code>), and <code>hasNext()</code> returned <code>false</code> before <code>next()</code> was ever called a third time, the mismatch is never actually checked at all — no exception fires, and <code>&quot;c&quot;</code> (which shifted into index 1 but was never visited, since the loop believed it had reached the end) is silently skipped entirely.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> fail-fast detection is explicitly a <strong>best-effort</strong> mechanism, documented by the JDK as such — it is not guaranteed to detect every concurrent or unsynchronized structural modification, as the second-to-last-element removal case demonstrates concretely. Never write code whose *correctness* depends on <code>ConcurrentModificationException</code> being thrown; only ever treat it as a helpful bug-detection signal on a best-effort basis.</blockquote>
+<ul><li>Fail-fast iterators track a <code>modCount</code> captured at creation, checked against the collection&#x27;s current <code>modCount</code> on every <code>next()</code> call — a mismatch throws <code>ConcurrentModificationException</code> immediately.</li><li>The only safe way to remove elements mid-iteration is through the iterator&#x27;s own <code>remove()</code> method (see <a href="0809-iterator.md">Iterator</a>), which updates <code>modCount</code> consistently with the iterator&#x27;s own bookkeeping.</li><li>The JDK explicitly documents this as best-effort: specific edge cases (like removing the second-to-last element of a list) can silently skip detection entirely, due to <code>hasNext()</code>&#x27;s check happening before <code>next()</code>&#x27;s <code>modCount</code> comparison ever runs.</li><li>Cross-thread structural modification during unsynchronized iteration may or may not throw <code>ConcurrentModificationException</code> — the outcome is genuinely non-deterministic and must never be relied upon for program correctness.</li><li>For collections genuinely modified concurrently from multiple threads, use fail-safe or weakly-consistent alternatives instead — <a href="0815-copyonwritearraylist.md"><code>CopyOnWriteArrayList</code></a>&#x27;s snapshot iterators or <a href="0830-concurrenthashmap-internals.md"><code>ConcurrentHashMap</code></a>&#x27;s weakly consistent iterators are designed specifically to avoid this class of problem entirely, rather than merely detecting it inconsistently.</li></ul>
+  <div class="nav"><a class="prv" href="0846-collections-min-max-frequency-disjoint.html"><span class="mini">← Previous</span>Collections.min / max / frequency / disjoint</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t847";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
