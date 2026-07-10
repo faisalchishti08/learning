@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Profiling (VisualVM, async-profiler, JMH) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Profiling (VisualVM, async-profiler, JMH)</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Profiling is measuring *where* a program actually spends its CPU time, allocates memory, or blocks on locks, as opposed to guessing based on reading the source code — three complementary tools cover this in the Java ecosystem, each for a different job. <strong>VisualVM</strong> is a free, GUI-based profiler bundled with (or easily added to) most JDK distributions, good for interactive, exploratory sessions: attach to a running process, watch live CPU/memory graphs, and take an on-demand CPU or memory snapshot. <strong>async-profiler</strong> is a low-overhead, sampling-based command-line profiler that works by periodically capturing stack traces (including native and JIT-compiled frames, which some profilers miss) without needing bytecode instrumentation, making it accurate and safe enough for production use, and it commonly outputs a <strong>flame graph</strong> — a visualization where each box is a stack frame, width represents time spent, and stacking represents call depth, making the most expensive call paths visually obvious at a glance. <strong>JMH</strong> (Java Microbenchmark Harness) is different in kind from the other two: rather than profiling a whole running application, it precisely measures the performance of one small, isolated piece of code (a single method or algorithm), carefully accounting for JIT warm-up, dead-code elimination, and other pitfalls that make naive hand-rolled &quot;time it with <code>System.nanoTime()</code>&quot; benchmarks unreliable.</p>
+<h2>2. Why &amp; when</h2>
+<p>Use VisualVM for a first, interactive look at an application you don&#x27;t yet have a specific hypothesis about — its live graphs are good for spotting an obvious CPU spike or memory growth pattern, and its snapshot-based CPU profiler is fine for a quick check, though its instrumentation-based sampling can itself introduce enough overhead to skew results under heavier load. Reach for async-profiler once you have a specific performance question and need trustworthy numbers, especially on a production or production-like system — its low overhead (achieved via a technique closer to how native profilers work, avoiding some of the classic Java profiler pitfalls like &quot;safepoint bias,&quot; where samples are only ever taken at safepoints, skewing results toward whatever code happens to reach safepoints most often) makes it safe to run against real, loaded services, and its flame-graph output is often the fastest way to see &quot;which specific method call path burns the most CPU&quot; without wading through a table of numbers. Reach for JMH specifically when the question is &quot;which of these two implementations of the same small operation is actually faster&quot; — a question that&#x27;s surprisingly easy to get a *wrong* answer to via naive benchmarking, since the JIT compiler&#x27;s warm-up behavior, escape analysis, and dead-code elimination can all silently invalidate a hand-rolled timing loop&#x27;s result without any obvious sign that something went wrong.</p>
+<h2>3. Core concept</h2>
+<pre><code>VisualVM:        attach to running JVM -&gt; live graphs (CPU%, heap, threads)
+                  -&gt; on-demand snapshot -&gt; exploratory, good first look, some overhead
+
+async-profiler:   attach or launch with agent -&gt; low-overhead SAMPLING of stack traces
+                  -&gt; flame graph output:
+                       widest boxes = most time spent in that call path
+                       stacked boxes = deeper call chain
+                  -&gt; safe for production, precise answers to &quot;where does time go&quot;
+
+JMH:              @Benchmark-annotated method -&gt; harness handles JIT warm-up,
+                  iterations, dead-code elimination avoidance -&gt; statistically
+                  sound throughput/latency numbers for ONE isolated piece of code
+                  -&gt; answers &quot;is implementation A actually faster than B&quot;, NOT
+                     &quot;where does my whole app spend time&quot;</code></pre>
+<p>Each tool answers a different-shaped question: VisualVM and async-profiler both profile a *running application&#x27;s* behavior (the difference being overhead and precision), while JMH measures one *isolated piece of code* in a controlled, repeatable way — using JMH to profile a whole app, or a whole-app profiler to compare two algorithm variants precisely, is a common but avoidable mismatch.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A flame graph with stacked boxes representing call depth and box width representing time spent, with the widest box at the top highlighting the most expensive call path" >
+  <rect x="20" y="130" width="600" height="25" fill="#1c2430" stroke="#8b949e"/>
+  <text x="320" y="147" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">main()</text>
+
+  <rect x="30" y="100" width="250" height="25" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="155" y="117" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">processRequest()</text>
+  <rect x="290" y="100" width="150" height="25" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="365" y="117" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">logEvent()</text>
+
+  <rect x="40" y="70" width="220" height="25" fill="#1c2430" stroke="#f0883e"/>
+  <text x="150" y="87" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">parseJson()  -- WIDEST: most CPU time</text>
+
+  <rect x="50" y="40" width="120" height="25" fill="#1c2430" stroke="#6db33f"/>
+  <text x="110" y="57" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">Regex.matches()</text>
+
+  <text x="320" y="20" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Width = time spent; height = call stack depth</text>
+</svg>
+<p>*In a flame graph, the widest box at each level shows exactly which call path consumes the most CPU time — here, <code>parseJson</code> dominates, with <code>Regex.matches</code> as its main contributor.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: identify a genuine CPU hot spot and confirm a fix using all three tools in the roles they&#x27;re actually best at — starting with a basic CPU-heavy workload profiled interactively, then locating the exact hot method with a flame graph, then using JMH to rigorously confirm that a proposed faster implementation is actually faster, not just apparently faster.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.regex.Pattern;
+
+public class ProfilingTargetWorkload {
+    static final Pattern SLOW_PATTERN = Pattern.compile(&quot;^[a-zA-Z0-9]+@[a-zA-Z0-9.]+\\.[a-zA-Z]{2,}$&quot;);
+
+    public static void main(String[] args) {
+        long matches = 0;
+        for (int i = 0; i &lt; 2_000_000; i++) {
+            String candidate = &quot;user&quot; + i + &quot;@example.com&quot;;
+            if (SLOW_PATTERN.matcher(candidate).matches()) {
+                matches++;
+            }
+        }
+        System.out.println(&quot;matched: &quot; + matches);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ProfilingTargetWorkload.java</code> (JDK 17+); while it runs, attach VisualVM (<code>jvisualvm</code>) to its PID and watch the live CPU graph.</p>
+<p>Expected output:</p>
+<pre><code>matched: 2000000</code></pre>
+<p>VisualVM&#x27;s live CPU graph shows sustained near-100% CPU usage for the duration of the run — a clear, if unspecific, signal that this program is CPU-bound, without yet pinpointing exactly which method is responsible.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// (Same ProfilingTargetWorkload.java as Level 1 -- this level profiles it with async-profiler for a precise answer)</code></pre>
+<p><strong>How to run:</strong> <code>java -agentpath:/path/to/libasyncProfiler.so=start,event=cpu,file=profile.html ProfilingTargetWorkload.java</code> (JDK 17+; async-profiler is a separate download, attached via the <code>-agentpath</code> JVM flag, producing an interactive flame-graph HTML file directly).</p>
+<p>Expected observation when opening <code>profile.html</code>:</p>
+<pre><code>Flame graph shows:
+  main() -&gt; Pattern.matches() -&gt; Matcher.matches() -- by far the widest box,
+  consuming the vast majority of total CPU samples</code></pre>
+<p>The real-world concern added: unlike VisualVM&#x27;s live percentage graph, async-profiler&#x27;s flame graph pinpoints the *exact* call path — here, regex matching via <code>Pattern</code>/<code>Matcher</code> — as the dominant CPU consumer, with low enough overhead that this measurement is trustworthy even under sustained, realistic load, giving a specific, actionable target (this particular regex call) rather than a general &quot;the CPU is busy&quot; observation.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import org.openjdk.jmh.annotations.*;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
+
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
+@State(Scope.Thread)
+public class EmailValidationBenchmark {
+    static final Pattern REGEX_PATTERN = Pattern.compile(&quot;^[a-zA-Z0-9]+@[a-zA-Z0-9.]+\\.[a-zA-Z]{2,}$&quot;);
+    String candidate = &quot;user12345@example.com&quot;;
+
+    @Benchmark
+    public boolean regexApproach() {
+        return REGEX_PATTERN.matcher(candidate).matches();
+    }
+
+    @Benchmark
+    public boolean manualApproach() {
+        // A hand-written, non-regex validation of the same rough shape --
+        // the proposed &quot;faster&quot; alternative to be rigorously compared against regex.
+        int at = candidate.indexOf(&#x27;@&#x27;);
+        if (at &lt;= 0 || at == candidate.length() - 1) return false;
+        int dot = candidate.lastIndexOf(&#x27;.&#x27;);
+        return dot &gt; at + 1 &amp;&amp; dot &lt; candidate.length() - 2;
+    }
+}</code></pre>
+<p><strong>How to run:</strong> requires a JMH project setup (Maven/Gradle with the <code>jmh-core</code>/<code>jmh-generator-annprocess</code> dependencies); run via <code>mvn clean package &amp;&amp; java -jar target/benchmarks.jar EmailValidationBenchmark</code> (JDK 17+; JMH cannot run as a bare single-file script since it relies on annotation-processing code generation).</p>
+<p>Expected output shape (illustrative — a real run prints detailed warm-up iteration data first):</p>
+<pre><code>Benchmark                                Mode  Cnt    Score    Error  Units
+EmailValidationBenchmark.regexApproach   avgt   25  185.412 ± 3.201  ns/op
+EmailValidationBenchmark.manualApproach  avgt   25   12.847 ± 0.415  ns/op</code></pre>
+<p>The production-flavored hard case: JMH&#x27;s harness automatically runs enough warm-up iterations for the JIT compiler to reach steady-state performance before measuring, runs enough measured iterations to report a statistically meaningful error margin, and structures the benchmark so the JIT cannot simply eliminate the &quot;unused&quot; return value as dead code — giving a rigorous, trustworthy confirmation that the hand-written <code>manualApproach</code> is genuinely roughly 14x faster than the regex-based approach identified as the hot spot in Level 2, not just an artifact of a naively-written, unreliable timing loop.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing the full investigation across all three tools, in the order a real performance investigation would follow:</p>
+<ol><li><code>ProfilingTargetWorkload</code> runs and VisualVM&#x27;s live CPU graph (Level 1) confirms the program is genuinely CPU-bound throughout its run — this is the coarse, first-pass signal that justifies looking deeper, but it doesn&#x27;t yet say *which* method is responsible.</li><li>Re-running the identical workload under async-profiler (Level 2) produces a flame graph whose widest box, at the appropriate call depth, is <code>Pattern.matches()</code>/<code>Matcher.matches()</code> — this is the precise, low-overhead answer to &quot;where specifically does the CPU time go,&quot; obtained via sampling real stack traces rather than instrumentation, and trustworthy enough to act on.</li><li>Having identified regex matching as the hot call path, a developer proposes a hand-written, non-regex alternative (<code>manualApproach</code>) that checks for the presence and rough position of <code>@</code> and <code>.</code> directly via <code>String.indexOf</code>/<code>lastIndexOf</code> — a plausible-looking optimization, but one whose actual speed advantage should not be assumed without rigorous measurement, since naive ad hoc timing (a raw <code>System.nanoTime()</code> loop with no JIT warm-up accounted for) is notoriously easy to get wrong for exactly this kind of small, hot method.</li><li>JMH&#x27;s <code>@Benchmark</code>-annotated methods (Level 3) are each run through the harness&#x27;s full protocol: several warm-up iterations first (letting the JIT compiler fully optimize both methods before any iteration counts toward the reported result), followed by several measured iterations whose results are averaged and reported with an explicit error margin (<code>±3.201</code>, <code>±0.415</code>) — this error margin is itself important, since it tells you whether the reported difference between the two approaches is statistically meaningful or could just be noise.</li><li>The benchmark&#x27;s design also avoids two classic JMH pitfalls implicitly: each <code>@Benchmark</code> method *returns* its result (rather than computing and discarding it), which prevents the JIT compiler&#x27;s dead-code elimination from noticing the result is unused and optimizing the entire computation away — a benchmark that silently measures &quot;how fast is doing nothing&quot; instead of the intended operation is one of the most common ways naive Java benchmarking goes wrong.</li><li>The final reported numbers — regex approach at ~185ns/op versus the manual approach at ~13ns/op — give a rigorous, trustworthy confirmation of roughly a 14x speedup, closing the loop from &quot;the app is CPU-bound&quot; (VisualVM) to &quot;specifically because of this regex call&quot; (async-profiler) to &quot;and this specific alternative implementation is a genuine, statistically-sound improvement, not just an illusion of one&quot; (JMH).</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> writing a &quot;quick benchmark&quot; as a bare loop with <code>System.nanoTime()</code> calls before and after, with no JIT warm-up phase and a discarded/unused result, is a well-known trap — the JIT compiler may not have finished optimizing the code being measured yet (making early iterations look artificially slow) or may eliminate the entire computation as dead code (making it look impossibly fast); always use JMH for any benchmark whose result will actually inform a real decision.</blockquote>
+<ul><li>VisualVM is a GUI-based, exploratory profiler good for a first, interactive look at CPU/memory behavior in a running JVM, at the cost of some measurement overhead.</li><li>async-profiler is a low-overhead, sampling-based profiler that produces flame graphs, precise and safe enough for production use, and the right tool once you need to pinpoint exactly which call path is expensive.</li><li>JMH (Java Microbenchmark Harness) measures one small, isolated piece of code rigorously, correctly handling JIT warm-up and avoiding dead-code-elimination pitfalls that make naive hand-rolled benchmarks unreliable — it answers &quot;is A faster than B,&quot; not &quot;where does my whole app spend time.&quot;</li><li>In a flame graph, box width represents time spent and stacking represents call depth — the widest box at any level is the most expensive call path at that point in the stack.</li><li>Never trust a hand-rolled <code>System.nanoTime()</code> benchmark for a decision that matters — always reach for JMH, since JIT warm-up and dead-code elimination can silently invalidate naive timing loops without any obvious sign of error.</li><li>See <a href="0919-jit-compilation-c1-client-c2-server.md">JIT compilation (C1/C2)</a> for why warm-up specifically matters to JMH&#x27;s design, and <a href="0942-java-flight-recorder-jfr.md">Java Flight Recorder (JFR)</a> for a complementary, continuous-recording alternative to on-demand profiling sessions.</li></ul>
+  <div class="nav"><a class="prv" href="0944-gc-logging.html"><span class="mini">← Previous</span>GC logging</a><a class="nxt" href="0946-outofmemoryerror-types.html"><span class="mini">Next →</span>OutOfMemoryError types</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t945";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GC logging — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>GC logging</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>GC logging is the JVM&#x27;s built-in facility for writing a structured, human-readable record of every garbage-collection event as it happens, controlled via the unified logging framework introduced in Java 9 (<code>-Xlog:gc*</code>, replacing the older, differently-formatted <code>-XX:+PrintGCDetails</code> flags used before it). Each line records what kind of collection ran (young, mixed, full), how long it took, and how much memory was reclaimed — enough detail, read over time, to build a complete picture of a running application&#x27;s GC behavior: pause frequency, pause duration trends, and whether the collector is keeping up with the application&#x27;s allocation rate or is instead sliding toward increasingly expensive full collections. It is the simplest, lowest-overhead, and most universally-available of all the GC diagnostic tools covered so far — unlike a <a href="0940-heap-dumps-analysis.md">heap dump</a> or <a href="0942-java-flight-recorder-jfr.md">JFR recording</a>, a GC log is just plain text, viewable with <code>tail -f</code>, <code>grep</code>, or any log-aggregation tool already in place for a service&#x27;s other logs.</p>
+<h2>2. Why &amp; when</h2>
+<p>GC logging is worth enabling essentially everywhere in production, by default — its overhead is negligible (it&#x27;s just writing a line of text per GC event, an event that already happened and would have occurred regardless of whether it&#x27;s logged), and the value of having a continuous historical record when something eventually does go wrong for a long-running service is high enough that omitting it is rarely justified. It is the first place to look whenever a GC-related question arises: is this service&#x27;s occasional latency spike correlated with GC pauses at all, is old-generation occupancy trending upward over the service&#x27;s lifetime (pointing at a <a href="0938-memory-leaks-in-managed-memory.md">memory leak</a>), or did a specific incident coincide with a &quot;Pause Full&quot; fallback event. Because it&#x27;s plain text and low-overhead, it&#x27;s also the natural first-line diagnostic tool to check before reaching for something heavier like a <a href="0942-java-flight-recorder-jfr.md">JFR recording</a> or <a href="0940-heap-dumps-analysis.md">heap dump</a> — those tools answer &quot;why,&quot; while the GC log usually answers &quot;whether, when, and roughly how bad&quot; quickly enough to decide if the heavier tools are even needed.</p>
+<h2>3. Core concept</h2>
+<pre><code>-Xlog:gc*:file=gc.log:time,uptime,level,tags:filecount=5,filesize=10M
+
+Breaking down the flag:
+  gc*              -- log all GC-related tags (gc, gc+heap, gc+ergo, etc.)
+  file=gc.log       -- write to this file instead of stdout
+  time,uptime,...   -- decorators: what metadata to prefix each line with
+  filecount=5,filesize=10M  -- log ROTATION: keep 5 files of 10MB each, oldest overwritten
+
+Sample log lines:
+[2026-07-10T10:15:22.001+0000][0.512s][info][gc] GC(0) Pause Young (Normal) ... 12M-&gt;4M(64M) 1.821ms
+[2026-07-10T10:15:30.204+0000][8.715s][info][gc] GC(14) Pause Full (G1 Compaction Pause) ... 60M-&gt;22M(64M) 210ms</code></pre>
+<p>Log rotation (<code>filecount</code>/<code>filesize</code>) matters for any long-running service: without it, an always-on GC log for a service running for months would grow without bound — exactly the kind of unbounded-growth mistake worth avoiding on the *logging* side, even while using logging to hunt for unbounded growth elsewhere.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A GC log file being written continuously, with rotation kicking in once the current file reaches its size limit, cycling through a fixed number of files" >
+  <rect x="20" y="40" width="120" height="40" fill="#1c2430" stroke="#6db33f"/>
+  <text x="80" y="64" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">gc.log.0 (active, filling)</text>
+
+  <rect x="160" y="40" width="100" height="40" fill="#1c2430" stroke="#8b949e"/>
+  <text x="210" y="64" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">gc.log.1</text>
+
+  <rect x="280" y="40" width="100" height="40" fill="#1c2430" stroke="#8b949e"/>
+  <text x="330" y="64" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">gc.log.2</text>
+
+  <rect x="400" y="40" width="100" height="40" fill="#1c2430" stroke="#8b949e"/>
+  <text x="450" y="64" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">gc.log.3</text>
+
+  <rect x="520" y="40" width="100" height="40" fill="none" stroke="#f0883e" stroke-dasharray="3"/>
+  <text x="570" y="64" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">gc.log.4 (oldest, next overwritten)</text>
+
+  <path d="M 620 80 Q 620 130 320 130 Q 20 130 20 80" fill="none" stroke="#8b949e" stroke-dasharray="4"/>
+  <text x="320" y="150" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">when gc.log.0 fills, it rotates to .1, pushing the oldest file out -- bounded total disk usage</text>
+</svg>
+<p>*Log rotation keeps GC logging safe to leave on indefinitely — bounded total disk usage, no unbounded growth of its own.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: use GC logging to answer a real diagnostic question end to end — starting with basic logging enabled on a workload, then adding rotation for a realistic long-running configuration, then parsing the log programmatically to extract a specific, actionable metric (a trend in pause duration over time).</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class GcLoggingBasicWorkload {
+    public static void main(String[] args) throws InterruptedException {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        for (int round = 0; round &lt; 20; round++) {
+            for (int i = 0; i &lt; 5_000; i++) {
+                retained.add(new byte[300]);
+            }
+            Thread.sleep(100);
+        }
+        System.out.println(&quot;done, retained=&quot; + retained.size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc -Xmx64m GcLoggingBasicWorkload.java</code> (JDK 17+).</p>
+<p>Expected output (interleaved with the program&#x27;s own output, on stdout since no <code>file=</code> was given):</p>
+<pre><code>[0.021s][info][gc] GC(0) Pause Young (Normal) (G1 Evacuation Pause) 8M-&gt;2M(64M) 1.4ms
+[0.045s][info][gc] GC(1) Pause Young (Normal) (G1 Evacuation Pause) 9M-&gt;2M(64M) 1.2ms
+...
+done, retained=100000</code></pre>
+<p>With no <code>file=</code> specified, GC log lines print directly to standard output alongside the program&#x27;s own prints — fine for quick, ad hoc checks, but not what you&#x27;d want for a long-running production service, which is exactly what the next level addresses.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// (Same GcLoggingBasicWorkload.java as Level 1 -- this level changes only the logging CONFIGURATION)</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc*:file=gc.log:time,uptime,level,tags:filecount=5,filesize=1M -Xmx64m GcLoggingBasicWorkload.java</code> (JDK 17+; <code>gc*</code> widens the tag set beyond just <code>gc</code>, and rotation keeps the log bounded).</p>
+<p>Expected content of <code>gc.log</code> after the run:</p>
+<pre><code>[2026-07-10T10:20:01.102+0000][0.021s][info][gc,heap] Heap region size: 1M
+[2026-07-10T10:20:01.105+0000][0.023s][info][gc          ] GC(0) Pause Young (Normal) (G1 Evacuation Pause) 8M-&gt;2M(64M) 1.4ms
+[2026-07-10T10:20:01.106+0000][0.024s][info][gc,heap     ] GC(0) DefNew: 8M-&gt;2M(9M)
+...</code></pre>
+<p>The real-world concern added: the wider <code>gc*</code> tag set captures additional detail (heap region sizing, per-generation breakdowns) beyond the plain <code>gc</code> tag alone, <code>file=gc.log</code> redirects output away from the application&#x27;s own stdout entirely (essential once a service runs for months and you need a persistent record, not just terminal scrollback), and <code>filecount=5,filesize=1M</code> bounds total disk usage so the log itself never becomes an unbounded-growth problem.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
+
+public class GcLogPauseAnalyzer {
+    public static void main(String[] args) throws Exception {
+        // Parses gc.log (produced by a prior run) and reports pause-duration trend over time.
+        Pattern pausePattern = Pattern.compile(&quot;Pause \\w+.*?([\\d.]+)ms\\s*$&quot;);
+        List&lt;Double&gt; pausesMs = new ArrayList&lt;&gt;();
+
+        for (String line : Files.readAllLines(Paths.get(&quot;gc.log&quot;))) {
+            Matcher m = pausePattern.matcher(line.trim());
+            if (m.find()) {
+                pausesMs.add(Double.parseDouble(m.group(1)));
+            }
+        }
+
+        if (pausesMs.isEmpty()) {
+            System.out.println(&quot;no pause events found -- run the workload with GC logging enabled first&quot;);
+            return;
+        }
+
+        double firstHalfAvg = average(pausesMs.subList(0, pausesMs.size() / 2));
+        double secondHalfAvg = average(pausesMs.subList(pausesMs.size() / 2, pausesMs.size()));
+        System.out.printf(&quot;parsed %d pause events%n&quot;, pausesMs.size());
+        System.out.printf(&quot;first-half avg pause: %.2fms, second-half avg pause: %.2fms%n&quot;, firstHalfAvg, secondHalfAvg);
+        if (secondHalfAvg &gt; firstHalfAvg * 1.5) {
+            System.out.println(&quot;WARNING: pause durations trending upward -- investigate possible memory pressure or leak&quot;);
+        } else {
+            System.out.println(&quot;pause durations stable across the run&quot;);
+        }
+    }
+
+    static double average(List&lt;Double&gt; vals) {
+        return vals.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> first generate a log with a genuinely worsening trend: <code>java -Xlog:gc*:file=gc.log -Xmx48m GcLoggingBasicWorkload.java</code> (a tight heap makes later pauses costlier as retained data grows relative to available space), then run <code>java GcLogPauseAnalyzer.java</code> (JDK 17+) in the same directory.</p>
+<p>Expected output shape:</p>
+<pre><code>parsed 22 pause events
+first-half avg pause: 1.35ms, second-half avg pause: 4.80ms
+WARNING: pause durations trending upward -- investigate possible memory pressure or leak</code></pre>
+<p>The production-flavored hard case: rather than eyeballing a potentially thousands-of-lines-long log file by hand, this parses every pause event&#x27;s duration with a regular expression and computes a concrete, quantified trend (first-half versus second-half average pause time) — turning &quot;does this log look concerning&quot; into an automatable, alertable check exactly the kind a real monitoring pipeline would run periodically against a service&#x27;s live GC log.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>GcLogPauseAnalyzer.main</code> end to end:</p>
+<ol><li>The program opens <code>gc.log</code> (produced by an earlier run of the workload under GC logging) and reads it line by line, applying a regular expression designed to match the pause-duration suffix common to G1&#x27;s various pause-type log lines (<code>Pause Young (Normal) ... 1.4ms</code>, <code>Pause Full ... 210ms</code>, and so on).</li><li>Every line that matches contributes its parsed millisecond value to the <code>pausesMs</code> list, in the exact chronological order the events occurred in the log — since GC log lines are always written in time order, this list is implicitly a time series of pause durations across the run.</li><li>The list is split into its first and second halves, and each half&#x27;s average pause duration is computed separately — a simple but effective way to detect a *trend* (pauses getting progressively worse over time) rather than just an overall average, which could mask a worsening pattern by averaging it together with an earlier, healthier period.</li><li>If the second half&#x27;s average pause duration exceeds the first half&#x27;s by more than 50%, the program prints an explicit warning — this threshold is a simple heuristic standing in for the kind of automated alerting rule a real monitoring system would apply to a live, continuously-updating GC log, flagging exactly the &quot;old-generation occupancy pressure trending upward&quot; symptom associated with a genuine <a href="0938-memory-leaks-in-managed-memory.md">memory leak</a> or simply an undersized heap.</li><li>The final printed summary — parsed event count, both half-averages, and the resulting verdict — gives a complete, quantified answer to &quot;is this service&#x27;s GC behavior degrading over time,&quot; derived entirely from the same plain-text log file that was already being written with negligible overhead throughout the original run, without needing a heap dump, thread dump, or JFR recording to reach this first-pass conclusion.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> unified logging&#x27;s tag syntax changed significantly from the older, pre-Java-9 GC logging flags (<code>-XX:+PrintGCDetails</code>, <code>-XX:+PrintGCDateStamps</code>, and similar) — a startup script or deployment configuration inherited from an older JDK version may still reference these removed flags, which (like <a href="0931-cms-removed.md">CMS</a>&#x27;s flags) will cause the JVM to fail to start on modern versions; always audit legacy GC logging flags specifically when upgrading a service across major JDK versions.</blockquote>
+<ul><li>GC logging (<code>-Xlog:gc*</code>, unified logging since Java 9) writes a plain-text, low-overhead, continuous record of every collection event — pause type, duration, and memory reclaimed — and is worth enabling by default in production.</li><li>It&#x27;s the natural first-line diagnostic: cheap enough to always have on, and answers &quot;whether, when, and roughly how bad&quot; quickly enough to decide whether heavier tools (<a href="0940-heap-dumps-analysis.md">heap dumps</a>, <a href="0942-java-flight-recorder-jfr.md">JFR</a>) are needed.</li><li><code>file=</code> redirects output to a dedicated file instead of stdout, and <code>filecount</code>/<code>filesize</code> bound total disk usage via rotation — essential for any long-running service, so the log itself never becomes an unbounded-growth problem.</li><li>Because it&#x27;s plain text, GC logs are straightforward to parse programmatically (e.g., with a simple regex) to compute concrete trends like pause-duration drift over time, which can feed directly into automated monitoring and alerting.</li><li>Legacy pre-Java-9 GC logging flags (<code>-XX:+PrintGCDetails</code> and similar) are removed on modern JDKs and will prevent the JVM from starting — audit for them specifically when upgrading a service&#x27;s JDK version.</li><li>See <a href="0937-gc-tuning-flags-ergonomics.md">GC tuning flags &amp; ergonomics</a> for how log evidence like this feeds directly into deciding which tuning flag to apply, and <a href="0942-java-flight-recorder-jfr.md">Java Flight Recorder (JFR)</a> for a richer, event-correlated alternative once plain GC logs point at something worth investigating further.</li></ul>
+  <div class="nav"><a class="prv" href="0943-java-mission-control-jmc.html"><span class="mini">← Previous</span>Java Mission Control (JMC)</a><a class="nxt" href="0945-profiling-visualvm-async-profiler-jmh.html"><span class="mini">Next →</span>Profiling (VisualVM, async-profiler, JMH)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t944";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
