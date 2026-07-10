@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Serial GC — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Serial GC</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Serial GC is the simplest garbage collector shipped with the JVM: it uses a single thread to do all collection work, in both the young generation (via <a href="0928-mark-sweep-mark-compact-copying.md">copying</a>) and the old generation (via mark-compact), and it stops every application thread completely while it runs — a full <a href="0936-stop-the-world-pauses.md">stop-the-world pause</a>, with no attempt at concurrency or parallelism anywhere in the algorithm. It is enabled with <code>-XX:+UseSerialGC</code>. There is no coordination overhead to manage, no worker-thread pool to synchronize, and no concurrent bookkeeping to maintain, which makes it the collector with the lowest per-collection overhead of any HotSpot GC — at the direct cost of every pause being fully single-threaded, so its duration scales with live-set size and is not reduced by extra CPU cores.</p>
+<h2>2. Why &amp; when</h2>
+<p>Serial GC exists for environments where the tradeoffs of more sophisticated collectors don&#x27;t pay off: small heaps (roughly under a few hundred megabytes), single-core or resource-constrained machines (containers with a CPU limit of 1, embedded devices), and short-lived client-style applications where startup time and memory footprint matter more than minimizing pause duration under load. Because it has no thread-coordination machinery, it has the smallest memory footprint and fastest startup of any collector, and on a genuinely single-core machine it is often *no slower* than a &quot;parallel&quot; collector would be anyway, since there are no spare cores for a worker pool to exploit. It becomes the wrong choice as soon as the heap grows large or low pause times matter, because its pauses are strictly proportional to live-set size with no way to spread the work across cores — a multi-gigabyte heap under Serial GC can produce multi-second pauses that would be sliced down to a fraction of that under <a href="0930-parallel-gc.md">Parallel GC</a> or a concurrent collector like <a href="0932-g1-gc.md">G1</a>.</p>
+<h2>3. Core concept</h2>
+<pre><code>Application threads running...
+        |
+        v
+[ALL APPLICATION THREADS STOPPED] &lt;-- stop-the-world begins
+        |
+        v
+Single GC thread:
+   Young gen:  copying collection (Eden -&gt; Survivor, or Survivor -&gt; Survivor/Old)
+   Old gen:    mark-compact (mark reachable, slide survivors together)
+        |
+        v
+[APPLICATION THREADS RESUME] &lt;-- stop-the-world ends</code></pre>
+<p>Every phase — marking, copying, compacting, reference processing — is executed by exactly one thread, so pause duration is a direct, roughly linear function of how much live data the collector has to trace and move; no core count changes that.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Serial GC pause: all application threads halt while a single GC thread performs young-generation copying and old-generation mark-compact, then threads resume">
+  <text x="320" y="18" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif">Serial GC — one thread does everything</text>
+  <rect x="20" y="35" width="180" height="30" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="110" y="54" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">App threads running</text>
+
+  <rect x="220" y="35" width="200" height="120" fill="#1c2430" stroke="#f0883e"/>
+  <text x="320" y="52" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">STOP-THE-WORLD</text>
+  <rect x="235" y="65" width="170" height="35" fill="none" stroke="#6db33f"/>
+  <text x="320" y="86" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">GC thread #1: copy young gen</text>
+  <rect x="235" y="105" width="170" height="35" fill="none" stroke="#6db33f"/>
+  <text x="320" y="126" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">GC thread #1: mark-compact old gen</text>
+
+  <rect x="440" y="35" width="180" height="30" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="530" y="54" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">App threads resume</text>
+
+  <text x="320" y="195" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Only ONE worker thread — pause length scales with live-set size, not core count</text>
+</svg>
+<p>*A single thread performs the entire collection while every application thread is completely halted.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: measure how Serial GC&#x27;s pause behavior responds to heap size and retained-data volume, starting with a baseline allocation workload, then adding sustained retention to force old-generation collection, then comparing against a more parallel collector on the same workload to show the concrete difference a single worker thread makes.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class SerialGcBaseline {
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 2_000_000; i++) {
+            byte[] garbage = new byte[64]; // short-lived, collected by young-gen copying
+        }
+        System.out.println(&quot;done -- check -Xlog:gc output for &#x27;Pause Young (Serial ...)&#x27; events&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc -XX:+UseSerialGC SerialGcBaseline.java</code> (JDK 17+).</p>
+<p>Expected output shape:</p>
+<pre><code>[0.03s][info][gc] GC(0) Pause Young (Serial Young Collection) ... 4M-&gt;1M(16M) 3.1ms
+[0.05s][info][gc] GC(1) Pause Young (Serial Young Collection) ... 5M-&gt;1M(16M) 2.8ms
+...
+done -- check -Xlog:gc output for &#x27;Pause Young (Serial ...)&#x27; events</code></pre>
+<p>With only short-lived garbage, all collections stay in the young generation and each pause is small, since the copying step only touches whatever tiny fraction of Eden happens to still be alive.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class SerialGcOldGenPressure {
+    public static void main(String[] args) {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 200_000; i++) {
+            retained.add(new byte[200]); // promoted into old gen over time, forcing a full GC eventually
+        }
+        System.out.println(&quot;retained: &quot; + retained.size());
+        System.out.println(&quot;check the log for a &#x27;Pause Full (Serial Old ...)&#x27; event -- note its duration&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc -Xmx64m -XX:+UseSerialGC SerialGcOldGenPressure.java</code> (JDK 17+; a small heap forces the old generation to fill and trigger a full mark-compact collection).</p>
+<p>Expected output shape:</p>
+<pre><code>[0.02s][info][gc] GC(0) Pause Young (Serial Young Collection) ... 4M-&gt;1M(16M) 2.9ms
+...
+[0.31s][info][gc] GC(14) Pause Full (Serial Old Collection) ... 60M-&gt;22M(64M) 145ms
+retained: 200000
+check the log for a &#x27;Pause Full (Serial Old ...)&#x27; event -- note its duration</code></pre>
+<p>The real-world concern added: sustained retention forces objects to survive long enough to be promoted to the old generation, which eventually triggers a single-threaded full mark-compact — visibly the most expensive pause type Serial GC produces, since it must trace and physically relocate every surviving object in one pass on one thread.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class SerialVsParallelComparison {
+    public static void main(String[] args) {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        long start = System.nanoTime();
+        for (int i = 0; i &lt; 400_000; i++) {
+            retained.add(new byte[300]);
+            if (i % 50_000 == 0) {
+                for (int j = 0; j &lt; 20_000; j++) {
+                    byte[] churn = new byte[128]; // interleave young-gen churn
+                }
+            }
+        }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;retained: &quot; + retained.size() + &quot;, elapsed: &quot; + elapsedMs + &quot;ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> run twice on a multi-core machine and compare total elapsed time and full-GC pause durations from <code>-Xlog:gc</code>: <code>java -Xlog:gc -Xmx128m -XX:+UseSerialGC SerialVsParallelComparison.java</code> versus <code>java -Xlog:gc -Xmx128m -XX:+UseParallelGC SerialVsParallelComparison.java</code> (JDK 17+).</p>
+<p>Expected output shape (illustrative — exact numbers vary by machine):</p>
+<pre><code>(SerialGC):    retained: 400000, elapsed: 810ms   -- fewer, longer single-threaded full-GC pauses
+(ParallelGC):  retained: 400000, elapsed: 540ms   -- same algorithm family, multi-threaded, shorter pauses</code></pre>
+<p>The production-flavored hard case: on a multi-core machine with a genuinely large retained data set, Serial GC&#x27;s single-threaded full collections become measurably slower than Parallel GC&#x27;s multi-threaded equivalent doing the same underlying mark-compact work — demonstrating concretely why Serial GC is recommended only for small heaps or genuinely single-core environments where that extra parallelism has nothing to exploit anyway.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>SerialGcOldGenPressure.main</code> end to end:</p>
+<ol><li>The loop allocates 200,000 small <code>byte[]</code> objects, retaining every one of them in <code>retained</code> — nothing here is garbage, so every object survives every young-generation collection it&#x27;s caught in.</li><li>Each time Eden fills, a young-generation pause fires: the single GC thread stops all application threads, copies every live object out of Eden (and the active Survivor space) into the other Survivor space, and resumes the application — since <code>retained</code> keeps every object alive, this copying step gets more expensive as the list grows, because more and more objects must be copied on each pass rather than being reclaimed as garbage.</li><li>Objects that survive enough young-generation collections are promoted into the old generation, per the usual generational-GC lifecycle — this promoted population keeps growing since nothing in <code>retained</code> is ever released.</li><li>Once the old generation itself fills (accelerated here by the small <code>-Xmx64m</code> cap), a full collection triggers: the single GC thread marks every reachable object across the *entire* heap, then compacts the old generation by sliding survivors together and fixing up references — this is the &quot;Pause Full (Serial Old Collection)&quot; line in the log, and it is the single most expensive event Serial GC produces, since it is single-threaded and touches the whole heap.</li><li>The program prints the final retained count and exits — logically identical output regardless of which collector ran, but the log above will show the tell-tale long single-threaded full-GC pause, which is the entire point of the exercise: to make Serial GC&#x27;s behavior directly observable in the log rather than purely theoretical.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> Serial GC&#x27;s pauses do not get shorter on a machine with more CPU cores — since it only ever uses one thread for collection, adding cores helps your *application* run in parallel but does nothing for GC pause duration; picking Serial GC on a large multi-core server with a big heap is usually a configuration mistake, not a deliberate choice.</blockquote>
+<ul><li>Serial GC uses exactly one thread for both young-generation copying and old-generation mark-compact, and stops all application threads for the full duration of every collection.</li><li>It has the lowest overhead and smallest footprint of any HotSpot collector, making it the right choice for small heaps, single-core machines, and short-lived client applications.</li><li>Pause duration scales with live-set size, not with available CPU cores — on a large heap with plenty of spare cores, <a href="0930-parallel-gc.md">Parallel GC</a> will almost always outperform it.</li><li>The most expensive event it produces is a full collection (mark-compact across the entire old generation), visible in <code>-Xlog:gc</code> output as <code>Pause Full (Serial Old Collection)</code>.</li><li>See <a href="0928-mark-sweep-mark-compact-copying.md">mark-sweep / mark-compact / copying</a> for the underlying algorithms Serial GC applies single-threadedly, and <a href="0936-stop-the-world-pauses.md">stop-the-world pauses</a> for why halting every application thread is necessary at all.</li></ul>
+  <div class="nav"><a class="prv" href="0928-mark-sweep-mark-compact-copying.html"><span class="mini">← Previous</span>Mark-sweep / mark-compact / copying</a><a class="nxt" href="0930-parallel-gc.html"><span class="mini">Next →</span>Parallel GC</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t929";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

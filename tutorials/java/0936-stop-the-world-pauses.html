@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stop-the-world pauses — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Stop-the-world pauses</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A stop-the-world (STW) pause is a period during which the JVM suspends every application thread simultaneously so that some internal operation — most commonly a garbage-collection phase, but also things like deoptimization, biased-lock revocation, or certain JFR/thread-dump operations — can run against a heap and thread state that is guaranteed not to change underneath it. The mechanism behind this is the <strong>safepoint</strong>: a point in generated code where a thread&#x27;s state is fully known and consistent (no half-finished object allocation, no in-progress stack unwinding), and where the thread can be safely parked. Before a stop-the-world operation can begin, every application thread must first reach a safepoint — the JVM inserts periodic safepoint-poll checks into compiled code specifically so this can happen promptly, and a thread that is, say, in a very long uninterrupted loop with no safepoint poll can actually delay the *entire* pause for every other thread until it finally reaches one.</p>
+<h2>2. Why &amp; when</h2>
+<p>Stop-the-world pauses exist because many GC operations (most notably relocating/compacting live objects, or finalizing which objects are reachable) are fundamentally unsafe to perform while application threads might simultaneously be reading or writing the very references and objects being moved or classified — without pausing, a thread could observe a half-moved object, a stale reference, or an inconsistent view of what&#x27;s reachable, leading to memory corruption or incorrect program behavior. Every collector must reckon with this tradeoff somewhere: <a href="0929-serial-gc.md">Serial</a> and <a href="0930-parallel-gc.md">Parallel GC</a> accept full, generation-wide stop-the-world pauses as the simplest correct approach; <a href="0932-g1-gc.md">G1</a> shrinks the *scope* of each pause to a handful of regions rather than a whole generation; and <a href="0933-zgc.md">ZGC</a> and <a href="0934-shenandoah.md">Shenandoah</a> go further still, using clever barrier mechanisms to make even object relocation itself safe to do concurrently, leaving only tiny root-synchronization pauses that stay sub-millisecond regardless of heap size. Understanding stop-the-world pauses matters practically whenever you are diagnosing latency spikes in a Java application — a request that mysteriously takes 200ms longer than usual, with no application-level explanation, is very often a stop-the-world GC pause (or a safepoint delayed by one slow-to-reach-safepoint thread) rather than a bug in application logic.</p>
+<h2>3. Core concept</h2>
+<pre><code>Thread A: -----running-----[safepoint poll: reached]---[PARKED]---[resume]-----
+Thread B: --running--------[safepoint poll: reached]---[PARKED]---[resume]-----
+Thread C: -------------------------running-------------[safepoint poll: reached, FINALLY]---[PARKED]--[resume]--
+                                                          ^
+                                     Thread C was slow to reach a safepoint --
+                                     it delayed the START of the pause for A and B too,
+                                     even though they were ready earlier (&quot;time to safepoint&quot;).
+
+                        [ALL THREADS NOW PARKED -- the actual STW operation runs here] --[resume all]</code></pre>
+<p>The pause an application experiences is not just &quot;the GC work itself&quot; — it also includes however long the *slowest* thread took to reach a safepoint, a component often called &quot;time to safepoint&quot; (TTSP), which can itself dominate the perceived pause under certain workloads.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Three application threads running at different speeds, each reaching a safepoint poll at a different time, with the actual stop-the-world operation only beginning once the slowest thread arrives">
+  <text x="320" y="16" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Time-to-safepoint: the pause waits for the SLOWEST thread</text>
+
+  <line x1="20" y1="40" x2="280" y2="40" stroke="#79c0ff" stroke-width="3"/>
+  <circle cx="280" cy="40" r="4" fill="#79c0ff"/>
+  <text x="150" y="35" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">Thread A: reaches safepoint early</text>
+
+  <line x1="20" y1="75" x2="320" y2="75" stroke="#6db33f" stroke-width="3"/>
+  <circle cx="320" cy="75" r="4" fill="#6db33f"/>
+  <text x="170" y="70" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">Thread B: reaches safepoint a bit later</text>
+
+  <line x1="20" y1="110" x2="460" y2="110" stroke="#f0883e" stroke-width="3"/>
+  <circle cx="460" cy="110" r="4" fill="#f0883e"/>
+  <text x="220" y="105" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">Thread C: long loop, slow to reach safepoint -- DELAYS EVERYONE</text>
+
+  <line x1="460" y1="10" x2="460" y2="150" stroke="#8b949e" stroke-dasharray="4"/>
+  <rect x="460" y="130" width="120" height="30" fill="#1c2430" stroke="#f0883e"/>
+  <text x="520" y="149" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">STW work begins HERE</text>
+</svg>
+<p>*The stop-the-world pause cannot start until every thread reaches a safepoint — the slowest thread sets the floor for when the pause can even begin.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: observe stop-the-world pause behavior directly — starting with a baseline workload showing normal GC pauses, then deliberately introducing a long safepoint-poll-starved loop to inflate time-to-safepoint, then measuring and comparing the actual application-visible pause impact with JFR-style timing.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class StwBaseline {
+    public static void main(String[] args) {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 200_000; i++) {
+            retained.add(new byte[200]);
+        }
+        System.out.println(&quot;retained: &quot; + retained.size());
+        System.out.println(&quot;check -Xlog:safepoint for safepoint pause entries&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:safepoint -Xmx64m StwBaseline.java</code> (JDK 17+).</p>
+<p>Expected output shape:</p>
+<pre><code>[0.02s][info][safepoint] Safepoint &quot;G1CollectForAllocation&quot;, Time since last: 15234567 ns, Reaching safepoint: 120 ns, At safepoint: 1823000 ns, Total: 1943000 ns
+...
+retained: 200000
+check -Xlog:safepoint for safepoint pause entries</code></pre>
+<p>Each safepoint log entry shows exactly the two components discussed above: &quot;Reaching safepoint&quot; (time to safepoint, waiting for all threads to arrive) and &quot;At safepoint&quot; (the actual paused work, here a GC collection).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">public class StwSlowSafepointArrival {
+    public static void main(String[] args) throws InterruptedException {
+        Thread slowThread = new Thread(() -&gt; {
+            long sum = 0;
+            // A tight counted loop over primitives can, in some JIT-compiled forms,
+            // go a while between safepoint polls -- simulating a &quot;slow to reach safepoint&quot; thread.
+            for (long i = 0; i &lt; 5_000_000_000L; i++) {
+                sum += i;
+            }
+            System.out.println(&quot;slow thread finished: &quot; + sum);
+        });
+        slowThread.start();
+
+        Thread.sleep(200); // let the slow thread get running
+        System.gc(); // request a GC -- this must wait for the slow thread to reach a safepoint
+        System.out.println(&quot;GC requested from main thread&quot;);
+        slowThread.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:safepoint -Xlog:gc StwSlowSafepointArrival.java</code> (JDK 17+).</p>
+<p>Expected output shape:</p>
+<pre><code>GC requested from main thread
+[0.45s][info][safepoint] Safepoint &quot;System.gc&quot;, Reaching safepoint: 48200000 ns, At safepoint: 900000 ns, Total: 49100000 ns
+slow thread finished: ...</code></pre>
+<p>The real-world concern added: the &quot;Reaching safepoint&quot; component here is disproportionately large relative to &quot;At safepoint&quot; — the actual GC work itself is quick, but waiting for the long-running counted loop to reach its next safepoint poll dominates the total pause, directly illustrating that a single badly-behaved thread can inflate a pause well beyond what the GC work alone would take.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class StwImpactMeasurement {
+    public static void main(String[] args) throws InterruptedException {
+        AtomicLong maxObservedGapNs = new AtomicLong(0);
+        Thread latencyProbe = new Thread(() -&gt; {
+            long last = System.nanoTime();
+            while (!Thread.currentThread().isInterrupted()) {
+                long now = System.nanoTime();
+                long gap = now - last;
+                maxObservedGapNs.updateAndGet(prev -&gt; Math.max(prev, gap));
+                last = now;
+            }
+        });
+        latencyProbe.setDaemon(true);
+        latencyProbe.start();
+
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 2_000_000; i++) {
+            retained.add(new byte[500]);
+        }
+
+        latencyProbe.interrupt();
+        System.out.println(&quot;retained: &quot; + retained.size());
+        System.out.println(&quot;max observed scheduling gap (proxy for worst STW pause): &quot;
+                + (maxObservedGapNs.get() / 1_000_000) + &quot;ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> run under a collector with large pauses versus one with small pauses to see the probe&#x27;s measured gap change accordingly: <code>java -Xmx128m -XX:+UseSerialGC StwImpactMeasurement.java</code> versus <code>java -Xmx128m -XX:+UseG1GC StwImpactMeasurement.java</code> (JDK 17+).</p>
+<p>Expected output shape (illustrative):</p>
+<pre><code>(SerialGC): retained: 2000000, max observed scheduling gap (proxy for worst STW pause): 210ms
+(G1):       retained: 2000000, max observed scheduling gap (proxy for worst STW pause): 18ms</code></pre>
+<p>The production-flavored hard case: a busy-spinning &quot;latency probe&quot; thread that records the largest gap between its own consecutive timestamp checks acts as a simple, direct proxy for the worst stop-the-world pause any thread in the JVM actually experienced — since during a real STW pause, even this probe thread is parked and cannot record a timestamp, so the gap it observes directly reflects the pause duration, letting you compare collectors&#x27; actual worst-case application-visible impact empirically rather than only from GC log summaries.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>StwSlowSafepointArrival.main</code> end to end:</p>
+<ol><li>The main thread starts <code>slowThread</code>, which begins a long, tight, primitive counted loop summing values into <code>sum</code> — this loop contains no allocation, no method calls, and no I/O, meaning it may go a comparatively long stretch between the safepoint-poll checks the JIT compiler inserts into generated code.</li><li>After a brief sleep to let <code>slowThread</code> get running, the main thread calls <code>System.gc()</code>, which requests a full garbage collection — but a garbage collection is a stop-the-world operation, so before it can actually begin, the JVM must first bring *every* application thread (including <code>slowThread</code>) to a safepoint.</li><li>Because <code>slowThread</code> is deep in its counted loop, it does not reach its next safepoint-poll check immediately — the JVM&#x27;s safepoint-synchronization mechanism must wait for it, and this waiting period is exactly what the &quot;Reaching safepoint&quot; component of the safepoint log entry measures.</li><li>Once <code>slowThread</code> finally does reach a safepoint poll, it parks itself, and — with every thread now at a safepoint — the actual stop-the-world garbage collection runs (the &quot;At safepoint&quot; component), which is comparatively brief since the live-object volume here is small.</li><li>After the collection completes, all threads (including <code>slowThread</code>) resume; <code>slowThread</code> finishes its loop and prints its sum, and the main thread&#x27;s <code>join()</code> call returns, letting the program exit — the log evidence shows clearly that the *total* pause the application experienced was dominated by time-to-safepoint, not by the GC work itself, which is the core lesson: a stop-the-world pause&#x27;s duration is not purely a function of collector algorithm or heap size — a single thread that is slow to reach a safepoint can inflate it arbitrarily.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a tight loop over primitives with no method calls, allocations, or field writes can, in specific JIT-compiled forms, go surprisingly long between safepoint-poll checks — this is a real, historically significant source of &quot;GC pauses&quot; that are actually mostly time-to-safepoint, not GC work; if a stop-the-world pause looks far larger than the reported GC work justifies, checking <code>-Xlog:safepoint</code>&#x27;s &quot;Reaching safepoint&quot; component (not just &quot;At safepoint&quot;) is the correct next diagnostic step.</blockquote>
+<ul><li>A stop-the-world pause suspends every application thread so a GC (or other JVM-internal) operation can run against a guaranteed-stable heap and thread state.</li><li>Threads can only be paused at a safepoint — a point where their state is fully consistent — and the JVM must wait for the *slowest* thread to reach one before the actual pause work can begin (time-to-safepoint, or TTSP).</li><li>Different collectors accept stop-the-world pauses of very different scope: <a href="0929-serial-gc.md">Serial</a>/<a href="0930-parallel-gc.md">Parallel GC</a> pause for a whole generation, <a href="0932-g1-gc.md">G1</a> pauses for a handful of regions, and <a href="0933-zgc.md">ZGC</a>/<a href="0934-shenandoah.md">Shenandoah</a> pause only for brief root synchronization.</li><li>Diagnosing an unexpectedly large pause should check both components separately: <code>-Xlog:safepoint</code>&#x27;s &quot;Reaching safepoint&quot; (time-to-safepoint) versus &quot;At safepoint&quot; (the actual operation) — a large gap in the former points to a specific slow-to-reach-safepoint thread, not a GC algorithm problem.</li><li>See <a href="0937-gc-tuning-flags-ergonomics.md">GC tuning flags &amp; ergonomics</a> for the flags that influence pause frequency and duration directly, and <a href="0940-heap-dumps-analysis.md">heap dumps &amp; analysis</a> for diagnosing what&#x27;s actually being retained when pauses are driven by genuine memory pressure rather than safepoint delay.</li></ul>
+  <div class="nav"><a class="prv" href="0935-epsilon-gc.html"><span class="mini">← Previous</span>Epsilon GC</a><a class="nxt" href="0937-gc-tuning-flags-ergonomics.html"><span class="mini">Next →</span>GC tuning flags & ergonomics</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t936";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

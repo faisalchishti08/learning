@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Heap dumps & analysis — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Heap dumps & analysis</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A heap dump is a complete, point-in-time snapshot of every object on the JVM heap — every instance, its field values, and every reference between objects — written out to a binary <code>.hprof</code> file. It can be triggered manually (<code>jcmd &lt;pid&gt; GC.heap_dump dump.hprof</code>, or the older <code>jmap -dump:file=dump.hprof &lt;pid&gt;</code>), taken automatically on an out-of-memory failure (<code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/path</code>), or captured programmatically. Once captured, a heap dump is analyzed with a tool such as Eclipse Memory Analyzer (MAT), VisualVM, or JDK Mission Control — these tools load the dump and let you query it: which objects consume the most retained memory, what is the shortest path from any given object back to a GC root (the reference chain keeping it alive), and which class has the most live instances. This is the primary practical tool for diagnosing exactly the kind of <a href="0938-memory-leaks-in-managed-memory.md">logical memory leak</a> discussed earlier — turning &quot;heap usage keeps growing&quot; into &quot;this specific static field is holding this specific collection, which is holding these specific stale entries.&quot;</p>
+<h2>2. Why &amp; when</h2>
+<p>Heap dump analysis becomes necessary once you&#x27;ve confirmed — via GC logs or monitoring — that heap usage is trending upward over time (a real leak, not just normal fluctuation), but you don&#x27;t yet know *which* object graph is responsible; without a heap dump, you&#x27;re limited to guessing based on code review, while a heap dump gives you ground truth from the actual running process. The standard workflow is to capture two dumps some time apart under representative load (or one dump right before an <code>OutOfMemoryError</code>, via <code>-XX:+HeapDumpOnOutOfMemoryError</code>), then use a tool&#x27;s comparison or &quot;dominator tree&quot; view to find which classes&#x27; retained-size grew the most between the two snapshots — the dominator tree is particularly useful because it shows *retained* size (an object plus everything only reachable through it) rather than just *shallow* size (the object&#x27;s own fields), which is what actually matters for finding what&#x27;s keeping large amounts of memory alive. It is generally not something to reach for casually in a routine debugging session — capturing a full heap dump on a large heap can itself pause the application for a nontrivial time and produces a large file — but it is exactly the right tool once a genuine, otherwise-unexplained memory-growth problem has been identified.</p>
+<h2>3. Core concept</h2>
+<pre><code>Heap dump analysis workflow:
+
+1. Capture:   jcmd &lt;pid&gt; GC.heap_dump dump1.hprof   (or on OOM: -XX:+HeapDumpOnOutOfMemoryError)
+2. Wait/load  (let the suspected leak grow further)
+3. Capture:   jcmd &lt;pid&gt; GC.heap_dump dump2.hprof
+4. Load both dumps in MAT / VisualVM / JMC
+5. Compare &quot;dominator tree&quot; between dump1 and dump2:
+     - which class&#x27;s RETAINED size grew the most?
+     - &quot;Path to GC Roots&quot; on a sample instance of that class
+       -&gt; reveals the EXACT reference chain keeping it alive
+6. Fix: break/bound that specific reference chain in the code</code></pre>
+<p>The dominator tree&#x27;s &quot;retained size&quot; (an object plus everything exclusively reachable through it) is the key metric — a small object that&#x27;s the sole gateway to a huge subgraph can show a tiny shallow size but an enormous retained size, and that&#x27;s exactly the object worth investigating.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A dominator tree showing a small cache object with a large retained size because it is the sole path keeping a huge collection of stale entries reachable">
+  <rect x="20" y="70" width="120" height="40" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="80" y="94" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">GC Root</text>
+
+  <rect x="200" y="70" width="140" height="40" fill="#1c2430" stroke="#f0883e"/>
+  <text x="270" y="88" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">static cache field</text>
+  <text x="270" y="102" fill="#f0883e" font-size="8" text-anchor="middle" font-family="sans-serif">shallow: 32 bytes</text>
+
+  <rect x="420" y="20" width="180" height="140" fill="none" stroke="#8b949e" stroke-dasharray="3"/>
+  <text x="510" y="35" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">everything ONLY reachable</text>
+  <text x="510" y="48" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">through the cache field</text>
+  <rect x="440" y="60" width="60" height="25" fill="#1c2430" stroke="#8b949e"/>
+  <rect x="510" y="60" width="60" height="25" fill="#1c2430" stroke="#8b949e"/>
+  <rect x="440" y="95" width="60" height="25" fill="#1c2430" stroke="#8b949e"/>
+  <rect x="510" y="95" width="60" height="25" fill="#1c2430" stroke="#8b949e"/>
+  <text x="510" y="150" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">retained size: 400MB</text>
+
+  <line x1="140" y1="90" x2="200" y2="90" stroke="#79c0ff" marker-end="url(#a)"/>
+  <line x1="340" y1="90" x2="420" y2="90" stroke="#f0883e" marker-end="url(#a)"/>
+</svg>
+<p>*A tiny object can have an enormous retained size if it is the sole gateway keeping a large subgraph reachable — exactly what the dominator tree view surfaces.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: produce and then diagnose a genuine leak using real heap-dump tooling — starting with a basic leaking program instrumented to make dumping convenient, then capturing and comparing two dumps to identify the growing class, then using &quot;path to GC roots&quot; to pinpoint the exact reference chain and confirm the fix.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class HeapDumpTarget {
+    static final Map&lt;String, byte[]&gt; leak = new HashMap&lt;&gt;();
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;PID: &quot; + ProcessHandle.current().pid());
+        for (int round = 0; round &lt; 100; round++) {
+            for (int i = 0; i &lt; 5_000; i++) {
+                leak.put(&quot;k-&quot; + round + &quot;-&quot; + i, new byte[1000]);
+            }
+            System.out.println(&quot;round &quot; + round + &quot;, leak.size()=&quot; + leak.size());
+            Thread.sleep(500); // pause between rounds so you have time to attach jcmd
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java HeapDumpTarget.java</code> (JDK 17+), then in a second terminal, note the printed PID and run <code>jcmd &lt;PID&gt; GC.heap_dump dump1.hprof</code> a few rounds in, then again later as <code>dump2.hprof</code>.</p>
+<p>Expected output shape (first terminal):</p>
+<pre><code>PID: 41823
+round 0, leak.size()=5000
+round 1, leak.size()=10000
+...</code></pre>
+<p>This just establishes a live, running, deliberately-leaking target process with a stable PID you can attach to — the actual analysis happens externally, against the <code>.hprof</code> files it produces.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class HeapDumpTargetWithHint {
+    static final Map&lt;String, byte[]&gt; leak = new HashMap&lt;&gt;();
+    static final List&lt;Object&gt; decoyShortLived = new ArrayList&lt;&gt;(); // to show a NON-growing class too
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;PID: &quot; + ProcessHandle.current().pid());
+        for (int round = 0; round &lt; 100; round++) {
+            for (int i = 0; i &lt; 5_000; i++) {
+                leak.put(&quot;k-&quot; + round + &quot;-&quot; + i, new byte[1000]);
+            }
+            decoyShortLived.clear(); // this one does NOT grow -- for comparison in the dumps
+            decoyShortLived.add(new int[10]);
+            System.out.println(&quot;round &quot; + round + &quot;, leak.size()=&quot; + leak.size());
+            Thread.sleep(500);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> same as Level 1 — <code>java HeapDumpTargetWithHint.java</code>, capturing <code>dump1.hprof</code> around round 10 and <code>dump2.hprof</code> around round 60, via <code>jcmd &lt;PID&gt; GC.heap_dump &lt;file&gt;</code>.</p>
+<p>Expected outcome when both dumps are opened in MAT (or VisualVM) and compared:</p>
+<pre><code>Histogram/dominator comparison:
+  byte[]           -- shallow count grew from ~50,000 to ~300,000 instances  (the leak)
+  int[]            -- stays at 1 instance in decoyShortLived               (not the leak)</code></pre>
+<p>The real-world concern added: a real analysis session always involves more than one candidate class — <code>decoyShortLived</code> deliberately behaves like a normal, correctly-bounded collection (cleared every round) so that comparing the two dumps&#x27; histograms makes the actual leaking class (<code>byte[]</code>, retained via <code>leak</code>) stand out clearly against a class that is *not* growing, exactly as a real leak investigation would need to distinguish signal from noise.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class HeapDumpTargetForRootPathAnalysis {
+    static final Map&lt;String, List&lt;byte[]&gt;&gt; leak = new HashMap&lt;&gt;();
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;PID: &quot; + ProcessHandle.current().pid());
+        for (int round = 0; round &lt; 200; round++) {
+            List&lt;byte[]&gt; bucket = leak.computeIfAbsent(&quot;bucket-&quot; + (round % 20), k -&gt; new ArrayList&lt;&gt;());
+            for (int i = 0; i &lt; 2_000; i++) {
+                bucket.add(new byte[1000]); // nested inside a List, inside a Map -- a realistic multi-level chain
+            }
+            System.out.println(&quot;round &quot; + round + &quot;, buckets=&quot; + leak.size());
+            Thread.sleep(300);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Xmx256m HeapDumpTargetForRootPathAnalysis.java</code> (JDK 17+; deliberately small <code>-Xmx</code> so the program eventually throws <code>OutOfMemoryError</code> and automatically dumps to <code>/tmp</code> without needing manual <code>jcmd</code> timing).</p>
+<p>Expected outcome (after the automatic dump is produced and opened in MAT):</p>
+<pre><code>Exception in thread &quot;main&quot; java.lang.OutOfMemoryError: Java heap space
+Dumping heap to /tmp/java_pid41900.hprof ...
+Heap dump file created
+
+In MAT: &quot;Path to GC Roots&quot; on the largest byte[] instance shows:
+  byte[] &lt;- ArrayList &lt;- HashMap$Node &lt;- HashMap &quot;leak&quot; (static field) &lt;- Class HeapDumpTargetForRootPathAnalysis &lt;- GC Root (class loader)</code></pre>
+<p>The production-flavored hard case: <code>-XX:+HeapDumpOnOutOfMemoryError</code> captures the dump automatically at the exact moment of failure, with no manual timing needed, and the &quot;Path to GC Roots&quot; view exposes the *full, multi-level* reference chain — object, inside a <code>List</code>, inside a <code>Map</code>, referenced by a static field, referenced by the class itself — which is precisely the kind of nested chain a real production leak (a per-key bucketed cache, for instance) actually produces, and precisely what the tool is for: turning a single suspicious instance into the exact code location responsible.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing the diagnostic process using <code>HeapDumpTargetForRootPathAnalysis</code> end to end:</p>
+<ol><li>The program starts and prints its PID, then begins its main loop, allocating twenty rotating &quot;buckets&quot; (one <code>ArrayList&lt;byte[]&gt;</code> per bucket key) inside the static <code>leak</code> map — every allocated <code>byte[1000]</code> is added to whichever bucket the current round maps to, and since neither the buckets nor the map are ever cleared, every single array allocated across the entire run remains reachable.</li><li>As rounds proceed and the <code>-Xmx256m</code> cap approaches, GC pauses become more frequent and reclaim less and less memory each time, since an ever-larger fraction of the heap is now genuinely live (reachable via <code>leak</code>) rather than garbage — this is the same observable symptom discussed in <a href="0938-memory-leaks-in-managed-memory.md">memory leaks in managed memory</a>, here driven all the way to failure.</li><li>Eventually, an allocation attempt fails outright: the JVM throws <code>OutOfMemoryError: Java heap space</code>, and because <code>-XX:+HeapDumpOnOutOfMemoryError</code> was set, it automatically writes a complete heap snapshot to the configured path *before* the process exits — capturing the exact state that led to the failure, with no need to have manually timed a <code>jcmd</code> call.</li><li>Loading that dump into MAT and viewing the dominator tree (or a simple class histogram) immediately surfaces <code>byte[]</code> as the class with by far the largest total retained size — far larger than any other class in the dump, which narrows the investigation from &quot;the whole heap&quot; to &quot;one specific class&quot; in a single step.</li><li>Selecting a representative <code>byte[]</code> instance and choosing &quot;Path to GC Roots&quot; walks backward through the exact reference chain keeping it alive: the array is held by an <code>ArrayList</code> (one of the twenty buckets), which is held as a value in a <code>HashMap$Node</code>, which is part of the static <code>leak</code> field on the <code>HeapDumpTargetForRootPathAnalysis</code> class, which is itself reachable from a GC root (the class loader that loaded this class, which is always reachable while the class remains loaded).</li><li>This chain is the complete answer to &quot;why is this object still alive?&quot; — and it points directly at the specific code responsible: the static <code>leak</code> field with no eviction policy — confirming that the fix is exactly the same kind discussed for <a href="0938-memory-leaks-in-managed-memory.md">memory leaks</a>: bound the map&#x27;s size, add a TTL, or otherwise ensure old buckets are removed, none of which requires touching GC configuration at all.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> taking a heap dump on a large, actively-used heap can itself cause a significant pause (heap dumping typically needs to walk the entire live object graph, often during a stop-the-world-like phase) — capturing dumps casually and frequently on a production system under load can itself become a performance problem; prefer taking them sparingly, ideally around a suspected leak&#x27;s growth window, or automatically and only on actual failure via <code>-XX:+HeapDumpOnOutOfMemoryError</code>.</blockquote>
+<ul><li>A heap dump is a complete snapshot of every live object, its fields, and every reference between objects, captured to a <code>.hprof</code> file via <code>jcmd ... GC.heap_dump</code>, <code>jmap</code>, or automatically on OOM via <code>-XX:+HeapDumpOnOutOfMemoryError</code>.</li><li>Analysis tools (Eclipse MAT, VisualVM, JDK Mission Control) let you compare two dumps&#x27; histograms to find which class&#x27;s instance count or retained size grew the most over time — the direct signal of a real leak.</li><li>The dominator tree&#x27;s &quot;retained size&quot; (not shallow size) is the key metric: a small object can retain an enormous subgraph if it&#x27;s the sole gateway to it.</li><li>&quot;Path to GC Roots&quot; on a specific instance reveals the exact, concrete reference chain keeping it alive, translating a suspicious object directly into the specific field or collection in the code responsible.</li><li>Capturing dumps on a large production heap has real performance cost — prefer targeted, infrequent captures (or automatic on-failure capture) over routine, frequent dumping.</li><li>See <a href="0938-memory-leaks-in-managed-memory.md">memory leaks in managed memory</a> for the conceptual background this tooling is used to diagnose, and <a href="0936-stop-the-world-pauses.md">stop-the-world pauses</a> for why capturing a dump itself can briefly affect a running application.</li></ul>
+  <div class="nav"><a class="prv" href="0939-jvm-flags-xms-xmx-xss.html"><span class="mini">← Previous</span>JVM flags (-Xms/-Xmx/-Xss)</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t940";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

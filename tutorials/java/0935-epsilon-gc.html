@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Epsilon GC — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Epsilon GC</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Epsilon (available since Java 11, via <code>-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC</code>) is a deliberately minimal, &quot;do-nothing&quot; garbage collector: it allocates memory exactly like any other collector&#x27;s young generation, but it never reclaims anything at all. Once the heap fills up, the JVM throws an <code>OutOfMemoryError</code> and terminates — there is no marking, no sweeping, no compaction, no collection cycle of any kind. It exists specifically as a control and measurement tool rather than a production reclaiming strategy, giving developers a way to measure a program&#x27;s true, unmediated allocation cost and memory footprint with zero GC-induced noise in the measurement.</p>
+<h2>2. Why &amp; when</h2>
+<p>Epsilon is useful in a small number of specific, well-understood scenarios: performance testing, where you want to measure the absolute lower bound on allocation and pause overhead a real collector could ever achieve (since any real collector adds *some* overhead on top of what Epsilon shows); extremely short-lived processes where the entire program runs and exits well before the heap could plausibly fill (a serverless function invocation, a one-shot CLI tool) — memory that&#x27;s never reclaimed doesn&#x27;t matter if the process is about to end anyway; and last-resort testing of memory pressure — deliberately using Epsilon to find the exact allocation pattern that would cause a program to run out of memory, without any collector intervening to delay or mask the failure. It is never appropriate for a real, long-running production service with unbounded or even just large allocation volume, since there is no reclamation mechanism whatsoever — the heap fills monotonically and the JVM will eventually and unavoidably crash with an <code>OutOfMemoryError</code>.</p>
+<h2>3. Core concept</h2>
+<pre><code>Normal collector:  allocate -&gt; [heap fills] -&gt; COLLECT (reclaim garbage) -&gt; allocate -&gt; ...
+                                                     ^^^^^^^^^^^^^^^^^^^^^^
+                                                     repeats indefinitely
+
+Epsilon:           allocate -&gt; allocate -&gt; allocate -&gt; ... -&gt; [heap fills] -&gt; OutOfMemoryError
+                               (no collection step exists at all)</code></pre>
+<p>Epsilon is, in effect, a baseline: whatever allocation throughput and latency a program achieves under Epsilon represents the theoretical ceiling any real collector&#x27;s overhead is subtracted from.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Heap occupancy under a normal collector oscillating between allocation and collection versus Epsilon GC which rises monotonically until an OutOfMemoryError">
+  <text x="150" y="16" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Normal collector: heap occupancy over time</text>
+  <polyline points="20,60 60,30 65,55 110,25 115,50 160,20 165,48 210,22 215,50 260,25" fill="none" stroke="#6db33f" stroke-width="2"/>
+  <text x="150" y="90" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">sawtooth: allocate up, collect down, repeat</text>
+
+  <text x="480" y="16" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Epsilon GC: heap occupancy over time</text>
+  <line x1="380" y1="60" x2="600" y2="20" stroke="#f0883e" stroke-width="2"/>
+  <text x="490" y="90" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">straight line up -- NO collection, ever</text>
+
+  <line x1="600" y1="20" x2="600" y2="5" stroke="#f0883e" stroke-dasharray="2"/>
+  <text x="600" y="130" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">heap full -&gt; OutOfMemoryError, JVM exits</text>
+</svg>
+<p>*Where a normal collector&#x27;s heap occupancy oscillates as it repeatedly reclaims garbage, Epsilon&#x27;s occupancy rises monotonically until the heap is exhausted.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: measure a program&#x27;s raw, uncollected allocation behavior — starting with a basic Epsilon-enabled workload that intentionally stays under the heap limit, then deliberately exceeding it to observe the guaranteed <code>OutOfMemoryError</code>, then using Epsilon as a measurement baseline compared against a real collector on identical allocation-heavy code.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class EpsilonWithinBudget {
+    public static void main(String[] args) {
+        // Allocate a bounded, known amount that comfortably fits the heap -- no collection needed.
+        for (int i = 0; i &lt; 100_000; i++) {
+            byte[] data = new byte[100];
+        }
+        System.out.println(&quot;done -- completed without needing any garbage collection at all&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xmx64m EpsilonWithinBudget.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>done -- completed without needing any garbage collection at all</code></pre>
+<p>Since total allocation here (roughly 10 MB across the loop, mostly immediately eligible for reclamation under a real collector) stays well under the 64 MB heap cap, Epsilon never needs to reclaim anything — the program runs to completion exactly as if garbage were free, since Epsilon never even attempts to identify or reclaim it.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">public class EpsilonExceedingBudget {
+    public static void main(String[] args) {
+        long count = 0;
+        try {
+            for (int i = 0; i &lt; 100_000_000; i++) {
+                byte[] data = new byte[1024]; // 1KB per iteration -- will exceed a small heap
+                count++;
+            }
+        } finally {
+            System.out.println(&quot;allocated &quot; + count + &quot; objects before running out of memory&quot;);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xmx32m EpsilonExceedingBudget.java</code> (JDK 17+; deliberately small heap to force exhaustion quickly).</p>
+<p>Expected output shape:</p>
+<pre><code>Exception in thread &quot;main&quot; java.lang.OutOfMemoryError: Java heap space
+        at EpsilonExceedingBudget.main(EpsilonExceedingBudget.java:5)
+allocated 31234 objects before running out of memory</code></pre>
+<p>The real-world concern added: this demonstrates Epsilon&#x27;s defining, deliberate limitation directly — because nothing is ever reclaimed, even short-lived garbage accumulates permanently, and a workload that a real collector would run indefinitely under (since the <code>byte[] data</code> objects are immediately unreachable after each iteration) instead exhausts a 32 MB heap in well under a second.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">public class EpsilonAsMeasurementBaseline {
+    public static void main(String[] args) {
+        long start = System.nanoTime();
+        long total = 0;
+        for (int i = 0; i &lt; 500_000; i++) {
+            byte[] data = new byte[128];
+            total += data.length;
+        }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;total bytes touched: &quot; + total + &quot;, elapsed: &quot; + elapsedMs + &quot;ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> compare raw allocation throughput against a real collector on identical code and a heap sized to comfortably fit the whole run without exhausting: <code>java -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xmx512m EpsilonAsMeasurementBaseline.java</code> versus <code>java -XX:+UseG1GC -Xmx512m EpsilonAsMeasurementBaseline.java</code> (JDK 17+).</p>
+<p>Expected output shape (illustrative):</p>
+<pre><code>(Epsilon): total bytes touched: 64000000, elapsed: 38ms   -- zero GC overhead, pure allocation cost
+(G1):      total bytes touched: 64000000, elapsed: 52ms   -- includes real collection cycles&#x27; overhead</code></pre>
+<p>The production-flavored hard case: with the heap sized generously enough that even a real collector barely needs to run, the remaining gap between Epsilon&#x27;s time and G1&#x27;s time isolates roughly what G1&#x27;s bookkeeping and any collection cycles it did run actually cost — exactly the kind of controlled, GC-overhead-isolating measurement Epsilon is built to enable.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>EpsilonExceedingBudget.main</code> end to end:</p>
+<ol><li>The loop begins allocating 1 KB <code>byte[]</code> arrays in a tight loop, intending to run 100 million iterations — under any real collector, each <code>data</code> array becomes unreachable garbage the very next iteration (nothing retains a reference to it), so a real young-generation collector would reclaim this space continuously and the loop could, in principle, run indefinitely.</li><li>Under Epsilon, none of that reclamation happens — every single allocated array&#x27;s memory remains committed and unavailable for reuse for the entire remainder of the program&#x27;s life, regardless of reachability, because Epsilon has no marking or sweeping logic at all.</li><li>As iterations proceed, heap occupancy therefore rises monotonically and linearly with the total bytes allocated so far — roughly 1 KB per iteration — with no oscillation or reclamation ever bringing it back down.</li><li>Once occupancy reaches the <code>-Xmx32m</code> cap, the very next allocation attempt fails outright: the JVM throws <code>OutOfMemoryError: Java heap space</code> at the exact allocation site (<code>new byte[1024]</code> inside the loop), since there is no fallback strategy — no full GC to attempt, no compaction to try — Epsilon simply has nothing left to offer.</li><li>The <code>finally</code> block still runs (as Java guarantees), printing however many objects were successfully allocated before the failure — this count is deterministic given a fixed heap size and per-iteration allocation size, since Epsilon&#x27;s occupancy growth is exactly linear and predictable, unlike a real collector&#x27;s occupancy, whose failure point (if it ever failed at all) would depend on live-set size, not total allocation volume.</li><li>The program then terminates with a non-zero exit status, having demonstrated exactly the tradeoff Epsilon makes explicit: total absence of collection overhead, in exchange for a hard, unavoidable ceiling on total lifetime allocation volume.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> Epsilon requires <code>-XX:+UnlockExperimentalVMOptions</code> alongside <code>-XX:+UseEpsilonGC</code> — it is intentionally gated as an experimental option, a signal that it is not meant for casual or accidental production use; running a real service under Epsilon by mistake (for example, via a copy-pasted benchmarking flag left in a deployment config) will eventually and unavoidably crash the process once the heap fills, with no warning beyond the eventual <code>OutOfMemoryError</code>.</blockquote>
+<ul><li>Epsilon allocates memory normally but never reclaims any of it — there is no marking, sweeping, or compaction step at all, by design.</li><li>Once the heap fills, the JVM throws <code>OutOfMemoryError</code> and the process must exit; there is no fallback or recovery path.</li><li>Its main legitimate uses are performance measurement (isolating true allocation cost with zero GC-induced noise), extremely short-lived processes that will exit before the heap could fill, and deliberately testing an application&#x27;s memory-pressure behavior.</li><li>It is never appropriate for a real long-running production service, since any nonzero sustained allocation rate makes an eventual crash a certainty, not a possibility.</li><li>Compare it conceptually against real collectors like <a href="0929-serial-gc.md">Serial</a>, <a href="0930-parallel-gc.md">Parallel</a>, <a href="0932-g1-gc.md">G1</a>, <a href="0933-zgc.md">ZGC</a>, and <a href="0934-shenandoah.md">Shenandoah</a> — all of which trade some overhead for the ability to run indefinitely; Epsilon trades that ability away entirely to show what &quot;zero GC overhead&quot; actually costs.</li></ul>
+  <div class="nav"><a class="prv" href="0934-shenandoah.html"><span class="mini">← Previous</span>Shenandoah</a><a class="nxt" href="0936-stop-the-world-pauses.html"><span class="mini">Next →</span>Stop-the-world pauses</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t935";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

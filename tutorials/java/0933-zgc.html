@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZGC — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>ZGC</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>ZGC is a low-latency garbage collector, production-ready since Java 15, designed to keep every stop-the-world pause under roughly a millisecond regardless of heap size — whether the heap is 8 GB or 8 TB. It achieves this by making almost every phase concurrent with the running application, including the phase every earlier collector treated as inherently requiring a pause: actually *moving* (relocating) live objects. ZGC accomplishes this using <strong>colored pointers</strong> (extra metadata bits packed into each object reference itself, marking its GC-relevant state) and a <strong>load barrier</strong> (a small check inserted into every reference load that can transparently redirect a thread to an object&#x27;s new location if it has been relocated concurrently) — together, these let application threads keep reading and writing references correctly even while the collector is moving the objects those references point to, underneath them, in parallel.</p>
+<h2>2. Why &amp; when</h2>
+<p>ZGC targets applications where pause time is the overriding concern and heap size is large enough that traditional collectors&#x27; pauses would be unacceptable — very large in-memory caches, large heaps for analytics or data-grid style services, and any latency-sensitive service where even G1&#x27;s soft ~200ms target pauses are too long for the service&#x27;s latency SLA. The tradeoff is real: colored pointers and load barriers add a small but nonzero overhead to *every* reference access in the running application (not just during a pause), and ZGC generally needs somewhat more headroom memory than G1 to do its concurrent relocation safely. For a small heap or a workload that doesn&#x27;t care about tail latency (a batch job, for instance), this overhead buys nothing and <a href="0930-parallel-gc.md">Parallel GC</a> or G1 remains the better choice — ZGC earns its keep specifically when heap size is large and pause time genuinely matters more than raw throughput.</p>
+<h2>3. Core concept</h2>
+<pre><code>Traditional collector:  [STOP] -&gt; mark -&gt; relocate/compact -&gt; fix references -&gt; [RESUME]
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                   the actual object-moving work pauses the app
+
+ZGC:                    marking, relocation, and reference fix-up ALL happen
+                         CONCURRENTLY with the app running -- pauses are only
+                         brief moments to synchronize roots, NOT proportional
+                         to heap size or live-set size.
+
+How relocation is made safe while the app runs:
+  - Each reference carries extra &quot;colored&quot; metadata bits (marked / relocatable / etc.)
+  - A LOAD BARRIER checks these bits on every reference read
+  - If an object has moved, the barrier transparently redirects to its new address
+    and can even fix up the reference in place (&quot;self-healing&quot;)
+  - The app thread never observes a stale or dangling reference</code></pre>
+<p>The load barrier is the mechanism that makes concurrent relocation *correct*: it is the one small piece of extra work every reference read pays, in exchange for the collector never needing to stop the world just to move memory around.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Application thread reading a reference through a load barrier which transparently redirects to a relocated object while the GC concurrently moves objects in the background">
+  <rect x="20" y="30" width="160" height="30" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="100" y="49" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">App thread: read reference</text>
+
+  <rect x="220" y="30" width="160" height="30" fill="#1c2430" stroke="#6db33f"/>
+  <text x="300" y="49" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">Load barrier checks color bits</text>
+
+  <rect x="420" y="10" width="180" height="30" fill="#1c2430" stroke="#8b949e"/>
+  <text x="510" y="29" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">object NOT moved -&gt; normal read</text>
+
+  <rect x="420" y="55" width="180" height="45" fill="#1c2430" stroke="#f0883e"/>
+  <text x="510" y="72" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">object WAS moved (by concurrent</text>
+  <text x="510" y="85" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">GC relocation) -&gt; redirect + self-heal</text>
+
+  <line x1="380" y1="45" x2="420" y2="25" stroke="#8b949e"/>
+  <line x1="380" y1="45" x2="420" y2="75" stroke="#8b949e"/>
+
+  <text x="320" y="140" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Meanwhile, GC threads relocate objects CONCURRENTLY,</text>
+  <text x="320" y="155" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">in the background, without ever stopping the app thread above</text>
+  <text x="320" y="180" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Result: sub-millisecond pauses, independent of heap size</text>
+</svg>
+<p>*The load barrier lets application threads safely follow references to objects the GC has concurrently relocated, eliminating the need to pause for compaction.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: observe ZGC&#x27;s headline property — pause time independent of heap size — starting with a basic ZGC-enabled workload, then scaling up to a genuinely large heap with sustained retention, then directly comparing max pause time against G1 on the identical large-heap workload.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class ZgcBaseline {
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 3_000_000; i++) {
+            byte[] garbage = new byte[64];
+        }
+        System.out.println(&quot;done -- check -Xlog:gc for ZGC pause events, all should be sub-millisecond&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc -XX:+UseZGC ZgcBaseline.java</code> (JDK 17+; ZGC is generally available and production-ready from Java 15 onward).</p>
+<p>Expected output shape:</p>
+<pre><code>[0.015s][info][gc] GC(0) Garbage Collection (Warmup) 4M(0%)-&gt;2M(0%) 0.412ms
+[0.030s][info][gc] GC(1) Garbage Collection (Warmup) 5M(0%)-&gt;2M(0%) 0.389ms
+...
+done -- check -Xlog:gc for ZGC pause events, all should be sub-millisecond</code></pre>
+<p>Even at this small scale, ZGC&#x27;s individual pause durations are already sub-millisecond, since the actual marking and relocation work is concurrent — the reported pause is only the brief synchronization step, not the bulk of the collection work.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ZgcLargeHeapRetention {
+    public static void main(String[] args) {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 2_000_000; i++) {
+            retained.add(new byte[500]); // ~1GB retained over the run
+        }
+        System.out.println(&quot;retained: &quot; + retained.size());
+        System.out.println(&quot;check pause durations -- should remain sub-millisecond despite the large heap&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc -Xmx4g -XX:+UseZGC ZgcLargeHeapRetention.java</code> (JDK 17+; a multi-gigabyte heap is where ZGC&#x27;s design goal becomes meaningfully observable).</p>
+<p>Expected output shape:</p>
+<pre><code>[0.02s][info][gc] GC(0) Garbage Collection (Warmup) 40M(1%)-&gt;10M(0%) 0.512ms
+...
+[1.80s][info][gc] GC(40) Garbage Collection (Allocation Rate) 950M(23%)-&gt;900M(22%) 0.687ms
+retained: 2000000
+check pause durations -- should remain sub-millisecond despite the large heap</code></pre>
+<p>The real-world concern added: retaining roughly a gigabyte of data on a 4 GB heap demonstrates ZGC&#x27;s central claim directly — pause durations stay in the sub-millisecond range even as live-set size grows substantially, unlike traditional collectors whose pause duration scales with exactly that quantity.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ZgcVsG1PauseComparison {
+    public static void main(String[] args) {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        long start = System.nanoTime();
+        for (int i = 0; i &lt; 4_000_000; i++) {
+            retained.add(new byte[500]);
+            if (i % 100_000 == 0) {
+                for (int j = 0; j &lt; 50_000; j++) {
+                    byte[] churn = new byte[128];
+                }
+            }
+        }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;retained: &quot; + retained.size() + &quot;, elapsed: &quot; + elapsedMs + &quot;ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> run against a large heap under both collectors and compare *maximum* single-pause duration (not just total time) from <code>-Xlog:gc</code>: <code>java -Xlog:gc -Xmx6g -XX:+UseZGC ZgcVsG1PauseComparison.java</code> versus <code>java -Xlog:gc -Xmx6g -XX:+UseG1GC ZgcVsG1PauseComparison.java</code> (JDK 17+).</p>
+<p>Expected output shape (illustrative — exact numbers vary by machine):</p>
+<pre><code>(ZGC):  max single pause ~0.8ms across the whole run, total elapsed: 6100ms (slightly higher overhead per-access)
+(G1):   max single pause ~180ms (a large mixed collection), total elapsed: 5400ms (lower overhead, larger worst-case pause)</code></pre>
+<p>The production-flavored hard case: on the same large-heap, high-retention workload, ZGC&#x27;s worst-case single pause stays roughly two orders of magnitude smaller than G1&#x27;s, at the cost of somewhat higher total elapsed time — precisely the throughput-for-latency tradeoff that makes ZGC the right choice specifically when bounding worst-case pause matters more than minimizing total run time.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>ZgcLargeHeapRetention.main</code> end to end:</p>
+<ol><li>The loop allocates and retains two million <code>byte[]</code> objects, growing the live set to roughly a gigabyte — under a traditional collector this would eventually force either a large young-to-old promotion wave or an expensive full compaction; under ZGC, the response is structurally different.</li><li>As allocation proceeds, ZGC&#x27;s concurrent marking threads trace reachability across the heap *while* the main thread keeps allocating and running — no stop-the-world mark phase is needed for the bulk of this work, only a brief pause to synchronize GC roots at the very start of a cycle.</li><li>Once marking identifies which regions hold reclaimable garbage, ZGC begins concurrently relocating (moving) the surviving objects out of those regions — this is the step every earlier collector needed a pause for, since moving an object while a thread might read a stale reference to its old address is normally unsafe.</li><li>ZGC makes this safe via colored pointers and the load barrier: every reference read by the application is checked against the colored metadata bits, and if the referenced object has already been relocated, the barrier transparently redirects the read to the object&#x27;s new location (and can rewrite the reference in place, &quot;healing&quot; it for future reads) — so the application thread never observes an invalid reference, and never needs to be paused for this to be safe.</li><li>Once relocation of a region completes and no live references to its old addresses remain, that region&#x27;s old memory is reclaimed and becomes available for new allocations — all of this happening concurrently, with the application&#x27;s <code>retained</code> list growing the entire time without interruption longer than roughly a millisecond at any single point.</li><li>The program prints its final retained count and exits, with the surrounding GC log showing pause durations that stay flat and sub-millisecond throughout, regardless of how large the live set became during the run — the direct, observable confirmation of ZGC&#x27;s core design goal.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> ZGC&#x27;s low pause times are not free — the load barrier adds a small overhead to every single reference read in the application, and ZGC generally wants more spare heap headroom than G1 to safely relocate concurrently; for small heaps or throughput-bound batch workloads with no latency requirement, this overhead is pure cost with no corresponding benefit, and a simpler collector will finish the same work faster overall.</blockquote>
+<ul><li>ZGC keeps individual stop-the-world pauses in the sub-millisecond range regardless of heap size, by making marking, relocation, and reference fix-up almost entirely concurrent with the running application.</li><li>Colored pointers (extra metadata bits in each reference) plus a load barrier (a check on every reference read) are what make concurrently relocating live objects safe — the barrier transparently redirects reads to an object&#x27;s new location if it has moved.</li><li>It targets large heaps with strict latency requirements; the load-barrier overhead and extra memory headroom it needs make it a poor fit for small heaps or pure-throughput batch workloads.</li><li>Compare directly against <a href="0932-g1-gc.md">G1</a>: G1 bounds pause time by limiting how many regions it evacuates per pause, while ZGC removes the pause from evacuation almost entirely, at the cost of small constant overhead on every reference access.</li><li>See <a href="0934-shenandoah.md">Shenandoah</a> for a similarly concurrent, low-pause alternative that uses a different mechanism (forwarding pointers plus a read/write barrier) to achieve a comparable goal.</li></ul>
+  <div class="nav"><a class="prv" href="0932-g1-gc.html"><span class="mini">← Previous</span>G1 GC</a><a class="nxt" href="0934-shenandoah.html"><span class="mini">Next →</span>Shenandoah</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t933";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>G1 GC — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>G1 GC</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>G1 (&quot;Garbage First&quot;) is the default garbage collector on modern HotSpot JVMs (since Java 9), designed to give reasonably low, *predictable* pause times on large heaps without giving up much throughput. Instead of the traditional fixed young/old generation split occupying two large contiguous blocks, G1 divides the entire heap into many small, equally-sized regions (typically 1–32 MB each, chosen automatically based on heap size) and assigns each region a role — Eden, Survivor, or Old — dynamically, rather than fixing generation boundaries in advance. Its defining trick is choosing which regions to collect based on how much garbage each one contains, always picking the most garbage-rich regions first (&quot;garbage-first,&quot; hence the name) — this lets G1 reclaim the most memory for the least collection effort, and lets it collect incrementally, a handful of regions at a time, rather than an entire generation at once, which is what makes its pauses both shorter and more predictable than <a href="0930-parallel-gc.md">Parallel GC</a>&#x27;s.</p>
+<h2>2. Why &amp; when</h2>
+<p>G1 targets a genuinely different goal than Parallel GC&#x27;s raw throughput or Serial GC&#x27;s minimal footprint: a <strong>configurable, soft pause-time target</strong> (<code>-XX:MaxGCPauseMillis</code>, defaulting to 200ms), which it tries to meet by choosing how many regions to collect in any given increment — collect fewer regions per pause to stay under the target, at the cost of needing more total pauses. This makes it the right general-purpose default for most server applications with heaps from roughly a few hundred megabytes up to many gigabytes, where some pause exists but an unbounded multi-second stop-the-world event (as Serial or Parallel GC could produce on a large heap) is unacceptable. It is not the right choice when pause times must be kept in the single-digit-millisecond range regardless of heap size — G1&#x27;s remaining stop-the-world phases (evacuation pauses) still scale somewhat with the number of regions being evacuated, which is exactly the gap <a href="0933-zgc.md">ZGC</a> and <a href="0934-shenandoah.md">Shenandoah</a> close by making even the actual object-moving phase mostly concurrent.</p>
+<h2>3. Core concept</h2>
+<pre><code>Heap divided into many small, equal-sized REGIONS (not two fixed generations):
+
+[E][E][S][O][O][E][ ][O][E][O][S][ ][O][E][ ][O] ...
+ E=Eden  S=Survivor  O=Old  [ ]=unused/free
+
+G1 collection cycle:
+  1. Concurrent marking -- trace liveness across old-gen regions, MOSTLY without pausing
+  2. Pick the N most garbage-rich regions that fit the pause-time budget
+     (MaxGCPauseMillis) -- &quot;garbage first&quot;
+  3. Evacuate (copy) survivors out of those N regions into fresh ones -- STOP-THE-WORLD,
+     but only for those N regions, not the whole generation
+  4. Reclaimed regions become free -- naturally compacted, since evacuation is a
+     copying-style operation</code></pre>
+<p>Because collection happens region-by-region rather than generation-at-once, G1 can bound each individual pause by simply choosing fewer regions to evacuate, trading pause frequency for pause duration to hit its target.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="G1 heap divided into small regions of type Eden, Survivor, Old, and free, with the most garbage-rich regions selected first for incremental evacuation">
+  <text x="320" y="16" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">G1 heap: many small regions, not two fixed generations</text>
+
+  <g font-family="sans-serif" font-size="9">
+    <rect x="20" y="30" width="40" height="40" fill="#1c2430" stroke="#79c0ff"/><text x="40" y="54" fill="#79c0ff" text-anchor="middle">E</text>
+    <rect x="65" y="30" width="40" height="40" fill="#1c2430" stroke="#79c0ff"/><text x="85" y="54" fill="#79c0ff" text-anchor="middle">E</text>
+    <rect x="110" y="30" width="40" height="40" fill="#1c2430" stroke="#f0883e"/><text x="130" y="54" fill="#f0883e" text-anchor="middle">O*</text>
+    <rect x="155" y="30" width="40" height="40" fill="#1c2430" stroke="#6db33f"/><text x="175" y="54" fill="#6db33f" text-anchor="middle">S</text>
+    <rect x="200" y="30" width="40" height="40" fill="#1c2430" stroke="#8b949e"/><text x="220" y="54" fill="#8b949e" text-anchor="middle">O</text>
+    <rect x="245" y="30" width="40" height="40" fill="none" stroke="#8b949e" stroke-dasharray="2"/><text x="265" y="54" fill="#8b949e" text-anchor="middle">free</text>
+    <rect x="290" y="30" width="40" height="40" fill="#1c2430" stroke="#f0883e"/><text x="310" y="54" fill="#f0883e" text-anchor="middle">O*</text>
+    <rect x="335" y="30" width="40" height="40" fill="#1c2430" stroke="#79c0ff"/><text x="355" y="54" fill="#79c0ff" text-anchor="middle">E</text>
+    <rect x="380" y="30" width="40" height="40" fill="#1c2430" stroke="#8b949e"/><text x="400" y="54" fill="#8b949e" text-anchor="middle">O</text>
+    <rect x="425" y="30" width="40" height="40" fill="#1c2430" stroke="#f0883e"/><text x="445" y="54" fill="#f0883e" text-anchor="middle">O*</text>
+  </g>
+  <text x="320" y="95" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">O* = most garbage-rich old regions -- picked FIRST for this pause</text>
+
+  <rect x="150" y="115" width="340" height="30" fill="#1c2430" stroke="#f0883e"/>
+  <text x="320" y="134" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">STW: evacuate ONLY the selected regions -- bounded pause</text>
+  <text x="320" y="170" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Fewer regions per pause = shorter pause, more pauses overall</text>
+  <text x="320" y="185" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">tuned via -XX:MaxGCPauseMillis</text>
+</svg>
+<p>*G1 always evacuates the most garbage-rich regions first, sized to fit within its configured pause-time target.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: observe G1&#x27;s region-based, pause-target-driven behavior — starting with a baseline default-G1 workload, then adding retained old-generation data to trigger concurrent marking and mixed collections, then tuning the pause-time target explicitly to see G1 trade pause frequency for pause duration.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class G1Baseline {
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 3_000_000; i++) {
+            byte[] garbage = new byte[64];
+        }
+        System.out.println(&quot;done -- check -Xlog:gc for &#x27;Pause Young (Normal) (G1 Evacuation Pause)&#x27; events&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc -XX:+UseG1GC G1Baseline.java</code> (JDK 17+; G1 is already the default on JDK 9+, the flag is explicit here for clarity).</p>
+<p>Expected output shape:</p>
+<pre><code>[0.02s][info][gc] GC(0) Pause Young (Normal) (G1 Evacuation Pause) ... 6M-&gt;1M(64M) 1.6ms
+[0.04s][info][gc] GC(1) Pause Young (Normal) (G1 Evacuation Pause) ... 7M-&gt;1M(64M) 1.3ms
+...
+done -- check -Xlog:gc for &#x27;Pause Young (Normal) (G1 Evacuation Pause)&#x27; events</code></pre>
+<p>Even the young-generation pauses are labeled &quot;G1 Evacuation Pause&quot; rather than a fixed-generation copy, reflecting that G1 treats every collection, young or mixed, as evacuating a chosen set of regions.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class G1MixedCollections {
+    public static void main(String[] args) {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 300_000; i++) {
+            retained.add(new byte[300]);
+            if (i % 5 == 0 &amp;&amp; !retained.isEmpty()) {
+                retained.remove(retained.size() / 2); // create garbage-rich old regions
+            }
+        }
+        System.out.println(&quot;retained: &quot; + retained.size());
+        System.out.println(&quot;check the log for &#x27;Pause Young (Concurrent Start)&#x27; then &#x27;Pause Young (Mixed)&#x27;&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc -Xmx200m -XX:+UseG1GC G1MixedCollections.java</code> (JDK 17+).</p>
+<p>Expected output shape:</p>
+<pre><code>[0.05s][info][gc] GC(0) Pause Young (Normal) (G1 Evacuation Pause) ... 6M-&gt;1M(200M) 1.5ms
+...
+[0.30s][info][gc] GC(15) Pause Young (Concurrent Start) (G1 Evacuation Pause) ... 90M-&gt;40M(200M) 4.2ms
+[0.35s][info][gc] GC(16) Pause Young (Mixed) (G1 Evacuation Pause) ... 95M-&gt;35M(200M) 3.8ms
+retained: 300000
+check the log for &#x27;Pause Young (Concurrent Start)&#x27; then &#x27;Pause Young (Mixed)&#x27;</code></pre>
+<p>The real-world concern added: sustained old-generation retention (with the deliberate mid-list removals creating garbage-rich old regions) triggers G1&#x27;s concurrent marking cycle (&quot;Concurrent Start&quot;), which then feeds into &quot;Mixed&quot; collections — pauses that evacuate both young regions and a selected set of the most garbage-rich old regions together, exactly G1&#x27;s &quot;garbage first&quot; strategy in action.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class G1PauseTargetTuning {
+    public static void main(String[] args) {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        long start = System.nanoTime();
+        for (int i = 0; i &lt; 500_000; i++) {
+            retained.add(new byte[300]);
+            if (i % 5 == 0 &amp;&amp; retained.size() &gt; 10) {
+                retained.remove(retained.size() / 3);
+            }
+        }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;retained: &quot; + retained.size() + &quot;, elapsed: &quot; + elapsedMs + &quot;ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> compare a tight versus loose pause-time target: <code>java -Xlog:gc -Xmx200m -XX:+UseG1GC -XX:MaxGCPauseMillis=20 G1PauseTargetTuning.java</code> versus <code>java -Xlog:gc -Xmx200m -XX:+UseG1GC -XX:MaxGCPauseMillis=500 G1PauseTargetTuning.java</code> (JDK 17+).</p>
+<p>Expected output shape (illustrative):</p>
+<pre><code>(MaxGCPauseMillis=20):  many short pauses (~15-20ms each), more of them, elapsed: 620ms
+(MaxGCPauseMillis=500): fewer, longer pauses (up to ~500ms), elapsed: 540ms</code></pre>
+<p>The production-flavored hard case: tightening the pause-time target forces G1 to evacuate fewer regions per pause (to stay under budget), producing more frequent but shorter pauses at some throughput cost, while loosening it lets G1 batch more region evacuation into each pause for better overall throughput — directly demonstrating <code>MaxGCPauseMillis</code> as a real, tunable tradeoff knob between latency and throughput, not just a hint G1 ignores.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>G1MixedCollections.main</code> end to end:</p>
+<ol><li>The loop retains growing numbers of small objects in <code>retained</code>, while periodically removing one from the middle of the list — since G1 allocates new objects into Eden regions, ordinary young collections (&quot;Pause Young (Normal)&quot;) continue reclaiming short-lived garbage exactly as they would under any generational collector, evacuating survivors into fresh Survivor regions.</li><li>As <code>retained</code> grows, more objects survive enough young collections to be promoted into Old regions — and because objects are being removed from the *middle* of the list (not just the end), specific Old regions accumulate significant amounts of garbage interspersed with live data, rather than being either entirely live or entirely dead.</li><li>Once the old-generation occupancy crosses an internal threshold (driven here by the <code>-Xmx200m</code> cap), G1 starts a concurrent marking cycle — this begins with a &quot;Pause Young (Concurrent Start)&quot; pause (a young collection that also kicks off concurrent marking, folded into the same pause for efficiency) and then proceeds mostly concurrently with the application, tracing reachability across all Old regions without stopping application threads for the bulk of that work.</li><li>Concurrent marking produces, for every Old region, a &quot;liveness&quot; estimate — how much of that region&#x27;s data is actually still reachable versus garbage — which is exactly the information G1 needs to rank regions by how garbage-rich they are.</li><li>The next pauses are labeled &quot;Pause Young (Mixed)&quot;: G1 evacuates not just Eden and Survivor regions (as any young collection would) but *also* a selected batch of the most garbage-rich Old regions identified during marking — chosen specifically to fit within the configured pause-time budget, reclaiming the most memory per millisecond of pause spent.</li><li>This mixed-collection process repeats across several pauses until the marked garbage-rich regions have all been reclaimed, at which point G1 returns to ordinary young-only collections until old-generation occupancy rises enough to trigger another concurrent marking cycle — the program&#x27;s final retained count and elapsed time reflect this steady-state cycle running correctly underneath, with the log evidence above showing each phase transition explicitly.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>-XX:MaxGCPauseMillis</code> is a *soft target*, not a hard guarantee — G1 tries to size its region-evacuation batches to hit it, but under sufficiently extreme allocation pressure (allocating faster than concurrent marking and mixed collection can keep up) it can still fall back to a full, old-fashioned stop-the-world full GC across the entire heap, which can take far longer than the configured target; monitoring for &quot;Pause Full&quot; events in the GC log is the way to catch this in production.</blockquote>
+<ul><li>G1 divides the heap into many small, equally-sized regions and assigns them Eden/Survivor/Old roles dynamically, rather than using two large fixed generations.</li><li>It always evacuates the most garbage-rich regions first (&quot;garbage first&quot;), which lets it reclaim more memory per unit of pause time than an undifferentiated whole-generation collection.</li><li><code>-XX:MaxGCPauseMillis</code> (default 200ms) is a soft, tunable pause-time target that G1 tries to hit by choosing how many regions to evacuate per pause — tightening it trades throughput for shorter, more frequent pauses.</li><li>Concurrent marking (mostly non-pausing) determines each Old region&#x27;s liveness, feeding directly into which regions get selected for &quot;Mixed&quot; collections alongside ordinary young evacuation.</li><li>Under extreme allocation pressure, G1 can still fall back to a full stop-the-world collection across the entire heap — this is the failure mode worth monitoring for, since it defeats the whole point of using G1 in the first place.</li><li>See <a href="0931-cms-removed.md">CMS (removed)</a> for the collector G1 replaced and the fragmentation problem G1&#x27;s incremental compaction specifically solves, and <a href="0933-zgc.md">ZGC</a> / <a href="0934-shenandoah.md">Shenandoah</a> for collectors that push pause times even lower by making evacuation itself mostly concurrent.</li></ul>
+  <div class="nav"><a class="prv" href="0931-cms-removed.html"><span class="mini">← Previous</span>CMS (removed)</a><a class="nxt" href="0933-zgc.html"><span class="mini">Next →</span>ZGC</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t932";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
