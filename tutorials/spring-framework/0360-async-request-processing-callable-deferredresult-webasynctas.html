@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Async request processing (Callable, DeferredResult, WebAsyncTask)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 6. Spring Web MVC</div>
+  <div class="htitle">
+    <h1>"Async request processing (Callable, DeferredResult, WebAsyncTask)"</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>Callable&lt;T&gt;</code>, <code>DeferredResult&lt;T&gt;</code>, and <code>WebAsyncTask&lt;T&gt;</code> are handler method return types that let Spring MVC release the servlet request-handling thread back to the container&#x27;s thread pool while the actual response is computed elsewhere, then resume and complete the HTTP response once a result becomes available. This is Spring MVC&#x27;s Servlet-based async processing model — distinct from, but related in spirit to, <code>SseEmitter</code>/<code>StreamingResponseBody</code> (which stream *multiple* chunks) — these three types are for a <strong>single</strong> eventual result, computed asynchronously.</p>
+<pre><code class="lang-java">@GetMapping(&quot;/reports/{id}&quot;)
+public Callable&lt;Report&gt; generate(@PathVariable long id) {
+    return () -&gt; reportService.generateSlowly(id);   // runs on a separate thread
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>A normal synchronous handler method ties up one servlet container thread for the entire duration of request processing — if generating a response takes 5 seconds (a slow external API call, a heavy computation, waiting on another service), that thread is blocked and unavailable for any other request the whole time. Under load, this can exhaust the thread pool and cause the server to reject or queue new requests even though most of the &quot;work&quot; is just waiting, not actual CPU usage.</p>
+<p>Use async processing when:</p>
+<ul><li>A handler&#x27;s response depends on a slow I/O operation (calling another service, a slow database query, waiting on a message) where the thread would otherwise sit idle blocked on I/O.</li><li>You want to decouple request-handling threads (a limited, precious resource) from the actual work-performing threads (which can use a differently-sized, independently-tuned thread pool, or come from a completely different subsystem like a message listener).</li><li>You&#x27;re building a system where results become available from an external event (a message arrives, a long-running job completes) rather than from a direct, synchronous call chain.</li></ul>
+<p>Choose based on where the async work originates: <code>Callable</code> for work you submit to Spring&#x27;s own task executor; <code>DeferredResult</code> for results that arrive from an entirely separate thread/system (a callback, a message listener) that Spring didn&#x27;t initiate; <code>WebAsyncTask</code> when you need a <code>Callable</code> plus explicit timeout/executor control.</p>
+<h2>3. Core concept</h2>
+<pre><code>Callable&lt;T&gt;:
+  handler returns a Callable — Spring MVC submits it to a
+  TaskExecutor itself, on a thread it manages
+  request thread RELEASED while Callable.call() executes elsewhere
+  when call() returns T, Spring resumes and completes the response
+
+DeferredResult&lt;T&gt;:
+  handler returns a DeferredResult immediately (usually empty/pending)
+  request thread RELEASED right away
+  SOME OTHER THREAD/SYSTEM (not Spring&#x27;s own executor) later calls
+    deferredResult.setResult(value)
+  Spring resumes and completes the response AT THAT POINT
+  — the handler method itself doesn&#x27;t block or wait at all
+
+WebAsyncTask&lt;T&gt;:
+  wraps a Callable, adding explicit timeout + custom executor + timeout/error callbacks
+  same execution model as Callable, with more configuration knobs
+
+Timeline (Callable):
+  Request thread: [preHandle] [return Callable] --RELEASED--
+  Executor thread:                [call() executes...] [returns T]
+  Request thread:                                        [--RESUMED--] [write response]</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <rect width="720" height="220" fill="#0d1117"/>
+  <text x="360" y="22" text-anchor="middle" fill="#8b949e">Request thread released while async work runs elsewhere</text>
+
+  <rect x="20" y="50" width="180" height="40" rx="4" fill="#1c2430" stroke="#6db33f"/>
+  <text x="110" y="75" text-anchor="middle" fill="#6db33f" font-size="10">Request thread: dispatch</text>
+
+  <line x1="200" y1="70" x2="260" y2="70" stroke="#8b949e" marker-end="url(#a36)"/>
+
+  <rect x="260" y="50" width="180" height="40" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,3"/>
+  <text x="350" y="75" text-anchor="middle" fill="#8b949e" font-size="10">RELEASED back to pool</text>
+
+  <rect x="260" y="110" width="180" height="40" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="350" y="135" text-anchor="middle" fill="#79c0ff" font-size="10">Executor thread: works</text>
+
+  <line x1="350" y1="90" x2="350" y2="110" stroke="#8b949e" stroke-dasharray="2,2" marker-end="url(#a36)"/>
+  <line x1="440" y1="130" x2="500" y2="70" stroke="#6db33f" marker-end="url(#a36)"/>
+
+  <rect x="500" y="50" width="180" height="40" rx="4" fill="#1c2430" stroke="#6db33f"/>
+  <text x="590" y="75" text-anchor="middle" fill="#6db33f" font-size="10">RESUMED, response written</text>
+
+  <text x="360" y="180" text-anchor="middle" fill="#8b949e" font-size="10">The SAME servlet-container thread pool serves other requests during the gap</text>
+
+  <defs>
+    <marker id="a36" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+</svg>
+<p>*The original request thread is freed for other work while the async computation runs, then a (possibly different) thread resumes and completes the response.*</p>
+<h2>5. Runnable example</h2>
+<h3>Level 1 — Basic</h3>
+<p>A slow report generation offloaded via <code>Callable</code>, freeing the request thread during the wait:</p>
+<pre><code class="lang-java">// ReportController.java
+import org.springframework.web.bind.annotation.*;
+
+import java.util.concurrent.Callable;
+
+@RestController
+public class ReportController {
+
+    record Report(long id, String summary) {}
+
+    @GetMapping(&quot;/reports/{id}&quot;)
+    public Callable&lt;Report&gt; generate(@PathVariable long id) {
+        return () -&gt; {
+            Thread.sleep(3000);   // simulates a slow external call or heavy computation
+            return new Report(id, &quot;Q3 sales summary&quot;);
+        };
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">./mvnw spring-boot:run
+
+time curl http://localhost:8080/reports/1
+# {&quot;id&quot;:1,&quot;summary&quot;:&quot;Q3 sales summary&quot;}
+# real  0m3.0xx s</code></pre>
+<p>The handler method returns almost instantly (it just builds and returns a <code>Callable</code>, not the actual <code>Report</code>) — Spring MVC submits that <code>Callable</code> to its configured async task executor, releases the original servlet thread, and resumes/completes the HTTP response only once <code>call()</code> finishes 3 seconds later. During those 3 seconds, the freed servlet thread is available to serve other, unrelated requests.</p>
+<h3>Level 2 — Intermediate</h3>
+<p><code>DeferredResult</code> fed from a completely separate thread — simulating a result that arrives from an external event (a message listener, a webhook callback) rather than work Spring itself initiated:</p>
+<pre><code class="lang-java">// ReportController.java (extended)
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.context.request.async.DeferredResult;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+@RestController
+public class ReportController {
+
+    record Report(long id, String summary) {}
+
+    private final ScheduledExecutorService externalSystemSimulator = Executors.newScheduledThreadPool(2);
+    private final Map&lt;Long, DeferredResult&lt;Report&gt;&gt; pending = new ConcurrentHashMap&lt;&gt;();
+
+    @GetMapping(&quot;/reports/{id}/async&quot;)
+    public DeferredResult&lt;Report&gt; generateAsync(@PathVariable long id) {
+        DeferredResult&lt;Report&gt; deferredResult = new DeferredResult&lt;&gt;(10_000L);   // 10s timeout
+        pending.put(id, deferredResult);
+
+        // Simulates an EXTERNAL system (e.g. a message queue consumer) completing
+        // the result later, on ITS OWN thread — Spring MVC did not initiate this work.
+        externalSystemSimulator.schedule(() -&gt; {
+            Report report = new Report(id, &quot;Generated by external worker&quot;);
+            DeferredResult&lt;Report&gt; waiting = pending.remove(id);
+            if (waiting != null) waiting.setResult(report);
+        }, 2, TimeUnit.SECONDS);
+
+        deferredResult.onTimeout(() -&gt; deferredResult.setErrorResult(&quot;Report generation timed out&quot;));
+        return deferredResult;
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">./mvnw spring-boot:run
+
+time curl http://localhost:8080/reports/1/async
+# {&quot;id&quot;:1,&quot;summary&quot;:&quot;Generated by external worker&quot;}
+# real  0m2.0xx s</code></pre>
+<p><strong>What changed:</strong> <code>generateAsync</code> returns the <code>DeferredResult</code> object immediately (well under the timeout), with no result set yet. The actual <code>Report</code> arrives 2 seconds later from <code>externalSystemSimulator</code> — a *completely separate* thread pool Spring MVC never submitted work to directly. When that external thread calls <code>deferredResult.setResult(report)</code>, Spring MVC (which had been watching this specific <code>DeferredResult</code> instance) wakes up and completes the HTTP response from wherever that call happened to occur. This models integrating with genuinely external async systems (message consumers, webhook handlers) rather than work Spring itself dispatches.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Production concern: <code>WebAsyncTask</code> with explicit timeout handling and a dedicated executor (never relying on Spring&#x27;s default async executor, which is not production-tuned out of the box), plus correct error propagation:</p>
+<pre><code class="lang-java">// AsyncConfig.java
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
+@Configuration
+public class AsyncConfig {
+
+    @Bean
+    public ThreadPoolTaskExecutor reportTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(8);
+        executor.setQueueCapacity(50);
+        executor.setThreadNamePrefix(&quot;report-async-&quot;);
+        executor.initialize();
+        return executor;
+    }
+}</code></pre>
+<pre><code class="lang-java">// ReportController.java (production version)
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.context.request.async.WebAsyncTask;
+
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executor;
+
+@RestController
+public class ReportController {
+
+    record Report(long id, String summary) {}
+
+    private final Executor reportTaskExecutor;
+    public ReportController(Executor reportTaskExecutor) { this.reportTaskExecutor = reportTaskExecutor; }
+
+    @GetMapping(&quot;/reports/{id}&quot;)
+    public WebAsyncTask&lt;Report&gt; generate(@PathVariable long id) {
+        Callable&lt;Report&gt; work = () -&gt; {
+            if (id &lt; 0) throw new IllegalArgumentException(&quot;Invalid report id: &quot; + id);
+            Thread.sleep(3000);
+            return new Report(id, &quot;Q3 sales summary&quot;);
+        };
+
+        WebAsyncTask&lt;Report&gt; task = new WebAsyncTask&lt;&gt;(5_000L, reportTaskExecutor, work);   // 5s timeout, DEDICATED executor
+        task.onTimeout(() -&gt; new Report(id, &quot;Report is taking longer than expected — check back shortly&quot;));
+        task.onError(() -&gt; new Report(id, &quot;Report generation failed&quot;));
+        return task;
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">./mvnw spring-boot:run
+
+time curl http://localhost:8080/reports/1
+# {&quot;id&quot;:1,&quot;summary&quot;:&quot;Q3 sales summary&quot;}
+# real  0m3.0xx s   (uses &quot;report-async-&quot; threads, NOT Spring&#x27;s shared default executor)
+
+curl http://localhost:8080/reports/-1
+# {&quot;id&quot;:-1,&quot;summary&quot;:&quot;Report generation failed&quot;}    &lt;- onError callback&#x27;s fallback value used</code></pre>
+<p><strong>What changed and why:</strong></p>
+<ul><li>A <strong>dedicated</strong> <code>ThreadPoolTaskExecutor</code> (<code>reportTaskExecutor</code>) is used instead of Spring&#x27;s built-in default <code>SimpleAsyncTaskExecutor</code> (which creates a new, unbounded thread per task with no pooling — genuinely unsafe under real load, since it provides no backpressure). Explicit <code>corePoolSize</code>/<code>maxPoolSize</code>/<code>queueCapacity</code> bound how many concurrent async report-generation tasks the application allows, protecting the system from being overwhelmed if requests to this endpoint spike.</li><li><code>onTimeout</code>/<code>onError</code> callbacks give the handler explicit, controlled fallback behavior for the two failure modes async processing introduces beyond a normal synchronous handler: taking too long, or throwing an exception on the async thread — without these, a timeout or async exception would otherwise produce a generic, less informative error response.</li><li>Naming the executor&#x27;s threads (<code>&quot;report-async-&quot;</code>) makes production thread-dump debugging dramatically easier — an operator investigating a stuck or slow request can immediately identify which subsystem&#x27;s threads are involved, rather than seeing generic, unlabeled thread names.</li></ul>
+<h2>6. Walkthrough</h2>
+<p><strong>Request: <code>GET /reports/1</code> (Level 3 code, successful path).</strong></p>
+<ol><li><code>DispatcherServlet</code> dispatches to <code>ReportController.generate(1)</code>. The method builds a <code>Callable&lt;Report&gt;</code> lambda (capturing <code>id = 1</code>) and wraps it in a <code>WebAsyncTask</code> configured with a <code>5000ms</code> timeout and the dedicated <code>reportTaskExecutor</code>. It returns this <code>WebAsyncTask</code> object — the method itself completes in microseconds, having done no actual report-generation work yet.</li><li>Spring MVC&#x27;s <code>WebAsyncManager</code> recognizes the async return type. It submits the wrapped <code>Callable</code> to the configured <code>reportTaskExecutor</code> (not Spring&#x27;s shared default) and — critically — puts the *original* servlet request thread into an async-started state, then <strong>releases</strong> it back to the servlet container&#x27;s thread pool, where it becomes available to handle other, unrelated incoming requests immediately.</li><li>On a <code>report-async-</code> prefixed thread from the dedicated pool: the <code>Callable</code>&#x27;s body executes. <code>id (1) &lt; 0</code> is <code>false</code>, so it proceeds past the validation check. <code>Thread.sleep(3000)</code> simulates slow work — this thread is occupied for 3 seconds, but it&#x27;s a *report-generation* thread, entirely separate from the servlet container&#x27;s request-handling thread pool, so it has zero impact on the application&#x27;s ability to accept new HTTP connections during this time.</li><li>After 3 seconds, the lambda returns <code>new Report(1, &quot;Q3 sales summary&quot;)</code>.</li><li>Spring MVC&#x27;s async machinery detects the <code>Callable</code> completed successfully (within the 5-second timeout, so <code>onTimeout</code> never fires), and dispatches an <strong>async completion</strong> back into the servlet container — this typically resumes on a servlet container thread (potentially a *different* one than originally handled the initial dispatch), which then proceeds through the normal return-value-handling pipeline (the <code>Report</code> object is serialized to JSON, exactly as if it had been returned directly from a synchronous handler).</li><li>Response:</li></ol>
+<pre><code>   HTTP/1.1 200 OK
+   Content-Type: application/json
+
+   {&quot;id&quot;:1,&quot;summary&quot;:&quot;Q3 sales summary&quot;}</code></pre>
+<p><strong>Request: <code>GET /reports/-1</code> (Level 3 code, async exception path).</strong></p>
+<p>1–2. Identical dispatch and thread-release steps, with <code>id = -1</code> captured in the <code>Callable</code>.</p>
+<ol><li>On the async executor thread: <code>id (-1) &lt; 0</code> is <code>true</code> → the lambda throws <code>new IllegalArgumentException(&quot;Invalid report id: -1&quot;)</code> instead of returning normally.</li><li>Spring MVC&#x27;s async machinery catches this exception on the async thread and, because a <code>WebAsyncTask</code> was used (not a bare <code>Callable</code>), consults the registered <code>onError</code> callback: <code>task.onError(() -&gt; new Report(id, &quot;Report generation failed&quot;))</code> — note this callback captures <code>id</code> from the enclosing scope and produces a *fallback* <code>Report</code> value rather than re-throwing.</li><li>This fallback value is treated as the successful result for response-writing purposes — it flows through the same JSON serialization path as a genuinely successful result would have.</li><li>Response:</li></ol>
+<pre><code>   HTTP/1.1 200 OK
+   Content-Type: application/json
+
+   {&quot;id&quot;:-1,&quot;summary&quot;:&quot;Report generation failed&quot;}</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>A bare <code>Callable&lt;T&gt;</code> (without <code>WebAsyncTask</code>) has no built-in timeout or error-recovery mechanism of its own beyond Spring&#x27;s application-wide <code>spring.mvc.async.request-timeout</code> property</strong> — an exception thrown inside a plain <code>Callable</code> propagates as a generic async processing error, typically resulting in a <code>500</code>, unless handled by an <code>@ExceptionHandler</code>/<code>@ControllerAdvice</code> capable of catching it. Use <code>WebAsyncTask</code> when you need per-endpoint timeout/error customization rather than relying on the application-wide default.</blockquote>
+<blockquote><strong>Never rely on Spring&#x27;s default <code>SimpleAsyncTaskExecutor</code></strong> (used implicitly if no <code>TaskExecutor</code> bean is configured and <code>Callable</code> is used directly without <code>WebAsyncTask</code>) <strong>in production</strong> — it creates an unbounded number of new threads with no pooling or queuing, which under sustained load can exhaust system resources far faster than a bounded, tuned <code>ThreadPoolTaskExecutor</code> would. Always configure and inject a dedicated, bounded executor for real async workloads, as shown in Level 3.</blockquote>
+<blockquote>**<code>DeferredResult</code> requires *someone* to eventually call <code>setResult</code>/<code>setErrorResult</code>, or the request will hang until the configured timeout fires.** A common bug is registering a <code>DeferredResult</code> and then losing track of it (e.g. a race condition where the external event fires before the <code>DeferredResult</code> is even registered in a tracking map) — always design the registration and completion paths carefully to avoid a <code>DeferredResult</code> that&#x27;s never resolved.</blockquote>
+<ul><li><code>Callable&lt;T&gt;</code> offloads work to Spring&#x27;s task executor, freeing the request thread during execution; <code>DeferredResult&lt;T&gt;</code> is for results arriving from an external system Spring didn&#x27;t initiate; <code>WebAsyncTask&lt;T&gt;</code> adds explicit timeout/executor/callback control on top of <code>Callable</code>.</li><li>Always configure and use a dedicated, bounded <code>ThreadPoolTaskExecutor</code> for real async workloads — never rely on the unbounded default executor in production.</li><li><code>WebAsyncTask</code>&#x27;s <code>onTimeout</code>/<code>onError</code> callbacks provide controlled, predictable fallback behavior for the two new failure modes async processing introduces.</li><li>Async processing trades request-thread occupancy for coordination complexity — reach for it specifically when I/O-bound work would otherwise tie up precious servlet threads, not as a default for every handler.</li></ul>
+  <div class="nav"><a class="prv" href="0359-cors-config-global.html"><span class="mini">← Previous</span>CORS config (global)</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t360";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
