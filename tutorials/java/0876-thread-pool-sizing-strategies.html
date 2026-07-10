@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Thread pool sizing strategies — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>Thread pool sizing strategies</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Thread pool sizing is choosing how many threads a pool should have based on the *nature* of the work it runs — CPU-bound work (pure computation, no waiting) benefits from a pool sized close to the number of available CPU cores, since more threads than cores just adds context-switching overhead with no extra throughput; I/O-bound work (network calls, disk access, database queries) benefits from a much larger pool, since each thread spends most of its time *waiting*, not computing, so many more threads than cores can be productively kept in flight at once. The standard formula for I/O-bound sizing is <code>threads = cores * (1 + waitTime/computeTime)</code> — the more time each task spends waiting relative to actually computing, the more threads you need to keep the CPU cores busy with *other* tasks during that wait.</p>
+<h2>2. Why &amp; when</h2>
+<p>Getting pool size wrong in either direction has a real, measurable cost: too few threads for I/O-bound work leaves CPU cores idle while tasks wait on the network or disk, needlessly limiting throughput; too many threads for CPU-bound work causes constant context switching, cache thrashing, and no throughput gain (once every core is saturated with computation, adding more competing threads only adds overhead). This matters any time you configure a pool for a specific known workload — a database connection pool&#x27;s executor (I/O-bound, size generously), a pool doing in-memory data transformation or hashing (CPU-bound, size near core count), or a mixed workload (measure and tune, since the formula&#x27;s <code>waitTime/computeTime</code> ratio has to come from real profiling, not guesswork). <code>Runtime.getRuntime().availableProcessors()</code> gives you the core count to build these calculations from at runtime, rather than hardcoding a number that becomes wrong on different hardware.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">int cores = Runtime.getRuntime().availableProcessors();
+
+// CPU-bound: threads = cores (+1, commonly, to keep a core busy while one thread page-faults etc.)
+int cpuBoundPoolSize = cores + 1;
+
+// I/O-bound: threads = cores * (1 + wait/compute) -- e.g. wait=90ms, compute=10ms -&gt; ratio 9 -&gt; cores * 10
+double waitTime = 90, computeTime = 10;
+int ioBoundPoolSize = (int) (cores * (1 + waitTime / computeTime));</code></pre>
+<p>The same 4-core machine might reasonably run a CPU-bound pool of 5 threads and an I/O-bound pool of 40 threads for a workload that spends 90% of its time waiting — sizing is about the workload&#x27;s *shape*, not a single universal number.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CPU-bound task keeps a core fully busy computing; I/O-bound task spends most time waiting, so more threads than cores can share the same cores productively">
+  <text x="160" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">CPU-bound: 1 thread ~ 1 core, fully busy</text>
+  <rect x="20" y="35" width="280" height="30" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="160" y="55" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif">[ compute compute compute compute ]</text>
+
+  <text x="480" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">I/O-bound: many threads share 1 core while waiting</text>
+  <rect x="340" y="35" width="60" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="370" y="55" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">compute</text>
+  <rect x="405" y="35" width="200" height="30" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3"/>
+  <text x="505" y="55" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">waiting on I/O (core is free for other threads)</text>
+
+  <rect x="340" y="90" width="60" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="370" y="110" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">compute</text>
+  <text x="480" y="150" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">While thread A waits, thread B's compute slice runs on the SAME core</text>
+</svg>
+<p>*A CPU-bound thread keeps its core saturated with work; an I/O-bound thread mostly idles, so many more of them can time-share the same core productively.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: processing a batch of items with a mix of &quot;compute&quot; and &quot;simulated I/O wait,&quot; growing from a naively-sized pool, to correctly sizing for a CPU-bound variant, to correctly sizing for an I/O-bound variant of the same workload and measuring the throughput difference.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class NaivelySizedPool {
+    static long cpuBoundWork(int n) {
+        long sum = 0;
+        for (int i = 0; i &lt; 20_000_000; i++) sum += i % (n + 1); // pure computation, no waiting
+        return sum;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int cores = Runtime.getRuntime().availableProcessors();
+        // Naive: just picking a big round number without regard to the workload&#x27;s nature
+        ExecutorService pool = Executors.newFixedThreadPool(50);
+
+        long start = System.currentTimeMillis();
+        AtomicLong total = new AtomicLong();
+        for (int i = 0; i &lt; cores * 4; i++) {
+            final int n = i;
+            pool.submit(() -&gt; total.addAndGet(cpuBoundWork(n)));
+        }
+        pool.shutdown();
+        pool.awaitTermination(30, TimeUnit.SECONDS);
+        System.out.println(&quot;cores available: &quot; + cores);
+        System.out.println(&quot;elapsed with 50 threads for CPU-bound work: &quot; + (System.currentTimeMillis() - start) + &quot;ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java NaivelySizedPool.java</code> (JDK 17+).</p>
+<p>Expected output shape (elapsed time varies by machine, but is not meaningfully better, and often worse, than a properly-sized pool):</p>
+<pre><code>cores available: 8
+elapsed with 50 threads for CPU-bound work: 3120ms</code></pre>
+<p>50 threads for pure CPU-bound work on an 8-core machine means far more runnable threads than cores — the OS scheduler spends real time context-switching between them with no throughput benefit, since only 8 can ever actually be computing at once.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class CpuBoundCorrectlySized {
+    static long cpuBoundWork(int n) {
+        long sum = 0;
+        for (int i = 0; i &lt; 20_000_000; i++) sum += i % (n + 1);
+        return sum;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int cores = Runtime.getRuntime().availableProcessors();
+        ExecutorService pool = Executors.newFixedThreadPool(cores + 1); // sized to the core count
+
+        long start = System.currentTimeMillis();
+        AtomicLong total = new AtomicLong();
+        for (int i = 0; i &lt; cores * 4; i++) {
+            final int n = i;
+            pool.submit(() -&gt; total.addAndGet(cpuBoundWork(n)));
+        }
+        pool.shutdown();
+        pool.awaitTermination(30, TimeUnit.SECONDS);
+        System.out.println(&quot;cores available: &quot; + cores);
+        System.out.println(&quot;elapsed with &quot; + (cores + 1) + &quot; threads for CPU-bound work: &quot; + (System.currentTimeMillis() - start) + &quot;ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java CpuBoundCorrectlySized.java</code>.</p>
+<p>Expected output shape (elapsed time should be comparable to, or better than, the 50-thread version, using far fewer threads):</p>
+<pre><code>cores available: 8
+elapsed with 9 threads for CPU-bound work: 2890ms</code></pre>
+<p>The real-world concern added: sizing the pool close to the actual core count for genuinely CPU-bound work — this uses the CPU no less efficiently than 50 threads did (all cores are still kept busy), while avoiding the wasted context-switching overhead of dozens of threads competing for the same handful of cores.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class IoBoundCorrectlySized {
+    static void ioBoundWork() {
+        try { Thread.sleep(90); } catch (InterruptedException ignored) {} // simulates waiting on I/O
+        // simulated 10ms of actual local computation on the result
+        long sum = 0;
+        for (int i = 0; i &lt; 2_000_000; i++) sum += i;
+    }
+
+    static long runBatch(int poolSize, int taskCount) throws InterruptedException {
+        ExecutorService pool = Executors.newFixedThreadPool(poolSize);
+        long start = System.currentTimeMillis();
+        for (int i = 0; i &lt; taskCount; i++) {
+            pool.submit(IoBoundCorrectlySized::ioBoundWork);
+        }
+        pool.shutdown();
+        pool.awaitTermination(60, TimeUnit.SECONDS);
+        return System.currentTimeMillis() - start;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int cores = Runtime.getRuntime().availableProcessors();
+        int taskCount = cores * 10;
+
+        // Undersized for I/O-bound work: pool size == cores, leaving cores idle during each 90ms wait
+        long undersizedElapsed = runBatch(cores, taskCount);
+
+        // Correctly sized for I/O-bound work: threads = cores * (1 + wait/compute) = cores * (1 + 90/10) = cores * 10
+        int ioBoundPoolSize = cores * 10;
+        long correctlySizedElapsed = runBatch(ioBoundPoolSize, taskCount);
+
+        System.out.println(&quot;cores: &quot; + cores + &quot;, tasks: &quot; + taskCount);
+        System.out.println(&quot;undersized pool (&quot; + cores + &quot; threads): &quot; + undersizedElapsed + &quot;ms&quot;);
+        System.out.println(&quot;correctly sized pool (&quot; + ioBoundPoolSize + &quot; threads): &quot; + correctlySizedElapsed + &quot;ms (much faster)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java IoBoundCorrectlySized.java</code>.</p>
+<p>Expected output shape (exact times vary by machine, but the correctly-sized pool should be dramatically faster):</p>
+<pre><code>cores: 8, tasks: 80
+undersized pool (8 threads): 900ms
+correctly sized pool (80 threads): 108ms (much faster)</code></pre>
+<p>This adds the production-flavored hard case: for genuinely I/O-bound work (90ms simulated wait, 10ms compute per task), a pool sized to the core count massively underutilizes the CPU — while one thread waits 90ms, its core sits idle instead of doing another thread&#x27;s 10ms of compute work. Sizing the pool using the <code>cores * (1 + wait/compute)</code> formula lets far more tasks be &quot;in flight&quot; (mostly waiting) simultaneously, so the same handful of cores can service many more waiting tasks&#x27; brief compute bursts, cutting total elapsed time dramatically.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing the difference between the undersized and correctly-sized runs in <code>IoBoundCorrectlySized.main</code>:</p>
+<ol><li><code>runBatch(cores, taskCount)</code> creates a pool with only as many threads as CPU cores. Each of the <code>taskCount</code> (80) tasks calls <code>ioBoundWork</code>, which sleeps 90ms (simulated I/O wait) then does 10ms of real computation.</li><li>With only 8 threads for 80 tasks, at any given moment at most 8 tasks are &quot;in flight&quot; — and each of those 8 threads spends 90% of its time asleep (blocked, not consuming CPU) and only 10% actually computing. Since only 8 threads exist, only 8 tasks&#x27; worth of &quot;the CPU is briefly needed&quot; moments can ever overlap with the CPU&#x27;s capacity — the cores spend most of their time with nothing to do, since there aren&#x27;t enough concurrent tasks queued up to fill the gaps left by sleeping threads.</li><li><code>runBatch(ioBoundPoolSize, taskCount)</code> recreates the same batch, but with 80 threads (<code>cores * 10</code>) — now all 80 tasks can be &quot;in flight&quot; simultaneously. While any given thread sleeps its 90ms, up to 8 *other* threads (matching the core count) can be actively computing their own 10ms bursts on the available cores at any instant.</li><li>Because computation only ever needs 10ms out of each task&#x27;s 100ms total lifetime, and there are enough threads to guarantee some thread&#x27;s compute burst is always ready to run on each core, the total elapsed time collapses toward roughly the time for one wave of 90ms waits plus the cores&#x27; worth of compute bursts pipelined through — dramatically less than the undersized run, where most of the wall-clock time was cores sitting idle.</li><li>The final printed comparison makes the sizing formula&#x27;s payoff concrete: the *same* total work, on the *same* hardware, completes far faster purely by matching thread count to the workload&#x27;s wait-to-compute ratio.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the sizing formula&#x27;s <code>waitTime/computeTime</code> ratio is only as good as your measurement of it — guessing wrong (over- or under-estimating how I/O-bound a workload really is) leads to a pool that&#x27;s either still starved of threads or needlessly oversized. Profile the real workload rather than assuming a ratio.</blockquote>
+<ul><li>CPU-bound work: size the pool close to <code>Runtime.getRuntime().availableProcessors()</code> (commonly <code>cores + 1</code>) — more threads than cores adds context-switching overhead with no throughput gain.</li><li>I/O-bound work: size the pool much larger, using <code>cores * (1 + waitTime/computeTime)</code> as a starting point, then tune based on real measurements — the goal is enough concurrent tasks that some thread&#x27;s compute burst is always ready whenever a core frees up.</li><li><code>Runtime.getRuntime().availableProcessors()</code> gives the actual core count at runtime — prefer it over a hardcoded number so the sizing adapts across different deployment hardware.</li><li>Mixed workloads (some CPU-bound stages, some I/O-bound stages) often benefit from <strong>separate</strong> pools sized independently for each stage, rather than one pool trying to serve both needs at once.</li><li>Sizing is a starting point, not a guarantee — always load-test and measure actual throughput and latency under realistic conditions before committing to a specific pool size in production.</li></ul>
+  <div class="nav"><a class="prv" href="0875-threadpoolexecutor-configuration-core-max-queue-rejection.html"><span class="mini">← Previous</span>ThreadPoolExecutor configuration (core/max/queue/rejection)</a><a class="nxt" href="0877-future-callable.html"><span class="mini">Next →</span>Future & Callable</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t876";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ForkJoinPool & work-stealing — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>ForkJoinPool & work-stealing</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>ForkJoinPool</code> is a specialized <code>ExecutorService</code> designed for <strong>divide-and-conquer</strong> computation: a large task is recursively split (&quot;forked&quot;) into smaller subtasks, which run in parallel and are later recombined (&quot;joined&quot;) into a final result. Its distinguishing internal feature is <strong>work-stealing</strong>: each worker thread has its own local deque (double-ended queue) of subtasks, pushing and popping from one end for its own work, while *idle* worker threads that run out of their own work can &quot;steal&quot; tasks from the *opposite* end of a busy thread&#x27;s deque. This keeps all cores productively busy even when the recursive splitting produces wildly uneven amounts of work per branch.</p>
+<h2>2. Why &amp; when</h2>
+<p>A regular fixed thread pool is a poor fit for recursive divide-and-conquer algorithms: each level of recursion would need to submit new tasks to the same pool and then block waiting for them, and if every thread in the pool is blocked waiting on its own subtasks, the pool can deadlock (no threads left to actually run the submitted subtasks). <code>ForkJoinPool</code>&#x27;s worker threads are designed to keep working on *other* available tasks while waiting for their own forked subtasks to complete, and work-stealing balances load automatically — a thread whose subtree happens to be small finishes early and steals work from a thread still churning through a larger subtree, rather than sitting idle. Use <code>ForkJoinPool</code> (or the higher-level <code>RecursiveTask</code>/<code>RecursiveAction</code>, or parallel streams, which use it internally) for genuinely recursive, splittable, CPU-bound computations — parallel sorting, parallel search, recursive aggregation over a tree or large array. It is a poor fit for I/O-bound or blocking work, since a worker thread blocked on I/O (rather than cooperating with the fork/join model) can&#x27;t be &quot;stolen from&quot; or usefully repurposed the way CPU-bound forked tasks can.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">ForkJoinPool pool = new ForkJoinPool(); // defaults to Runtime.getRuntime().availableProcessors() threads
+long result = pool.invoke(new SumTask(array, 0, array.length));
+// Internally: SumTask.compute() checks if the range is small enough to compute directly;
+// if not, it forks two halves, each becomes its own subtask on some worker&#x27;s local deque,
+// and idle workers steal from busy workers&#x27; deques to keep every core occupied.</code></pre>
+<p>The pool itself is just the thread-management machinery; the actual splitting logic lives in <code>RecursiveTask</code>/<code>RecursiveAction</code> subclasses (see the next tutorial), which <code>ForkJoinPool</code> is specifically built to run efficiently.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two worker threads each with their own deque of tasks; worker 2 finishes its own small deque early and steals a task from the opposite end of worker 1's larger deque">
+  <text x="160" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Worker 1 -- large subtree, own deque</text>
+  <rect x="20" y="30" width="60" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="90" y="30" width="60" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="160" y="30" width="60" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="230" y="30" width="60" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="55" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">own end</text>
+  <text x="255" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">steal end</text>
+
+  <text x="480" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Worker 2 -- small subtree, finishes early</text>
+  <rect x="440" y="30" width="60" height="30" rx="4" fill="#1c2430" stroke="#f0883e" stroke-dasharray="3"/>
+  <text x="470" y="50" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">empty</text>
+
+  <line x1="440" y1="60" x2="290" y2="45" stroke="#f0883e" stroke-width="2" stroke-dasharray="5" marker-end="url(#a19)"/>
+  <text x="380" y="90" fill="#f0883e" font-size="11" text-anchor="middle" font-family="sans-serif">Worker 2 steals a task from Worker 1's deque</text>
+
+  <text x="320" y="150" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Both workers stay busy -- load automatically balances across uneven subtrees.</text>
+  <defs><marker id="a19" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f0883e"/></marker></defs>
+</svg>
+<p>*A worker pushes/pops its own tasks from one end of its deque; idle workers steal from the other end of a busy worker&#x27;s deque, keeping every core occupied despite uneven splits.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: summing a large array, growing from a plain sequential sum, to a naive <code>ForkJoinPool</code> submission using a plain <code>Runnable</code> (missing the point of fork/join), to a properly recursive divide-and-conquer sum that lets work-stealing balance load across an intentionally uneven workload.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class SequentialSum {
+    public static void main(String[] args) {
+        int size = 20_000_000;
+        long[] data = new long[size];
+        for (int i = 0; i &lt; size; i++) data[i] = i;
+
+        long start = System.currentTimeMillis();
+        long sum = 0;
+        for (long v : data) sum += v; // single-threaded, uses only one core
+        System.out.println(&quot;sum = &quot; + sum);
+        System.out.println(&quot;elapsed ~&quot; + (System.currentTimeMillis() - start) + &quot;ms (single core)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java SequentialSum.java</code> (JDK 17+).</p>
+<p>Expected output shape:</p>
+<pre><code>sum = 199999990000000
+elapsed ~40ms (single core)</code></pre>
+<p>Correct, but only ever uses one CPU core — on a multi-core machine, this leaves most of the available compute capacity completely idle.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class NaiveForkJoinSubmission {
+    static long sumRange(long[] data, int from, int to) {
+        long sum = 0;
+        for (int i = from; i &lt; to; i++) sum += data[i];
+        return sum;
+    }
+
+    public static void main(String[] args) throws Exception {
+        int size = 20_000_000;
+        long[] data = new long[size];
+        for (int i = 0; i &lt; size; i++) data[i] = i;
+
+        ForkJoinPool pool = new ForkJoinPool(); // defaults to availableProcessors() threads
+
+        // Naive: manually splitting into a FIXED number of chunks up front (not truly recursive
+        // divide-and-conquer), submitted as plain Callables -- this works but doesn&#x27;t let
+        // work-stealing rebalance if one chunk happens to take longer than the others.
+        int chunks = Runtime.getRuntime().availableProcessors();
+        int chunkSize = size / chunks;
+        var futures = new Future[chunks];
+        for (int c = 0; c &lt; chunks; c++) {
+            int from = c * chunkSize;
+            int to = (c == chunks - 1) ? size : from + chunkSize;
+            futures[c] = pool.submit(() -&gt; sumRange(data, from, to));
+        }
+
+        long total = 0;
+        for (Future f : futures) total += (Long) f.get();
+        System.out.println(&quot;sum = &quot; + total);
+        pool.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java NaiveForkJoinSubmission.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>sum = 199999990000000</code></pre>
+<p>Correct and uses all cores, but the chunking is fixed and manual — if the actual work per chunk turns out uneven (which this example&#x27;s uniform array doesn&#x27;t show, but real workloads often are), the threads handling smaller chunks simply finish early and sit idle, since there&#x27;s no recursive splitting for work-stealing to redistribute.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class RecursiveWorkStealingSum {
+    static long[] data;
+
+    static class SumTask extends RecursiveTask&lt;Long&gt; {
+        final int from, to;
+        SumTask(int from, int to) { this.from = from; this.to = to; }
+
+        static final int THRESHOLD = 10_000;
+
+        @Override
+        protected Long compute() {
+            if (to - from &lt;= THRESHOLD) {
+                long sum = 0;
+                for (int i = from; i &lt; to; i++) sum += data[i];
+                return sum;
+            }
+            int mid = (from + to) / 2;
+            SumTask left = new SumTask(from, mid);
+            SumTask right = new SumTask(mid, to);
+            left.fork();                    // submit left half to be run asynchronously (possibly stolen)
+            long rightResult = right.compute(); // compute right half on THIS thread directly
+            long leftResult = left.join();       // wait for the forked left half (steals work in the meantime if idle)
+            return leftResult + rightResult;
+        }
+    }
+
+    public static void main(String[] args) {
+        int size = 20_000_000;
+        data = new long[size];
+        for (int i = 0; i &lt; size; i++) data[i] = i; // uniform here, but recursive splitting handles UNEVEN work too
+
+        ForkJoinPool pool = new ForkJoinPool();
+        long start = System.currentTimeMillis();
+        long sum = pool.invoke(new SumTask(0, size));
+        System.out.println(&quot;sum = &quot; + sum);
+        System.out.println(&quot;elapsed ~&quot; + (System.currentTimeMillis() - start) + &quot;ms (all cores, auto-balanced)&quot;);
+        pool.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java RecursiveWorkStealingSum.java</code>.</p>
+<p>Expected output shape (correctness is exact; elapsed time is machine-dependent but uses all cores):</p>
+<pre><code>sum = 199999990000000
+elapsed ~15ms (all cores, auto-balanced)</code></pre>
+<p>This adds the production-flavored hard case: genuine recursive divide-and-conquer via <code>RecursiveTask</code>, splitting down to a small threshold before computing directly. Because <code>left.fork()</code> hands the left half off as an independent task any idle worker thread can pick up (or steal), while the current thread proceeds directly to <code>right.compute()</code>, the workload naturally spreads across however many cores are available and automatically rebalances if some subtrees happen to take longer than others — unlike the fixed, manual chunking in Level 2, this scales correctly to genuinely uneven recursive workloads (a tree search, a recursive algorithm with data-dependent branch costs) without any hand-tuned chunk sizing.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>RecursiveWorkStealingSum.main</code>&#x27;s call to <code>pool.invoke(new SumTask(0, 20_000_000))</code>:</p>
+<ol><li><code>pool.invoke(...)</code> submits the top-level <code>SumTask</code> and blocks the calling thread until it fully completes, returning the final <code>Long</code> sum.</li><li>Inside <code>compute()</code>, since <code>20,000,000 - 0</code> far exceeds <code>THRESHOLD</code> (10,000), the task splits: <code>mid = 10,000,000</code>, creating <code>left = SumTask(0, 10_000_000)</code> and <code>right = SumTask(10_000_000, 20_000_000)</code>.</li><li><code>left.fork()</code> schedules <code>left</code> to run asynchronously — it&#x27;s pushed onto the *current* worker thread&#x27;s own local deque, available for that same thread to resume later, or for an idle *different* worker thread to steal from the opposite end.</li><li>The current thread does <strong>not</strong> wait idly for <code>left</code> — it immediately calls <code>right.compute()</code> directly, recursively repeating this same split-and-fork process on the right half, keeping itself productively busy the whole time.</li><li>Each recursive split continues until a task&#x27;s range is small enough (<code>&lt;= THRESHOLD</code>), at which point <code>compute()</code> just sums that small range directly and returns — this is the base case that actually does real work.</li><li>Meanwhile, if the pool has multiple worker threads (matching available cores), any thread that finishes its own local work early can steal a still-pending forked task from another busy thread&#x27;s deque — since the recursive splitting produces many small, independent tasks, there&#x27;s ample opportunity for this rebalancing to happen automatically, without any code explicitly managing it.</li><li>Once <code>right.compute()</code> returns its half&#x27;s sum, <code>left.join()</code> retrieves the result of the forked left half — if it hasn&#x27;t finished yet, the calling thread can itself help execute pending tasks (including, potentially, subtasks of <code>left</code> or others) while waiting, rather than blocking uselessly.</li><li>The two halves&#x27; sums are added and returned up through each level of the recursive call stack, eventually producing the single, correct total sum back at the top-level <code>invoke()</code> call.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>ForkJoinPool</code> (and its <code>RecursiveTask</code>/<code>RecursiveAction</code> model) is built for CPU-bound, splittable computation — using it for blocking I/O work defeats the point of work-stealing, since a worker thread genuinely blocked on I/O (not cooperatively yielding via <code>fork</code>/<code>join</code>) can&#x27;t be usefully &quot;stolen from,&quot; and can even reduce the pool&#x27;s effective parallelism below its configured thread count.</blockquote>
+<ul><li>Work-stealing lets idle threads pull tasks from busy threads&#x27; deques, automatically balancing load across genuinely uneven recursive workloads without manual chunk-size tuning.</li><li>Split down to a sensible threshold (not too fine — task overhead dominates; not too coarse — load balancing opportunities shrink) — 1,000 to 10,000+ elements per leaf task is a common starting range, tuned by measurement.</li><li><code>fork()</code> schedules a subtask asynchronously (potentially stealable); computing the &quot;other half&quot; directly on the current thread, then <code>join()</code>-ing the forked half, is the standard pattern that keeps the current thread productively busy rather than idly waiting.</li><li><code>ForkJoinPool</code> is what powers Java&#x27;s parallel streams (<code>.parallelStream()</code>) internally — understanding fork/join mechanics helps explain parallel streams&#x27; performance characteristics and pitfalls.</li><li>Avoid blocking calls (I/O, <code>Thread.sleep</code>, lock acquisition on contended locks) inside <code>RecursiveTask.compute()</code> — see <a href="0884-recursivetask-recursiveaction.md"><code>RecursiveTask</code>/<code>RecursiveAction</code></a> and the <a href="0885-common-pool.md">common pool</a> tutorials for how this interacts with shared pool usage.</li></ul>
+  <div class="nav"><a class="prv" href="0882-completablefuture-exception-handling-exceptionally-handle-wh.html"><span class="mini">← Previous</span>CompletableFuture exception handling (exceptionally/handle/whenComplete)</a><a class="nxt" href="0884-recursivetask-recursiveaction.html"><span class="mini">Next →</span>RecursiveTask / RecursiveAction</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t883";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
