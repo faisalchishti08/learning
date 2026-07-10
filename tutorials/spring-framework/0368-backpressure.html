@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Backpressure" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 7. Spring WebFlux (Reactive)</div>
+  <div class="htitle">
+    <h1>"Backpressure"</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Backpressure is the mechanism by which a slow consumer (subscriber) tells a fast producer (publisher) to slow down, rather than being overwhelmed by data arriving faster than it can process — implemented in Reactive Streams via <code>Subscription.request(n)</code> (the previous card&#x27;s specification). Without backpressure, a fast producer and a slow consumer would either force unbounded memory growth (buffering everything the consumer hasn&#x27;t caught up on) or drop data silently — both dangerous failure modes reactive programming is specifically designed to avoid.</p>
+<pre><code class="lang-java">Flux.range(1, 1_000_000)
+    .onBackpressureBuffer(1000)   // explicit strategy: buffer up to 1000, then apply a fallback
+    .subscribe(new BaseSubscriber&lt;Integer&gt;() {
+        @Override
+        protected void hookOnSubscribe(Subscription s) {
+            request(10);   // only ask for 10 at a time
+        }
+        @Override
+        protected void hookOnNext(Integer value) {
+            process(value);
+            request(1);   // ask for one more after processing each
+        }
+    });</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Imagine a fast producer (a database streaming millions of rows) feeding a slow consumer (writing each row to a rate-limited external API, one at a time). Without backpressure, the producer would keep emitting rows as fast as it can read them, and something has to give: either the consumer&#x27;s input buffer grows unboundedly (eventually causing an <code>OutOfMemoryError</code>), or rows get silently dropped, or the whole system deadlocks trying to apply artificial blocking to prevent the first two outcomes.</p>
+<p>Backpressure solves this at the protocol level: the *consumer* decides how much it can handle, and the producer is contractually obligated to respect that limit. This matters whenever:</p>
+<ul><li>You&#x27;re processing a genuinely large or unbounded stream (a live event feed, a huge database export, an infinite <code>Flux.interval</code>) where the consumer&#x27;s processing rate is a real constraint.</li><li>Downstream systems have rate limits (an external API you shouldn&#x27;t hammer) and you want the reactive pipeline to naturally throttle to match.</li><li>You want explicit, deliberate control over buffering behavior (how much to buffer, and what to do when the buffer fills) rather than accepting an implicit, potentially unsafe default.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code>Unbounded request (Flux operators mostly do this by default):
+
+  subscription.request(Long.MAX_VALUE)   &lt;- &quot;send me everything, as fast as you can&quot;
+  This effectively DISABLES backpressure for that subscription — fine when
+  the consumer genuinely can keep up (most in-memory transformation pipelines).
+
+Explicit, bounded request (backpressure IN EFFECT):
+
+  subscription.request(10)   &lt;- &quot;send me AT MOST 10, then wait for more requests&quot;
+  publisher MUST NOT send an 11th item until MORE demand is requested
+
+When the producer is faster than the consumer&#x27;s requested rate, overflow
+strategies decide what happens to the EXCESS:
+
+  onBackpressureBuffer(n)   — queue up to n excess items (THEN error/drop/block, configurable)
+  onBackpressureDrop()      — silently DISCARD items the consumer hasn&#x27;t requested yet
+  onBackpressureLatest()    — keep only the MOST RECENT unconsumed item, drop older ones
+  onBackpressureError()     — signal an ERROR if demand is exceeded (fail loudly, don&#x27;t buffer)
+
+Choosing a strategy is a real design decision, not a technicality:
+  a live stock ticker -&gt; onBackpressureLatest() makes sense (old prices are stale anyway)
+  a financial transaction log -&gt; onBackpressureError() or careful buffering (can&#x27;t lose data)</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 740 220" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <rect width="740" height="220" fill="#0d1117"/>
+  <text x="370" y="22" text-anchor="middle" fill="#8b949e">Backpressure: consumer-controlled demand vs producer speed</text>
+
+  <rect x="20" y="50" width="200" height="60" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="120" y="72" text-anchor="middle" fill="#6db33f" font-size="10">Fast Producer</text>
+  <text x="120" y="90" text-anchor="middle" fill="#8b949e" font-size="9">can emit 10,000/sec</text>
+
+  <line x1="220" y1="80" x2="520" y2="80" stroke="#8b949e" marker-end="url(#a44)"/>
+  <text x="370" y="72" text-anchor="middle" fill="#8b949e" font-size="9">request(10) -&gt; onNext × 10 -&gt; wait</text>
+
+  <rect x="520" y="50" width="200" height="60" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="620" y="72" text-anchor="middle" fill="#79c0ff" font-size="10">Slow Consumer</text>
+  <text x="620" y="90" text-anchor="middle" fill="#8b949e" font-size="9">processes 100/sec</text>
+
+  <rect x="220" y="140" width="300" height="50" rx="5" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,3"/>
+  <text x="370" y="170" text-anchor="middle" fill="#8b949e" font-size="10">producer PAUSES until more demand requested</text>
+
+  <defs>
+    <marker id="a44" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+</svg>
+<p>*The consumer&#x27;s <code>request(n)</code> calls throttle the producer to a pace it can actually sustain.*</p>
+<h2>5. Runnable example</h2>
+<h3>Level 1 — Basic</h3>
+<p>A custom <code>BaseSubscriber</code> explicitly controlling demand, one item at a time, to observe backpressure directly:</p>
+<pre><code class="lang-java">// ManualDemandDemo.java
+import org.reactivestreams.Subscription;
+import reactor.core.publisher.BaseSubscriber;
+import reactor.core.publisher.Flux;
+
+public class ManualDemandDemo {
+
+    public static void main(String[] args) throws InterruptedException {
+        Flux&lt;Integer&gt; source = Flux.range(1, 10)
+            .doOnRequest(n -&gt; System.out.println(&quot;Producer: received request for &quot; + n));
+
+        source.subscribe(new BaseSubscriber&lt;Integer&gt;() {
+            @Override
+            protected void hookOnSubscribe(Subscription subscription) {
+                System.out.println(&quot;Subscriber: requesting 1 item&quot;);
+                request(1);
+            }
+
+            @Override
+            protected void hookOnNext(Integer value) {
+                System.out.println(&quot;Subscriber: processing &quot; + value);
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                System.out.println(&quot;Subscriber: requesting 1 more&quot;);
+                request(1);
+            }
+
+            @Override
+            protected void hookOnComplete() {
+                System.out.println(&quot;Subscriber: complete&quot;);
+            }
+        });
+
+        Thread.sleep(1500);
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">java ManualDemandDemo.java
+# Subscriber: requesting 1 item
+# Producer: received request for 1
+# Subscriber: processing 1
+# Subscriber: requesting 1 more
+# Producer: received request for 1
+# Subscriber: processing 2
+# ... (repeats for 3 through 10, one at a time)
+# Subscriber: complete</code></pre>
+<p>The producer only ever emits <strong>one</strong> item per <code>request(1)</code> call — even though <code>Flux.range(1, 10)</code> could produce all ten values instantly, the subscriber&#x27;s deliberate one-at-a-time demand strictly paces the flow, and <code>doOnRequest</code> makes each individual request call visible in the log.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Comparing overflow strategies (<code>onBackpressureDrop</code> vs <code>onBackpressureLatest</code>) when a producer genuinely outpaces a slow consumer, using <code>Flux.interval</code> (a real, time-driven, potentially-infinite source):</p>
+<pre><code class="lang-java">// OverflowStrategyDemo.java
+import reactor.core.publisher.Flux;
+import reactor.core.scheduler.Schedulers;
+
+import java.time.Duration;
+
+public class OverflowStrategyDemo {
+
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(&quot;--- onBackpressureDrop ---&quot;);
+        Flux.interval(Duration.ofMillis(10))               // producer: 100 items/sec
+            .onBackpressureDrop(dropped -&gt; System.out.println(&quot;  dropped: &quot; + dropped))
+            .publishOn(Schedulers.boundedElastic(), 1)      // downstream processes ONE at a time
+            .subscribe(value -&gt; {
+                slowlyProcess(value, 100);                  // consumer: only ~10 items/sec
+            });
+
+        Thread.sleep(500);
+
+        System.out.println(&quot;--- onBackpressureLatest ---&quot;);
+        Flux.interval(Duration.ofMillis(10))
+            .onBackpressureLatest()
+            .publishOn(Schedulers.boundedElastic(), 1)
+            .subscribe(value -&gt; {
+                slowlyProcess(value, 100);
+            });
+
+        Thread.sleep(500);
+    }
+
+    static void slowlyProcess(Long value, long delayMs) {
+        System.out.println(&quot;  processing: &quot; + value);
+        try { Thread.sleep(delayMs); } catch (InterruptedException ignored) {}
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">java OverflowStrategyDemo.java
+# --- onBackpressureDrop ---
+#   processing: 0
+#   dropped: 1
+#   dropped: 2
+#   ... (many drops while item 0 is being slowly processed)
+#   processing: 3
+#   dropped: 4
+# ... (roughly every ~10th interval item actually gets processed; the rest are dropped)
+#
+# --- onBackpressureLatest ---
+#   processing: 0
+#   processing: N   (whichever value was MOST RECENT when the consumer became ready again)
+# ... (similar pacing, but ALWAYS the freshest available value, never an arbitrarily old dropped one)</code></pre>
+<p><strong>What changed:</strong> <code>onBackpressureDrop</code> discards *any* item the slow consumer isn&#x27;t ready for the instant it arrives — including potentially the very next, most-relevant one. <code>onBackpressureLatest</code> instead always keeps the *most recent* unconsumed item, discarding only older ones as newer ones arrive — appropriate for something like a live sensor reading or stock price, where an old, stale value is actively worse than no value at all, and only the freshest matters once the consumer catches up.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Production concern: bounded buffering with an explicit overflow strategy and monitoring — the realistic middle ground between &quot;unlimited buffer&quot; (risks OOM) and &quot;drop everything the consumer can&#x27;t immediately handle&quot; (risks silent data loss for cases where every item matters):</p>
+<pre><code class="lang-java">// BoundedBufferDemo.java
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxSink;
+import reactor.core.scheduler.Schedulers;
+import reactor.util.concurrent.Queues;
+
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class BoundedBufferDemo {
+
+    record Order(long id, double amount) {}
+
+    public static void main(String[] args) throws InterruptedException {
+        AtomicLong processedCount = new AtomicLong(0);
+        AtomicLong errorCount = new AtomicLong(0);
+
+        // Simulates a BURSTY producer — orders arriving faster than they can be
+        // written to a (simulated) slow downstream payment-processing system.
+        Flux&lt;Order&gt; orderStream = Flux.create(sink -&gt; {
+            for (long i = 1; i &lt;= 50; i++) {
+                sink.next(new Order(i, 19.99 * i));
+            }
+            sink.complete();
+        }, FluxSink.OverflowStrategy.BUFFER);
+
+        orderStream
+            // Bounded buffer: hold up to 20 unconsumed orders; if that fills,
+            // signal an ERROR rather than growing unboundedly or silently
+            // dropping a financial transaction (data loss is NOT acceptable here).
+            .onBackpressureBuffer(
+                20,
+                dropped -&gt; System.out.println(&quot;BUFFER FULL — rejected order: &quot; + dropped),
+                reactor.util.concurrent.Queues.SMALL_BUFFER_SIZE &gt; 0
+                    ? reactor.core.publisher.BufferOverflowStrategy.ERROR
+                    : reactor.core.publisher.BufferOverflowStrategy.ERROR)
+            .publishOn(Schedulers.boundedElastic(), 1)
+            .doOnError(ex -&gt; System.out.println(&quot;Pipeline failed: &quot; + ex.getMessage()))
+            .doOnNext(order -&gt; {
+                processSlowly(order);
+                processedCount.incrementAndGet();
+            })
+            .onErrorResume(ex -&gt; {
+                errorCount.incrementAndGet();
+                return Flux.empty();
+            })
+            .blockLast();   // ONLY acceptable here because main() needs to wait — never in a real handler
+
+        System.out.println(&quot;Processed: &quot; + processedCount.get() + &quot;, Errors: &quot; + errorCount.get());
+    }
+
+    static void processSlowly(Order order) {
+        try { Thread.sleep(20); } catch (InterruptedException ignored) {}   // simulated slow downstream call
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">java BoundedBufferDemo.java
+# processing continues until the buffer of 20 fills faster than the consumer drains it
+# BUFFER FULL — rejected order: Order[id=..., amount=...]
+# Pipeline failed: ... (Queue is full / overflow)
+# Processed: &lt;some number less than 50&gt;, Errors: 1</code></pre>
+<p><strong>What changed and why:</strong></p>
+<ul><li><code>onBackpressureBuffer(20, droppedHandler, BufferOverflowStrategy.ERROR)</code> establishes an explicit, bounded buffer size (<code>20</code>) rather than either extreme — this genuinely protects memory from unbounded growth while still absorbing reasonable, short-lived bursts that a fully synchronous, un-buffered approach would reject immediately.</li><li>Choosing <code>BufferOverflowStrategy.ERROR</code> (rather than silently dropping) reflects a deliberate business decision: for financial <code>Order</code> data, silently losing a transaction is unacceptable, so exceeding the buffer&#x27;s capacity should be a loud, observable failure (logged, alerted on, and handled explicitly via <code>onErrorResume</code>) rather than quietly discarding customer orders.</li><li><code>doOnNext</code>/<code>onErrorResume</code> together demonstrate handling the two possible outcomes for each item explicitly: successful processing increments a counter, while the buffer-overflow error path is caught, logged as a metric (<code>errorCount</code>), and the pipeline recovers with <code>Flux.empty()</code> rather than crashing the entire stream over what might be a transient burst.</li></ul>
+<h2>6. Walkthrough</h2>
+<p><strong>Execution: <code>ManualDemandDemo.main()</code> (Level 1 code), tracing the request/emit cycle precisely.</strong></p>
+<ol><li><code>source.subscribe(new BaseSubscriber&lt;Integer&gt;() {...})</code> triggers the subscription. Per the Reactive Streams protocol, this causes <code>hookOnSubscribe(subscription)</code> to be called first, before any data flows.</li><li>Inside <code>hookOnSubscribe</code>: the subscriber prints its intent and calls <code>request(1)</code> — explicitly telling the upstream <code>Flux.range(1, 10)</code> (wrapped with <code>doOnRequest</code> for visibility) &quot;you may emit exactly one item right now.&quot;</li><li><code>doOnRequest</code>&#x27;s callback fires, printing <code>&quot;Producer: received request for 1&quot;</code> — confirming the request signal reached the source.</li><li><code>Flux.range</code> emits its first value, <code>1</code>, triggering <code>hookOnNext(1)</code> on the subscriber.</li><li>Inside <code>hookOnNext</code>: the subscriber prints <code>&quot;processing 1&quot;</code>, sleeps 100ms (simulating real work), then calls <code>request(1)</code> <strong>again</strong> — this is the critical step that keeps the flow going. Without this second <code>request(1)</code> call, the producer would never emit a second item; the flow would simply stop after the first, since no further demand was ever signaled.</li><li>This triggers another <code>doOnRequest</code> log line, then <code>Flux.range</code> emits <code>2</code>, triggering another <code>hookOnNext(2)</code> call.</li><li>This cycle (process, sleep, request one more) repeats for values <code>3</code> through <code>10</code> — each iteration strictly gated by the subscriber&#x27;s own <code>request(1)</code> call, never running ahead of the consumer&#x27;s actual processing pace.</li><li>After emitting <code>10</code> (the range&#x27;s last value) and receiving the corresponding acknowledgment via the next <code>hookOnNext</code> completing its cycle, <code>Flux.range</code> has no more values to emit — it signals completion, triggering <code>hookOnComplete()</code>, which prints <code>&quot;Subscriber: complete&quot;</code>.</li></ol>
+<p>The key insight demonstrated end-to-end: at no point does the producer emit an item the subscriber hasn&#x27;t explicitly asked for — the entire ten-item sequence is paced exactly to the subscriber&#x27;s own processing rate (roughly one item per 100ms, matching the <code>Thread.sleep(100)</code> in <code>hookOnNext</code>), even though <code>Flux.range</code> itself is fully capable of producing all ten values essentially instantaneously.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>**Most everyday Reactor operator chains use *unbounded* request internally (<code>request(Long.MAX_VALUE)</code>) unless you explicitly customize demand** — backpressure exists and is available, but for typical in-memory transformation pipelines where the consumer can easily keep pace, you generally don&#x27;t need to manage it manually. Reach for explicit demand control (as in these examples) specifically when a genuine speed mismatch between producer and consumer exists.</blockquote>
+<blockquote><strong>Choosing <code>onBackpressureDrop</code>/<code>onBackpressureLatest</code> for data where every item matters (financial transactions, audit logs) is a serious correctness bug, not just a performance tuning choice</strong> — these strategies are explicitly designed to lose data under pressure. Reserve them for genuinely &quot;only the latest matters&quot; scenarios (live prices, sensor readings, UI state updates); use <code>onBackpressureBuffer</code> with an error/block strategy for anything where data loss is unacceptable.</blockquote>
+<blockquote><strong>An unbounded <code>onBackpressureBuffer()</code> (no capacity argument) can still cause an <code>OutOfMemoryError</code> under sustained producer/consumer speed mismatch</strong> — always specify an explicit, reasoned capacity and overflow strategy rather than relying on the no-argument default, which effectively just delays the same unbounded-growth problem backpressure exists to prevent.</blockquote>
+<ul><li>Backpressure lets a slow consumer explicitly control how much data a fast producer sends, via <code>Subscription.request(n)</code>, preventing unbounded buffering or silent data loss.</li><li>Overflow strategies (<code>buffer</code>, <code>drop</code>, <code>latest</code>, <code>error</code>) represent real, deliberate business tradeoffs about what should happen when a producer genuinely outpaces a consumer — choose based on whether losing individual items is acceptable for the data in question.</li><li>Most everyday reactive pipelines use unbounded (effectively backpressure-free) demand implicitly — explicit demand management matters specifically for genuine, sustained speed mismatches between producer and consumer.</li><li>For data where loss is unacceptable, use a bounded buffer with an <code>ERROR</code> (or blocking) overflow strategy, paired with explicit error handling — never rely on unbounded buffering as a substitute for genuine capacity planning.</li></ul>
+  <div class="nav"><a class="prv" href="0367-project-reactor-mono-flux.html"><span class="mini">← Previous</span>Project Reactor (Mono / Flux)</a><a class="nxt" href="0369-imperative-vs-reactive-trade-offs.html"><span class="mini">Next →</span>Imperative vs reactive trade-offs</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t368";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
