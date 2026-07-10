@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Publishing events from aggregate roots (@DomainEvents)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-data.html">Spring Data</a> › 1. Spring Data Commons (core)</div>
+  <div class="htitle">
+    <h1>"Publishing events from aggregate roots (@DomainEvents)"</h1>
+    <a class="back" href="../../spring-data.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>@DomainEvents</code> is a method-level annotation on an entity: when a Spring Data repository calls <code>save(...)</code> on that entity, the framework automatically calls the <code>@DomainEvents</code>-annotated method, collects whatever events it returns, and publishes each one through the application&#x27;s <code>ApplicationEventPublisher</code> — the same event mechanism <code>ApplicationListener</code>/<code>@EventListener</code> consume — right after the save completes successfully. A paired <code>@AfterDomainEventPublication</code> method (optional) lets the entity clear its pending-events list once publication has happened, so the same events aren&#x27;t republished on a later save.</p>
+<pre><code class="lang-java">@Entity
+public class Order {
+    @Transient
+    private final List&lt;Object&gt; pendingEvents = new ArrayList&lt;&gt;();
+
+    @DomainEvents
+    Collection&lt;Object&gt; domainEvents() { return pendingEvents; }
+
+    @AfterDomainEventPublication
+    void clearEvents() { pendingEvents.clear(); }
+
+    public void ship() {
+        this.status = &quot;shipped&quot;;
+        pendingEvents.add(new OrderShippedEvent(this.id));
+    }
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>This pattern comes from Domain-Driven Design: an &quot;aggregate root&quot; (the entity that owns a consistency boundary — here, <code>Order</code>) is the right place for business logic to record &quot;something significant happened&quot; (an order shipped, a customer&#x27;s tier changed), but that logic shouldn&#x27;t need to know *how* those events eventually get delivered to whatever else in the application cares about them. <code>@DomainEvents</code> bridges the two: business logic on the entity just accumulates plain event objects; Spring Data&#x27;s save machinery handles publishing them through the standard Spring event system, decoupling &quot;recording that something happened&quot; from &quot;reacting to it.&quot;</p>
+<p>Reach for <code>@DomainEvents</code> specifically when:</p>
+<ul><li>You&#x27;re following a domain-driven design style where entities (aggregate roots) are responsible for recording significant state changes as events, and want those events published automatically and reliably whenever the entity is actually saved — not forgotten because a caller forgot to manually publish an event after calling <code>save</code>.</li><li>You want event publication tied directly to persistence success — an event fires only once the entity&#x27;s new state is actually committed to the repository, not before, avoiding the common bug of publishing an event for a change that then fails to save.</li><li>You&#x27;re decoupling side effects (sending a notification, updating a read model, triggering a downstream process) from the core business logic that causes them — the entity records *what* happened; separate <code>@EventListener</code> methods elsewhere decide *what to do* about it.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> @Entity
+ public class Order {
+     @DomainEvents
+     Collection&lt;Object&gt; domainEvents() { return pendingEvents; }
+     -- returns whatever events have accumulated so far
+
+     @AfterDomainEventPublication
+     void clearEvents() { pendingEvents.clear(); }
+     -- called automatically AFTER publication, to reset for next time
+ }
+
+ repo.save(order)
+        |
+        v
+ Spring Data JPA&#x27;s save() implementation:
+   1. persists the entity (the actual INSERT/UPDATE)
+   2. AFTER a successful save, calls the @DomainEvents method
+   3. for each returned event object, publishes it via ApplicationEventPublisher
+   4. calls @AfterDomainEventPublication to clear the entity&#x27;s event list
+        |
+        v
+ any @EventListener(OrderShippedEvent.class) method elsewhere in the
+ application receives the event, completely decoupled from Order itself</code></pre>
+<p>The whole cycle — accumulate, save, publish, clear — happens automatically as part of calling <code>save(...)</code>; no manual <code>publisher.publishEvent(...)</code> call is needed anywhere in application code.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Calling save on an entity with pending domain events triggers automatic event publication after the save succeeds">
+  <rect x="10" y="20" width="180" height="55" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="100" y="42" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">order.ship()</text>
+  <text x="100" y="58" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">records a pending event</text>
+
+  <rect x="230" y="20" width="180" height="55" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="320" y="42" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">repo.save(order)</text>
+  <text x="320" y="58" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">persists, then publishes events</text>
+
+  <rect x="450" y="20" width="180" height="55" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="540" y="42" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">@EventListener</text>
+  <text x="540" y="58" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">reacts, decoupled from Order</text>
+
+  <line x1="190" y1="47" x2="225" y2="47" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="410" y1="47" x2="445" y2="47" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/>
+  <defs><marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Business logic records an event on the entity; <code>save</code> is what actually delivers it, only after persistence genuinely succeeds.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: an <code>Order</code> aggregate recording a shipment event, evolving from basic event capture-and-publish, to an <code>@EventListener</code> reacting to it, to confirming events are only published on successful saves and correctly cleared afterward so they aren&#x27;t re-published.</p>
+<h3>Level 1 — Basic</h3>
+<p>Record a domain event on <code>ship()</code>, save the entity, and confirm the event was published via a simple listener.</p>
+<pre><code class="lang-java">import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Transient;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.event.EventListener;
+import org.springframework.data.domain.AfterDomainEventPublication;
+import org.springframework.data.domain.DomainEvents;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+@SpringBootApplication
+public class DomainEventsLevel1 {
+
+    public record OrderShippedEvent(Long orderId) {}
+
+    @Entity
+    public static class Order {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String status = &quot;pending&quot;;
+
+        @Transient
+        private final List&lt;Object&gt; pendingEvents = new ArrayList&lt;&gt;();
+
+        public Long getId() { return id; }
+        public String getStatus() { return status; }
+
+        public void ship() {
+            this.status = &quot;shipped&quot;;
+            pendingEvents.add(new OrderShippedEvent(this.id));
+        }
+
+        @DomainEvents
+        Collection&lt;Object&gt; domainEvents() { return pendingEvents; }
+
+        @AfterDomainEventPublication
+        void clearEvents() { pendingEvents.clear(); }
+    }
+
+    public interface OrderRepository extends JpaRepository&lt;Order, Long&gt; {}
+
+    @Component
+    public static class OrderShippedListener {
+        final List&lt;OrderShippedEvent&gt; received = new CopyOnWriteArrayList&lt;&gt;();
+
+        @EventListener
+        public void onOrderShipped(OrderShippedEvent event) {
+            received.add(event);
+            System.out.println(&quot;[listener] received OrderShippedEvent for order &quot; + event.orderId());
+        }
+    }
+
+    public static void main(String[] args) {
+        ConfigurableApplicationContext ctx = SpringApplication.run(DomainEventsLevel1.class,
+            &quot;--spring.datasource.url=jdbc:h2:mem:domevents1&quot;,
+            &quot;--spring.jpa.hibernate.ddl-auto=create-drop&quot;);
+
+        OrderRepository repo = ctx.getBean(OrderRepository.class);
+        OrderShippedListener listener = ctx.getBean(OrderShippedListener.class);
+
+        Order order = repo.save(new Order()); // initial save -- no events yet
+        order.ship();                          // records a pending event
+        repo.save(order);                      // save() triggers automatic publication
+
+        System.out.println(&quot;listener received &quot; + listener.received.size() + &quot; event(s)&quot;);
+
+        if (listener.received.size() != 1) throw new AssertionError(&quot;Expected exactly 1 OrderShippedEvent received&quot;);
+        if (!listener.received.get(0).orderId().equals(order.getId()))
+            throw new AssertionError(&quot;Expected the event to reference the correct order id&quot;);
+        System.out.println(&quot;@DomainEvents automatically published the event on save() -- PASS&quot;);
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: put <code>spring-boot-starter-data-jpa</code> and <code>com.h2database:h2</code> on the classpath, then <code>java DomainEventsLevel1.java</code> on JDK 17+.</p>
+<p><code>order.ship()</code> is pure business logic — it changes <code>status</code> and records an <code>OrderShippedEvent</code> in <code>pendingEvents</code>, with no knowledge of Spring&#x27;s event system at all. <code>repo.save(order)</code> is what actually triggers publication: Spring Data JPA&#x27;s save implementation calls the <code>@DomainEvents</code>-annotated <code>domainEvents()</code> method after persisting, publishes each returned event through <code>ApplicationEventPublisher</code>, and <code>OrderShippedListener</code>&#x27;s <code>@EventListener</code> method receives it — entirely decoupled from <code>Order</code> itself.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Confirm <code>@AfterDomainEventPublication</code> correctly clears the event list, so a subsequent unrelated save doesn&#x27;t re-publish the same event.</p>
+<pre><code class="lang-java">import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Transient;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.event.EventListener;
+import org.springframework.data.domain.AfterDomainEventPublication;
+import org.springframework.data.domain.DomainEvents;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+@SpringBootApplication
+public class DomainEventsLevel2 {
+
+    public record OrderShippedEvent(Long orderId) {}
+
+    @Entity
+    public static class Order {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String status = &quot;pending&quot;;
+        private String notes = &quot;&quot;;
+
+        @Transient
+        private final List&lt;Object&gt; pendingEvents = new ArrayList&lt;&gt;();
+
+        public Long getId() { return id; }
+        public void ship() {
+            this.status = &quot;shipped&quot;;
+            pendingEvents.add(new OrderShippedEvent(this.id));
+        }
+        public void addNote(String note) { this.notes += note; } // unrelated change, no new event
+
+        @DomainEvents
+        Collection&lt;Object&gt; domainEvents() { return pendingEvents; }
+
+        @AfterDomainEventPublication
+        void clearEvents() { pendingEvents.clear(); }
+    }
+
+    public interface OrderRepository extends JpaRepository&lt;Order, Long&gt; {}
+
+    @Component
+    public static class OrderShippedListener {
+        final List&lt;OrderShippedEvent&gt; received = new CopyOnWriteArrayList&lt;&gt;();
+        @EventListener
+        public void onOrderShipped(OrderShippedEvent event) { received.add(event); }
+    }
+
+    public static void main(String[] args) {
+        ConfigurableApplicationContext ctx = SpringApplication.run(DomainEventsLevel2.class,
+            &quot;--spring.datasource.url=jdbc:h2:mem:domevents2&quot;,
+            &quot;--spring.jpa.hibernate.ddl-auto=create-drop&quot;);
+
+        OrderRepository repo = ctx.getBean(OrderRepository.class);
+        OrderShippedListener listener = ctx.getBean(OrderShippedListener.class);
+
+        Order order = repo.save(new Order());
+        order.ship();
+        repo.save(order); // publishes 1 event, then clears pendingEvents
+
+        order.addNote(&quot;left at front desk&quot;); // unrelated change, no new event recorded
+        repo.save(order); // this save should NOT re-publish the already-cleared event
+
+        System.out.println(&quot;total events received across BOTH saves = &quot; + listener.received.size());
+
+        if (listener.received.size() != 1)
+            throw new AssertionError(&quot;Expected exactly 1 event total -- @AfterDomainEventPublication should have cleared the list&quot;);
+        System.out.println(&quot;@AfterDomainEventPublication correctly prevented re-publishing the same event -- PASS&quot;);
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: same classpath as Level 1, <code>java DomainEventsLevel2.java</code>.</p>
+<p>After the first <code>repo.save(order)</code> publishes the <code>OrderShippedEvent</code>, <code>@AfterDomainEventPublication</code>&#x27;s <code>clearEvents()</code> runs automatically, emptying <code>pendingEvents</code>. The second <code>repo.save(order)</code> (triggered by an unrelated <code>addNote</code> call that adds no new event) finds <code>pendingEvents</code> empty, so <code>domainEvents()</code> returns nothing to publish — the listener&#x27;s total received-event count stays at exactly <code>1</code>, confirming events aren&#x27;t accidentally re-published on every subsequent save.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Confirm events are published only on a *successful* save by wrapping the save in a transaction that fails afterward, and observing the event was never actually delivered — demonstrating events are tied to genuine persistence, not merely to calling <code>save()</code>.</p>
+<pre><code class="lang-java">import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Transient;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.event.EventListener;
+import org.springframework.context.event.TransactionalEventListener;
+import org.springframework.data.domain.AfterDomainEventPublication;
+import org.springframework.data.domain.DomainEvents;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+@SpringBootApplication
+public class DomainEventsLevel3 {
+
+    public record OrderShippedEvent(Long orderId) {}
+
+    @Entity
+    public static class Order {
+        @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+        private Long id;
+        private String status = &quot;pending&quot;;
+
+        @Transient
+        private final List&lt;Object&gt; pendingEvents = new ArrayList&lt;&gt;();
+
+        public Long getId() { return id; }
+        public void ship() {
+            this.status = &quot;shipped&quot;;
+            pendingEvents.add(new OrderShippedEvent(this.id));
+        }
+
+        @DomainEvents
+        Collection&lt;Object&gt; domainEvents() { return pendingEvents; }
+
+        @AfterDomainEventPublication
+        void clearEvents() { pendingEvents.clear(); }
+    }
+
+    public interface OrderRepository extends JpaRepository&lt;Order, Long&gt; {}
+
+    @Component
+    public static class OrderShippedListener {
+        // @TransactionalEventListener with AFTER_COMMIT phase (the default) means
+        // this only fires if the enclosing transaction actually commits successfully.
+        final List&lt;OrderShippedEvent&gt; received = new CopyOnWriteArrayList&lt;&gt;();
+
+        @TransactionalEventListener
+        public void onOrderShippedAfterCommit(OrderShippedEvent event) {
+            received.add(event);
+            System.out.println(&quot;[listener] transaction committed, event delivered for order &quot; + event.orderId());
+        }
+    }
+
+    @Component
+    public static class OrderShippingService {
+        private final OrderRepository repo;
+        public OrderShippingService(OrderRepository repo) { this.repo = repo; }
+
+        @Transactional
+        public Long shipSuccessfully() {
+            Order order = repo.save(new Order());
+            order.ship();
+            repo.save(order); // event is RECORDED for publication, deferred to after commit
+            return order.getId();
+        }
+
+        @Transactional
+        public void shipThenFail() {
+            Order order = repo.save(new Order());
+            order.ship();
+            repo.save(order); // event is recorded here too...
+            throw new RuntimeException(&quot;simulated failure AFTER save, causing a rollback&quot;);
+            // ...but the transaction rolls back, so the event must NEVER actually be delivered
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        ConfigurableApplicationContext ctx = SpringApplication.run(DomainEventsLevel3.class,
+            &quot;--spring.datasource.url=jdbc:h2:mem:domevents3&quot;,
+            &quot;--spring.jpa.hibernate.ddl-auto=create-drop&quot;);
+
+        OrderShippingService service = ctx.getBean(OrderShippingService.class);
+        OrderShippedListener listener = ctx.getBean(OrderShippedListener.class);
+
+        Long successfulOrderId = service.shipSuccessfully();
+        Thread.sleep(200); // allow the AFTER_COMMIT listener to run
+
+        System.out.println(&quot;after successful ship: events received = &quot; + listener.received.size());
+
+        try {
+            service.shipThenFail();
+        } catch (RuntimeException expected) {
+            System.out.println(&quot;shipThenFail() threw as expected, transaction rolled back&quot;);
+        }
+        Thread.sleep(200);
+
+        System.out.println(&quot;after failed ship: events received = &quot; + listener.received.size());
+
+        if (listener.received.size() != 1)
+            throw new AssertionError(&quot;Expected exactly 1 event total -- the failed transaction&#x27;s event must never be delivered&quot;);
+        if (!listener.received.get(0).orderId().equals(successfulOrderId))
+            throw new AssertionError(&quot;Expected the ONE delivered event to be from the successful order&quot;);
+
+        System.out.println(&quot;Events tied to transaction commit -- the rolled-back save&#x27;s event was never delivered -- PASS&quot;);
+        ctx.close();
+    }
+}</code></pre>
+<p>How to run: put <code>spring-boot-starter-data-jpa</code> and <code>com.h2database:h2</code> on the classpath, then <code>java DomainEventsLevel3.java</code> on JDK 17+.</p>
+<p><code>@TransactionalEventListener</code> (instead of plain <code>@EventListener</code>) defers actual event delivery until the enclosing transaction commits successfully — <code>shipSuccessfully()</code>&#x27;s transaction commits, so its event is delivered; <code>shipThenFail()</code>&#x27;s transaction rolls back (due to the thrown exception after the save), so even though <code>@DomainEvents</code> recorded the event during the save, it&#x27;s never actually delivered to the listener, since the transaction it was part of never committed. This confirms domain events, combined with <code>@TransactionalEventListener</code>, are tied to genuine, durable persistence — not merely to the <code>save()</code> method call having executed.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>service.shipThenFail()</code>&#x27;s failed attempt.</p>
+<ol><li><strong><code>@Transactional</code> begins</strong>: <code>shipThenFail()</code> starts a database transaction.</li><li><strong><code>repo.save(new Order())</code></strong> inserts a new <code>Order</code> row within this transaction.</li><li><strong><code>order.ship()</code></strong> records an <code>OrderShippedEvent</code> in the entity&#x27;s <code>pendingEvents</code> list — pure in-memory state at this point, nothing published yet.</li><li><strong><code>repo.save(order)</code></strong>: Spring Data JPA&#x27;s save implementation persists the updated <code>status</code>, then calls <code>@DomainEvents</code>&#x27;s <code>domainEvents()</code>, collecting the pending event. Internally, Spring Data doesn&#x27;t publish it immediately as a plain event — with <code>@TransactionalEventListener</code> in play on the receiving side, the actual delivery is registered to occur only after the current transaction commits. <code>@AfterDomainEventPublication</code> still runs, clearing <code>pendingEvents</code>.</li><li><strong><code>throw new RuntimeException(...)</code></strong>: this exception propagates out of the <code>@Transactional</code> method — Spring&#x27;s transaction interceptor sees an unchecked exception and marks the transaction for rollback rather than commit.</li><li><strong>Rollback occurs</strong>: the <code>INSERT</code> and subsequent <code>UPDATE</code> from steps 2–4 are both rolled back at the database level — as far as the database is concerned, this order was never shipped, and in fact never existed at all after the rollback.</li><li><strong>Event delivery never happens</strong>: because <code>@TransactionalEventListener</code>&#x27;s default phase is <code>AFTER_COMMIT</code>, and this transaction never committed (it rolled back), the registered event delivery is simply discarded — <code>OrderShippedListener.onOrderShippedAfterCommit</code> is never invoked for this particular event.</li><li><strong>Verification</strong>: <code>listener.received</code> still contains only the one event from the earlier, successful <code>shipSuccessfully()</code> call — confirming the failed transaction&#x27;s domain event was correctly never delivered, even though <code>@DomainEvents</code> had recorded it during the (ultimately rolled-back) save.</li></ol>
+<pre><code> shipThenFail() [@Transactional]
+        |
+        +-- save(new Order())        -- INSERT (within transaction)
+        +-- order.ship()              -- records pending event (in-memory only)
+        +-- save(order)                -- UPDATE + @DomainEvents collects event,
+        |                                  registers it for AFTER_COMMIT delivery
+        +-- throw RuntimeException     -- transaction marked for ROLLBACK
+        |
+        v
+ ROLLBACK: INSERT + UPDATE undone; registered event delivery DISCARDED, never fires</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> plain <code>@EventListener</code> (as used in Levels 1 and 2, without <code>@Transactional</code> wrapping the save) fires *immediately* when <code>repo.save(...)</code> completes, regardless of whether an enclosing transaction (if any) later commits or rolls back — this can mean a listener reacts to an event whose underlying database change is later undone. <code>@TransactionalEventListener</code> (Level 3) is the safer choice whenever domain events should only be acted upon after the triggering change is durably committed, which is the common and usually correct expectation for domain events specifically.</blockquote>
+<ul><li><code>@DomainEvents</code> lets an entity (an aggregate root, in DDD terms) accumulate plain event objects as part of its own business logic, with <code>save(...)</code> automatically collecting and publishing them — no manual <code>ApplicationEventPublisher</code> call needed in application code.</li><li><code>@AfterDomainEventPublication</code> clears the entity&#x27;s pending-events list once publication has occurred, preventing the same events from being re-published on a later, unrelated save.</li><li>Combine <code>@DomainEvents</code> with <code>@TransactionalEventListener</code> (rather than plain <code>@EventListener</code>) when event delivery should be tied to the enclosing transaction&#x27;s actual commit, not merely to the <code>save()</code> call having executed — critical for correctness whenever a save might later be rolled back.</li><li>This pattern decouples &quot;recording that something significant happened&quot; (business logic on the entity) from &quot;reacting to it&quot; (separate <code>@EventListener</code>/<code>@TransactionalEventListener</code> methods elsewhere) — a core Domain-Driven Design technique that Spring Data&#x27;s repository infrastructure supports directly.</li></ul>
+  <div class="nav"><a class="prv" href="0030-customizing-the-base-repository.html"><span class="mini">← Previous</span>Customizing the base repository</a><a class="nxt" href="0032-spring-data-extensions-web-support.html"><span class="mini">Next →</span>Spring Data extensions (web support)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-data.html", ID = "t31";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
