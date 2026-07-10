@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"MVC HTTP/2 considerations" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-framework.html">Spring Framework</a> › 6. Spring Web MVC</div>
+  <div class="htitle">
+    <h1>"MVC HTTP/2 considerations"</h1>
+    <a class="back" href="../../spring-framework.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>HTTP/2 is a binary, multiplexed transport protocol — a major revision of how HTTP messages travel over the wire, though the request/response semantics Spring MVC works with (methods, headers, status codes, bodies) remain unchanged. Spring MVC itself is largely transport-agnostic (it doesn&#x27;t know or care whether HTTP/1.1 or HTTP/2 delivered a request), but a few application-level practices that made sense under HTTP/1.1&#x27;s constraints become unnecessary or even counterproductive under HTTP/2, and enabling it requires configuration at the embedded server level, not in Spring MVC itself.</p>
+<pre><code class="lang-yaml"># application.yml — enabling HTTP/2 on embedded Tomcat (requires TLS)
+server:
+  http2:
+    enabled: true
+  ssl:
+    enabled: true
+    key-store: classpath:keystore.p12
+    key-store-password: changeit</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>HTTP/1.1 has a well-known limitation: browsers open only a small number of parallel TCP connections per origin (historically 6), and each connection can only have one request in flight at a time (head-of-line blocking at the HTTP layer). This drove a whole ecosystem of HTTP/1.1-era performance techniques: <strong>domain sharding</strong> (spreading assets across multiple subdomains to get more parallel connections), <strong>asset concatenation/bundling</strong> (combining many small files into fewer large ones to reduce the number of separate requests), and <strong>image spriting</strong> (combining many small images into one large image, sliced via CSS).</p>
+<p>HTTP/2 multiplexes many requests over a <strong>single</strong> TCP connection, largely eliminating the original motivation for these techniques — and in some cases, they now actively work *against* HTTP/2&#x27;s strengths (e.g. bundling defeats HTTP/2&#x27;s efficient per-resource caching, since a single changed line invalidates the *entire* bundle rather than just one small file). Understanding this matters when:</p>
+<ul><li>Modernizing a legacy application&#x27;s asset-delivery strategy that was built around HTTP/1.1-era assumptions.</li><li>Configuring the embedded server (Tomcat, Jetty, Undertow) to actually enable HTTP/2, since Spring Boot doesn&#x27;t turn it on by default and it requires TLS in virtually all real-world deployments (browsers only support HTTP/2 over TLS via ALPN negotiation, even though the spec technically allows cleartext HTTP/2).</li><li>Understanding that Spring MVC&#x27;s own request/response handling code requires <strong>no changes</strong> to work correctly over HTTP/2 — the protocol upgrade happens entirely below the servlet API abstraction layer.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code>HTTP/1.1 (per-origin connection limits, one request in flight per connection):
+
+  Browser -&gt; [conn 1: GET /style.css]      (blocks other requests on THIS connection)
+  Browser -&gt; [conn 2: GET /script.js]      (needs a SEPARATE connection for parallelism)
+  Browser -&gt; [conn 3: GET /logo.png]
+  ... limited to ~6 parallel connections per origin
+
+  Mitigations (now often UNNECESSARY under HTTP/2):
+    - bundle many small JS/CSS files into ONE large file (fewer requests needed)
+    - shard assets across multiple subdomains (more connections allowed)
+    - inline small images as data URIs (skip a request entirely)
+
+HTTP/2 (single connection, MULTIPLEXED streams):
+
+  Browser -&gt; [ONE connection]
+               stream 1: GET /style.css   ─┐
+               stream 3: GET /script.js    ├─ all IN FLIGHT SIMULTANEOUSLY,
+               stream 5: GET /logo.png    ─┘  interleaved over ONE TCP connection
+
+  Bundling now often HURTS: one small CSS change invalidates
+  the WHOLE bundle&#x27;s cache, instead of just one small file&#x27;s
+
+Spring MVC&#x27;s role: NONE of this affects @Controller code, argument
+resolution, or response handling — it&#x27;s entirely a TRANSPORT-LAYER
+concern, configured at the embedded server, invisible to handler code.</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 740 230" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <rect width="740" height="230" fill="#0d1117"/>
+  <text x="370" y="22" text-anchor="middle" fill="#8b949e">HTTP/1.1 multiple connections vs HTTP/2 multiplexed streams</text>
+
+  <rect x="20" y="50" width="320" height="150" rx="5" fill="#1c2430" stroke="#8b949e"/>
+  <text x="180" y="70" text-anchor="middle" fill="#8b949e" font-size="10">HTTP/1.1</text>
+  <text x="35" y="95" fill="#8b949e" font-size="9">conn 1: -- style.css --&gt;</text>
+  <text x="35" y="115" fill="#8b949e" font-size="9">conn 2: -- script.js --&gt;</text>
+  <text x="35" y="135" fill="#8b949e" font-size="9">conn 3: -- logo.png --&gt;</text>
+  <text x="35" y="160" fill="#8b949e" font-size="9">3 separate TCP connections</text>
+  <text x="35" y="178" fill="#8b949e" font-size="9">needed for parallelism</text>
+
+  <rect x="390" y="50" width="330" height="150" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="555" y="70" text-anchor="middle" fill="#6db33f" font-size="10">HTTP/2</text>
+  <text x="405" y="95" fill="#8b949e" font-size="9">ONE connection, multiplexed streams:</text>
+  <text x="405" y="115" fill="#6db33f" font-size="9">stream 1: style.css</text>
+  <text x="405" y="133" fill="#6db33f" font-size="9">stream 3: script.js</text>
+  <text x="405" y="151" fill="#6db33f" font-size="9">stream 5: logo.png</text>
+  <text x="405" y="175" fill="#8b949e" font-size="9">all interleaved, ONE connection</text>
+
+  <defs>
+    <marker id="a39" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+</svg>
+<p>*HTTP/2 multiplexes many logical streams over a single TCP connection, removing the original motivation for HTTP/1.1-era bundling/sharding tricks.*</p>
+<h2>5. Runnable example</h2>
+<h3>Level 1 — Basic</h3>
+<p>Enabling HTTP/2 on embedded Tomcat with a self-signed certificate for local testing, and confirming Spring MVC&#x27;s controller code needs zero changes:</p>
+<pre><code class="lang-yaml"># application.yml
+server:
+  port: 8443
+  http2:
+    enabled: true
+  ssl:
+    enabled: true
+    key-store: classpath:keystore.p12
+    key-store-password: changeit
+    key-store-type: PKCS12</code></pre>
+<pre><code class="lang-bash"># Generate a local self-signed certificate for testing
+keytool -genkeypair -alias tomcat -keyalg RSA -keysize 2048 -storetype PKCS12 \
+  -keystore src/main/resources/keystore.p12 -validity 365 -dname &quot;CN=localhost&quot;</code></pre>
+<pre><code class="lang-java">// ProductController.java — completely ordinary, HTTP-version-agnostic code
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ProductController {
+
+    record Product(long id, String name) {}
+
+    @GetMapping(&quot;/products/{id}&quot;)
+    public Product get(@PathVariable long id) {
+        return new Product(id, &quot;Drill&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">./mvnw spring-boot:run
+
+curl -k --http2 -I https://localhost:8443/products/1
+# HTTP/2 200
+# content-type: application/json
+
+curl -k --http1.1 -I https://localhost:8443/products/1
+# HTTP/1.1 200        &lt;- the SAME endpoint, same code, still perfectly serves HTTP/1.1 clients</code></pre>
+<p><code>ProductController</code> required zero changes to work over HTTP/2 — the protocol negotiation (via TLS&#x27;s ALPN extension) happens entirely at the connection layer, below anything Spring MVC&#x27;s <code>@Controller</code> code interacts with. The server transparently serves both protocol versions to whichever clients request them.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Demonstrating the practical shift away from HTTP/1.1-era asset bundling — serving several small, individually cacheable files instead of one large bundle, and observing that this is now a reasonable (often preferable) strategy under HTTP/2:</p>
+<pre><code class="lang-java">// WebConfig.java
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.CacheControl;
+import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.resource.VersionResourceResolver;
+
+import java.time.Duration;
+
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+    @Override
+    public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        // Several SEPARATE, individually versioned/cacheable files — a deliberate choice
+        // that would have been a performance ANTI-PATTERN under HTTP/1.1 (too many
+        // separate requests), but is entirely reasonable under HTTP/2&#x27;s multiplexing.
+        registry.addResourceHandler(&quot;/assets/**&quot;)
+            .addResourceLocations(&quot;classpath:/static/assets/&quot;)
+            .setCacheControl(CacheControl.maxAge(Duration.ofDays(365)).immutable())
+            .resourceChain(true)
+            .addResolver(new VersionResourceResolver().addContentVersionStrategy(&quot;/**&quot;));
+    }
+}</code></pre>
+<p><code>templates/home.html</code>:</p>
+<pre><code class="lang-html">&lt;html xmlns:th=&quot;http://www.thymeleaf.org&quot;&gt;
+&lt;head&gt;
+  &lt;!-- Several SEPARATE stylesheets — each independently cacheable and versioned.
+       Editing button-styles.css invalidates ONLY that file&#x27;s hash, not a giant bundle. --&gt;
+  &lt;link rel=&quot;stylesheet&quot; th:href=&quot;@{/assets/layout.css}&quot;&gt;
+  &lt;link rel=&quot;stylesheet&quot; th:href=&quot;@{/assets/typography.css}&quot;&gt;
+  &lt;link rel=&quot;stylesheet&quot; th:href=&quot;@{/assets/button-styles.css}&quot;&gt;
+&lt;/head&gt;
+&lt;body&gt;&lt;h1&gt;Home&lt;/h1&gt;&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash">./mvnw spring-boot:run
+
+curl -k --http2 https://localhost:8443/
+# &lt;link href=&quot;/assets/layout-a1b2.css&quot;&gt;
+# &lt;link href=&quot;/assets/typography-c3d4.css&quot;&gt;
+# &lt;link href=&quot;/assets/button-styles-e5f6.css&quot;&gt;
+# three separate, independently versioned/cached files — served efficiently over ONE
+# multiplexed HTTP/2 connection, no separate-connection penalty as there would have
+# been under HTTP/1.1</code></pre>
+<p><strong>What changed:</strong> Rather than bundling <code>layout.css</code> + <code>typography.css</code> + <code>button-styles.css</code> into one large <code>app.css</code> (the HTTP/1.1-era default best practice, to minimize request count), each file remains separate. Under HTTP/2, the browser fetches all three over the same multiplexed connection with negligible per-request overhead, and — the real payoff — editing <code>button-styles.css</code> only invalidates *that* file&#x27;s version-hashed URL and cache entry, leaving <code>layout.css</code>&#x27;s and <code>typography.css</code>&#x27;s long-lived caches completely untouched.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Production concern: correctly configuring the embedded server for HTTP/2 behind a reverse proxy/load balancer (a very common real-world topology, where the proxy — not the Spring Boot application itself — often terminates the client-facing TLS/HTTP2 connection), and understanding what changes versus a direct-to-application HTTP/2 setup:</p>
+<pre><code class="lang-yaml"># application.yml — application behind a reverse proxy that terminates client TLS
+# In THIS topology, the proxy speaks HTTP/2 to BROWSERS, but often speaks plain
+# HTTP/1.1 to the application internally (a common, simpler configuration) —
+# so the application itself does NOT need server.http2.enabled at all.
+server:
+  port: 8080
+  forward-headers-strategy: framework   # tells Spring Boot to trust and process X-Forwarded-* headers</code></pre>
+<pre><code class="lang-java">// WebConfig.java — ForwardedHeaderFilter is handled automatically via forward-headers-strategy,
+// no manual filter registration needed when set to &quot;framework&quot;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ProductController {
+
+    @GetMapping(&quot;/products/{id}&quot;)
+    public String get(@PathVariable long id) {
+        // Redirect/URL-building code here correctly reflects the CLIENT-FACING
+        // https:// scheme and hostname, even though the application itself only
+        // ever sees plain HTTP/1.1 connections from the proxy.
+        return &quot;Drill&quot;;
+    }
+}</code></pre>
+<p><strong>Reverse proxy config (nginx example, illustrative):</strong></p>
+<pre><code class="lang-nginx">server {
+    listen 443 ssl http2;               # proxy speaks HTTP/2 + TLS to BROWSERS
+    ssl_certificate     /etc/ssl/cert.pem;
+    ssl_certificate_key /etc/ssl/key.pem;
+
+    location / {
+        proxy_pass http://app-internal:8080;   # plain HTTP/1.1 to the Spring Boot app
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+    }
+}</code></pre>
+<p><strong>How to run:</strong></p>
+<pre><code class="lang-bash"># Client connects to the PROXY over HTTP/2 + TLS:
+curl --http2 -I https://shop.example.com/products/1
+# HTTP/2 200
+
+# The proxy internally forwards to the Spring Boot app over plain HTTP/1.1 —
+# the application itself never directly negotiates HTTP/2 at all in this topology.</code></pre>
+<p><strong>What changed and why:</strong></p>
+<ul><li><code>forward-headers-strategy: framework</code> is the key setting for this topology — it tells Spring Boot to automatically apply <code>ForwardedHeaderFilter</code>-equivalent processing, trusting the proxy&#x27;s <code>X-Forwarded-*</code> headers so that any URL-building code in the application (redirects, absolute links) correctly reflects <code>https://shop.example.com</code>, even though the actual TCP connection reaching the application is plain HTTP/1.1 from the internal proxy.</li><li>This is an extremely common production topology: the reverse proxy/load balancer (nginx, an AWS ALB, a CDN edge) handles the complexity of TLS termination and HTTP/2 negotiation with real browsers, while the application itself runs a simpler, plain HTTP/1.1 configuration internally — there&#x27;s no requirement that the Spring Boot application itself terminate HTTP/2 for the *overall* system to benefit from HTTP/2&#x27;s client-facing performance improvements.</li><li>This demonstrates that &quot;does my application use HTTP/2&quot; is often the wrong question in production — the more relevant question is &quot;does the client-facing edge of my system speak HTTP/2,&quot; which frequently is a proxy/CDN concern entirely separate from the application server&#x27;s own configuration.</li></ul>
+<h2>6. Walkthrough</h2>
+<p><strong>Request: a browser fetching <code>https://shop.example.com/products/1</code> (Level 3 topology — proxy terminates HTTP/2, forwards HTTP/1.1 internally).</strong></p>
+<ol><li>The browser establishes a TLS connection to the reverse proxy (nginx), negotiating HTTP/2 via ALPN during the TLS handshake — this negotiation happens entirely between the browser and the proxy; the Spring Boot application is not a party to it at all.</li><li>The browser sends its request as an HTTP/2 stream over this connection: <code>GET /products/1</code>.</li><li>nginx receives and decodes the HTTP/2 stream, then re-issues the request as a plain HTTP/1.1 request to the internal application (<code>proxy_pass http://app-internal:8080</code>), adding <code>X-Forwarded-Proto: https</code> and <code>X-Forwarded-Host: shop.example.com</code> headers to communicate the original client-facing connection details.</li><li>The Spring Boot application (embedded Tomcat, listening on plain HTTP/1.1 port <code>8080</code>) receives this internal request. Because <code>forward-headers-strategy: framework</code> is configured, Spring Boot&#x27;s request-forwarding-aware infrastructure processes the <code>X-Forwarded-*</code> headers automatically.</li><li><code>DispatcherServlet</code> dispatches to <code>ProductController.get(1)</code> exactly as it would for any other request — nothing about the handler method&#x27;s execution differs based on the original client&#x27;s protocol version.</li><li><code>get(1)</code> returns <code>&quot;Drill&quot;</code>. Because of the forwarded-header processing from step 4, if this handler needed to build an absolute URL (a redirect, a <code>Location</code> header), it would correctly produce <code>https://shop.example.com/...</code>, not <code>http://app-internal:8080/...</code>.</li><li>The response travels back to nginx over the internal HTTP/1.1 connection, which re-encodes it as an HTTP/2 stream and sends it to the browser over the original HTTP/2 connection.</li><li>The browser receives the response over HTTP/2, exactly as it would for any HTTP/2-served content — with the entire internal HTTP/1.1 hop between proxy and application completely invisible to it.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>HTTP/2 (per the spec) technically allows cleartext operation, but virtually no browser supports it — real-world HTTP/2 deployments require TLS.</strong> Attempting to enable <code>server.http2.enabled: true</code> without also configuring TLS (<code>server.ssl.enabled: true</code>) produces a server that starts but that browsers will simply refuse to speak HTTP/2 to, silently falling back to HTTP/1.1 with no obvious error.</blockquote>
+<blockquote><strong>Bundling/concatenating assets is not universally &quot;wrong&quot; under HTTP/2 — it depends on change frequency and cache-invalidation granularity.</strong> A bundle of assets that change together, infrequently, can still be a reasonable choice; the anti-pattern specifically is bundling *unrelated*, *independently-changing* assets purely to reduce request count, since HTTP/2 removes the request-count penalty that justified that specific tradeoff.</blockquote>
+<blockquote><strong>In a reverse-proxy topology, forgetting <code>forward-headers-strategy</code> (or the equivalent manual <code>ForwardedHeaderFilter</code> registration) means the application misinterprets its own connection details</strong> — redirects and absolute URLs can end up pointing at the internal proxy-to-application address instead of the client-facing one, a bug that&#x27;s easy to miss in local development (no proxy involved) and only surfaces in the deployed topology.</blockquote>
+<ul><li>Spring MVC&#x27;s <code>@Controller</code> code requires zero changes to work correctly over HTTP/2 — protocol negotiation happens entirely below the servlet API, typically via TLS&#x27;s ALPN extension.</li><li>HTTP/2&#x27;s multiplexing removes the original motivation for HTTP/1.1-era asset bundling, domain sharding, and image spriting — prefer smaller, independently cacheable/versioned resources where practical.</li><li>Real-world HTTP/2 requires TLS; enabling <code>server.http2.enabled</code> without TLS configuration produces a server browsers will silently ignore for HTTP/2 purposes.</li><li>In reverse-proxy topologies, the application itself often doesn&#x27;t need to speak HTTP/2 at all — <code>forward-headers-strategy: framework</code> (or an equivalent <code>ForwardedHeaderFilter</code>) ensures the application correctly reflects the client-facing connection details regardless.</li></ul>
+  <div class="nav"><a class="prv" href="0362-filters-characterencodingfilter-forwardedheaderfilter-etc.html"><span class="mini">← Previous</span>Filters (CharacterEncodingFilter, ForwardedHeaderFilter, etc.)</a><a class="nxt" href="0364-error-handling-pages.html"><span class="mini">Next →</span>Error handling pages</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-framework.html", ID = "t363";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
