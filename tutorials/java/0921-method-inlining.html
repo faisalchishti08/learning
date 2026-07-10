@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Method inlining — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Method inlining</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Method inlining is a JIT compiler optimization that replaces a call to a small, frequently-invoked method with a direct copy of that method&#x27;s own compiled code at the call site — eliminating the overhead of the call itself (setting up a new <a href="0913-jvm-stacks-stack-frames.md">stack frame</a>, jumping to the method&#x27;s code, jumping back) and, just as importantly, opening the door to *further* optimizations that only become possible once the caller and callee&#x27;s code are merged into one contiguous block the optimizer can analyze together. The <a href="0919-jit-compilation-c1-client-c2-server.md">C2 compiler</a> decides which calls to inline based on the method&#x27;s size, how &quot;hot&quot; the call site is, and — critically — how confident it can be about which actual method implementation will run at that call site, informed by the type-profiling data gathered during <a href="0920-tiered-compilation.md">tiered compilation</a>&#x27;s earlier stages.</p>
+<h2>2. Why &amp; when</h2>
+<p>Inlining matters enormously for idiomatic, well-encapsulated Java code, which tends to be built from many small methods (getters, setters, tiny helper methods, one-line delegating calls) — without inlining, each of these would carry real per-call overhead that, multiplied across millions of invocations in a hot loop, would add up to significant, unnecessary cost. Inlining is also the enabling optimization behind much of the JIT compiler&#x27;s other work: once a getter&#x27;s body is inlined directly into its caller, the surrounding code can often be further optimized (e.g., proving a value never escapes, enabling <a href="0922-escape-analysis-scalar-replacement.md">escape analysis and scalar replacement</a>) in ways that wouldn&#x27;t be possible while the getter remained a genuinely separate call. Understanding inlining explains why writing small, well-named helper methods for clarity generally doesn&#x27;t cost real performance in hot Java code (contrary to older, pre-JIT-era intuitions from other languages) — the compiler frequently inlines them away entirely, and why virtual/polymorphic call sites (where the actual implementation called can vary) are harder to inline confidently than simple, monomorphic ones, a topic worth understanding for genuinely performance-critical code.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">class Point {
+    private final int x, y;
+    Point(int x, int y) { this.x = x; this.y = y; }
+    int getX() { return x; } // tiny, frequently-called -- a prime inlining candidate
+    int getY() { return y; }
+}
+
+int distanceSquared(Point p1, Point p2) {
+    int dx = p1.getX() - p2.getX(); // once hot, the JIT can inline getX() directly here
+    int dy = p1.getY() - p2.getY();
+    return dx * dx + dy * dy;
+}
+// After inlining, the compiled code for distanceSquared effectively becomes as if
+// getX()/getY() had been written inline by hand -- with NO actual method-call overhead
+// remaining, and the resulting merged code open to further optimization.</code></pre>
+<p>The source code retains its clean, encapsulated structure (private fields, accessor methods); the JIT compiler is what collapses that structure away at the machine-code level, once it&#x27;s confident doing so is safe and beneficial.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Before inlining, a call site jumps out to a separate getX method and back; after inlining, the getX method's own logic is copied directly into the caller's compiled code, with no call/return overhead remaining">
+  <text x="160" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Before inlining</text>
+  <rect x="20" y="35" width="260" height="35" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="150" y="57" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">caller: ... call getX() ... use result ...</text>
+  <rect x="60" y="90" width="180" height="30" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="150" y="110" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">separate getX() frame, jump + return</text>
+  <line x1="150" y1="70" x2="150" y2="88" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a49)"/>
+
+  <text x="480" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">After inlining</text>
+  <rect x="360" y="45" width="260" height="60" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="490" y="70" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">caller: ... [getX's logic COPIED IN] ...</text>
+  <text x="490" y="90" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">no call, no separate frame, no jump</text>
+  <defs><marker id="a49" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*Inlining physically merges the callee&#x27;s compiled logic into the caller, eliminating call overhead and opening the merged code up to further, cross-method optimization.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: measuring inlining&#x27;s real performance impact via getter-heavy code, growing from a baseline demonstrating small-method overhead essentially disappears once hot, to deliberately preventing inlining to make its cost visible, to a polymorphic call-site case showing why virtual dispatch complicates inlining.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class TrivialGettersGetInlined {
+    static class Point {
+        private final int x, y;
+        Point(int x, int y) { this.x = x; this.y = y; }
+        int getX() { return x; }
+        int getY() { return y; }
+    }
+
+    static long distanceSquared(Point a, Point b) {
+        int dx = a.getX() - b.getX();
+        int dy = a.getY() - b.getY();
+        return (long) dx * dx + (long) dy * dy;
+    }
+
+    public static void main(String[] args) {
+        Point[] points = new Point[1000];
+        for (int i = 0; i &lt; points.length; i++) points[i] = new Point(i, i * 2);
+
+        long start = System.nanoTime();
+        long total = 0;
+        for (int iter = 0; iter &lt; 50_000; iter++) {
+            for (int i = 0; i &lt; points.length - 1; i++) {
+                total += distanceSquared(points[i], points[i + 1]); // millions of getX()/getY() calls
+            }
+        }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;total=&quot; + total + &quot;, elapsed=&quot; + elapsedMs + &quot;ms&quot;);
+        System.out.println(&quot;(after warm-up, getX()/getY() calls have essentially ZERO overhead -- inlined away)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java TrivialGettersGetInlined.java</code> (JDK 17+).</p>
+<p>Expected output shape (machine-dependent, but notably fast given the enormous number of logical getter calls involved):</p>
+<pre><code>total=..., elapsed=95ms
+(after warm-up, getX()/getY() calls have essentially ZERO overhead -- inlined away)</code></pre>
+<p>Despite calling <code>getX()</code>/<code>getY()</code> many millions of times through the nested loops, the JIT compiler inlines these trivial accessor methods directly into <code>distanceSquared</code>&#x27;s compiled code once it&#x27;s identified as hot, making the encapsulated, &quot;clean code&quot; style essentially free at runtime.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">public class ForcingNoInlineComparison {
+    static class Point {
+        private final int x, y;
+        Point(int x, int y) { this.x = x; this.y = y; }
+        int getX() { return x; }
+        int getY() { return y; }
+    }
+
+    static long distanceSquared(Point a, Point b) {
+        int dx = a.getX() - b.getX();
+        int dy = a.getY() - b.getY();
+        return (long) dx * dx + (long) dy * dy;
+    }
+
+    public static void main(String[] args) {
+        Point[] points = new Point[1000];
+        for (int i = 0; i &lt; points.length; i++) points[i] = new Point(i, i * 2);
+
+        long start = System.nanoTime();
+        long total = 0;
+        for (int iter = 0; iter &lt; 50_000; iter++) {
+            for (int i = 0; i &lt; points.length - 1; i++) {
+                total += distanceSquared(points[i], points[i + 1]);
+            }
+        }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;total=&quot; + total + &quot;, elapsed=&quot; + elapsedMs + &quot;ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -XX:CompileCommand=dontinline,ForcingNoInlineComparison$Point::getX -XX:CompileCommand=dontinline,ForcingNoInlineComparison$Point::getY ForcingNoInlineComparison.java</code> (JDK 17+; this flag explicitly forbids the JIT from inlining these two specific methods, letting their true, un-inlined call overhead show through for comparison against Level 1&#x27;s result).</p>
+<p>Expected output shape (typically slower than the freely-inlined version in Level 1, since real call overhead is now paid on every single invocation):</p>
+<pre><code>total=..., elapsed=210ms</code></pre>
+<p>The real-world concern added: forcibly disabling inlining for <code>getX</code>/<code>getY</code> specifically, via <code>-XX:CompileCommand=dontinline</code>, makes their true per-call overhead visible — the resulting elapsed time is measurably worse than the freely-optimized version, directly demonstrating inlining&#x27;s real contribution to making small, well-encapsulated methods essentially free in practice.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">public class PolymorphicCallSiteChallenge {
+    interface Shape { double area(); }
+    static class Circle implements Shape {
+        double r;
+        Circle(double r) { this.r = r; }
+        public double area() { return Math.PI * r * r; }
+    }
+    static class Square implements Shape {
+        double side;
+        Square(double side) { this.side = side; }
+        public double area() { return side * side; }
+    }
+
+    static double sumAreas(Shape[] shapes) {
+        double total = 0;
+        for (Shape s : shapes) total += s.area(); // POLYMORPHIC call site -- which area() runs varies per element
+        return total;
+    }
+
+    public static void main(String[] args) {
+        // MONOMORPHIC case: every element is the SAME concrete type -- easiest to inline confidently
+        Shape[] allCircles = new Shape[10_000];
+        for (int i = 0; i &lt; allCircles.length; i++) allCircles[i] = new Circle(i % 10 + 1);
+
+        // MEGAMORPHIC-leaning case: alternating between TWO concrete types at the SAME call site --
+        // harder for the JIT to inline with full confidence, since it must handle both possibilities
+        Shape[] mixed = new Shape[10_000];
+        for (int i = 0; i &lt; mixed.length; i++) {
+            mixed[i] = (i % 2 == 0) ? new Circle(i % 10 + 1) : new Square(i % 10 + 1);
+        }
+
+        long start1 = System.nanoTime();
+        double total1 = 0;
+        for (int i = 0; i &lt; 5000; i++) total1 += sumAreas(allCircles);
+        long elapsed1 = (System.nanoTime() - start1) / 1_000_000;
+
+        long start2 = System.nanoTime();
+        double total2 = 0;
+        for (int i = 0; i &lt; 5000; i++) total2 += sumAreas(mixed);
+        long elapsed2 = (System.nanoTime() - start2) / 1_000_000;
+
+        System.out.println(&quot;monomorphic (all Circle) call site: &quot; + elapsed1 + &quot;ms&quot;);
+        System.out.println(&quot;polymorphic (mixed Circle/Square) call site: &quot; + elapsed2 + &quot;ms (often somewhat slower)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java PolymorphicCallSiteChallenge.java</code> (JDK 17+).</p>
+<p>Expected output shape (the mixed-type version is often somewhat slower, reflecting the harder inlining/dispatch problem, though the exact gap depends heavily on JVM version and machine):</p>
+<pre><code>monomorphic (all Circle) call site: 48ms
+polymorphic (mixed Circle/Square) call site: 72ms (often somewhat slower)</code></pre>
+<p>This adds the production-flavored hard case: comparing a <strong>monomorphic</strong> call site (every array element is the same concrete <code>Circle</code> type, so the JIT can confidently inline <code>Circle.area()</code> directly and speculatively assume that type going forward, informed by the type profile from tiered compilation) against a call site alternating between two concrete types (<code>Circle</code> and <code>Square</code>) — the JIT can still often optimize this reasonably well (e.g., via a small inline cache checking for one of a couple of expected types), but it&#x27;s a fundamentally harder inlining problem than the monomorphic case, since no single inlined implementation is correct for every call; understanding this distinction is valuable for genuinely performance-critical hot paths where call-site type diversity could be a real, measurable cost.</p>
+<h2>6. Walkthrough</h2>
+<p>Reasoning through why the monomorphic call site tends to outperform the polymorphic one:</p>
+<ol><li>In the <code>allCircles</code> array, every single element passed to <code>sumAreas</code>&#x27;s <code>s.area()</code> call site is actually a <code>Circle</code> at runtime — the type-profiling data gathered during tiered compilation&#x27;s C1 stages observes this consistently, giving C2 strong confidence that inlining <code>Circle.area()</code>&#x27;s specific implementation directly at this call site (with a cheap guard checking the actual type still matches, in case that ever changes) will be correct essentially every time.</li><li>With that confidence, C2 can inline <code>Circle.area()</code>&#x27;s body (<code>Math.PI * r * r</code>) directly into <code>sumAreas</code>&#x27;s compiled code, eliminating virtual dispatch overhead (looking up which implementation to call based on the object&#x27;s actual type) entirely for the common case, and opening the merged code to further optimization.</li><li>In the <code>mixed</code> array, the same call site alternates between <code>Circle.area()</code> and <code>Square.area()</code> — the type profile now shows genuine diversity at this one call site, so there&#x27;s no single implementation the JIT can confidently inline as &quot;the&quot; answer; it typically falls back to a slightly more expensive strategy, such as an inline cache that checks the actual type and dispatches to one of a couple of specifically-anticipated implementations, or in the worst case, a full virtual method table lookup if the diversity is too great to specialize for efficiently.</li><li>This additional per-call type-checking/dispatch overhead, multiplied across the many millions of calls in this benchmark&#x27;s loops, is what typically shows up as the polymorphic version&#x27;s somewhat slower measured time — a direct, practical consequence of how much harder confident inlining becomes once a call site genuinely sees more than one implementation in practice.</li><li>It&#x27;s worth noting this effect is usually far smaller than one might expect from purely theoretical reasoning — modern JIT compilers handle even moderate polymorphism (2-3 implementations at one call site) quite well via inline caching techniques; the effect becomes much more pronounced with a large number of genuinely different implementations hit unpredictably at the same call site (&quot;megamorphic&quot; call sites), which is a more specialized concern than most everyday code needs to worry about.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> inlining decisions, thresholds, and the exact mechanisms for handling polymorphic call sites are JIT-implementation details that can vary meaningfully across JVM versions and vendors — never hard-code assumptions about exactly what will or won&#x27;t be inlined into production logic; if a specific hot path&#x27;s performance genuinely matters, measure it directly (with proper warm-up) rather than reasoning from a fixed mental model of inlining rules that may not hold on a different JVM version.</blockquote>
+<ul><li>Method inlining replaces a call to a small, hot method with a direct copy of its compiled logic at the call site, eliminating call overhead and enabling further optimizations on the merged code.</li><li>This is exactly why writing small, well-encapsulated helper methods, getters, and setters generally costs no real performance in hot Java code — the JIT compiler routinely inlines them away once they&#x27;re identified as worth optimizing.</li><li>Confident inlining is easiest at monomorphic call sites (consistently one actual implementation observed) and progressively harder as a call site sees more genuine implementation diversity (polymorphic, and especially megamorphic, call sites).</li><li>Type-profiling data gathered during <a href="0920-tiered-compilation.md">tiered compilation</a>&#x27;s C1 stages is exactly what informs C2&#x27;s inlining confidence — this is one of the concrete mechanisms by which the intermediate profiling levels pay for themselves.</li><li>See <a href="0922-escape-analysis-scalar-replacement.md">escape analysis &amp; scalar replacement</a> for one of the most powerful further optimizations that inlining directly enables, by merging caller and callee code into one analyzable unit.</li></ul>
+  <div class="nav"><a class="prv" href="0920-tiered-compilation.html"><span class="mini">← Previous</span>Tiered compilation</a><a class="nxt" href="0922-escape-analysis-scalar-replacement.html"><span class="mini">Next →</span>Escape analysis & scalar replacement</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t921";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

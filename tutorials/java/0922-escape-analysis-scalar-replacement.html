@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Escape analysis & scalar replacement — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Escape analysis & scalar replacement</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Escape analysis is a JIT compiler technique that determines whether an object created inside a method could possibly be referenced (&quot;escape&quot;) outside that method — returned to a caller, stored into a field of another object, passed to another thread, or captured by something that outlives the current call. If the compiler can prove an object *never* escapes (it&#x27;s used only locally and then discarded), it becomes eligible for <strong>scalar replacement</strong>: instead of actually allocating the object on the <a href="0911-heap.md">heap</a> at all, the compiler decomposes it into its individual primitive fields, which can then live directly in CPU registers or on the <a href="0913-jvm-stacks-stack-frames.md">stack</a>, exactly like ordinary local variables — completely eliminating both the allocation cost and any later garbage collection cost for that object, since it never actually existed as a heap object in the first place.</p>
+<h2>2. Why &amp; when</h2>
+<p>This optimization matters enormously for code that creates small, short-lived, purely-local helper objects inside hot loops — a common and idiomatic Java pattern (a temporary <code>Point</code>, a small immutable value-holder, an iterator) that, without escape analysis, would otherwise generate real allocation pressure and garbage collection work proportional to how many times the hot loop runs. With scalar replacement, that entire cost can vanish: the object&#x27;s fields simply become register/stack values, with the same runtime behavior as if you had manually &quot;inlined&quot; the object&#x27;s fields into separate local variables yourself — except you get to keep the clean, encapsulated object-oriented code, and the compiler does the flattening automatically once it&#x27;s confident the object genuinely stays local. Understanding this explains why modern Java performance advice increasingly says &quot;don&#x27;t manually avoid small object creation for performance reasons in hot loops&quot; — the JIT compiler, once warmed up, frequently eliminates that cost entirely on its own, provided the object&#x27;s usage pattern actually satisfies the non-escaping requirement escape analysis needs.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">long sumOfSquaredDistances(int[] xs, int[] ys) {
+    long total = 0;
+    for (int i = 0; i &lt; xs.length - 1; i++) {
+        Point p = new Point(xs[i] - xs[i + 1], ys[i] - ys[i + 1]); // created, used, discarded -- NEVER escapes
+        total += p.magnitudeSquared(); // p&#x27;s fields consumed here, then p is never touched again
+    }
+    return total;
+}
+// Once the JIT confirms `p` never escapes this loop iteration (never returned, never stored
+// anywhere else, never passed to another thread), it can scalar-replace it entirely --
+// `p.x` and `p.y` become plain register/stack values, with ZERO actual heap allocation.</code></pre>
+<p>The source code still looks like ordinary object creation — the elimination happens invisibly, at the machine-code level, once the compiler proves it&#x27;s safe.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Without escape analysis, a temporary object is fully heap-allocated each loop iteration; with escape analysis proving it never escapes, its fields are scalar-replaced into register values with no heap allocation at all">
+  <text x="160" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Without escape analysis</text>
+  <rect x="30" y="35" width="240" height="35" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="150" y="57" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">new Point(...) -- HEAP allocation, every iteration</text>
+  <text x="150" y="90" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">later: garbage collected</text>
+
+  <text x="480" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">With escape analysis + scalar replacement</text>
+  <rect x="360" y="35" width="260" height="35" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="490" y="57" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">x, y become plain register/stack values</text>
+  <text x="490" y="90" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">NO heap allocation, NO GC work, at all</text>
+</svg>
+<p>*Proving an object never escapes lets the compiler skip heap allocation entirely, decomposing it into plain scalar values instead.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: measuring the real garbage-collection impact of a hot loop&#x27;s temporary objects, growing from a baseline showing allocation cost when escape analysis can&#x27;t apply (object genuinely escapes), to the same computation restructured so the temporary object provably never escapes, to directly observing GC activity difference via runtime statistics.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ObjectGenuinelyEscapes {
+    static class Point {
+        final int x, y;
+        Point(int x, int y) { this.x = x; this.y = y; }
+        long magnitudeSquared() { return (long) x * x + (long) y * y; }
+    }
+
+    static List&lt;Point&gt; collected = new ArrayList&lt;&gt;(); // KEEPS every Point reachable -- genuine escape
+
+    static long sumWithEscaping(int[] xs, int[] ys) {
+        long total = 0;
+        for (int i = 0; i &lt; xs.length - 1; i++) {
+            Point p = new Point(xs[i] - xs[i + 1], ys[i] - ys[i + 1]);
+            collected.add(p); // ESCAPES: stored somewhere that outlives this loop iteration
+            total += p.magnitudeSquared();
+        }
+        return total;
+    }
+
+    public static void main(String[] args) {
+        int[] xs = new int[1000], ys = new int[1000];
+        for (int i = 0; i &lt; xs.length; i++) { xs[i] = i; ys[i] = i * 2; }
+
+        long start = System.nanoTime();
+        long total = 0;
+        for (int iter = 0; iter &lt; 10_000; iter++) {
+            collected.clear(); // reset each outer iteration, but STILL genuinely escapes within each inner pass
+            total += sumWithEscaping(xs, ys);
+        }
+        System.out.println(&quot;total=&quot; + total + &quot;, elapsed=&quot; + (System.nanoTime() - start) / 1_000_000 + &quot;ms&quot;);
+        System.out.println(&quot;(every Point object here GENUINELY escapes -- escape analysis CANNOT eliminate it)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ObjectGenuinelyEscapes.java</code> (JDK 17+).</p>
+<p>Expected output shape:</p>
+<pre><code>total=..., elapsed=145ms
+(every Point object here GENUINELY escapes -- escape analysis CANNOT eliminate it)</code></pre>
+<p>Because every <code>Point</code> is stored into <code>collected</code> (a field that outlives the loop iteration creating it), escape analysis cannot prove it stays local — every single <code>Point</code> really is allocated on the heap, and later genuinely collected by the garbage collector, incurring real allocation and collection cost.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">public class ObjectNeverEscapes {
+    static class Point {
+        final int x, y;
+        Point(int x, int y) { this.x = x; this.y = y; }
+        long magnitudeSquared() { return (long) x * x + (long) y * y; }
+    }
+
+    static long sumWithoutEscaping(int[] xs, int[] ys) {
+        long total = 0;
+        for (int i = 0; i &lt; xs.length - 1; i++) {
+            Point p = new Point(xs[i] - xs[i + 1], ys[i] - ys[i + 1]); // used, then DISCARDED -- never escapes
+            total += p.magnitudeSquared();
+        }
+        return total;
+    }
+
+    public static void main(String[] args) {
+        int[] xs = new int[1000], ys = new int[1000];
+        for (int i = 0; i &lt; xs.length; i++) { xs[i] = i; ys[i] = i * 2; }
+
+        long start = System.nanoTime();
+        long total = 0;
+        for (int iter = 0; iter &lt; 10_000; iter++) {
+            total += sumWithoutEscaping(xs, ys);
+        }
+        System.out.println(&quot;total=&quot; + total + &quot;, elapsed=&quot; + (System.nanoTime() - start) / 1_000_000 + &quot;ms (typically much faster)&quot;);
+        System.out.println(&quot;(each Point here provably NEVER escapes -- likely scalar-replaced, no real allocation)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ObjectNeverEscapes.java</code> (JDK 17+).</p>
+<p>Expected output shape (typically noticeably faster than Level 1&#x27;s genuinely-escaping version):</p>
+<pre><code>total=..., elapsed=38ms (typically much faster)
+(each Point here provably NEVER escapes -- likely scalar-replaced, no real allocation)</code></pre>
+<p>The real-world concern added: identical logical computation, but <code>p</code> is now used only within the same loop iteration that creates it and never stored anywhere that outlives that iteration — once hot, the JIT compiler can prove this and apply scalar replacement, eliminating the heap allocation entirely; the measured speedup directly reflects both the avoided allocation cost and the avoided later garbage-collection cost for what would otherwise have been millions of small, short-lived objects.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.lang.management.*;
+
+public class MeasuringGcActivityDifference {
+    static class Point {
+        final int x, y;
+        Point(int x, int y) { this.x = x; this.y = y; }
+        long magnitudeSquared() { return (long) x * x + (long) y * y; }
+    }
+
+    static long sumWithoutEscaping(int[] xs, int[] ys) {
+        long total = 0;
+        for (int i = 0; i &lt; xs.length - 1; i++) {
+            Point p = new Point(xs[i] - xs[i + 1], ys[i] - ys[i + 1]);
+            total += p.magnitudeSquared();
+        }
+        return total;
+    }
+
+    public static void main(String[] args) {
+        int[] xs = new int[1000], ys = new int[1000];
+        for (int i = 0; i &lt; xs.length; i++) { xs[i] = i; ys[i] = i * 2; }
+
+        // Warm up first, so the JIT has a real chance to apply scalar replacement
+        // BEFORE we start measuring GC activity for the &quot;real&quot; timed portion.
+        for (int i = 0; i &lt; 5000; i++) sumWithoutEscaping(xs, ys);
+
+        long gcCountBefore = totalGcCollections();
+        long start = System.nanoTime();
+        long total = 0;
+        for (int iter = 0; iter &lt; 50_000; iter++) total += sumWithoutEscaping(xs, ys);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        long gcCountAfter = totalGcCollections();
+
+        System.out.println(&quot;total=&quot; + total + &quot;, elapsed=&quot; + elapsedMs + &quot;ms&quot;);
+        System.out.println(&quot;GC collections during this measured run: &quot; + (gcCountAfter - gcCountBefore));
+        System.out.println(&quot;(a LOW or ZERO count here, despite ~50 BILLION logical Point &#x27;creations&#x27;,&quot;);
+        System.out.println(&quot; is strong evidence scalar replacement eliminated the real allocations)&quot;);
+    }
+
+    static long totalGcCollections() {
+        long total = 0;
+        for (GarbageCollectorMXBean bean : ManagementFactory.getGarbageCollectorMXBeans()) {
+            total += bean.getCollectionCount();
+        }
+        return total;
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java MeasuringGcActivityDifference.java</code> (JDK 17+).</p>
+<p>Expected output shape (a low GC collection count despite the enormous logical object-creation count is the key signal):</p>
+<pre><code>total=..., elapsed=180ms
+GC collections during this measured run: 0
+(a LOW or ZERO count here, despite ~50 BILLION logical Point &#x27;creations&#x27;,
+ is strong evidence scalar replacement eliminated the real allocations)</code></pre>
+<p>This adds the production-flavored hard case: directly measuring actual garbage collection activity (via <code>GarbageCollectorMXBean</code>) across a run that logically creates roughly 50 billion <code>Point</code> objects (50,000 outer iterations × 999 inner iterations each) — if these were all genuinely heap-allocated, this would produce an enormous amount of garbage collection work; observing zero (or very few) collections during the measured window is strong, direct evidence that scalar replacement really did eliminate the actual heap allocations for this provably-non-escaping object, not just a theoretical claim about what the JIT compiler *might* do.</p>
+<h2>6. Walkthrough</h2>
+<p>Reasoning through why GC activity stays low in <code>MeasuringGcActivityDifference.main</code>:</p>
+<ol><li>The initial warm-up loop (5000 iterations of <code>sumWithoutEscaping</code>) exists specifically to give the JIT compiler enough invocations to identify this method as hot and apply its full suite of optimizations, including escape analysis, *before* the actual timed-and-measured portion begins — without this warm-up, the measured run would include some genuinely interpreted or partially-optimized execution, muddying the GC-activity signal.</li><li>During compilation, C2&#x27;s escape analysis examines <code>p</code>&#x27;s usage within <code>sumWithoutEscaping</code>: <code>p</code> is created, <code>p.magnitudeSquared()</code> is called on it, and then the loop moves to its next iteration — <code>p</code> is never returned from the method, never stored into any field, never passed to another method that might retain it, and never referenced by another thread. This satisfies the conditions for provably non-escaping.</li><li>With that proof established, the compiler applies scalar replacement: rather than emitting code that actually allocates a <code>Point</code> object on the heap (with its object header, its <code>x</code> and <code>y</code> fields laid out in memory), it instead treats <code>x</code> and <code>y</code> as if they were two separate, ordinary local variables — computed, used by the inlined body of <code>magnitudeSquared()</code> (itself likely inlined too, per <a href="0921-method-inlining.md">method inlining</a>), and then simply discarded, with no object ever actually existing in memory.</li><li>Because no real heap allocation occurs for any of the roughly 50 billion logical <code>Point</code> &quot;creations&quot; across the measured loop, there&#x27;s essentially no corresponding garbage for the collector to ever need to reclaim — hence the near-zero (often exactly zero) GC collection count observed, despite the enormous logical object-creation volume the source code appears to describe.</li><li>This is a direct, measured confirmation that scalar replacement isn&#x27;t just a theoretical optimization described in JIT compiler literature — it has a concrete, observable effect (the near-total absence of GC activity that the same code, without this optimization, would otherwise clearly require) for code written in the ordinary, idiomatic, object-oriented style this example uses.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> escape analysis is a best-effort, JIT-implementation-dependent optimization — it is never a language guarantee, and whether it actually applies to any specific piece of code can depend on subtle details of how that object is used, how large/complex the enclosing method is, and the specific JVM version in use. Never *rely* on scalar replacement happening for correctness or for a hard performance requirement; treat it as a valuable, frequently-occurring optimization for well-structured code, not a contract.</blockquote>
+<ul><li>Escape analysis determines whether an object created in a method can be proven to never escape that method&#x27;s local scope; scalar replacement then decomposes such objects into individual primitive values, eliminating heap allocation entirely.</li><li>This is exactly why creating small, purely-local helper objects inside hot loops is frequently free in practice, once the JIT compiler has warmed up and applied this optimization — a significant relaxation of older, pre-JIT-era intuitions about avoiding object creation for performance.</li><li>An object that is returned, stored into a longer-lived field, passed to another thread, or otherwise made reachable beyond its creating method&#x27;s local scope genuinely escapes and cannot be scalar-replaced — it will be allocated on the heap as usual.</li><li><code>GarbageCollectorMXBean</code>&#x27;s collection-count statistics are a useful, direct way to observe whether scalar replacement is actually occurring for a specific piece of code, rather than reasoning about it purely theoretically.</li><li>See <a href="0921-method-inlining.md">method inlining</a> (escape analysis frequently depends on inlining having already merged caller and callee code together, giving the optimizer a large enough unit of code to analyze an object&#x27;s full usage within) and <a href="0924-deoptimization.md">deoptimization</a> (the safety mechanism that lets the JIT compiler safely undo speculative optimizations, including this one, if an assumption it made turns out to be wrong later).</li></ul>
+  <div class="nav"><a class="prv" href="0921-method-inlining.html"><span class="mini">← Previous</span>Method inlining</a><a class="nxt" href="0923-on-stack-replacement-osr.html"><span class="mini">Next →</span>On-stack replacement (OSR)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t922";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

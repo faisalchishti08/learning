@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reachability & GC roots — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Reachability & GC roots</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Reachability</strong> is the sole criterion the garbage collector uses to decide whether an object is still &quot;alive&quot; (must be kept) or is garbage (can be reclaimed): an object is reachable if there&#x27;s a chain of references leading to it starting from a <strong>GC root</strong> — a fixed set of starting points the collector always treats as inherently alive, without needing anything else to reference them. GC roots include: local variables and parameters currently on any thread&#x27;s <a href="0913-jvm-stacks-stack-frames.md">stack</a>, active <code>Thread</code> objects themselves, static fields of loaded classes, JNI references held by native code, and a few other JVM-internal special cases. The collector&#x27;s core algorithm, at its heart, is simply: starting from every GC root, trace every reference transitively, and mark everything reached as alive — anything left unmarked afterward is unreachable, and therefore garbage.</p>
+<h2>2. Why &amp; when</h2>
+<p>Understanding reachability precisely is the foundation for correctly predicting whether a given object will be collected, and for correctly diagnosing memory leaks in Java, which — since there&#x27;s no manual <code>free()</code>/<code>delete</code> — always take the specific form of &quot;something unreachable was expected, but a lingering reference chain from some GC root kept it reachable instead.&quot; This matters directly whenever debugging unexpectedly high memory usage: the question is never &quot;did I forget to release this object,&quot; but always &quot;what GC-root-rooted reference chain is still keeping this object reachable that shouldn&#x27;t be&quot; — a static field holding a collection that&#x27;s never cleared, a listener registered with a long-lived object and never unregistered, a <code>ThreadLocal</code> set on a pooled thread and never removed (see <a href="0899-threadlocal-memory-leaks.md"><code>ThreadLocal</code> memory leaks</a> for exactly this pattern). Heap-dump analysis tools work by constructing exactly this reachability graph and letting you trace the actual path from a GC root to a specific object you didn&#x27;t expect to still be alive.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">class Node { Node next; Object data; }
+
+static Node cache; // a STATIC FIELD -- itself a GC root&#x27;s direct target, always reachable
+
+void demo() {
+    Node local = new Node(); // LOCAL VARIABLE on the stack -- a GC root while this method runs
+    local.data = new byte[1_000_000]; // reachable via: stack (GC root) -&gt; local -&gt; data
+
+    cache = local; // NOW ALSO reachable via: static field (GC root) -&gt; cache -&gt; the SAME object
+
+    // local goes out of scope when demo() returns -- but `cache` still references
+    // the same object, so it remains reachable (and therefore NOT garbage) regardless.
+}</code></pre>
+<p>An object is garbage the instant *every* chain of references from *every* GC root to it is broken — not merely when one particular reference (like a local variable) goes out of scope, if another reachable path to the same object still exists.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="GC roots -- thread stacks, static fields, active threads -- each pointing into a web of interconnected objects; anything reachable by tracing from a root is alive, anything left unreached is garbage">
+  <text x="160" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">GC roots</text>
+  <rect x="20" y="30" width="120" height="30" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="80" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">thread stack</text>
+  <rect x="20" y="70" width="120" height="30" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="80" y="90" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">static field</text>
+
+  <rect x="220" y="30" width="90" height="30" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="265" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Object A</text>
+  <rect x="220" y="70" width="90" height="30" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="265" y="90" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Object B</text>
+  <rect x="380" y="50" width="90" height="30" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="425" y="70" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Object C</text>
+
+  <rect x="220" y="130" width="90" height="30" rx="6" fill="#1c2430" stroke="#f85149" stroke-dasharray="3"/>
+  <text x="265" y="150" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Object D (garbage)</text>
+
+  <line x1="140" y1="45" x2="220" y2="45" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a53)"/>
+  <line x1="140" y1="85" x2="220" y2="85" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a53)"/>
+  <line x1="310" y1="55" x2="380" y2="60" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a53)"/>
+  <text x="330" y="170" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">Object D has NO path from any GC root -- unreachable, therefore garbage.</text>
+  <defs><marker id="a53" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*Reachability is purely about tracing paths from GC roots — an object with no such path, no matter how recently it was created or how large it is, is immediately eligible for collection.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: directly demonstrating reachability&#x27;s effect via <code>WeakReference</code>, growing from a basic local-variable-scope demonstration, to a case where a static field keeps an object reachable despite a local variable going out of scope, to a realistic &quot;leak&quot; pattern where an unexpected reference chain keeps something alive far longer than intended.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.lang.ref.*;
+
+public class BasicReachability {
+    static WeakReference&lt;Object&gt; tracker;
+
+    static void createAndDrop() {
+        Object local = new Object(); // reachable via the STACK (a GC root) while this method runs
+        tracker = new WeakReference&lt;&gt;(local);
+    } // `local` goes out of scope HERE -- no more references to it from any GC root
+
+    public static void main(String[] args) throws InterruptedException {
+        createAndDrop();
+        System.gc();
+        Thread.sleep(200);
+        System.out.println(&quot;object still reachable after createAndDrop() returned? &quot; + (tracker.get() != null));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java BasicReachability.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>object still reachable after createAndDrop() returned? false</code></pre>
+<p>Once <code>createAndDrop()</code> returns, its local variable <code>local</code> — the only strong reference the object ever had — is gone from any thread&#x27;s stack; with no remaining path from any GC root, the object becomes unreachable and is collected.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.lang.ref.*;
+
+public class StaticFieldKeepsAlive {
+    static Object cache; // a STATIC FIELD -- itself always reachable from a GC root
+    static WeakReference&lt;Object&gt; tracker;
+
+    static void createAndRetain() {
+        Object local = new Object();
+        tracker = new WeakReference&lt;&gt;(local);
+        cache = local; // NOW also reachable via: static field -&gt; cache -&gt; the SAME object
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        createAndRetain();
+        System.gc();
+        Thread.sleep(200);
+        System.out.println(&quot;object still reachable (via static field) after method returned? &quot; + (tracker.get() != null));
+
+        cache = null; // remove the LAST remaining reachable path
+        System.gc();
+        Thread.sleep(200);
+        System.out.println(&quot;object still reachable after clearing the static field too? &quot; + (tracker.get() != null));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java StaticFieldKeepsAlive.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>object still reachable (via static field) after method returned? true
+object still reachable after clearing the static field too? false</code></pre>
+<p>The real-world concern added: even though <code>local</code>&#x27;s own stack-based reachability ends when <code>createAndRetain()</code> returns (exactly as in Level 1), the *same object* is also reachable via <code>cache</code>, a static field — since static fields are always reachable (a class, once loaded, is itself effectively a permanent GC root for its own static state), the object stays alive via this second path, and is only actually collected once <code>cache</code> itself is cleared, removing the last remaining path from any GC root.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.lang.ref.*;
+import java.util.*;
+
+public class RealisticLeakPattern {
+    // Simulates a long-lived, framework-level event bus that OUTLIVES individual &quot;sessions&quot;
+    static List&lt;Runnable&gt; eventListeners = new ArrayList&lt;&gt;();
+
+    static class UserSession {
+        final byte[] sessionData = new byte[5_000_000]; // ~5MB of session-specific data
+        void registerActivityListener() {
+            // THE LEAK: registers a lambda that CAPTURES `this`, into a registry that
+            // outlives the session&#x27;s own intended lifetime.
+            eventListeners.add(() -&gt; System.out.println(&quot;activity for session with data length &quot; + sessionData.length));
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        WeakReference&lt;UserSession&gt; sessionTracker;
+        {
+            UserSession session = new UserSession();
+            session.registerActivityListener(); // registers a listener that keeps `session` reachable
+            sessionTracker = new WeakReference&lt;&gt;(session);
+        } // `session` (the local variable) goes out of scope HERE
+
+        System.gc();
+        Thread.sleep(200);
+        System.out.println(&quot;session still reachable despite going out of scope? &quot; + (sessionTracker.get() != null));
+        System.out.println(&quot;(true -- eventListeners, a STATIC field, transitively still references it&quot;);
+        System.out.println(&quot; via the registered lambda, which captured `this`)&quot;);
+
+        eventListeners.clear(); // the actual fix: remove the listener, breaking the last reachable path
+        System.gc();
+        Thread.sleep(200);
+        System.out.println(&quot;session reachable after clearing eventListeners? &quot; + (sessionTracker.get() != null));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java RealisticLeakPattern.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>session still reachable despite going out of scope? true
+(true -- eventListeners, a STATIC field, transitively still references it
+ via the registered lambda, which captured `this`)
+session reachable after clearing eventListeners? false</code></pre>
+<p>This adds the production-flavored hard case: a <code>UserSession</code> object whose only intended reference (a local variable) goes out of scope, yet remains reachable because it registered a lambda callback — capturing <code>this</code> — into a static, long-lived registry (<code>eventListeners</code>) that was never cleared. This is exactly the shape most real Java memory leaks take: not a missing <code>free()</code> call (Java has none), but an unexpected, still-live reference chain rooted in something genuinely long-lived (here, a <code>static</code> field, itself always reachable) that nobody remembered to break.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing why <code>sessionTracker.get()</code> returns non-null even after <code>session</code> goes out of scope:</p>
+<ol><li><code>UserSession session = new UserSession();</code> creates the object; at this point, it&#x27;s reachable via exactly one path: the local variable <code>session</code>, itself reachable because it&#x27;s on <code>main</code>&#x27;s current stack frame (a GC root while <code>main</code> is executing).</li><li><code>session.registerActivityListener()</code> adds a lambda to <code>eventListeners</code> — since this lambda&#x27;s body references <code>sessionData</code> (an instance field), the lambda implicitly captures a reference to <code>session</code> itself (its enclosing instance) in order to access that field when eventually invoked.</li><li><code>eventListeners</code> is a <code>static</code> field — meaning it&#x27;s directly reachable from a GC root (the loaded <code>RealisticLeakPattern</code> class&#x27;s own static state, which the JVM always treats as reachable for as long as the class remains loaded) — so everything <code>eventListeners</code> transitively references, including the newly-added lambda and, through it, <code>session</code>, is now *also* reachable via this second, independent path.</li><li>When the block containing <code>UserSession session = new UserSession();</code> ends, <code>session</code>&#x27;s scope as a local variable ends too — but this only removes *one* of the two reachable paths to the object; the path through <code>eventListeners</code> remains entirely intact and unaffected.</li><li><code>System.gc()</code> traces reachability from every GC root, including <code>eventListeners</code> (via the loaded class&#x27;s static state) — following that path leads to the lambda, and through the lambda&#x27;s captured reference, to the <code>UserSession</code> object itself — so it&#x27;s found reachable and is *not* collected, exactly matching <code>sessionTracker.get()</code> returning non-null.</li><li>Only once <code>eventListeners.clear()</code> actually removes the lambda (and hence its captured reference to <code>session</code>) does the last remaining path from any GC root to this object disappear — the subsequent <code>System.gc()</code> now finds it genuinely unreachable, and it&#x27;s finally collected, matching <code>sessionTracker.get()</code> correctly returning <code>null</code>.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> lambdas and inner (non-static) classes silently capture a reference to their enclosing instance whenever they reference any of that instance&#x27;s fields or methods — this is easy to overlook, and is exactly the mechanism that let <code>UserSession</code> leak through <code>eventListeners</code> in the advanced example; a lambda registered with a long-lived collection can keep an entire &quot;logically finished&quot; object graph alive far longer than intended, purely through this implicit capture.</blockquote>
+<ul><li>Reachability — a traceable chain of references from some GC root — is the *sole* criterion for whether an object is alive; there is no other notion of &quot;in use&quot; in Java&#x27;s memory model.</li><li>GC roots include local variables/parameters on any thread&#x27;s stack, active <code>Thread</code> objects, static fields of loaded classes, and JNI references held by native code.</li><li>An object remains alive as long as *any* reachable path exists from *any* GC root, even if some other path (like a local variable that went out of scope) has been broken — all paths must be severed before an object becomes garbage.</li><li>Java memory leaks always take the form of &quot;an unexpected, still-live reference chain from some GC root keeps an object reachable longer than intended&quot; — a static field, a long-lived listener registry, an un-cleared <code>ThreadLocal</code> (see <a href="0899-threadlocal-memory-leaks.md"><code>ThreadLocal</code> memory leaks</a>) are the most common culprits.</li><li>Lambdas and non-static inner classes implicitly capture a reference to their enclosing instance whenever they access its members — a subtle but common source of exactly this kind of unintended, prolonged reachability.</li></ul>
+  <div class="nav"><a class="prv" href="0925-generational-hypothesis-young-old-eden-survivor.html"><span class="mini">← Previous</span>Generational hypothesis (young/old/eden/survivor)</a><a class="nxt" href="0927-reference-types-strong-soft-weak-phantom.html"><span class="mini">Next →</span>Reference types (strong/soft/weak/phantom)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t926";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

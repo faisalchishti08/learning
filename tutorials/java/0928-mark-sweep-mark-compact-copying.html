@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mark-sweep / mark-compact / copying — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 24. JVM Internals</div>
+  <div class="htitle">
+    <h1>Mark-sweep / mark-compact / copying</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>These are the three foundational algorithms real garbage collectors build on to actually reclaim memory, once <a href="0926-reachability-gc-roots.md">reachability analysis</a> has determined which objects are alive. <strong>Mark-sweep</strong> has two phases: mark (trace reachability from GC roots, flagging every live object) and sweep (walk the entire heap region, treating every unmarked object&#x27;s space as free) — simple, but leaves the heap fragmented, with free space scattered in gaps between surviving objects rather than in one contiguous block. <strong>Mark-compact</strong> adds a third phase after marking: it slides all surviving objects together toward one end of the region, eliminating fragmentation entirely, at the cost of the extra work needed to relocate objects and fix up every reference that pointed to them. <strong>Copying</strong> collection (used specifically for the young generation, exploiting the <a href="0925-generational-hypothesis-young-old-eden-survivor.md">generational hypothesis</a>) divides memory into two halves; it copies every *live* object from the currently-active half into the other half (compacting them as it goes, for free, as a side effect of copying), then simply treats the entire old half as reclaimed — extremely fast for regions where most objects are expected to be garbage, since the work is proportional to how much survives, not to the region&#x27;s total size.</p>
+<h2>2. Why &amp; when</h2>
+<p>Each algorithm makes a different tradeoff between speed, memory overhead, and fragmentation, which is exactly why real collectors combine them differently for different heap regions. Copying collection is ideal for the young generation precisely because the generational hypothesis holds there — since most objects die young, &quot;copying only the survivors&quot; touches very little data most of the time, making it extremely fast, at the cost of needing double the memory (one half always sits empty, reserved for the next copy) — an acceptable tradeoff since the young generation is comparatively small anyway. Mark-compact is better suited to the old generation, where most objects genuinely are expected to survive any given collection (copying-style &quot;copy the survivors&quot; would mean copying nearly everything, defeating copying&#x27;s whole efficiency advantage) — compaction here avoids fragmentation, which matters more in a region expected to hold long-lived data for a long time, at the cost of a more expensive relocation phase. Plain mark-sweep (without compaction) trades away the compaction cost but risks fragmentation, which can eventually cause allocation failures even when total free memory is technically sufficient, just not contiguous — a real, historically significant issue that&#x27;s exactly why most modern collectors add at least occasional compaction even to otherwise mark-sweep-based old-generation collection.</p>
+<h2>3. Core concept</h2>
+<pre><code>Mark-sweep:      [mark reachable] -&gt; [sweep: reclaim unmarked objects&#x27; space in place]
+                  Result: free space in scattered gaps -- FRAGMENTED.
+
+Mark-compact:     [mark reachable] -&gt; [slide survivors together] -&gt; [fix up references]
+                  Result: free space in ONE contiguous block -- no fragmentation, but relocation cost.
+
+Copying:          [copy every LIVE object from Half A to Half B] -&gt; [treat all of Half A as free]
+                  Result: naturally compact (copying inherently arranges survivors contiguously),
+                  fast when few objects survive, but needs 2x memory (one half always reserved, empty).</code></pre>
+<p>Each algorithm&#x27;s cost is proportional to a different thing: mark-sweep&#x27;s sweep phase touches the whole region regardless of how much is garbage; copying&#x27;s cost is proportional only to how much *survives*; mark-compact pays both a full mark pass and a relocation pass.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Three collection strategies applied to the same heap region with scattered live objects: mark-sweep leaves gaps between survivors, mark-compact slides survivors together leaving one contiguous free block, copying moves survivors to a second half entirely">
+  <text x="110" y="15" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Mark-sweep</text>
+  <rect x="20" y="25" width="30" height="25" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="60" y="25" width="20" height="25" fill="none" stroke="#8b949e" stroke-dasharray="2"/>
+  <rect x="90" y="25" width="30" height="25" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="130" y="25" width="15" height="25" fill="none" stroke="#8b949e" stroke-dasharray="2"/>
+  <rect x="155" y="25" width="30" height="25" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="105" y="65" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">free space FRAGMENTED</text>
+
+  <text x="110" y="90" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Mark-compact</text>
+  <rect x="20" y="100" width="30" height="25" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="50" y="100" width="30" height="25" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="80" y="100" width="30" height="25" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="110" y="100" width="75" height="25" fill="none" stroke="#6db33f"/>
+  <text x="105" y="140" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">ONE contiguous free block</text>
+
+  <text x="480" y="15" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">Copying (two halves)</text>
+  <rect x="380" y="25" width="30" height="25" fill="#1c2430" stroke="#8b949e" stroke-dasharray="2"/>
+  <rect x="440" y="25" width="30" height="25" fill="#1c2430" stroke="#6db33f"/>
+  <rect x="470" y="25" width="30" height="25" fill="#1c2430" stroke="#6db33f"/>
+  <text x="420" y="65" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Half A (now free)</text>
+  <text x="475" y="65" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">Half B (survivors, packed)</text>
+</svg>
+<p>*Three different ways of turning &quot;which objects are still alive&quot; into reclaimed, usable memory — each with a different speed/fragmentation/memory-overhead tradeoff.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: since these algorithms are internal to the collector and not directly invokable from Java code, this example demonstrates their *effects* — fragmentation versus compaction — by observing allocation behavior and GC logs under different collector configurations, growing from a baseline showing typical young-generation (copying) behavior, to observing old-generation behavior under sustained retention, to comparing collectors with different compaction strategies.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class YoungGenCopyingBehavior {
+    public static void main(String[] args) throws InterruptedException {
+        // Allocate many short-lived objects of VARYING sizes -- if this were collected via
+        // plain mark-sweep without compaction, it would tend to fragment badly, since
+        // objects of different sizes die in an interleaved, unpredictable pattern.
+        for (int i = 0; i &lt; 500_000; i++) {
+            byte[] garbage = new byte[100 + (i % 50) * 20]; // varying sizes, all short-lived
+        }
+        System.out.println(&quot;done -- check the GC log above for &#x27;Pause Young&#x27; events&quot;);
+        System.out.println(&quot;(the young generation uses a COPYING collector by default in most modern JVMs --&quot;);
+        System.out.println(&quot; survivors are copied to a fresh space, inherently compacting them for free)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc YoungGenCopyingBehavior.java</code> (JDK 17+).</p>
+<p>Expected output shape (multiple fast &quot;Pause Young&quot; events, each reclaiming most of the examined memory):</p>
+<pre><code>[0.04s][info][gc] GC(0) Pause Young ... 4M-&gt;1M(64M) 2.1ms
+[0.08s][info][gc] GC(1) Pause Young ... 5M-&gt;1M(64M) 1.9ms
+...
+done -- check the GC log above for &#x27;Pause Young&#x27; events
+(the young generation uses a COPYING collector by default in most modern JVMs --
+ survivors are copied to a fresh space, inherently compacting them for free)</code></pre>
+<p>Despite allocating objects of many different, interleaved sizes (a pattern that would fragment a plain, non-compacting mark-sweep region), the young generation&#x27;s copying collector produces no fragmentation at all — every minor GC&#x27;s &quot;after&quot; state is implicitly compact, since copying survivors into a fresh space naturally packs them together with no gaps.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class OldGenRetentionAndCompaction {
+    public static void main(String[] args) throws InterruptedException {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+
+        for (int i = 0; i &lt; 3000; i++) {
+            // Allocate and IMMEDIATELY retain varying-sized objects, forcing promotion into
+            // the old generation -- and, critically, occasionally REMOVE some retained objects
+            // out of order, creating gaps a non-compacting collector would need to fragment around.
+            retained.add(new byte[50_000 + (i % 20) * 5000]);
+            if (i % 7 == 0 &amp;&amp; !retained.isEmpty()) {
+                retained.remove(retained.size() / 2); // remove from the MIDDLE -- creates a gap
+            }
+        }
+
+        System.out.println(&quot;final retained count: &quot; + retained.size());
+        System.out.println(&quot;check the GC log above for &#x27;Pause Full&#x27; events, if any occurred,&quot;);
+        System.out.println(&quot;and note whether allocation continued succeeding despite the gaps created&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java -Xlog:gc -Xmx128m OldGenRetentionAndCompaction.java</code> (JDK 17+; a modest heap cap makes old-generation pressure, and any resulting full/compacting collections, appear more readily).</p>
+<p>Expected output shape (allocation succeeds throughout, and any full GC events reflect the collector compacting around the gaps created by out-of-order removal):</p>
+<pre><code>[0.05s][info][gc] GC(0) Pause Young ... 4M-&gt;1M(64M) 2.0ms
+...
+[1.20s][info][gc] GC(22) Pause Full (Ergonomics) ... 95M-&gt;60M(128M) 85ms
+...
+final retained count: ...
+check the GC log above for &#x27;Pause Full&#x27; events, if any occurred,
+and note whether allocation continued succeeding despite the gaps created</code></pre>
+<p>The real-world concern added: deliberately removing retained objects out of order (from the middle of the list, not just the end) simulates a realistic pattern of old-generation objects becoming garbage in an unpredictable, interleaved order — exactly the pattern that would badly fragment a purely mark-sweep (non-compacting) collector over time; observing that allocation continues succeeding, and that any full GC&#x27;s reported &quot;after&quot; size reflects genuinely reclaimed, usable contiguous space, is indirect but real evidence of the collector&#x27;s compaction work paying off.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ComparingCollectorConfigurations {
+    public static void main(String[] args) throws InterruptedException {
+        List&lt;byte[]&gt; retained = new ArrayList&lt;&gt;();
+        long start = System.nanoTime();
+
+        for (int i = 0; i &lt; 5000; i++) {
+            retained.add(new byte[30_000 + (i % 30) * 3000]);
+            if (i % 5 == 0 &amp;&amp; retained.size() &gt; 10) {
+                retained.remove(retained.size() / 3); // fragmentation-inducing removal pattern
+            }
+            if (i % 1000 == 0) {
+                for (int j = 0; j &lt; 5000; j++) {
+                    byte[] shortLived = new byte[500]; // interleave short-lived young-gen churn too
+                }
+            }
+        }
+
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(&quot;final retained: &quot; + retained.size() + &quot;, elapsed: &quot; + elapsedMs + &quot;ms&quot;);
+        System.out.println(&quot;compare this run&#x27;s GC log across different collectors (see &#x27;How to run&#x27;)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> run this three ways and compare the <code>-Xlog:gc</code> output and total elapsed time: <code>java -Xlog:gc -Xmx200m -XX:+UseG1GC ComparingCollectorConfigurations.java</code> (G1, a mostly region-based, incrementally-compacting collector), <code>java -Xlog:gc -Xmx200m -XX:+UseSerialGC ComparingCollectorConfigurations.java</code> (the simple serial collector, using mark-compact for its old generation), and <code>java -Xlog:gc -Xmx200m -XX:+UseParallelGC ComparingCollectorConfigurations.java</code> (JDK 17+; each collector implements these fundamental algorithms somewhat differently, with different pause characteristics).</p>
+<p>Expected output shape (illustrative — exact numbers and GC event types vary significantly by collector and JVM version, but all three should complete correctly, with differing pause patterns reflecting their different underlying compaction strategies):</p>
+<pre><code>(G1GC):        final retained: ..., elapsed: 480ms  -- many small, incremental region-based collections
+(SerialGC):     final retained: ..., elapsed: 650ms  -- fewer, larger mark-compact pauses on the old gen
+(ParallelGC):   final retained: ..., elapsed: 410ms  -- similar algorithms to Serial, but multi-threaded</code></pre>
+<p>This adds the production-flavored hard case: running the identical, deliberately fragmentation-inducing and allocation-churning workload against three genuinely different collector implementations, each of which realizes the mark-sweep/mark-compact/copying algorithms differently (G1 divides the heap into many small regions and compacts incrementally, region by region, rather than compacting the entire old generation at once; Serial and Parallel use more traditional whole-generation mark-compact for the old generation, differing mainly in whether the actual work is single- or multi-threaded) — directly demonstrating that &quot;which collector algorithm&quot; is a genuine, measurable, configurable choice with real performance consequences for a given workload&#x27;s specific allocation and retention pattern, not just an abstract textbook distinction.</p>
+<h2>6. Walkthrough</h2>
+<p>Reasoning through what each collector configuration is doing differently in <code>ComparingCollectorConfigurations.main</code>:</p>
+<ol><li>Every configuration must handle the same two allocation pressures: the young generation churning through many small, short-lived arrays (the periodic burst of 5000 <code>shortLived</code> allocations), and the old generation accumulating a growing, fragmentation-inducing set of retained <code>byte[]</code> arrays (from <code>retained</code>, with objects removed from arbitrary positions, not just the end).</li><li>Under G1, the heap is divided into many small, independently-collectible regions rather than one monolithic young/old split — G1 can incrementally collect and compact just the regions that are most profitable to reclaim at any given moment (&quot;garbage-first,&quot; hence the name), rather than needing a single large pause to compact an entire old generation at once; this tends to produce more, but individually smaller and more predictable, pauses.</li><li>Under Serial GC, the old generation is collected via a single-threaded mark-compact pass when needed — simple and low-overhead for small heaps, but any given full collection pauses the entire program for the duration of that single-threaded mark-and-compact work, potentially producing longer individual pauses for a heap and retention pattern like this one, especially as it grows.</li><li>Under Parallel GC, the same fundamental mark-compact strategy for the old generation is used, but the actual marking and compaction work is spread across multiple threads — for a multi-core machine, this can substantially reduce the wall-clock duration of any individual full-collection pause compared to Serial GC&#x27;s single-threaded approach, even though the total amount of CPU work performed is similar.</li><li>Because the workload here deliberately creates old-generation fragmentation pressure (objects removed from the middle of a growing collection, not just the end) alongside sustained young-generation churn, the specific way each collector handles compaction — incrementally and region-by-region (G1) versus in occasional, larger, whole-generation passes (Serial/Parallel) — becomes directly visible in both the shape of the GC log output and the overall elapsed time, rather than being a purely theoretical distinction.</li><li>None of the three configurations produce incorrect results — the actual retained object count (<code>retained.size()</code>) and program logic are identical regardless of collector choice; what differs is purely the performance characteristics (pause frequency, pause duration, total overhead) of reclaiming and compacting memory for this specific allocation pattern, which is exactly the kind of tradeoff a real production system would tune based on its own latency and throughput requirements.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> these algorithms (mark-sweep, mark-compact, copying) are internal implementation strategies, and real, modern production collectors (G1, ZGC, Shenandoah, and others) combine, hybridize, and refine them in increasingly sophisticated ways (region-based collection, concurrent marking, incremental compaction) — treat this tutorial&#x27;s three-algorithm framework as the essential conceptual foundation for understanding *why* garbage collectors behave the way they do, not as a literal, complete description of any single modern collector&#x27;s actual internal implementation.</blockquote>
+<ul><li>Mark-sweep marks reachable objects and reclaims everything else in place, but leaves the heap fragmented; mark-compact adds a relocation phase to eliminate fragmentation at the cost of extra relocation work; copying collection copies survivors into a fresh space (inherently compacting them for free) and is fast specifically when few objects are expected to survive.</li><li>Copying collection suits the young generation (few survivors expected, per the <a href="0925-generational-hypothesis-young-old-eden-survivor.md">generational hypothesis</a>); mark-compact suits the old generation (most objects expected to survive, so copying nearly everything would be wasteful, but fragmentation still needs addressing since old-generation objects live a long time).</li><li>Fragmentation is a real, historically significant problem for non-compacting collectors — it can cause allocation failures even when total free memory is technically sufficient, simply because no single contiguous block is large enough for a given request.</li><li>Different JVM collectors (G1, Serial, Parallel, and others) implement these fundamental strategies differently — often with meaningfully different pause-frequency and pause-duration tradeoffs for the same underlying workload, making collector choice a genuine, measurable performance decision.</li><li>See <a href="0926-reachability-gc-roots.md">reachability &amp; GC roots</a> for how the &quot;mark&quot; phase actually determines liveness, and <a href="0925-generational-hypothesis-young-old-eden-survivor.md">the generational hypothesis</a> for the empirical observation that motivates applying different algorithms to different heap regions in the first place.</li></ul>
+  <div class="nav"><a class="prv" href="0927-reference-types-strong-soft-weak-phantom.html"><span class="mini">← Previous</span>Reference types (strong/soft/weak/phantom)</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t928";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
