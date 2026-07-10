@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Condition variables — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>Condition variables</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>condition variable</strong>, in Java represented by <code>java.util.concurrent.locks.Condition</code> (obtained from a <code>Lock</code> via <code>lock.newCondition()</code>), lets a thread that holds a lock release it and go to sleep until some other thread signals that a condition it&#x27;s waiting for might now be true — then reacquires the lock automatically before waking up. It&#x27;s the explicit-lock equivalent of an object&#x27;s built-in <code>wait()</code>/<code>notify()</code>/<code>notifyAll()</code> methods, but with the crucial improvement that a single <code>Lock</code> can have <strong>multiple</strong> independent <code>Condition</code>s, each representing a different thing threads might be waiting for (e.g., &quot;queue not empty&quot; versus &quot;queue not full&quot;), instead of the single, undifferentiated wait-set every plain object monitor has.</p>
+<h2>2. Why &amp; when</h2>
+<p>Use a condition variable whenever a thread needs to block until some state change happens that it cannot busy-wait for efficiently — a bounded queue that&#x27;s full (producers must wait) or empty (consumers must wait), a connection pool with no free connections, a barrier waiting for N threads to arrive. The key discipline is always waiting in a <strong>loop</strong>, re-checking the actual condition after waking up, never assuming a single <code>await()</code> return means the condition is now true — a <strong>spurious wakeup</strong> (the thread waking up without any real signal, which the JVM is explicitly permitted to do) or another thread beating you to the resource after being signaled are both legitimate reasons the condition might still be false when you wake up. Prefer condition variables over ad hoc polling loops with <code>Thread.sleep</code> — polling wastes CPU and adds latency, while a proper <code>await()</code>/<code>signal()</code> pair wakes exactly when (and shortly after) the state actually changes.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">Lock lock = new ReentrantLock();
+Condition notEmpty = lock.newCondition();
+Queue&lt;Integer&gt; queue = new LinkedList&lt;&gt;();
+
+void put(int value) {
+    lock.lock();
+    try {
+        queue.add(value);
+        notEmpty.signal(); // wake ONE waiting consumer (if any)
+    } finally { lock.unlock(); }
+}
+
+int take() throws InterruptedException {
+    lock.lock();
+    try {
+        while (queue.isEmpty()) {      // ALWAYS a loop, never `if`
+            notEmpty.await();           // releases lock, sleeps, reacquires lock before returning
+        }
+        return queue.poll();
+    } finally { lock.unlock(); }
+}</code></pre>
+<p><code>await()</code> atomically releases the lock and suspends the thread; when signaled (or spuriously woken), it reacquires the lock before returning — the <code>while</code> loop then re-checks the actual condition rather than trusting the wakeup itself.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A consumer thread awaits on an empty-queue condition, releasing the lock while waiting; a producer adds an item, signals, and the consumer reacquires the lock and rechecks before proceeding">
+  <rect x="20" y="20" width="260" height="40" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="150" y="45" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Consumer: queue empty -&gt; await() (releases lock)</text>
+
+  <rect x="330" y="20" width="280" height="40" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="470" y="45" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Producer: acquires lock, adds item, signal()</text>
+
+  <rect x="20" y="90" width="260" height="40" rx="8" fill="#1c2430" stroke="#f0883e"/>
+  <text x="150" y="115" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Consumer wakes, REACQUIRES lock</text>
+
+  <rect x="20" y="150" width="260" height="40" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="150" y="175" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">while-loop re-checks: queue not empty -&gt; proceed</text>
+
+  <line x1="150" y1="60" x2="150" y2="88" stroke="#8b949e" stroke-width="2" stroke-dasharray="4"/>
+  <line x1="470" y1="60" x2="150" y2="105" stroke="#6db33f" stroke-width="2" marker-end="url(#a8)"/>
+  <line x1="150" y1="130" x2="150" y2="148" stroke="#8b949e" stroke-width="2" marker-end="url(#a8)"/>
+  <defs><marker id="a8" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*<code>await()</code> releases the lock while sleeping; <code>signal()</code> wakes the consumer, which reacquires the lock and re-checks the actual condition before proceeding.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a small bounded blocking queue, growing from a broken busy-wait/polling version, to a correct single-condition <code>await</code>/<code>signal</code> version, to a full producer–consumer with two separate conditions (not-empty and not-full) so producers and consumers each wait on exactly the condition relevant to them.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class BusyWaitQueue {
+    static class Box {
+        private Integer value = null;
+        boolean hasValue() { return value != null; }
+
+        void put(int v) {
+            synchronized (this) { value = v; }
+        }
+
+        int take() throws InterruptedException {
+            while (!hasValue()) {
+                Thread.sleep(1); // POLLING -- wastes CPU, adds up to 1ms latency
+            }
+            synchronized (this) {
+                int v = value;
+                value = null;
+                return v;
+            }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Box box = new Box();
+        Thread consumer = new Thread(() -&gt; {
+            try {
+                System.out.println(&quot;consumed: &quot; + box.take());
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        consumer.start();
+        Thread.sleep(20);
+        box.put(42);
+        consumer.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java BusyWaitQueue.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>consumed: 42</code></pre>
+<p>Works, but the consumer burns CPU cycles continuously polling <code>hasValue()</code> every millisecond instead of truly sleeping until data is ready — wasteful and adds unnecessary latency.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+
+public class ConditionAwaitSignal {
+    static class Box {
+        private final Lock lock = new ReentrantLock();
+        private final Condition hasValue = lock.newCondition();
+        private Integer value = null;
+
+        void put(int v) {
+            lock.lock();
+            try {
+                value = v;
+                hasValue.signal(); // wake a waiting consumer, if any
+            } finally { lock.unlock(); }
+        }
+
+        int take() throws InterruptedException {
+            lock.lock();
+            try {
+                while (value == null) { // loop, not if -- guards against spurious wakeups
+                    hasValue.await(); // releases lock while waiting, reacquires before returning
+                }
+                int v = value;
+                value = null;
+                return v;
+            } finally { lock.unlock(); }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Box box = new Box();
+        Thread consumer = new Thread(() -&gt; {
+            try {
+                System.out.println(&quot;consumed: &quot; + box.take() + &quot; (woke via signal, not polling)&quot;);
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        consumer.start();
+        Thread.sleep(20);
+        box.put(42);
+        consumer.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ConditionAwaitSignal.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>consumed: 42 (woke via signal, not polling)</code></pre>
+<p>The real-world concern added: the consumer truly sleeps (no CPU spinning) via <code>hasValue.await()</code>, waking only when <code>put</code> calls <code>hasValue.signal()</code> — and it still re-checks <code>value == null</code> in a <code>while</code> loop after waking, correctly handling the theoretical case of a spurious wakeup or another consumer having already claimed the value.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+import java.util.*;
+import java.util.concurrent.*;
+
+public class TwoConditionBoundedQueue {
+    static class BoundedQueue {
+        private final Lock lock = new ReentrantLock();
+        private final Condition notEmpty = lock.newCondition(); // consumers wait here
+        private final Condition notFull = lock.newCondition();  // producers wait here
+        private final Queue&lt;Integer&gt; queue = new LinkedList&lt;&gt;();
+        private final int capacity;
+
+        BoundedQueue(int capacity) { this.capacity = capacity; }
+
+        void put(int value) throws InterruptedException {
+            lock.lock();
+            try {
+                while (queue.size() == capacity) {
+                    notFull.await(); // producer waits on its OWN condition, not notEmpty
+                }
+                queue.add(value);
+                notEmpty.signal(); // wake a consumer specifically
+            } finally { lock.unlock(); }
+        }
+
+        int take() throws InterruptedException {
+            lock.lock();
+            try {
+                while (queue.isEmpty()) {
+                    notEmpty.await(); // consumer waits on ITS own condition
+                }
+                int v = queue.poll();
+                notFull.signal(); // wake a producer specifically -- there&#x27;s now room
+                return v;
+            } finally { lock.unlock(); }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        BoundedQueue q = new BoundedQueue(2); // capacity of 2 -- forces producers to wait
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+
+        pool.submit(() -&gt; {
+            try {
+                for (int i = 1; i &lt;= 5; i++) {
+                    q.put(i);
+                    System.out.println(&quot;produced &quot; + i);
+                }
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+
+        pool.submit(() -&gt; {
+            try {
+                for (int i = 1; i &lt;= 5; i++) {
+                    Thread.sleep(30); // consume slower than production, to force capacity waits
+                    System.out.println(&quot;consumed &quot; + q.take());
+                }
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+
+        pool.shutdown();
+        pool.awaitTermination(5, TimeUnit.SECONDS);
+        System.out.println(&quot;done -- producers correctly waited on notFull when the queue hit capacity 2&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java TwoConditionBoundedQueue.java</code>.</p>
+<p>Expected output shape (interleaving of &quot;produced&quot;/&quot;consumed&quot; lines varies, but all five of each print, in order within each role):</p>
+<pre><code>produced 1
+produced 2
+consumed 1
+produced 3
+consumed 2
+produced 4
+consumed 3
+produced 5
+consumed 4
+consumed 5
+done -- producers correctly waited on notFull when the queue hit capacity 2</code></pre>
+<p>This adds the production-flavored hard case: two independent conditions sharing the same lock, each representing a different thing a thread might be waiting for. A producer waiting on <code>notFull</code> is only ever woken by a consumer&#x27;s <code>notFull.signal()</code> (never by another producer&#x27;s <code>signal()</code> on <code>notEmpty</code>), and vice versa — this targeted signaling avoids the &quot;thundering herd&quot; problem of using a single condition (and hence <code>signalAll()</code>) for two logically distinct wake-up reasons.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing the bounded queue reaching capacity:</p>
+<ol><li>The producer calls <code>put(3)</code> after the queue already holds <code>{1, 2}</code> (capacity 2). It acquires <code>lock</code>, finds <code>queue.size() == capacity</code> true, and calls <code>notFull.await()</code> — this atomically releases <code>lock</code> and suspends the producer thread.</li><li>The consumer, running concurrently, calls <code>take()</code>, acquires the now-free <code>lock</code>, finds the queue non-empty, polls off <code>1</code>, and calls <code>notFull.signal()</code> — this wakes the producer that was suspended in step 1 (or would wake one if multiple were waiting), but does <strong>not</strong> yet let it proceed, since the woken thread must first reacquire <code>lock</code>, which the consumer still holds until it releases it in <code>finally</code>.</li><li>Once the consumer&#x27;s <code>take()</code> call finishes (releasing <code>lock</code>), the producer&#x27;s <code>await()</code> call reacquires <code>lock</code> and returns, re-entering its <code>while (queue.size() == capacity)</code> loop — this time finding <code>queue.size() == 1 &lt; capacity</code>, so it exits the loop and proceeds to <code>queue.add(3)</code>, then calls <code>notEmpty.signal()</code> in case a consumer is waiting on that condition.</li><li>This exact request/response-style handoff repeats for the remaining values, with producers occasionally blocking on <code>notFull</code> (since the consumer sleeps 30ms between takes, letting the producer race ahead and fill the two-slot buffer) and consumers occasionally blocking on <code>notEmpty</code> (briefly, right after taking the last item, before the next <code>put</code>).</li><li>By the end, all five values have been produced and consumed exactly once each, in FIFO order (since the underlying <code>LinkedList</code> used as <code>queue</code> preserves insertion order), and the final <code>println</code> confirms the whole exchange completed without deadlock or lost signals.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> always call <code>await()</code> inside a <code>while</code> loop that re-checks the actual condition, never inside an <code>if</code>. Both spurious wakeups (permitted by the JVM with no real signal at all) and &quot;stolen&quot; signals (another thread reacquiring the lock and consuming the resource before the woken thread gets its turn) mean the condition you were waiting for might still be false the moment <code>await()</code> returns.</blockquote>
+<ul><li>A single <code>Lock</code> can have multiple independent <code>Condition</code>s — use separate conditions for logically distinct wait reasons (like &quot;not empty&quot; vs. &quot;not full&quot;) so a <code>signal()</code> wakes only threads that could plausibly proceed.</li><li><code>await()</code> atomically releases the lock while suspending and reacquires it before returning — you never manually juggle lock release/reacquire around a wait.</li><li>Prefer <code>signal()</code> (wakes one waiter) over <code>signalAll()</code> (wakes every waiter) when only one waiting thread can actually make progress, to avoid a thundering-herd of threads all waking up, reacquiring the lock one at a time, and finding the condition still false for all but one of them.</li><li><code>Condition</code> is the explicit-lock analogue of <code>Object.wait()</code>/<code>notify()</code>/<code>notifyAll()</code> — the same &quot;always loop, never assume&quot; discipline applies to both.</li><li>For many common producer–consumer patterns, <code>java.util.concurrent</code>&#x27;s ready-made blocking queues (<code>ArrayBlockingQueue</code>, <code>LinkedBlockingQueue</code>) already implement exactly this kind of condition-variable coordination internally — reach for those before hand-rolling your own unless you need custom wake conditions.</li></ul>
+  <div class="nav"><a class="prv" href="0869-stampedlock-optimistic-reads.html"><span class="mini">← Previous</span>StampedLock (optimistic reads)</a><a class="nxt" href="0871-deadlock-causes-prevention.html"><span class="mini">Next →</span>Deadlock (causes & prevention)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t870";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

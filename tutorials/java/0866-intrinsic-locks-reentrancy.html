@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intrinsic locks & reentrancy — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>Intrinsic locks & reentrancy</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Every Java object has a built-in (&quot;intrinsic&quot;) lock, also called its <strong>monitor</strong> — this is what <code>synchronized</code> methods and blocks acquire and release. Intrinsic locks are <strong>reentrant</strong>: if a thread already holds an object&#x27;s lock and calls another method (or the same method again, e.g. recursively) that also needs to acquire that same lock, it succeeds immediately instead of blocking on itself. The JVM tracks a per-thread hold count for the lock; each nested <code>synchronized</code> entry on an already-held lock increments the count, and each exit decrements it — the lock is only actually released back to other threads once the count returns to zero.</p>
+<h2>2. Why &amp; when</h2>
+<p>Reentrancy exists because it&#x27;s extremely common for a <code>synchronized</code> method to call another <code>synchronized</code> method on the same object — a public method delegating to a private helper, an overridden method calling <code>super.method()</code>, or a recursive algorithm. Without reentrancy, a thread would deadlock against itself the instant it tried to re-enter its own lock, making <code>synchronized</code> all but unusable for any nontrivial class. You benefit from this property any time you design a class with several <code>synchronized</code> methods that call each other, or a <code>synchronized</code> method that recurses — you don&#x27;t need to think about it, since the JVM&#x27;s intrinsic locks are reentrant by default, but you need to understand it to know when it&#x27;s *not* the safety net you might assume it is (see the gotcha about a subclass acquiring a *different* lock than a superclass method).</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">class Node {
+    synchronized void outer() {
+        System.out.println(&quot;in outer, calling inner...&quot;);
+        inner(); // re-enters the SAME lock (this) -- succeeds immediately, does not block
+    }
+
+    synchronized void inner() {
+        System.out.println(&quot;in inner&quot;);
+    }
+}
+// A single thread calling outer() acquires `this`&#x27;s lock once for outer(),
+// then acquires it AGAIN for inner() -- hold count becomes 2, then drops back to 1, then 0.</code></pre>
+<p>If intrinsic locks were not reentrant, <code>outer()</code> calling <code>inner()</code> on the same thread would block forever, since the thread would be waiting for a lock it itself already holds and has no way to release until <code>outer()</code> returns.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A single thread entering outer, acquiring the lock, calling inner which re-enters the same lock, hold count going 1 then 2 then back to 1 then 0">
+  <rect x="40" y="20" width="560" height="40" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="320" y="45" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif">Thread T calls outer() -- acquires lock, hold count = 1</text>
+
+  <rect x="90" y="80" width="460" height="40" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="320" y="105" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif">T calls inner() -- SAME thread, SAME lock, hold count = 2</text>
+
+  <rect x="90" y="130" width="460" height="30" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="320" y="150" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">inner() returns -- hold count = 1</text>
+
+  <rect x="40" y="170" width="560" height="10" fill="none"/>
+  <text x="320" y="185" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">outer() returns -- hold count = 0, lock fully released</text>
+
+  <line x1="320" y1="60" x2="320" y2="78" stroke="#79c0ff" stroke-width="2" marker-end="url(#a5)"/>
+  <line x1="320" y1="120" x2="320" y2="128" stroke="#8b949e" stroke-width="2" marker-end="url(#a5)"/>
+  <defs><marker id="a5" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker></defs>
+</svg>
+<p>*The same thread re-entering its own lock succeeds immediately; only a different thread would actually block.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a recursive factorial-with-logging class that must synchronize its shared log, growing from a version that would deadlock without reentrancy (shown conceptually), to relying on real reentrancy for recursion, to a subclass-overriding case where a mismatched lock object silently breaks the safety reentrancy normally provides.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">public class ReentrantRecursion {
+    static class Calculator {
+        private long callCount = 0;
+
+        synchronized long factorial(int n) {
+            callCount++; // shared state, protected by this method&#x27;s lock
+            if (n &lt;= 1) return 1;
+            return n * factorial(n - 1); // RE-ENTERS the same lock on `this` -- works fine
+        }
+
+        synchronized long getCallCount() {
+            return callCount;
+        }
+    }
+
+    public static void main(String[] args) {
+        Calculator calc = new Calculator();
+        long result = calc.factorial(5);
+        System.out.println(&quot;factorial(5) = &quot; + result);
+        System.out.println(&quot;recursive calls made = &quot; + calc.getCallCount());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ReentrantRecursion.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>factorial(5) = 120
+recursive calls made = 5</code></pre>
+<p>Each recursive call to <code>factorial</code> re-acquires the same <code>this</code> lock the outer call already holds — without reentrancy, this recursive, <code>synchronized</code>-on-itself pattern would deadlock on the very first recursive call.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.*;
+
+public class ReentrancyUnderConcurrency {
+    static class Calculator {
+        private long callCount = 0;
+        synchronized long factorial(int n) {
+            callCount++;
+            if (n &lt;= 1) return 1;
+            return n * factorial(n - 1);
+        }
+        synchronized long getCallCount() { return callCount; }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Calculator calc = new Calculator();
+        ExecutorService pool = Executors.newFixedThreadPool(4);
+        for (int i = 0; i &lt; 20; i++) {
+            final int n = 5;
+            pool.submit(() -&gt; System.out.println(&quot;factorial(&quot; + n + &quot;) = &quot; + calc.factorial(n)));
+        }
+        pool.shutdown();
+        pool.awaitTermination(5, TimeUnit.SECONDS);
+        System.out.println(&quot;total recursive calls across all threads = &quot; + calc.getCallCount());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ReentrancyUnderConcurrency.java</code>.</p>
+<p>Expected output shape (line order varies, final count is exact):</p>
+<pre><code>factorial(5) = 120
+... (20 lines total)
+total recursive calls across all threads = 100</code></pre>
+<p>The real-world concern added: multiple threads now compete for the *outermost* call to <code>factorial</code>, but each individual thread&#x27;s own chain of recursive re-entries into its already-held lock is unaffected — reentrancy is per-thread, so it never interacts badly with other threads also trying to acquire the lock. Twenty threads times five recursive calls each correctly totals 100.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">public class SubclassLockMismatch {
+    static class Base {
+        protected final Object baseLock = new Object();
+        void baseOperation() {
+            synchronized (baseLock) {
+                System.out.println(&quot;Base.baseOperation holding baseLock&quot;);
+                extensionHook();
+            }
+        }
+        void extensionHook() { /* overridden by subclasses */ }
+    }
+
+    static class BuggySubclass extends Base {
+        private final Object subclassLock = new Object(); // A DIFFERENT lock object!
+        @Override
+        void extensionHook() {
+            // This does NOT reenter baseLock -- it&#x27;s a totally different monitor,
+            // so if another thread already holds subclassLock, THIS WOULD BLOCK,
+            // even though the current thread already holds baseLock.
+            synchronized (subclassLock) {
+                System.out.println(&quot;BuggySubclass.extensionHook holding a DIFFERENT lock (no reentrancy relationship to baseLock)&quot;);
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        BuggySubclass obj = new BuggySubclass();
+        obj.baseOperation(); // works fine here because nothing else is contending for subclassLock
+        System.out.println(&quot;completed without contention -- but note: this was NOT true reentrancy,&quot;);
+        System.out.println(&quot;just two independent locks that happened not to be contended concurrently&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java SubclassLockMismatch.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>Base.baseOperation holding baseLock
+BuggySubclass.extensionHook holding a DIFFERENT lock (no reentrancy relationship to baseLock)
+completed without contention -- but note: this was NOT true reentrancy,
+just two independent locks that happened not to be contended concurrently</code></pre>
+<p>This adds the production-flavored hard case: reentrancy only protects re-entry into the <strong>same lock object</strong>. <code>BuggySubclass.extensionHook</code> acquires <code>subclassLock</code>, a completely different monitor from <code>baseLock</code> — this happens to run fine in the single-threaded demo above, but if another thread were concurrently holding <code>subclassLock</code> while this thread held <code>baseLock</code> and tried to enter <code>extensionHook</code>, it would simply block, waiting like any unrelated lock acquisition; there is no reentrancy relationship between the two different lock objects, regardless of which class &quot;logically&quot; owns the call chain.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>SubclassLockMismatch.main</code> calling <code>obj.baseOperation()</code>:</p>
+<ol><li><code>baseOperation()</code> enters <code>synchronized (baseLock)</code>, acquiring <code>baseLock</code>&#x27;s monitor for the current thread — hold count on <code>baseLock</code> becomes 1.</li><li>Still holding <code>baseLock</code>, it calls <code>extensionHook()</code>, which — thanks to overriding — dispatches to <code>BuggySubclass.extensionHook()</code>.</li><li><code>BuggySubclass.extensionHook()</code> enters <code>synchronized (subclassLock)</code> — a completely unrelated <code>Object</code> instance from <code>baseLock</code>. This is a fresh lock acquisition, not a reentrant one; it happens to succeed instantly here only because no other thread currently holds <code>subclassLock</code>.</li><li>The nested block prints its message, then exits, releasing <code>subclassLock</code> (hold count back to 0 for that lock).</li><li>Control returns to <code>baseOperation()</code>, which exits its <code>synchronized (baseLock)</code> block, releasing <code>baseLock</code>.</li><li><code>main</code> prints the two follow-up lines, making explicit that the apparent smoothness here was <strong>not</strong> intrinsic-lock reentrancy at work — it was simply two independent, uncontended locks. Had a second thread been holding <code>subclassLock</code> at the moment <code>extensionHook()</code> ran, step 3 would have blocked that thread, even though it already held <code>baseLock</code> — a genuine, easily-missed deadlock risk in class hierarchies that mix different lock objects across base and subclass.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> reentrancy is a property of a specific <strong>lock object</strong>, not of &quot;the current call stack&quot; in general. A subclass method that locks on a *different* object than its superclass — even while called from inside a method that already holds the superclass&#x27;s lock — gets no reentrancy benefit and can deadlock under contention, exactly like acquiring any two unrelated locks in an inconsistent order.</blockquote>
+<ul><li>Intrinsic locks (acquired via <code>synchronized</code>) are reentrant per-thread: the same thread can re-acquire a lock it already holds, tracked via an internal hold count.</li><li>Reentrancy is what makes <code>synchronized</code> methods safely callable from other <code>synchronized</code> methods on the same object, including recursively.</li><li>Reentrancy never extends across *different* lock objects — locking <code>this</code> in one method and a private field in another provides zero reentrant relationship between them, even if one call leads directly to the other.</li><li>Be careful in class hierarchies: a subclass overriding a method that a superclass calls from within a <code>synchronized</code> block should either use the same lock object or think carefully about whether a different lock is intentional and deadlock-safe.</li><li>Reentrancy applies equally to <a href="0867-reentrantlock-fairness.md"><code>ReentrantLock</code></a> (hence the name) — the same per-thread hold-count behavior, but as an explicit, non-implicit API.</li></ul>
+  <div class="nav"><a class="prv" href="0865-synchronized-blocks-monitor-objects.html"><span class="mini">← Previous</span>synchronized blocks & monitor objects</a><a class="nxt" href="0867-reentrantlock-fairness.html"><span class="mini">Next →</span>ReentrantLock & fairness</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t866";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

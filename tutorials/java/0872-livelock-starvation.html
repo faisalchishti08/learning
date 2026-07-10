@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Livelock & starvation — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>Livelock & starvation</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Livelock</strong> is when threads are *not* blocked — they&#x27;re actively running, repeatedly changing state in response to each other — but the system as a whole never makes real progress, because every thread keeps &quot;politely&quot; backing off for the other, over and over, forever. It&#x27;s deadlock&#x27;s more embarrassing cousin: instead of freezing silently, the threads burn CPU busily doing nothing useful. <strong>Starvation</strong> is a related but distinct problem: a thread is repeatedly denied access to a resource it needs (a lock, CPU time, a turn in a queue) because other threads keep getting priority over it — it isn&#x27;t deadlocked or livelocked, it&#x27;s just perpetually unlucky, and in principle could still eventually run, but never actually does under the observed conditions.</p>
+<h2>2. Why &amp; when</h2>
+<p>Livelock most often shows up in code written specifically to *avoid* deadlock via retry-and-back-off logic (like &quot;if I can&#x27;t get both locks, release what I have and try again&quot;) — if every competing thread&#x27;s back-off logic is symmetric and deterministic, they can end up perfectly, repeatedly colliding and backing off in lockstep, never making progress. The fix is usually to add <strong>randomized</strong> backoff (jitter) so competing threads eventually desynchronize, or to give one thread priority to break the symmetry. Starvation typically comes from an <strong>unfair</strong> lock or scheduler policy under sustained heavy contention — a fast, frequently-arriving thread can repeatedly &quot;barge in&quot; ahead of a thread that&#x27;s been patiently waiting, especially with default (unfair) <code>synchronized</code> or <code>ReentrantLock</code> semantics; the fix is a fair lock (see <a href="0867-reentrantlock-fairness.md"><code>ReentrantLock</code> &amp; fairness</a>) or a scheduling policy that explicitly bounds how long any one requester can be skipped over.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">// LIVELOCK-PRONE: two &quot;polite&quot; threads that both back off identically when they can&#x27;t proceed
+void politeTransfer(Account from, Account to) {
+    while (true) {
+        if (from.lock.tryLock()) {
+            try {
+                if (to.lock.tryLock()) {
+                    try { /* do the work */ return; }
+                    finally { to.lock.unlock(); }
+                }
+            } finally { from.lock.unlock(); } // release and retry -- but WITHOUT any randomness
+        }
+        // no delay, or a FIXED delay -- if both threads do this in lockstep, neither ever wins
+    }
+}</code></pre>
+<p>If two threads both back off the *same* way every time, they can keep re-colliding on every retry — technically running, technically &quot;trying,&quot; but never actually completing.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two threads repeatedly acquiring one lock, failing to get the second, releasing, and retrying in perfect lockstep -- livelock, no progress despite constant activity">
+  <rect x="20" y="20" width="260" height="35" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="150" y="43" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">T1: lock A, try B -- fails, release A</text>
+
+  <rect x="340" y="20" width="260" height="35" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="470" y="43" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">T2: lock B, try A -- fails, release B</text>
+
+  <rect x="20" y="70" width="260" height="35" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="150" y="93" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">T1: retries -- lock A again...</text>
+
+  <rect x="340" y="70" width="260" height="35" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="470" y="93" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">T2: retries -- lock B again...</text>
+
+  <line x1="150" y1="55" x2="150" y2="68" stroke="#8b949e" stroke-width="2" marker-end="url(#a10)"/>
+  <line x1="470" y1="55" x2="470" y2="68" stroke="#8b949e" stroke-width="2" marker-end="url(#a10)"/>
+  <text x="320" y="130" fill="#f85149" font-size="12" text-anchor="middle" font-family="sans-serif">Both threads active, both "trying" -- neither ever succeeds. Repeats forever.</text>
+  <defs><marker id="a10" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>*Unlike deadlock, both threads are constantly doing work — just never anything that actually finishes.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: two accounts being &quot;politely&quot; transferred between, growing from a livelock-prone symmetric-backoff version (bounded so the demo terminates), to a jittered-backoff fix, to a version that also protects against starvation using a fair lock so no thread is perpetually skipped.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+import java.util.concurrent.atomic.*;
+
+public class LivelockProne {
+    static class Account {
+        final ReentrantLock lock = new ReentrantLock();
+    }
+
+    static AtomicInteger attempts = new AtomicInteger(0);
+
+    static boolean politeTransfer(Account from, Account to) {
+        for (int i = 0; i &lt; 20; i++) { // bounded so this demo terminates -- real livelock has no bound
+            attempts.incrementAndGet();
+            if (from.lock.tryLock()) {
+                try {
+                    if (to.lock.tryLock()) {
+                        try { return true; } finally { to.lock.unlock(); }
+                    }
+                    // couldn&#x27;t get `to` -- release `from` immediately and retry, NO delay, NO randomness
+                } finally { from.lock.unlock(); }
+            }
+        }
+        return false; // gave up after the bound -- a real livelock would spin forever
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Account a = new Account();
+        Account b = new Account();
+
+        Thread t1 = new Thread(() -&gt; System.out.println(&quot;t1 succeeded? &quot; + politeTransfer(a, b)));
+        Thread t2 = new Thread(() -&gt; System.out.println(&quot;t2 succeeded? &quot; + politeTransfer(b, a)));
+        t1.start(); t2.start();
+        t1.join(); t2.join();
+        System.out.println(&quot;total attempts made across both threads: &quot; + attempts.get());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java LivelockProne.java</code> (JDK 17+).</p>
+<p>Expected output shape (a real, unbounded livelock might never print anything at all; this bounded version demonstrates wasted attempts):</p>
+<pre><code>t1 succeeded? false
+t2 succeeded? false
+total attempts made across both threads: 40</code></pre>
+<p>Both threads keep acquiring their first lock, failing on the second (because the other thread grabbed it in the opposite order at nearly the same instant), releasing, and retrying — with no randomness in the retry timing, they can keep re-colliding attempt after attempt, exhausting the bound without ever succeeding.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+import java.util.concurrent.atomic.*;
+import java.util.concurrent.ThreadLocalRandom;
+
+public class JitteredBackoffFix {
+    static class Account {
+        final ReentrantLock lock = new ReentrantLock();
+    }
+
+    static AtomicInteger attempts = new AtomicInteger(0);
+
+    static boolean politeTransfer(Account from, Account to) throws InterruptedException {
+        for (int i = 0; i &lt; 20; i++) {
+            attempts.incrementAndGet();
+            if (from.lock.tryLock()) {
+                try {
+                    if (to.lock.tryLock()) {
+                        try { return true; } finally { to.lock.unlock(); }
+                    }
+                } finally { from.lock.unlock(); }
+            }
+            // RANDOM backoff -- breaks the lockstep symmetry that causes livelock
+            Thread.sleep(ThreadLocalRandom.current().nextInt(1, 10));
+        }
+        return false;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Account a = new Account();
+        Account b = new Account();
+
+        Thread t1 = new Thread(() -&gt; {
+            try { System.out.println(&quot;t1 succeeded? &quot; + politeTransfer(a, b)); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        Thread t2 = new Thread(() -&gt; {
+            try { System.out.println(&quot;t2 succeeded? &quot; + politeTransfer(b, a)); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        t1.start(); t2.start();
+        t1.join(); t2.join();
+        System.out.println(&quot;total attempts made across both threads: &quot; + attempts.get() + &quot; (usually far fewer than the worst case)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java JitteredBackoffFix.java</code>.</p>
+<p>Expected output shape (attempt count is much lower and progress is now reliable):</p>
+<pre><code>t1 succeeded? true
+t2 succeeded? true
+total attempts made across both threads: 3 (usually far fewer than the worst case)</code></pre>
+<p>The real-world concern added: a small <strong>randomized</strong> delay before each retry. Because the two threads&#x27; backoff durations are no longer identical or synchronized, they very quickly desynchronize — one of them ends up retrying slightly before or after the other, breaking the perfect collision pattern and letting one of them successfully acquire both locks.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class FairLockAvoidsStarvation {
+    static final ReentrantLock fairLock = new ReentrantLock(true); // fair -- prevents starvation
+    static final AtomicInteger[] serviceOrder = new AtomicInteger[1];
+
+    public static void main(String[] args) throws InterruptedException {
+        serviceOrder[0] = new AtomicInteger(0);
+        int workers = 6;
+        CountDownLatch startGate = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        int[] serviceRank = new int[workers];
+
+        for (int i = 0; i &lt; workers; i++) {
+            final int id = i;
+            pool.submit(() -&gt; {
+                try {
+                    startGate.await(); // release all workers at once, maximizing contention
+                    fairLock.lock();
+                    try {
+                        serviceRank[id] = serviceOrder[0].incrementAndGet();
+                    } finally {
+                        fairLock.unlock();
+                    }
+                } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            });
+        }
+
+        startGate.countDown();
+        pool.shutdown();
+        pool.awaitTermination(5, TimeUnit.SECONDS);
+
+        for (int i = 0; i &lt; workers; i++) {
+            System.out.println(&quot;worker &quot; + i + &quot; served at rank &quot; + serviceRank[i]);
+        }
+        System.out.println(&quot;with a FAIR lock, every worker is guaranteed eventual service -- none starves&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java FairLockAvoidsStarvation.java</code>.</p>
+<p>Expected output shape (exact ranks vary by submission/thread-arrival order, but crucially every worker gets a distinct rank 1 through 6 — none is skipped):</p>
+<pre><code>worker 0 served at rank 1
+worker 1 served at rank 2
+worker 2 served at rank 3
+worker 3 served at rank 4
+worker 4 served at rank 5
+worker 5 served at rank 6
+with a FAIR lock, every worker is guaranteed eventual service -- none starves</code></pre>
+<p>This adds the production-flavored hard case: under sustained heavy contention with an <strong>unfair</strong> lock, a fast or luckily-scheduled thread can keep barging ahead of others indefinitely, starving them. Using <code>new ReentrantLock(true)</code> (fair mode) guarantees strict FIFO acquisition order, so every one of the six workers is served exactly once, in a well-defined order, with no possibility that any single worker is passed over forever.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>FairLockAvoidsStarvation.main</code>:</p>
+<ol><li>Six worker tasks are submitted, each immediately blocking on <code>startGate.await()</code> so all six are ready to contend for <code>fairLock</code> at essentially the same instant, once released.</li><li><code>startGate.countDown()</code> releases all six workers simultaneously, maximizing real contention on <code>fairLock</code>.</li><li>Because <code>fairLock</code> was constructed with <code>true</code>, its internal wait queue grants the lock strictly in the order requests were registered — even though all six requests arrive in a tight burst, the JVM records a definite arrival order and honors it, rather than letting scheduling luck or CPU cache effects let one thread repeatedly cut in line.</li><li>Each worker, once granted the lock, increments the shared <code>serviceOrder</code> counter and records its own resulting rank into <code>serviceRank[id]</code>, then releases the lock — allowing the fair queue to grant it to the next-in-line waiter.</li><li>After all six workers finish, <code>main</code> prints each worker&#x27;s assigned rank. Because the lock is fair, the six ranks are guaranteed to be a permutation of 1 through 6 — no rank is skipped, and critically, no single worker could have been made to wait behind an unbounded number of &quot;cutting&quot; newcomers, which is exactly the starvation risk an *unfair* lock would carry under the same contention pattern.</li><li>The final <code>println</code> underscores the key difference from livelock: here, every thread performed useful work and finished — nothing spun uselessly; fairness is about *order* and *eventual service*, not about avoiding wasted busy-work the way jittered backoff fixes livelock.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> livelock is easy to introduce by accident specifically when *fixing* deadlock with a naive &quot;release and retry&quot; pattern — if the retry logic is perfectly deterministic and symmetric across competing threads, you can trade a silent, permanent freeze (deadlock) for a noisy, permanent spin (livelock), which is not obviously better and can be harder to notice since CPU usage looks &quot;busy&quot; rather than idle.</blockquote>
+<ul><li>Livelock: threads are active and changing state, but the system never converges to actual progress — usually caused by symmetric, deterministic retry/backoff logic colliding repeatedly.</li><li>The standard fix for livelock is randomized backoff (jitter) so competing threads&#x27; retry timings desynchronize, or breaking symmetry by giving one thread explicit priority.</li><li>Starvation: a thread is repeatedly denied a resource due to unfair scheduling or unfair lock policy, even though it isn&#x27;t blocked or deadlocked — it&#x27;s simply never lucky enough to win the race.</li><li>The standard fix for starvation under lock contention is a fair lock (<code>new ReentrantLock(true)</code>), which guarantees FIFO acquisition order at some throughput cost.</li><li>Livelock and starvation are both harder to detect than deadlock — there&#x27;s no thread-dump signature that flags them the way &quot;Found one Java-level deadlock&quot; does; they usually surface as unexplained slowness, high CPU with no throughput, or specific requests that never seem to complete.</li></ul>
+  <div class="nav"><a class="prv" href="0871-deadlock-causes-prevention.html"><span class="mini">← Previous</span>Deadlock (causes & prevention)</a><a class="nxt" href="0873-lock-ordering-avoidance.html"><span class="mini">Next →</span>Lock ordering & avoidance</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t872";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

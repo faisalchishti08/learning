@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ReentrantLock & fairness — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>ReentrantLock & fairness</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>java.util.concurrent.locks.ReentrantLock</code> is an explicit lock class that provides the same mutual-exclusion and reentrancy guarantees as <code>synchronized</code>, but as an ordinary object with method calls (<code>lock()</code>, <code>unlock()</code>, <code>tryLock()</code>) instead of language syntax — giving it capabilities <code>synchronized</code> doesn&#x27;t have: timed and interruptible acquisition, non-blocking <code>tryLock()</code>, and, notably, an optional <strong>fairness</strong> policy. A <code>ReentrantLock</code> is created unfair by default; passing <code>true</code> to its constructor (<code>new ReentrantLock(true)</code>) makes it <strong>fair</strong>, meaning threads acquire the lock strictly in the order they requested it (FIFO), rather than allowing a newly-arriving thread to &quot;barge in&quot; ahead of threads that have been waiting longer.</p>
+<h2>2. Why &amp; when</h2>
+<p>Use <code>ReentrantLock</code> over <code>synchronized</code> when you need one of its extra capabilities: <code>tryLock()</code> to avoid blocking forever and instead do something else if the lock isn&#x27;t free, <code>lockInterruptibly()</code> to allow a blocked thread to respond to interruption, or explicit <code>Condition</code> objects for more flexible wait/notify (see <a href="0870-condition-variables.md">condition variables</a>). Reach for the <strong>fair</strong> variant specifically when starvation is an observed or likely problem — many threads competing for a hot lock under an unfair policy can let unlucky threads wait arbitrarily long, even indefinitely, while lucky/fast threads keep winning the race. Fair locks fix that at a real cost: they are measurably slower under high contention, because enforcing strict ordering means even an uncontended <code>lock()</code> call may need to check a queue rather than just attempt a fast compare-and-swap. Default to unfair (or plain <code>synchronized</code>) unless you have a concrete starvation problem to solve.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">ReentrantLock unfairLock = new ReentrantLock();       // default: unfair, higher throughput
+ReentrantLock fairLock = new ReentrantLock(true);      // fair: strict FIFO, lower throughput, no starvation
+
+fairLock.lock();
+try {
+    // critical section
+} finally {
+    fairLock.unlock(); // MUST be in finally -- unlike synchronized, this is not automatic
+}</code></pre>
+<p>Unlike <code>synchronized</code>, <code>ReentrantLock</code> requires the programmer to manually call <code>unlock()</code>, almost always inside a <code>finally</code> block — forgetting this leaves the lock held forever, a bug <code>synchronized</code> structurally cannot produce.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Under an unfair lock, a newly arriving thread can barge ahead of threads already waiting; under a fair lock, threads acquire strictly in arrival order">
+  <text x="160" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Unfair lock</text>
+  <rect x="20" y="30" width="280" height="30" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="160" y="50" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Waiting queue: T1, T2, T3...</text>
+  <rect x="20" y="70" width="280" height="30" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="160" y="90" fill="#f0883e" font-size="11" text-anchor="middle" font-family="sans-serif">T4 (just arrived) BARGES IN, wins lock first</text>
+
+  <text x="480" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Fair lock</text>
+  <rect x="340" y="30" width="280" height="30" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="480" y="50" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Waiting queue: T1, T2, T3...</text>
+  <rect x="340" y="70" width="280" height="30" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="480" y="90" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif">T1 goes next (strict FIFO); T4 joins queue's tail</text>
+
+  <text x="320" y="140" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Fairness trades raw throughput for guaranteed, predictable ordering.</text>
+</svg>
+<p>*An unfair lock can let a fast, newly-arriving thread repeatedly beat out threads that have waited longer; a fair lock never does.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: several worker threads competing for a shared resource lock, starting with a plain <code>ReentrantLock</code>, then demonstrating unfair starvation risk under heavy contention, then switching to a fair lock and to <code>tryLock</code> with a timeout to avoid blocking forever.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+
+public class BasicReentrantLock {
+    static final ReentrantLock lock = new ReentrantLock(); // default: unfair
+    static int sharedCounter = 0;
+
+    static void incrementSafely() {
+        lock.lock();
+        try {
+            sharedCounter++;
+        } finally {
+            lock.unlock(); // always in finally, so it releases even if the body throws
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread[] threads = new Thread[10];
+        for (int i = 0; i &lt; 10; i++) {
+            threads[i] = new Thread(() -&gt; {
+                for (int j = 0; j &lt; 1000; j++) incrementSafely();
+            });
+        }
+        for (Thread t : threads) t.start();
+        for (Thread t : threads) t.join();
+        System.out.println(&quot;expected 10000, got &quot; + sharedCounter);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java BasicReentrantLock.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>expected 10000, got 10000</code></pre>
+<p><code>ReentrantLock</code> provides the same correctness guarantee as <code>synchronized</code> here — every increment is protected — just via explicit <code>lock()</code>/<code>unlock()</code> calls instead of language syntax.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+import java.util.concurrent.atomic.*;
+
+public class UnfairStarvationDemo {
+    static final ReentrantLock unfairLock = new ReentrantLock(); // default: unfair
+    static final AtomicInteger[] winsPerThread = new AtomicInteger[5];
+
+    public static void main(String[] args) throws InterruptedException {
+        for (int i = 0; i &lt; 5; i++) winsPerThread[i] = new AtomicInteger(0);
+
+        Thread[] threads = new Thread[5];
+        for (int i = 0; i &lt; 5; i++) {
+            final int id = i;
+            threads[i] = new Thread(() -&gt; {
+                for (int j = 0; j &lt; 20_000; j++) {
+                    unfairLock.lock();
+                    try {
+                        winsPerThread[id].incrementAndGet();
+                    } finally {
+                        unfairLock.unlock();
+                    }
+                }
+            });
+        }
+        for (Thread t : threads) t.start();
+        for (Thread t : threads) t.join();
+
+        for (int i = 0; i &lt; 5; i++) {
+            System.out.println(&quot;thread &quot; + i + &quot; won the lock &quot; + winsPerThread[i].get() + &quot; times&quot;);
+        }
+        System.out.println(&quot;under contention, wins can be UNEVENLY distributed with an unfair lock&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java UnfairStarvationDemo.java</code>.</p>
+<p>Expected output shape (each thread wins its own 20,000 attempts, since each thread only competes with itself for its own increments in this simplified demo — true starvation is best observed by timing acquisition latency under real contention, not raw win counts):</p>
+<pre><code>thread 0 won the lock 20000 times
+thread 1 won the lock 20000 times
+thread 2 won the lock 20000 times
+thread 3 won the lock 20000 times
+thread 4 won the lock 20000 times
+under contention, wins can be UNEVENLY distributed with an unfair lock</code></pre>
+<p>The real-world concern added: five threads all contending for the *same* lock, illustrating that although every increment is still safely counted (correctness holds), an unfair lock offers no guarantee about the *order* or *latency* in which competing threads actually get the lock — some threads can be kept waiting far longer than others under sustained contention, a property that only shows up as uneven wait *times*, not uneven final counts, in a workload like this.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+import java.util.concurrent.*;
+
+public class FairLockAndTryLock {
+    static final ReentrantLock fairLock = new ReentrantLock(true); // fair: strict FIFO
+
+    public static void main(String[] args) throws InterruptedException {
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+
+        for (int i = 0; i &lt; 3; i++) {
+            final int id = i;
+            pool.submit(() -&gt; {
+                try {
+                    // tryLock with a timeout -- never blocks forever, unlike a plain lock()
+                    if (fairLock.tryLock(2, TimeUnit.SECONDS)) {
+                        try {
+                            System.out.println(&quot;worker &quot; + id + &quot; acquired the fair lock, doing work...&quot;);
+                            Thread.sleep(100);
+                        } finally {
+                            fairLock.unlock();
+                        }
+                    } else {
+                        System.out.println(&quot;worker &quot; + id + &quot; gave up waiting for the lock&quot;);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+
+        pool.shutdown();
+        pool.awaitTermination(5, TimeUnit.SECONDS);
+        System.out.println(&quot;all workers processed in FIFO order, none blocked indefinitely&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java FairLockAndTryLock.java</code>.</p>
+<p>Expected output shape (worker order is FIFO, i.e. by submission order, since the lock is fair):</p>
+<pre><code>worker 0 acquired the fair lock, doing work...
+worker 1 acquired the fair lock, doing work...
+worker 2 acquired the fair lock, doing work...
+all workers processed in FIFO order, none blocked indefinitely</code></pre>
+<p>This adds the production-flavored hard case: combining fairness (so no worker is starved out by later arrivals) with <code>tryLock(timeout, unit)</code> (so no worker blocks forever if something goes wrong) — the two features solve two different problems (ordering fairness and bounded waiting) and compose cleanly, something <code>synchronized</code> cannot express at all.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>FairLockAndTryLock.main</code>:</p>
+<ol><li>Three tasks are submitted to a 3-thread pool at essentially the same time; each calls <code>fairLock.tryLock(2, TimeUnit.SECONDS)</code>.</li><li>Because <code>fairLock</code> was constructed with <code>true</code> (fair), the JVM&#x27;s internal wait queue for this lock hands out the lock strictly in the order requests arrived — worker 0&#x27;s request (submitted first) is granted first, regardless of any scheduling quirks that might otherwise let worker 1 or 2 &quot;jump the queue.&quot;</li><li>Worker 0 acquires the lock, prints its acquisition message, sleeps 100ms (simulating work) inside the <code>try</code>, then releases the lock in <code>finally</code> — guaranteeing release even if <code>Thread.sleep</code> were somehow interrupted and threw.</li><li>With the lock now free, the fair queue grants it next to worker 1 (the next-oldest waiter), which repeats the same acquire/work/release cycle.</li><li>Worker 2 follows identically once worker 1 releases.</li><li>Because every <code>tryLock</code> call specifies a 2-second timeout, if any worker had been unable to acquire the lock within that window (e.g., due to an unexpected long hold elsewhere), it would print &quot;gave up waiting&quot; instead of blocking indefinitely — a safety net plain <code>synchronized</code> has no equivalent for.</li><li><code>pool.awaitTermination</code> waits for all three submitted tasks to finish, and the final <code>println</code> confirms the FIFO ordering guarantee held throughout.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> forgetting to call <code>unlock()</code> — or calling it outside a <code>finally</code> block — leaves the lock permanently held if the critical section throws an exception, which will silently deadlock every other thread that later tries to acquire it. This is exactly the class of bug <code>synchronized</code> makes structurally impossible, since the compiler-inserted unlock always runs; with <code>ReentrantLock</code>, the discipline is entirely on the programmer.</blockquote>
+<ul><li><code>ReentrantLock</code> gives you everything <code>synchronized</code> gives you, plus <code>tryLock()</code>, timed and interruptible acquisition, and explicit <code>Condition</code> support — at the cost of manual, <code>finally</code>-block unlocking.</li><li>Fairness (<code>new ReentrantLock(true)</code>) guarantees FIFO acquisition order, preventing starvation, but is measurably slower under contention than the default unfair mode — use it only when starvation is a real, observed concern.</li><li>An unfair lock is correct (no lost updates, no torn reads) — it just makes no promise about acquisition order or bounded wait time under contention.</li><li><code>tryLock(timeout, unit)</code> is the tool for avoiding indefinite blocking; a plain <code>synchronized</code> block or a plain <code>lock()</code> call has no equivalent — a thread will simply wait forever if the lock is never released.</li><li>Prefer <code>synchronized</code> for the common case (simplicity, automatic release); reach for <code>ReentrantLock</code> specifically when you need one of its extra capabilities, not as a default replacement.</li></ul>
+  <div class="nav"><a class="prv" href="0866-intrinsic-locks-reentrancy.html"><span class="mini">← Previous</span>Intrinsic locks & reentrancy</a><a class="nxt" href="0868-readwritelock.html"><span class="mini">Next →</span>ReadWriteLock</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t867";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ReadWriteLock — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../java.html">Java SE</a> › 23. Concurrency (deep)</div>
+  <div class="htitle">
+    <h1>ReadWriteLock</h1>
+    <a class="back" href="../../java.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>java.util.concurrent.locks.ReadWriteLock</code> (typically implemented via <code>ReentrantReadWriteLock</code>) splits locking into two separate locks that cooperate: a <strong>read lock</strong> that can be held by any number of threads *simultaneously*, as long as no thread holds the write lock, and a <strong>write lock</strong> that is exclusive — only one thread can hold it, and no reader can hold the read lock at the same time. This is a direct improvement over a plain mutual-exclusion lock for workloads where reads vastly outnumber writes: readers no longer block each other, only writers block everyone.</p>
+<h2>2. Why &amp; when</h2>
+<p>A plain <code>synchronized</code> block or <code>ReentrantLock</code> treats every access — read or write — as needing exclusive access, which is wasteful when the actual data races only matter for writes: two threads simultaneously *reading* an unchanging value can never corrupt anything, so there&#x27;s no correctness reason to serialize them. Use <code>ReadWriteLock</code> for shared, mutable data structures that are read far more often than they&#x27;re written — a configuration cache refreshed occasionally but read constantly, an in-memory index, a shared lookup table. It is the wrong tool when writes are frequent or roughly as common as reads, since the extra bookkeeping <code>ReadWriteLock</code> needs (tracking multiple simultaneous readers, and handling the readers-to-writer transition) can actually make it slower than a plain lock under write-heavy or balanced workloads.</p>
+<h2>3. Core concept</h2>
+<pre><code class="lang-java">ReadWriteLock rwLock = new ReentrantReadWriteLock();
+Lock readLock = rwLock.readLock();
+Lock writeLock = rwLock.writeLock();
+
+// Any number of threads can hold readLock at once:
+readLock.lock();
+try { /* read shared data */ } finally { readLock.unlock(); }
+
+// Only one thread can hold writeLock, and no reader can hold readLock meanwhile:
+writeLock.lock();
+try { /* mutate shared data */ } finally { writeLock.unlock(); }</code></pre>
+<p>The two <code>Lock</code> objects returned by <code>readLock()</code> and <code>writeLock()</code> are two views onto the *same* underlying <code>ReentrantReadWriteLock</code> — they coordinate with each other even though they&#x27;re called separately.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Multiple reader threads holding the read lock simultaneously, then a writer thread waiting for all readers to finish before acquiring the exclusive write lock">
+  <rect x="20" y="20" width="180" height="35" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="110" y="43" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Reader 1 -- read lock</text>
+  <rect x="20" y="65" width="180" height="35" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="110" y="88" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Reader 2 -- read lock</text>
+  <rect x="20" y="110" width="180" height="35" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="110" y="133" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Reader 3 -- read lock</text>
+  <text x="110" y="10" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">all three run CONCURRENTLY</text>
+
+  <rect x="330" y="65" width="280" height="35" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="470" y="88" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Writer -- WAITS for all readers to release</text>
+
+  <line x1="200" y1="80" x2="325" y2="80" stroke="#8b949e" stroke-width="2" stroke-dasharray="4"/>
+
+  <rect x="330" y="140" width="280" height="35" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="470" y="163" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Writer -- EXCLUSIVE write lock, no readers allowed</text>
+  <line x1="470" y1="100" x2="470" y2="138" stroke="#6db33f" stroke-width="2" marker-end="url(#a6)"/>
+  <defs><marker id="a6" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker></defs>
+</svg>
+<p>*Readers never block each other; a writer must wait for every current reader to finish, and blocks all future readers until it&#x27;s done.*</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a shared, occasionally-updated in-memory price cache, growing from a plain-lock version that unnecessarily serializes all reads, to a <code>ReadWriteLock</code> version letting concurrent reads through, to a version demonstrating and avoiding the classic read-lock-upgrade deadlock.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+import java.util.*;
+
+public class PlainLockCache {
+    private final Lock lock = new ReentrantLock(); // one lock for everything -- reads block each other too
+    private final Map&lt;String, Double&gt; prices = new HashMap&lt;&gt;();
+
+    double getPrice(String symbol) {
+        lock.lock();
+        try {
+            return prices.getOrDefault(symbol, 0.0);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    void setPrice(String symbol, double price) {
+        lock.lock();
+        try {
+            prices.put(symbol, price);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public static void main(String[] args) {
+        PlainLockCache cache = new PlainLockCache();
+        cache.setPrice(&quot;AAPL&quot;, 190.50);
+        System.out.println(&quot;AAPL = &quot; + cache.getPrice(&quot;AAPL&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java PlainLockCache.java</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>AAPL = 190.5</code></pre>
+<p>Correct, but every <code>getPrice</code> call — even though reads never conflict with each other — is serialized against every other read *and* every write by the single <code>Lock</code>, wasting parallelism in a read-heavy workload.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+import java.util.concurrent.*;
+import java.util.*;
+
+public class ReadWriteLockCache {
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final Lock readLock = rwLock.readLock();
+    private final Lock writeLock = rwLock.writeLock();
+    private final Map&lt;String, Double&gt; prices = new HashMap&lt;&gt;();
+
+    double getPrice(String symbol) {
+        readLock.lock(); // multiple threads can hold this concurrently
+        try {
+            return prices.getOrDefault(symbol, 0.0);
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    void setPrice(String symbol, double price) {
+        writeLock.lock(); // exclusive -- blocks all readers and other writers
+        try {
+            prices.put(symbol, price);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        ReadWriteLockCache cache = new ReadWriteLockCache();
+        cache.setPrice(&quot;AAPL&quot;, 190.50);
+
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        for (int i = 0; i &lt; 8; i++) {
+            pool.submit(() -&gt; {
+                for (int j = 0; j &lt; 100_000; j++) cache.getPrice(&quot;AAPL&quot;); // pure reads, run concurrently
+            });
+        }
+        pool.shutdown();
+        pool.awaitTermination(10, TimeUnit.SECONDS);
+        System.out.println(&quot;8 threads x 100000 concurrent reads completed, final price = &quot; + cache.getPrice(&quot;AAPL&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ReadWriteLockCache.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>8 threads x 100000 concurrent reads completed, final price = 190.5</code></pre>
+<p>The real-world concern added: eight threads hammering <code>getPrice</code> concurrently now genuinely run their reads in parallel with each other (only blocking against a concurrent writer, of which there are none here), rather than needlessly queuing up behind a single exclusive lock as in Level 1 — throughput for read-heavy workloads improves accordingly.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.concurrent.locks.*;
+import java.util.*;
+
+public class ReadWriteLockUpgradeSafely {
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final Lock readLock = rwLock.readLock();
+    private final Lock writeLock = rwLock.writeLock();
+    private final Map&lt;String, Double&gt; prices = new HashMap&lt;&gt;();
+
+    // WRONG pattern (commented out): holding the read lock and then calling writeLock.lock()
+    // deadlocks, because ReentrantReadWriteLock does not support upgrading read -&gt; write directly --
+    // the write lock cannot be acquired while ANY thread (including this one) still holds the read lock.
+    //
+    // void brokenUpdateIfAbsent(String symbol, double fallback) {
+    //     readLock.lock();
+    //     try {
+    //         if (!prices.containsKey(symbol)) {
+    //             writeLock.lock(); // DEADLOCK: this thread still holds readLock
+    //             ...
+    //         }
+    //     } finally { readLock.unlock(); }
+    // }
+
+    // CORRECT pattern: release the read lock BEFORE acquiring the write lock,
+    // then re-check the condition after acquiring the write lock (another thread
+    // may have changed things in between -- this is the standard &quot;check-then-act&quot; fix).
+    void updateIfAbsent(String symbol, double fallback) {
+        readLock.lock();
+        boolean present;
+        try {
+            present = prices.containsKey(symbol);
+        } finally {
+            readLock.unlock(); // MUST release read lock before trying to acquire write lock
+        }
+        if (!present) {
+            writeLock.lock();
+            try {
+                prices.putIfAbsent(symbol, fallback); // re-check: another writer may have won the race
+            } finally {
+                writeLock.unlock();
+            }
+        }
+    }
+
+    double getPrice(String symbol) {
+        readLock.lock();
+        try { return prices.getOrDefault(symbol, 0.0); }
+        finally { readLock.unlock(); }
+    }
+
+    public static void main(String[] args) {
+        ReadWriteLockUpgradeSafely cache = new ReadWriteLockUpgradeSafely();
+        cache.updateIfAbsent(&quot;GOOG&quot;, 140.00);
+        cache.updateIfAbsent(&quot;GOOG&quot;, 999.00); // should NOT overwrite -- already present
+        System.out.println(&quot;GOOG = &quot; + cache.getPrice(&quot;GOOG&quot;) + &quot; (expected 140.0, not overwritten)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java ReadWriteLockUpgradeSafely.java</code>.</p>
+<p>Expected output:</p>
+<pre><code>GOOG = 140.0 (expected 140.0, not overwritten)</code></pre>
+<p>This adds the production-flavored hard case: <code>ReentrantReadWriteLock</code> does <strong>not</strong> support upgrading a held read lock directly into the write lock — attempting to acquire <code>writeLock</code> while still holding <code>readLock</code> deadlocks, since the write lock cannot be granted while any reader (including the requester itself) still holds the read lock. The correct pattern releases the read lock first, then acquires the write lock and <strong>re-checks</strong> the condition (<code>putIfAbsent</code> rather than a blind <code>put</code>), since another thread could have changed the data during the brief window between releasing the read lock and acquiring the write lock.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>ReadWriteLockUpgradeSafely.main</code>:</p>
+<ol><li><code>cache.updateIfAbsent(&quot;GOOG&quot;, 140.00)</code> acquires <code>readLock</code>, checks <code>prices.containsKey(&quot;GOOG&quot;)</code> — <code>false</code>, since the map is empty — then releases <code>readLock</code> in the <code>finally</code> block, *before* touching the write lock.</li><li>Because <code>present</code> was <code>false</code>, it acquires <code>writeLock</code> (now uncontended, since the read lock was already released) and calls <code>prices.putIfAbsent(&quot;GOOG&quot;, 140.00)</code>, which inserts the value since the key is still absent, then releases <code>writeLock</code>.</li><li><code>cache.updateIfAbsent(&quot;GOOG&quot;, 999.00)</code> runs the same sequence: acquires <code>readLock</code>, finds <code>containsKey(&quot;GOOG&quot;)</code> is now <code>true</code> (from step 2), releases <code>readLock</code>, and — because <code>present</code> was <code>true</code> — <strong>skips</strong> acquiring the write lock entirely, leaving the existing value untouched.</li><li>Even in the case where <code>present</code> had been <code>false</code> for both calls (e.g., if two threads called <code>updateIfAbsent</code> concurrently on a fresh key), the re-check inside the write lock via <code>putIfAbsent</code> (not a blind <code>put</code>) ensures whichever thread acquires the write lock second simply finds the key already there and does nothing — no lost update, no overwrite, despite the read-then-write not being a single atomic operation.</li><li><code>cache.getPrice(&quot;GOOG&quot;)</code> acquires <code>readLock</code>, reads <code>140.0</code>, releases <code>readLock</code>, and the final <code>println</code> confirms the second <code>updateIfAbsent</code> call correctly left the original value in place.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>ReentrantReadWriteLock</code> does not support upgrading a read lock to a write lock while holding it — doing so deadlocks, because the write lock can never be granted while any reader (including the very thread attempting the upgrade) still holds the read lock. Always release the read lock first, then acquire the write lock and re-check whatever condition you originally read, since the data may have changed in between.</blockquote>
+<ul><li>Readers never block other readers; only a writer blocks everyone (readers and other writers) and is blocked by any existing reader or writer.</li><li><code>ReadWriteLock</code> pays off specifically for read-heavy, write-light workloads — measure before assuming it beats a plain <code>ReentrantLock</code> for balanced or write-heavy access patterns.</li><li>Downgrading (holding the write lock and then acquiring the read lock before releasing the write lock) <strong>is</strong> supported by <code>ReentrantReadWriteLock</code> and is a common, safe pattern; upgrading (read → write) is not.</li><li>Always re-check any condition read under the read lock after acquiring the write lock — the world can change in the gap between releasing one lock and acquiring the other.</li><li>For an alternative that avoids locking entirely for reads under specific access patterns, see <a href="0869-stampedlock-optimistic-reads.md"><code>StampedLock</code>&#x27;s optimistic reads</a>, which can outperform <code>ReadWriteLock</code> further at the cost of a more careful usage pattern.</li></ul>
+  <div class="nav"><a class="prv" href="0867-reentrantlock-fairness.html"><span class="mini">← Previous</span>ReentrantLock & fairness</a><a class="nxt" href="0869-stampedlock-optimistic-reads.html"><span class="mini">Next →</span>StampedLock (optimistic reads)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:java.html", ID = "t868";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
