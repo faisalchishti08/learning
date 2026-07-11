@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Pre-authentication scenarios (X.509, SiteMinder, J2EE)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 2. Authentication</div>
+  <div class="htitle">
+    <h1>"Pre-authentication scenarios (X.509, SiteMinder, J2EE)"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Pre-authentication is the model for scenarios where identity has *already* been established by something outside Spring Security entirely — a client TLS certificate verified during the TLS handshake itself (X.509), an external single-sign-on proxy like SiteMinder that authenticates the user and forwards identity via a trusted header, or a servlet container&#x27;s own authentication mechanism (J2EE/servlet container auth) — and Spring Security&#x27;s job is reduced to *extracting* that already-established identity and *loading* the corresponding user&#x27;s authorities, never verifying a password itself. <code>AbstractPreAuthenticatedProcessingFilter</code> is the shared base class for all such filters, and <code>PreAuthenticatedAuthenticationProvider</code> (paired with a <code>UserDetailsService</code>) is the corresponding provider that loads authorities without ever checking a credential.</p>
+<pre><code class="lang-java">// X.509: the filter extracts the principal directly from the already-verified client certificate
+public class X509AuthenticationFilter extends AbstractPreAuthenticatedProcessingFilter {
+    protected Object getPreAuthenticatedPrincipal(HttpServletRequest request) {
+        X509Certificate cert = extractClientCertificate(request);
+        return cert.getSubjectX500Principal().getName(); // e.g. &quot;CN=alice,OU=Engineering,...&quot;
+    }
+    protected Object getPreAuthenticatedCredentials(HttpServletRequest request) {
+        return &quot;N/A&quot;; // no credential to check -- the CERTIFICATE ITSELF was already verified by TLS
+    }
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Spring Security&#x27;s default authentication model assumes *it* is the component responsible for verifying a credential — but in these scenarios, a far more privileged and trusted layer (the TLS handshake itself, a dedicated enterprise SSO gateway, the servlet container/application server) has already done that verification, often using mechanisms Spring Security has no direct visibility into (certificate chain validation, an external identity provider&#x27;s own login flow). Re-verifying anything at the Spring Security layer would be redundant at best and impossible at worst (Spring Security cannot re-validate a TLS certificate chain that the container already terminated), so pre-authentication filters exist specifically to *trust* that external verification and focus only on the remaining necessary step: mapping the externally-established identity to the application&#x27;s own notion of authorities/roles.</p>
+<p>Reach for a pre-authentication filter when:</p>
+<ul><li>Client-certificate (mutual TLS) authentication is required, where the container or a load balancer terminates TLS and Spring Security&#x27;s job is only to read the already-validated certificate&#x27;s subject and load corresponding authorities.</li><li>An external SSO/reverse-proxy system (SiteMinder, an enterprise identity gateway) authenticates the user and forwards identity via a trusted, proxy-injected HTTP header (<code>SM_USER</code> or similar) that only the trusted proxy can set, never the end client directly.</li><li>Deploying inside a servlet container or application server that already performs its own authentication (J2EE container-managed security) and Spring Security should simply adopt that already-established <code>Principal</code> rather than duplicating the check.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> AbstractPreAuthenticatedProcessingFilter.doFilter(request):
+   1. principal = getPreAuthenticatedPrincipal(request)   -- SUBCLASS extracts from cert/header/container
+   2. credentials = getPreAuthenticatedCredentials(request) -- usually a meaningless filler value (&quot;N/A&quot;)
+   3. PreAuthenticatedAuthenticationToken unverified = new PreAuthenticatedAuthenticationToken(principal, credentials)
+   4. authenticationManager.authenticate(unverified)
+        -&gt; PreAuthenticatedAuthenticationProvider:
+             userDetailsService.loadUserByUsername(principal)  -- LOADS AUTHORITIES ONLY
+             ( NEVER compares any password -- the identity is ALREADY TRUSTED )
+   5. SecurityContextHolder populated with the resulting, now-authorized Authentication</code></pre>
+<p>The provider&#x27;s job shrinks from &quot;verify AND authorize&quot; (the normal case) to just &quot;authorize&quot; — verification already happened outside Spring Security.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An externally verified identity from a client certificate an SSO proxy header or a servlet container is extracted by a pre authentication filter and passed to PreAuthenticatedAuthenticationProvider which loads authorities via UserDetailsService without ever checking a password since verification already happened outside Spring Security">
+  <rect x="15" y="20" width="180" height="42" rx="7" fill="#1c2430" stroke="#8b949e" stroke-width="1.1"/>
+  <text x="105" y="45" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">X.509 client certificate</text>
+
+  <rect x="15" y="70" width="180" height="42" rx="7" fill="#1c2430" stroke="#8b949e" stroke-width="1.1"/>
+  <text x="105" y="95" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">SiteMinder header (SM_USER)</text>
+
+  <rect x="15" y="120" width="180" height="42" rx="7" fill="#1c2430" stroke="#8b949e" stroke-width="1.1"/>
+  <text x="105" y="145" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">J2EE container Principal</text>
+
+  <rect x="250" y="70" width="180" height="42" rx="7" fill="#1c2430" stroke="#79c0ff" stroke-width="1.4"/>
+  <text x="340" y="87" fill="#79c0ff" font-size="7" text-anchor="middle" font-family="sans-serif">AbstractPreAuthenticated</text>
+  <text x="340" y="100" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">ProcessingFilter</text>
+
+  <rect x="470" y="70" width="150" height="42" rx="7" fill="#1c2430" stroke="#6db33f" stroke-width="1.4"/>
+  <text x="545" y="87" fill="#6db33f" font-size="7" text-anchor="middle" font-family="sans-serif">load authorities</text>
+  <text x="545" y="100" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">(NO password check)</text>
+
+  <defs><marker id="a31" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <line x1="195" y1="41" x2="250" y2="80" stroke="#8b949e" stroke-width="1" marker-end="url(#a31)"/>
+  <line x1="195" y1="91" x2="250" y2="91" stroke="#8b949e" stroke-width="1" marker-end="url(#a31)"/>
+  <line x1="195" y1="141" x2="250" y2="102" stroke="#8b949e" stroke-width="1" marker-end="url(#a31)"/>
+  <line x1="430" y1="91" x2="470" y2="91" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a31)"/>
+</svg>
+<p>Three different external sources of already-verified identity, all converging into the same &quot;load authorities only&quot; pattern.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: model a SiteMinder-style header-based pre-authentication filter, then add trust boundary validation (only accept the header from a genuinely trusted proxy IP), then add X.509 alongside it behind a shared abstraction, proving both mechanisms fit the identical pattern.</p>
+<h3>Level 1 — Basic</h3>
+<p>A minimal pre-authentication filter reading a trusted proxy header and loading authorities without any password check.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class PreAuthLevel1 {
+    record Request(Map&lt;String, String&gt; headers) {}
+    record UserAuthorities(String username, Set&lt;String&gt; roles) {}
+
+    static Map&lt;String, UserAuthorities&gt; userDirectory = Map.of(
+            &quot;alice&quot;, new UserAuthorities(&quot;alice&quot;, Set.of(&quot;ROLE_USER&quot;, &quot;ROLE_ADMIN&quot;))
+    );
+
+    // models getPreAuthenticatedPrincipal(request) -- reads the identity a TRUSTED proxy already established
+    static String extractPrincipal(Request request) {
+        return request.headers().get(&quot;SM_USER&quot;); // set ONLY by the trusted SiteMinder proxy, never by the end client
+    }
+
+    static UserAuthorities authenticate(Request request) {
+        String principal = extractPrincipal(request);
+        if (principal == null) throw new RuntimeException(&quot;no SM_USER header -- request did not come through SSO proxy&quot;);
+        UserAuthorities authorities = userDirectory.get(principal);
+        if (authorities == null) throw new RuntimeException(&quot;no such user in local directory: &quot; + principal);
+        return authorities; // NOTE: no password was ever checked -- identity was already trusted
+    }
+
+    public static void main(String[] args) {
+        Request request = new Request(Map.of(&quot;SM_USER&quot;, &quot;alice&quot;));
+        System.out.println(&quot;authenticated: &quot; + authenticate(request));
+    }
+}</code></pre>
+<p>How to run: <code>java PreAuthLevel1.java</code></p>
+<p><code>authenticate</code> never asks for or checks any password — it trusts that the presence of <code>SM_USER</code> in the request already represents a verified identity from the SSO proxy, and its only remaining job is to look up <code>alice</code>&#x27;s authorities in the local <code>userDirectory</code>.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add a trust boundary check: the <code>SM_USER</code> header must only be honored when it genuinely came from the trusted proxy&#x27;s IP, since an end client could otherwise simply forge the header directly.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class PreAuthLevel2 {
+    record Request(Map&lt;String, String&gt; headers, String sourceIp) {}
+    record UserAuthorities(String username, Set&lt;String&gt; roles) {}
+
+    static Map&lt;String, UserAuthorities&gt; userDirectory = Map.of(
+            &quot;alice&quot;, new UserAuthorities(&quot;alice&quot;, Set.of(&quot;ROLE_USER&quot;, &quot;ROLE_ADMIN&quot;))
+    );
+    static Set&lt;String&gt; trustedProxyIps = Set.of(&quot;10.0.0.1&quot;); // ONLY this IP may set SM_USER meaningfully
+
+    static class AuthenticationException extends RuntimeException {
+        AuthenticationException(String msg) { super(msg); }
+    }
+
+    static UserAuthorities authenticate(Request request) {
+        if (!trustedProxyIps.contains(request.sourceIp())) {
+            // CRITICAL: reject the header ENTIRELY if it didn&#x27;t arrive via the trusted proxy,
+            // regardless of what value it claims -- otherwise ANY client could forge SM_USER: admin
+            throw new AuthenticationException(&quot;SM_USER header ignored -- request did not originate from a trusted proxy IP (&quot;
+                    + request.sourceIp() + &quot;)&quot;);
+        }
+        String principal = request.headers().get(&quot;SM_USER&quot;);
+        if (principal == null) throw new AuthenticationException(&quot;trusted proxy request missing SM_USER header&quot;);
+        UserAuthorities authorities = userDirectory.get(principal);
+        if (authorities == null) throw new AuthenticationException(&quot;no such user in local directory: &quot; + principal);
+        return authorities;
+    }
+
+    public static void main(String[] args) {
+        Request viaTrustedProxy = new Request(Map.of(&quot;SM_USER&quot;, &quot;alice&quot;), &quot;10.0.0.1&quot;);
+        System.out.println(&quot;via trusted proxy: &quot; + authenticate(viaTrustedProxy));
+
+        Request forgedDirectly = new Request(Map.of(&quot;SM_USER&quot;, &quot;alice&quot;), &quot;203.0.113.50&quot;); // attacker, NOT the proxy
+        try {
+            authenticate(forgedDirectly);
+        } catch (AuthenticationException ex) {
+            System.out.println(&quot;forged header attempt: &quot; + ex.getMessage());
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java PreAuthLevel2.java</code></p>
+<p>The exact same <code>SM_USER: alice</code> header value is honored when it arrives from <code>10.0.0.1</code> (the trusted proxy) but rejected when it arrives from any other IP — this trust-boundary enforcement is essential and non-optional for header-based pre-authentication, since without it any client could simply set the header themselves and impersonate any user.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Unify header-based (SiteMinder-style) and certificate-based (X.509) pre-authentication behind a shared abstraction, proving both are the same pattern with a different &quot;already-verified identity extraction&quot; step.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Function;
+
+public class PreAuthLevel3 {
+    record Request(Map&lt;String, String&gt; headers, String sourceIp, String clientCertSubjectDN) {}
+    record UserAuthorities(String username, Set&lt;String&gt; roles) {}
+
+    static Map&lt;String, UserAuthorities&gt; userDirectory = Map.of(
+            &quot;alice&quot;, new UserAuthorities(&quot;alice&quot;, Set.of(&quot;ROLE_USER&quot;, &quot;ROLE_ADMIN&quot;)),
+            &quot;bob&quot;, new UserAuthorities(&quot;bob&quot;, Set.of(&quot;ROLE_USER&quot;))
+    );
+    static Set&lt;String&gt; trustedProxyIps = Set.of(&quot;10.0.0.1&quot;);
+
+    static class AuthenticationException extends RuntimeException {
+        AuthenticationException(String msg) { super(msg); }
+    }
+
+    interface PreAuthenticatedPrincipalExtractor extends Function&lt;Request, String&gt; {}
+
+    static PreAuthenticatedPrincipalExtractor siteMinderExtractor = request -&gt; {
+        if (!trustedProxyIps.contains(request.sourceIp())) {
+            throw new AuthenticationException(&quot;SM_USER ignored -- untrusted source IP &quot; + request.sourceIp());
+        }
+        return request.headers().get(&quot;SM_USER&quot;);
+    };
+
+    static PreAuthenticatedPrincipalExtractor x509Extractor = request -&gt; {
+        if (request.clientCertSubjectDN() == null) throw new AuthenticationException(&quot;no client certificate presented&quot;);
+        // parse &quot;CN=alice,OU=Engineering,O=Example&quot; -&gt; &quot;alice&quot;
+        for (String part : request.clientCertSubjectDN().split(&quot;,&quot;)) {
+            if (part.trim().startsWith(&quot;CN=&quot;)) return part.trim().substring(3);
+        }
+        throw new AuthenticationException(&quot;certificate subject DN missing CN&quot;);
+    };
+
+    // the SHARED provider logic: identical regardless of which extractor supplied the principal
+    static UserAuthorities authenticate(Request request, PreAuthenticatedPrincipalExtractor extractor) {
+        String principal = extractor.apply(request); // the ONLY part that differs between mechanisms
+        UserAuthorities authorities = userDirectory.get(principal);
+        if (authorities == null) throw new AuthenticationException(&quot;no such user in local directory: &quot; + principal);
+        return authorities;
+    }
+
+    public static void main(String[] args) {
+        Request siteMinderRequest = new Request(Map.of(&quot;SM_USER&quot;, &quot;alice&quot;), &quot;10.0.0.1&quot;, null);
+        System.out.println(&quot;via SiteMinder: &quot; + authenticate(siteMinderRequest, siteMinderExtractor));
+
+        Request x509Request = new Request(Map.of(), null, &quot;CN=bob,OU=Engineering,O=Example&quot;);
+        System.out.println(&quot;via X.509 cert: &quot; + authenticate(x509Request, x509Extractor));
+    }
+}</code></pre>
+<p>How to run: <code>java PreAuthLevel3.java</code></p>
+<p><code>authenticate</code> itself is completely mechanism-agnostic — it never inspects headers or certificates directly, only calls whichever <code>PreAuthenticatedPrincipalExtractor</code> it&#x27;s given and looks up the resulting <code>principal</code> in <code>userDirectory</code>; <code>siteMinderExtractor</code> and <code>x509Extractor</code> are the only mechanism-specific pieces, exactly mirroring how <code>AbstractPreAuthenticatedProcessingFilter</code> factors out the shared authentication lifecycle while leaving <code>getPreAuthenticatedPrincipal</code> as the one method each concrete subclass implements differently.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>authenticate(x509Request, x509Extractor)</code> from Level 3.</p>
+<ol><li><code>authenticate</code> first calls <code>extractor.apply(request)</code>, which for this call is <code>x509Extractor</code> — inside, <code>request.clientCertSubjectDN()</code> is <code>&quot;CN=bob,OU=Engineering,O=Example&quot;</code>, not <code>null</code>, so the method proceeds past the initial guard.</li><li><code>x509Extractor</code> splits the subject DN string on commas, producing <code>[&quot;CN=bob&quot;, &quot;OU=Engineering&quot;, &quot;O=Example&quot;]</code>, then iterates looking for the part starting with <code>&quot;CN=&quot;</code> — the first element matches, so it returns <code>&quot;CN=bob&quot;.substring(3)</code>, which is <code>&quot;bob&quot;</code>.</li><li>Back in <code>authenticate</code>, <code>principal</code> is now <code>&quot;bob&quot;</code>; <code>userDirectory.get(&quot;bob&quot;)</code> finds <code>new UserAuthorities(&quot;bob&quot;, Set.of(&quot;ROLE_USER&quot;))</code>, which is non-null, so the final <code>if</code> guard is skipped.</li><li>The method returns this <code>UserAuthorities</code> object directly — note that at no point in this entire trace was any password, secret, or credential ever compared; the client&#x27;s certificate was already verified during the TLS handshake, well before this code ever ran, and this code&#x27;s entire job was extracting the already-trusted identity (<code>bob</code>) and looking up his authorities.</li><li>Contrast this with the <code>siteMinderRequest</code> call just above it: <code>siteMinderExtractor</code> instead checks <code>request.sourceIp()</code> against <code>trustedProxyIps</code> before trusting the <code>SM_USER</code> header at all — a different verification-of-trust step specific to that mechanism, but the shared <code>authenticate</code> function downstream is identical for both.</li></ol>
+<pre><code>x509Request  -&gt; x509Extractor: parse &quot;CN=bob,...&quot; -&gt; principal=&quot;bob&quot; -&gt; lookup -&gt; UserAuthorities(bob, {ROLE_USER})
+siteMinderRequest -&gt; siteMinderExtractor: check trusted IP, then read SM_USER header -&gt; principal=&quot;alice&quot; -&gt; lookup -&gt; UserAuthorities(alice, {ROLE_USER, ROLE_ADMIN})
+(the SAME authenticate() function handles both, differing only in how principal is extracted)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> header-based pre-authentication (SiteMinder-style) is only as secure as the guarantee that the trusted header can *never* reach the application directly from an end client — if the application server is ever reachable other than through the trusted proxy (a misconfigured load balancer, a direct network path bypassing the proxy), an attacker can simply set <code>SM_USER: admin</code> themselves and impersonate any user. This trust boundary must be enforced at the network/infrastructure level, not just checked opportunistically in application code.</blockquote>
+<ul><li>Pre-authentication scenarios (X.509, SiteMinder-style proxies, J2EE container auth) shift Spring Security&#x27;s role from &quot;verify and authorize&quot; to &quot;trust and authorize only&quot; — the actual credential verification happened in a different, already-trusted layer.</li><li><code>AbstractPreAuthenticatedProcessingFilter</code> factors out the shared lifecycle; a concrete subclass only supplies <code>getPreAuthenticatedPrincipal</code> (and typically a filler value for <code>getPreAuthenticatedCredentials</code>, since there&#x27;s no real credential to extract).</li><li>Header-based mechanisms absolutely require verifying the request&#x27;s origin (source IP, mutual TLS between proxy and application) before trusting the header at all — the header itself carries no inherent proof of authenticity.</li><li><code>PreAuthenticatedAuthenticationProvider</code> pairs with a <code>UserDetailsService</code> purely to load authorities for the already-trusted principal — it is fundamentally different from <code>DaoAuthenticationProvider</code>, which additionally verifies a password.</li></ul>
+  <div class="nav"><a class="prv" href="0030-anonymous-authentication.html"><span class="mini">← Previous</span>Anonymous authentication</a><a class="nxt" href="0032-run-as-authentication-replacement.html"><span class="mini">Next →</span>Run-as authentication replacement</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t31";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
