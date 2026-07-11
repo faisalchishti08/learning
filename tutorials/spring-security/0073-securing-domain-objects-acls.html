@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Securing domain objects (ACLs)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 3. Authorization</div>
+  <div class="htitle">
+    <h1>"Securing domain objects (ACLs)"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Security&#x27;s ACL (Access Control List) module addresses per-object, per-recipient permissions at scale — not &quot;can any user with <code>ROLE_USER</code> view *some* document&quot; (a role check), but &quot;can *this specific user* perform *this specific action* on *this specific document instance*,&quot; where the answer can differ independently for every single object and every single user, and needs to be efficiently queryable across potentially millions of objects and users, backed by a dedicated relational schema rather than expressed inline in code.</p>
+<pre><code class="lang-java">@PreAuthorize(&quot;hasPermission(#documentId, &#x27;com.example.Document&#x27;, &#x27;READ&#x27;)&quot;)
+public Document getDocument(Long documentId) { ... }
+
+// the actual per-object, per-user grant lives in the ACL database tables, managed separately:
+aclService.createAcl(new ObjectIdentityImpl(Document.class, documentId));
+MutableAcl acl = (MutableAcl) aclService.readAclById(objectIdentity);
+acl.insertAce(acl.getEntries().size(), BasePermission.READ, new PrincipalSid(&quot;alice&quot;), true);
+aclService.updateAcl(acl);</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>The <code>hasPermission</code>/ownership-comparison patterns from earlier <code>@PreAuthorize</code> cards work well when access can be derived from a simple rule (an owner-ID field, a department match), but genuinely fine-grained, per-object, per-recipient access — a specific document shared with three specific colleagues, a specific folder where one user has read-only access while another has full edit rights, entirely independent of any role or ownership pattern — needs a scalable way to store and query &quot;who can do what to this specific instance&quot; without hand-rolling a custom permissions table and query logic for every domain object type that needs it. Spring Security&#x27;s ACL module provides exactly this: a generic, reusable schema and API for object-level permission grants, at the cost of real setup complexity and a dedicated database schema most applications never actually need.</p>
+<p>Reach for the ACL module when:</p>
+<ul><li>Individual object instances (not just object *types* or classes of objects) need independently configurable permissions per specific recipient — a genuinely per-document, per-user sharing model, similar to a file-sharing or collaborative-document application.</li><li>The number of distinct object/recipient permission combinations is large enough that a generic, indexed, purpose-built schema meaningfully outperforms and outscales a hand-rolled equivalent.</li><li>Never reach for ACLs when a simpler pattern suffices — an owner-ID comparison (from the earlier <code>@PreAuthorize</code>/<code>@PostAuthorize</code> card), a role-based check, or even a straightforward custom join table specific to one domain object type, are all considerably less setup and maintenance overhead for applications that don&#x27;t genuinely need the ACL module&#x27;s full generality.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> the CORE QUESTION ACLs answer:
+   &quot;can PRINCIPAL X perform PERMISSION Y on this SPECIFIC INSTANCE of DOMAIN OBJECT Z?&quot;
+
+ NOT expressible efficiently as a simple rule, because:
+   - the answer varies per SPECIFIC INSTANCE (not just per object TYPE)
+   - the answer varies per SPECIFIC PRINCIPAL (not just per ROLE)
+   - grants need to be independently ADDED/REMOVED at runtime, per object/principal PAIR
+
+ ACL&#x27;s ANSWER: a DEDICATED, GENERIC schema (covered in depth in the next card) storing exactly this --
+   one row per (object instance, principal or authority, specific permission, granted/denied) combination,
+   queried via hasPermission(...) inside a normal @PreAuthorize expression</code></pre>
+<p>A genuinely different shape of question from &quot;does this role satisfy this rule&quot; — this is &quot;does this specific grant exist for this specific pair.&quot;</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Three documents each have independent per user permission grants document 1 grants alice read access document 2 grants bob write access and alice read access document 3 grants nobody any access these grants are stored in a dedicated ACL schema and queried via hasPermission rather than derived from any role or ownership rule">
+  <rect x="15" y="15" width="180" height="46" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="105" y="35" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Document 1</text>
+  <text x="105" y="48" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">alice: READ</text>
+
+  <rect x="15" y="70" width="180" height="60" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="105" y="90" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Document 2</text>
+  <text x="105" y="103" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">bob: WRITE</text>
+  <text x="105" y="116" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">alice: READ</text>
+
+  <rect x="15" y="140" width="180" height="34" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="105" y="161" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">Document 3: (no grants)</text>
+
+  <rect x="400" y="60" width="220" height="60" rx="9" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="510" y="83" fill="#6db33f" font-size="7.5" text-anchor="middle" font-family="sans-serif">hasPermission(#docId, 'READ')</text>
+  <text x="510" y="96" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">queries the ACL schema directly</text>
+
+  <defs><marker id="a73" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <line x1="195" y1="35" x2="400" y2="80" stroke="#8b949e" stroke-width="1" marker-end="url(#a73)"/>
+  <line x1="195" y1="100" x2="400" y2="95" stroke="#8b949e" stroke-width="1" marker-end="url(#a73)"/>
+  <line x1="195" y1="157" x2="400" y2="110" stroke="#8b949e" stroke-width="1" marker-end="url(#a73)"/>
+</svg>
+<p>Three documents, each with an entirely independent permission story — not derivable from any single role or ownership rule.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: model a simplified ACL store — per-object, per-principal permission grants — and a <code>hasPermission</code>-style check function, then demonstrate genuinely independent per-instance grants across multiple documents, then add revocation, proving grants can be added and removed at runtime independently per object/principal pair.</p>
+<h3>Level 1 — Basic</h3>
+<p>A minimal ACL store: a map from (object, principal) pairs to a set of granted permissions.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class DomainObjectAclLevel1 {
+    record ObjectIdentity(String type, long id) {}
+    record AclKey(ObjectIdentity object, String principal) {}
+
+    static Map&lt;AclKey, Set&lt;String&gt;&gt; aclGrants = new HashMap&lt;&gt;();
+
+    static void grant(ObjectIdentity object, String principal, String permission) {
+        aclGrants.computeIfAbsent(new AclKey(object, principal), k -&gt; new HashSet&lt;&gt;()).add(permission);
+    }
+
+    static boolean hasPermission(ObjectIdentity object, String principal, String permission) {
+        return aclGrants.getOrDefault(new AclKey(object, principal), Set.of()).contains(permission);
+    }
+
+    public static void main(String[] args) {
+        ObjectIdentity document1 = new ObjectIdentity(&quot;Document&quot;, 1L);
+
+        grant(document1, &quot;alice&quot;, &quot;READ&quot;);
+
+        System.out.println(&quot;alice can READ document 1: &quot; + hasPermission(document1, &quot;alice&quot;, &quot;READ&quot;));
+        System.out.println(&quot;alice can WRITE document 1 (never granted): &quot; + hasPermission(document1, &quot;alice&quot;, &quot;WRITE&quot;));
+        System.out.println(&quot;bob can READ document 1 (never granted to bob): &quot; + hasPermission(document1, &quot;bob&quot;, &quot;READ&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java DomainObjectAclLevel1.java</code></p>
+<p><code>grant</code> records exactly one specific <code>(object, principal, permission)</code> combination; <code>hasPermission</code> only returns <code>true</code> for combinations that were explicitly granted — alice&#x27;s <code>READ</code> grant on document 1 doesn&#x27;t extend to <code>WRITE</code> on the same document, nor does it extend to bob at all, demonstrating the fully independent, per-instance, per-principal nature of ACL grants.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Demonstrate genuinely independent grants across multiple document instances, proving the same principal can have entirely different permissions on different objects.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class DomainObjectAclLevel2 {
+    record ObjectIdentity(String type, long id) {}
+    record AclKey(ObjectIdentity object, String principal) {}
+
+    static Map&lt;AclKey, Set&lt;String&gt;&gt; aclGrants = new HashMap&lt;&gt;();
+
+    static void grant(ObjectIdentity object, String principal, String permission) {
+        aclGrants.computeIfAbsent(new AclKey(object, principal), k -&gt; new HashSet&lt;&gt;()).add(permission);
+    }
+
+    static boolean hasPermission(ObjectIdentity object, String principal, String permission) {
+        return aclGrants.getOrDefault(new AclKey(object, principal), Set.of()).contains(permission);
+    }
+
+    public static void main(String[] args) {
+        ObjectIdentity document1 = new ObjectIdentity(&quot;Document&quot;, 1L);
+        ObjectIdentity document2 = new ObjectIdentity(&quot;Document&quot;, 2L);
+        ObjectIdentity document3 = new ObjectIdentity(&quot;Document&quot;, 3L);
+
+        grant(document1, &quot;alice&quot;, &quot;READ&quot;);
+        grant(document2, &quot;alice&quot;, &quot;READ&quot;);
+        grant(document2, &quot;alice&quot;, &quot;WRITE&quot;); // alice has BOTH read and write on document 2 specifically
+        // document3: NO grants for alice at all
+
+        for (ObjectIdentity doc : List.of(document1, document2, document3)) {
+            System.out.println(doc + &quot; -- alice: READ=&quot; + hasPermission(doc, &quot;alice&quot;, &quot;READ&quot;)
+                    + &quot;, WRITE=&quot; + hasPermission(doc, &quot;alice&quot;, &quot;WRITE&quot;));
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java DomainObjectAclLevel2.java</code></p>
+<p>alice has read-only access to document 1, both read and write access to document 2, and no access at all to document 3 — three genuinely different permission profiles for the identical principal, entirely independent of any role or ownership rule, and each fully attributable to explicit, per-instance grants recorded individually.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Add revocation and confirm grants can be added and removed at runtime independently, without affecting any other object/principal combination.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class DomainObjectAclLevel3 {
+    record ObjectIdentity(String type, long id) {}
+    record AclKey(ObjectIdentity object, String principal) {}
+
+    static Map&lt;AclKey, Set&lt;String&gt;&gt; aclGrants = new HashMap&lt;&gt;();
+
+    static void grant(ObjectIdentity object, String principal, String permission) {
+        aclGrants.computeIfAbsent(new AclKey(object, principal), k -&gt; new HashSet&lt;&gt;()).add(permission);
+    }
+
+    static void revoke(ObjectIdentity object, String principal, String permission) {
+        Set&lt;String&gt; permissions = aclGrants.get(new AclKey(object, principal));
+        if (permissions != null) permissions.remove(permission);
+    }
+
+    static boolean hasPermission(ObjectIdentity object, String principal, String permission) {
+        return aclGrants.getOrDefault(new AclKey(object, principal), Set.of()).contains(permission);
+    }
+
+    public static void main(String[] args) {
+        ObjectIdentity sharedDoc = new ObjectIdentity(&quot;Document&quot;, 42L);
+
+        grant(sharedDoc, &quot;alice&quot;, &quot;READ&quot;);
+        grant(sharedDoc, &quot;alice&quot;, &quot;WRITE&quot;);
+        grant(sharedDoc, &quot;bob&quot;, &quot;READ&quot;);
+
+        System.out.println(&quot;before revocation -- alice WRITE: &quot; + hasPermission(sharedDoc, &quot;alice&quot;, &quot;WRITE&quot;)
+                + &quot;, bob READ: &quot; + hasPermission(sharedDoc, &quot;bob&quot;, &quot;READ&quot;));
+
+        revoke(sharedDoc, &quot;alice&quot;, &quot;WRITE&quot;); // revoke ONLY alice&#x27;s WRITE grant, on THIS specific document
+
+        System.out.println(&quot;after revoking alice&#x27;s WRITE:&quot;);
+        System.out.println(&quot;  alice WRITE: &quot; + hasPermission(sharedDoc, &quot;alice&quot;, &quot;WRITE&quot;) + &quot; (revoked)&quot;);
+        System.out.println(&quot;  alice READ: &quot; + hasPermission(sharedDoc, &quot;alice&quot;, &quot;READ&quot;) + &quot; (UNAFFECTED -- different permission)&quot;);
+        System.out.println(&quot;  bob READ: &quot; + hasPermission(sharedDoc, &quot;bob&quot;, &quot;READ&quot;) + &quot; (UNAFFECTED -- different principal)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java DomainObjectAclLevel3.java</code></p>
+<p>Revoking alice&#x27;s <code>WRITE</code> grant on <code>sharedDoc</code> leaves her <code>READ</code> grant on the *same* document completely intact, and leaves bob&#x27;s <code>READ</code> grant on the *same* document equally untouched — revocation is scoped precisely to the one <code>(object, principal, permission)</code> triple it targets, exactly as fine-grained as the ACL model&#x27;s grants themselves.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the sequence of calls in Level 3&#x27;s <code>main</code>, focusing on the state of <code>aclGrants</code> before and after <code>revoke</code>.</p>
+<ol><li>Three <code>grant</code> calls populate <code>aclGrants</code> with two entries: the key <code>AclKey(sharedDoc, &quot;alice&quot;)</code> maps to <code>{&quot;READ&quot;, &quot;WRITE&quot;}</code> (from the first two grants), and the key <code>AclKey(sharedDoc, &quot;bob&quot;)</code> maps to <code>{&quot;READ&quot;}</code> (from the third grant).</li><li><code>hasPermission(sharedDoc, &quot;alice&quot;, &quot;WRITE&quot;)</code> looks up <code>AclKey(sharedDoc, &quot;alice&quot;)</code>, finds <code>{&quot;READ&quot;, &quot;WRITE&quot;}</code>, and checks <code>.contains(&quot;WRITE&quot;)</code> — <code>true</code>; <code>hasPermission(sharedDoc, &quot;bob&quot;, &quot;READ&quot;)</code> similarly finds <code>{&quot;READ&quot;}</code> and confirms <code>.contains(&quot;READ&quot;)</code> — also <code>true</code>. Both are printed as expected before any revocation.</li><li><code>revoke(sharedDoc, &quot;alice&quot;, &quot;WRITE&quot;)</code> runs: <code>aclGrants.get(new AclKey(sharedDoc, &quot;alice&quot;))</code> retrieves the *same* mutable set object, <code>{&quot;READ&quot;, &quot;WRITE&quot;}</code>, and <code>permissions.remove(&quot;WRITE&quot;)</code> mutates it in place, leaving it as <code>{&quot;READ&quot;}</code> — critically, this is the identical <code>Set</code> object referenced by <code>aclGrants</code>&#x27;s entry for alice, so the mutation is immediately reflected in any subsequent lookup.</li><li><code>hasPermission(sharedDoc, &quot;alice&quot;, &quot;WRITE&quot;)</code> now finds <code>AclKey(sharedDoc, &quot;alice&quot;)</code> mapping to <code>{&quot;READ&quot;}</code> (post-revocation) and checks <code>.contains(&quot;WRITE&quot;)</code> — this is now <code>false</code>.</li><li><code>hasPermission(sharedDoc, &quot;alice&quot;, &quot;READ&quot;)</code> looks up the *same* now-modified set, <code>{&quot;READ&quot;}</code>, and checks <code>.contains(&quot;READ&quot;)</code> — still <code>true</code>, since only <code>&quot;WRITE&quot;</code> was removed, not <code>&quot;READ&quot;</code>; <code>hasPermission(sharedDoc, &quot;bob&quot;, &quot;READ&quot;)</code> looks up an entirely separate key, <code>AclKey(sharedDoc, &quot;bob&quot;)</code>, whose set <code>{&quot;READ&quot;}</code> was never touched by the <code>revoke</code> call at all (which only targeted alice&#x27;s key) — also still <code>true</code>.</li></ol>
+<pre><code>before revoke:  AclKey(sharedDoc,&quot;alice&quot;) -&gt; {READ, WRITE}     AclKey(sharedDoc,&quot;bob&quot;) -&gt; {READ}
+revoke(sharedDoc, &quot;alice&quot;, &quot;WRITE&quot;):        removes &quot;WRITE&quot; from alice&#x27;s set ONLY
+after revoke:   AclKey(sharedDoc,&quot;alice&quot;) -&gt; {READ}            AclKey(sharedDoc,&quot;bob&quot;) -&gt; {READ}  (untouched)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the ACL module&#x27;s fine-grained, per-instance permission model carries genuine storage and query overhead proportional to the number of distinct object/principal/permission combinations an application actually needs — for applications where access can instead be derived from a simple, computable rule (ownership, role, department match), introducing the full ACL schema and API is disproportionate complexity; reserve it specifically for cases where permissions are genuinely, independently assigned per object instance and per recipient, not derivable from any simpler rule.</blockquote>
+<ul><li>Spring Security&#x27;s ACL module addresses per-object, per-recipient permission grants — a fundamentally different, more granular question than the role- or ownership-based rules <code>@PreAuthorize</code> alone typically expresses.</li><li>Grants are recorded per specific <code>(object instance, principal, permission)</code> combination, entirely independent of any role or ownership pattern, and independently addable or revocable at runtime without affecting any other combination.</li><li><code>hasPermission(...)</code> inside a <code>@PreAuthorize</code> expression is the typical way an ACL-backed permission check is invoked from application code, delegating to a configured <code>PermissionEvaluator</code> backed by the ACL schema.</li><li>Reach for the ACL module only when access genuinely varies per specific object instance and per specific recipient in a way no simpler, computable rule can express — the next card covers the concrete schema (<code>Acl</code>, <code>Sid</code>, <code>Permission</code>, <code>AclService</code>) backing this model.</li></ul>
+  <div class="nav"><a class="prv" href="0072-meta-annotations-for-method-security.html"><span class="mini">← Previous</span>Meta-annotations for method security</a><a class="nxt" href="0074-acl-model-acl-sid-permission-aclservice.html"><span class="mini">Next →</span>ACL model (Acl, Sid, Permission, AclService)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t73";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
