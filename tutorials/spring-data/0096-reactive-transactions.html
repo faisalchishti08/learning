@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Reactive transactions" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-data.html">Spring Data</a> › 4. Spring Data R2DBC</div>
+  <div class="htitle">
+    <h1>"Reactive transactions"</h1>
+    <a class="back" href="../../spring-data.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Reactive transactions use <code>ReactiveTransactionManager</code> and <code>TransactionalOperator</code> instead of the classic (thread-bound) <code>PlatformTransactionManager</code> and <code>@Transactional</code> annotation — because a reactive pipeline can hop between threads as it composes, a transaction can&#x27;t be tied to &quot;the current thread&quot; the way blocking transactions are; it&#x27;s instead tied to the reactive <code>Context</code> that flows through the <code>Mono</code>/<code>Flux</code> chain itself.</p>
+<pre><code class="lang-java">@Autowired TransactionalOperator transactionalOperator;
+
+Mono&lt;Void&gt; placeOrder(Order order, List&lt;LineItem&gt; items) {
+    return orderRepository.save(order)
+        .then(lineItemRepository.saveAll(items).then())
+        .as(transactionalOperator::transactional); // wraps the WHOLE reactive chain in one transaction
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Every earlier card in the R2DBC section built single, independent reactive operations; the transactional-query-methods card (from the JPA section) explained why multiple repository calls sometimes need to commit or roll back together — that same need exists here, but the classic <code>@Transactional</code>-plus-thread-local mechanism can&#x27;t work, since reactive execution isn&#x27;t pinned to one thread. <code>TransactionalOperator</code> is the reactive-aware replacement.</p>
+<p>Reach for reactive transactions specifically when:</p>
+<ul><li>A business operation spans multiple reactive repository calls (saving an order and its line items, for instance) that must commit or roll back together — exactly the same motivation as the JPA transactional-query-methods card, adapted to a non-blocking pipeline.</li><li>You&#x27;re wrapping a <code>Mono</code>/<code>Flux</code> chain and need the whole thing — regardless of how many threads it hops across during composition — to participate in one atomic database transaction.</li><li><code>@Transactional</code> is available as an annotation on reactive methods too (Spring detects the reactive return type and applies reactive transaction semantics automatically) — but understanding <code>TransactionalOperator</code> explains what&#x27;s happening underneath, and is necessary when composing transactional behavior programmatically rather than declaratively.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> Classic (blocking) @Transactional:
+   -- transaction bound to the CURRENT THREAD via a ThreadLocal
+   -- works because the whole method runs on ONE thread, start to finish
+
+ Reactive transactions:
+   -- a Mono/Flux chain can execute across MULTIPLE threads as it&#x27;s subscribed to and composed
+   -- so the transaction is carried in the Reactor &quot;Context&quot; that flows WITH the chain, not a ThreadLocal
+   -- TransactionalOperator.transactional(mono) wraps a reactive chain so it participates in one transaction
+      regardless of which thread executes which part of it</code></pre>
+<p>Reactive transactions travel with the data flow itself (the <code>Context</code>), rather than being pinned to whichever thread happens to be executing at a given moment.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.v3.org/2000/svg" role="img" aria-label="A blocking transaction is bound to one thread for the whole method, while a reactive transaction travels with the Context across thread hops">
+  <text x="20" y="20" fill="#e6edf3" font-size="10" font-family="sans-serif">Blocking @Transactional</text>
+  <rect x="20" y="30" width="580" height="35" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.3"/>
+  <text x="310" y="52" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">ONE thread, start to finish -- transaction bound via ThreadLocal</text>
+
+  <text x="20" y="100" fill="#e6edf3" font-size="10" font-family="sans-serif">Reactive TransactionalOperator</text>
+  <rect x="20" y="110" width="180" height="40" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="110" y="133" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">thread A: save(order)</text>
+  <rect x="230" y="110" width="180" height="40" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="320" y="133" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">thread B: saveAll(items)</text>
+  <text x="420" y="133" fill="#8b949e" font-size="8" font-family="sans-serif">-- Context carries the tx --</text>
+</svg>
+<p>The blocking model relies on one thread owning the whole method; the reactive model carries the transaction in the <code>Context</code> so it survives thread hops.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: placing an order with line items, evolving from separate uncoordinated reactive calls (the same inconsistency risk the JPA transactional-query-methods card demonstrated), to a simulated <code>TransactionalOperator</code> wrapping both calls atomically, to a rollback scenario proving the whole chain reverts together.</p>
+<h3>Level 1 — Basic</h3>
+<p>Model two independent, uncoordinated reactive calls — each &quot;commits&quot; on its own, mirroring the JPA card&#x27;s Level 1 problem but in reactive form.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.*;
+
+class Order { long id; String status; Order(long id, String status) { this.id = id; this.status = status; } }
+class LineItem { long orderId; String description; LineItem(long orderId, String d) { this.orderId = orderId; description = d; } }
+
+class OrderRepository {
+    Map&lt;Long, Order&gt; db = new HashMap&lt;&gt;();
+    CompletableFuture&lt;Order&gt; save(Order order) {
+        return CompletableFuture.supplyAsync(() -&gt; { db.put(order.id, order); System.out.println(&quot;  [committed] order saved&quot;); return order; });
+    }
+}
+class LineItemRepository {
+    List&lt;LineItem&gt; db = new ArrayList&lt;&gt;();
+    CompletableFuture&lt;Void&gt; saveAll(List&lt;LineItem&gt; items) {
+        return CompletableFuture.supplyAsync(() -&gt; {
+            for (LineItem li : items) if (li.description.equals(&quot;INVALID&quot;)) throw new RuntimeException(&quot;Invalid: &quot; + li.description);
+            db.addAll(items);
+            System.out.println(&quot;  [committed] &quot; + items.size() + &quot; line items saved&quot;);
+            return null;
+        });
+    }
+}
+
+public class ReactiveTxLevel1 {
+    // NO transactional coordination -- each repository call is independent, exactly like the JPA card&#x27;s Level 1.
+    static CompletableFuture&lt;Void&gt; placeOrderUncoordinated(OrderRepository orderRepo, LineItemRepository itemRepo,
+                                                             Order order, List&lt;LineItem&gt; items) {
+        return orderRepo.save(order).thenCompose(saved -&gt; itemRepo.saveAll(items));
+    }
+
+    public static void main(String[] args) throws Exception {
+        OrderRepository orderRepo = new OrderRepository();
+        LineItemRepository itemRepo = new LineItemRepository();
+
+        try {
+            placeOrderUncoordinated(orderRepo, itemRepo, new Order(1, &quot;PENDING&quot;),
+                List.of(new LineItem(1, &quot;Widget&quot;), new LineItem(1, &quot;INVALID&quot;))).get();
+        } catch (Exception e) {
+            System.out.println(&quot;Failed: &quot; + e.getCause().getMessage());
+        }
+
+        System.out.println(&quot;Order 1 in DB? &quot; + orderRepo.db.containsKey(1L)); // TRUE -- inconsistent!
+    }
+}</code></pre>
+<p>How to run: <code>java ReactiveTxLevel1.java</code></p>
+<p>Just like the blocking JPA card&#x27;s equivalent example, the order is already committed by the time the line-item save fails — reactive composition alone (<code>.thenCompose</code>) provides *sequencing*, not *atomicity*; nothing here rolls the order save back when the line-item save fails.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Wrap both calls with a simulated <code>TransactionalOperator</code> that only commits both changes if the whole chain succeeds, rolling back everything otherwise.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.*;
+
+class Order { long id; String status; Order(long id, String status) { this.id = id; this.status = status; } }
+class LineItem { long orderId; String description; LineItem(long orderId, String d) { this.orderId = orderId; description = d; } }
+
+// Stands in for org.springframework.transaction.reactive.TransactionalOperator
+class TransactionalOperator {
+    static &lt;T&gt; CompletableFuture&lt;T&gt; transactional(Map&lt;Long, Order&gt; orderDb, List&lt;LineItem&gt; itemDb,
+                                                    Function&lt;PendingChanges, CompletableFuture&lt;T&gt;&gt; work) {
+        PendingChanges changes = new PendingChanges();
+        return work.apply(changes).handle((result, ex) -&gt; {
+            if (ex == null) {
+                orderDb.putAll(changes.pendingOrders);
+                itemDb.addAll(changes.pendingItems);
+                System.out.println(&quot;  [transaction committed]&quot;);
+                return result;
+            } else {
+                System.out.println(&quot;  [transaction rolled back] &quot; + ex.getCause().getMessage());
+                throw new CompletionException(ex.getCause());
+            }
+        });
+    }
+}
+class PendingChanges { Map&lt;Long, Order&gt; pendingOrders = new HashMap&lt;&gt;(); List&lt;LineItem&gt; pendingItems = new ArrayList&lt;&gt;(); }
+
+public class ReactiveTxLevel2 {
+    static CompletableFuture&lt;Void&gt; placeOrder(PendingChanges tx, Order order, List&lt;LineItem&gt; items) {
+        return CompletableFuture.supplyAsync(() -&gt; { tx.pendingOrders.put(order.id, order); return null; })
+            .thenCompose(v -&gt; CompletableFuture.supplyAsync(() -&gt; {
+                for (LineItem li : items) if (li.description.equals(&quot;INVALID&quot;)) throw new RuntimeException(&quot;Invalid: &quot; + li.description);
+                tx.pendingItems.addAll(items);
+                return null;
+            }));
+    }
+
+    public static void main(String[] args) throws Exception {
+        Map&lt;Long, Order&gt; orderDb = new HashMap&lt;&gt;();
+        List&lt;LineItem&gt; itemDb = new ArrayList&lt;&gt;();
+
+        try {
+            TransactionalOperator.transactional(orderDb, itemDb, tx -&gt;
+                placeOrder(tx, new Order(1, &quot;PENDING&quot;), List.of(new LineItem(1, &quot;Widget&quot;), new LineItem(1, &quot;INVALID&quot;)))
+            ).get();
+        } catch (Exception e) {
+            System.out.println(&quot;Caught: &quot; + e.getCause().getMessage());
+        }
+
+        System.out.println(&quot;Order 1 in DB? &quot; + orderDb.containsKey(1L)); // FALSE now -- consistent!
+    }
+}</code></pre>
+<p>How to run: <code>java ReactiveTxLevel2.java</code></p>
+<p><code>orderDb.containsKey(1L)</code> now prints <code>false</code> — the order save was buffered in <code>PendingChanges</code> and only committed to the real <code>orderDb</code> if the whole chain (order save + line-item save) succeeded, matching how <code>TransactionalOperator.transactional(mono)</code> in a real reactive pipeline only commits the whole chain&#x27;s changes together, rolling back everything if any step throws.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Show the success path alongside the rollback path, confirming both order and line items commit together when everything succeeds, and both revert together when anything fails — the full &quot;all or nothing&quot; guarantee.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.*;
+
+class Order { long id; String status; Order(long id, String status) { this.id = id; this.status = status; } }
+class LineItem { long orderId; String description; LineItem(long orderId, String d) { this.orderId = orderId; description = d; } }
+
+class TransactionalOperator {
+    static &lt;T&gt; CompletableFuture&lt;T&gt; transactional(Map&lt;Long, Order&gt; orderDb, List&lt;LineItem&gt; itemDb,
+                                                    Function&lt;PendingChanges, CompletableFuture&lt;T&gt;&gt; work) {
+        PendingChanges changes = new PendingChanges();
+        return work.apply(changes).handle((result, ex) -&gt; {
+            if (ex == null) {
+                orderDb.putAll(changes.pendingOrders);
+                itemDb.addAll(changes.pendingItems);
+                return result;
+            } else {
+                throw new CompletionException(ex.getCause());
+            }
+        });
+    }
+}
+class PendingChanges { Map&lt;Long, Order&gt; pendingOrders = new HashMap&lt;&gt;(); List&lt;LineItem&gt; pendingItems = new ArrayList&lt;&gt;(); }
+
+public class ReactiveTxLevel3 {
+    static CompletableFuture&lt;Void&gt; placeOrder(PendingChanges tx, Order order, List&lt;LineItem&gt; items) {
+        return CompletableFuture.supplyAsync(() -&gt; { tx.pendingOrders.put(order.id, order); return null; })
+            .thenCompose(v -&gt; CompletableFuture.supplyAsync(() -&gt; {
+                for (LineItem li : items) if (li.description.equals(&quot;INVALID&quot;)) throw new RuntimeException(&quot;Invalid: &quot; + li.description);
+                tx.pendingItems.addAll(items);
+                return null;
+            }));
+    }
+
+    public static void main(String[] args) throws Exception {
+        Map&lt;Long, Order&gt; orderDb = new HashMap&lt;&gt;();
+        List&lt;LineItem&gt; itemDb = new ArrayList&lt;&gt;();
+
+        // Success path: both order 1 and its (valid) line items should commit TOGETHER.
+        TransactionalOperator.transactional(orderDb, itemDb, tx -&gt;
+            placeOrder(tx, new Order(1, &quot;PENDING&quot;), List.of(new LineItem(1, &quot;Widget&quot;), new LineItem(1, &quot;Gadget&quot;)))
+        ).get();
+        System.out.println(&quot;After success: order=&quot; + orderDb.containsKey(1L) + &quot;, items=&quot; + itemDb.size());
+
+        // Failure path: both order 2 and its line items should ROLL BACK together.
+        try {
+            TransactionalOperator.transactional(orderDb, itemDb, tx -&gt;
+                placeOrder(tx, new Order(2, &quot;PENDING&quot;), List.of(new LineItem(2, &quot;INVALID&quot;)))
+            ).get();
+        } catch (Exception e) {
+            System.out.println(&quot;Order 2 attempt failed as expected: &quot; + e.getCause().getMessage());
+        }
+        System.out.println(&quot;After failure: order2=&quot; + orderDb.containsKey(2L) + &quot;, total items=&quot; + itemDb.size());
+    }
+}</code></pre>
+<p>How to run: <code>java ReactiveTxLevel3.java</code></p>
+<p>After the success path, <code>orderDb.containsKey(1L)</code> is <code>true</code> and <code>itemDb.size()</code> is <code>2</code> — both committed together. After the failure path, <code>orderDb.containsKey(2L)</code> is <code>false</code> and <code>itemDb.size()</code> stays <code>2</code> (unchanged from before the failed attempt) — order 2&#x27;s attempted save was rolled back along with its invalid line item, leaving the database exactly as it was before that attempt began.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts in <code>main</code> for Level 3. First, the success-path call runs: <code>TransactionalOperator.transactional(orderDb, itemDb, tx -&gt; placeOrder(tx, order1, [Widget, Gadget]))</code>. Inside, <code>placeOrder</code> buffers <code>order1</code> into <code>tx.pendingOrders</code>, then (since neither line item is <code>&quot;INVALID&quot;</code>) buffers both into <code>tx.pendingItems</code>, completing without error. Back in <code>transactional</code>, <code>.handle((result, ex) -&gt; ...)</code> sees <code>ex == null</code>, so it commits: <code>orderDb.putAll(tx.pendingOrders)</code> and <code>itemDb.addAll(tx.pendingItems)</code> run, making both changes visible. The printed check confirms <code>order=true, items=2</code>.</p>
+<p>Next, the failure-path call runs: <code>TransactionalOperator.transactional(orderDb, itemDb, tx -&gt; placeOrder(tx, order2, [INVALID]))</code>. Inside <code>placeOrder</code>, <code>order2</code> is buffered into a *fresh* <code>tx.pendingOrders</code> (a new <code>PendingChanges</code> instance, unrelated to the first call&#x27;s), but the line-item loop finds <code>&quot;INVALID&quot;</code> and throws <code>RuntimeException</code>. This exception propagates up through the <code>CompletableFuture</code> chain into <code>transactional</code>&#x27;s <code>.handle(...)</code>, where <code>ex</code> is now non-null — so the commit lines (<code>orderDb.putAll(...)</code>, <code>itemDb.addAll(...)</code>) never execute at all, and the exception is rethrown wrapped in <code>CompletionException</code>. The <code>catch</code> block in <code>main</code> catches it and prints the expected failure message.</p>
+<p>The final printed check confirms <code>order2=false</code> (never committed) and <code>total items=2</code> (unchanged from the success path — the failed attempt&#x27;s line item was never added), demonstrating that the second transaction&#x27;s failure had zero effect on the database, while the first transaction&#x27;s success remains fully intact.</p>
+<pre><code>success: placeOrder(order1, [Widget, Gadget]) -&gt; no throw -&gt; commit: orderDb+=order1, itemDb+=2 items
+                                                                                  order=true, items=2
+
+failure: placeOrder(order2, [INVALID]) -&gt; throws -&gt; ex != null -&gt; commit SKIPPED entirely
+                                                                                  order2=false, items still 2</code></pre>
+<p>In a real Spring Data R2DBC application, wrapping a reactive chain with <code>.as(transactionalOperator::transactional)</code> (or annotating a reactive-returning service method with <code>@Transactional</code>, which Spring detects and handles reactively) causes the underlying <code>ReactiveTransactionManager</code> to begin a database transaction when the chain is subscribed to, propagate it through the Reactor <code>Context</code> across every operator in the chain (regardless of which thread executes which step), and commit only if the entire <code>Mono</code>/<code>Flux</code> completes successfully — any error signal anywhere in the chain triggers a rollback of every database operation performed within it, exactly mirroring the atomic all-or-nothing guarantee <code>@Transactional</code> provides for blocking JPA/JDBC code, adapted to reactive execution&#x27;s thread-hopping nature.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: <code>@Transactional</code> on a reactive method only works correctly if the method&#x27;s return type is itself reactive (<code>Mono</code>/<code>Flux</code>) and the *entire* chain of repository calls inside it is also reactive — mixing in a blocking call anywhere inside a method meant to be reactively transactional breaks the mechanism silently, since the reactive <code>Context</code> carrying the transaction has no way to reach a blocking call that steps outside the reactive chain entirely.</blockquote>
+<ul><li>Reactive transactions use <code>ReactiveTransactionManager</code>/<code>TransactionalOperator</code> instead of the classic thread-bound <code>PlatformTransactionManager</code>, because reactive execution isn&#x27;t pinned to one thread.</li><li>The transaction travels with the reactive <code>Context</code> that flows through the <code>Mono</code>/<code>Flux</code> chain, rather than being bound to whichever thread happens to be executing at a given moment.</li><li><code>TransactionalOperator.transactional(...)</code> wraps a reactive chain so every repository call inside it commits or rolls back together — the same atomicity guarantee <code>@Transactional</code> provides for blocking code.</li><li><code>@Transactional</code> works on reactive methods too, but requires the entire call chain to stay reactive — any blocking call inserted into the middle breaks the mechanism.</li></ul>
+  <div class="nav"><a class="prv" href="0095-mapping-conversions.html"><span class="mini">← Previous</span>Mapping & conversions</a><a class="nxt" href="0097-auditing-reactive.html"><span class="mini">Next →</span>Auditing (reactive)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-data.html", ID = "t96";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
