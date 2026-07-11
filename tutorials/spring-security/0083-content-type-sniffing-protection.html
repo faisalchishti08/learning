@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Content-Type sniffing protection — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 4. Protection Against Exploits</div>
+  <div class="htitle">
+    <h1>Content-Type sniffing protection</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Content-Type (MIME) sniffing</strong> is a legacy browser behavior where, instead of trusting the <code>Content-Type</code> header a server declares for a response, the browser inspects the first bytes of the body itself and guesses (&quot;sniffs&quot;) what kind of content it *really* is — then renders or executes it based on that guess rather than the declared type. The <strong><code>X-Content-Type-Options: nosniff</code></strong> response header, set by Spring Security&#x27;s <code>contentTypeOptions()</code> (enabled by default in the security filter chain), tells the browser to disable this guessing entirely and always trust the declared <code>Content-Type</code>.</p>
+<p>This matters most anywhere user-supplied content re-enters an HTTP response: file uploads served back to users or other visitors, user-generated content stored and rendered later, any endpoint where the bytes in the body aren&#x27;t fully controlled by your own server code. Without <code>nosniff</code>, a file uploaded as <code>profile-picture.png</code> but actually containing an <code>&lt;script&gt;</code> tag can be sniffed by the browser as HTML and executed — turning an image-upload feature into a stored cross-site scripting vector.</p>
+<h2>2. Why &amp; when</h2>
+<p>Historically, browsers sniffed content for a reasonable-sounding reason: servers frequently mislabeled content (a misconfigured web server serving <code>.html</code> files as <code>text/plain</code>, for instance), and sniffing made pages &quot;just work&quot; despite sloppy server configuration. But that same leniency became a security hole the moment user-controlled bytes could reach a response with an attacker-chosen, or simply wrong, declared type. A file that looks like a PNG to a naive validator but actually starts with <code>&lt;html&gt;&lt;script&gt;</code> can be sniffed as HTML and executed in the context of your origin, with access to cookies, session storage, and anything else same-origin script can reach.</p>
+<p>Reach for — or rather, keep, since it&#x27;s enabled by default — <code>contentTypeOptions()</code>:</p>
+<ul><li>Whenever your application serves any content that originated from outside your own trusted server code: user avatar uploads, attached documents, user-generated markdown converted to a downloadable file, and similar.</li><li>Whenever a response&#x27;s <code>Content-Type</code> might be wrong or ambiguous for any reason — sniffing protection is a blanket defense that doesn&#x27;t depend on getting every single content-type declaration perfectly right everywhere in a large application.</li><li>It&#x27;s safe to leave enabled essentially always; there&#x27;s rarely a legitimate reason to disable <code>nosniff</code> for an authenticated application, since it changes nothing about how *correctly labeled* content is rendered — it only removes the browser&#x27;s willingness to guess when the label might be wrong.</li></ul>
+<p>This builds on the security-headers foundation established earlier, where headers like CSP and frame-options guard against script-injection and clickjacking respectively; <code>nosniff</code> specifically closes the gap where the browser second-guesses the <code>Content-Type</code> header rather than trusting it.</p>
+<h2>3. Core concept</h2>
+<pre><code> Without nosniff:
+   Content-Type: image/png              (declared)
+   body: &lt;html&gt;&lt;script&gt;...&lt;/script&gt;&lt;/html&gt;   (actual bytes)
+   Browser: &quot;the declared type doesn&#x27;t look right, let me check the bytes myself&quot;
+            -&gt; sniffs -&gt; sees HTML/script markers -&gt; renders/EXECUTES as HTML, not image
+
+ With X-Content-Type-Options: nosniff:
+   Content-Type: image/png
+   X-Content-Type-Options: nosniff
+   Browser: &quot;nosniff is set, I am NOT allowed to guess&quot; -&gt; trusts image/png -&gt; tries to
+            decode the bytes as a PNG -&gt; fails or shows a broken image -&gt; the script NEVER RUNS</code></pre>
+<p>One header, one boolean decision inside the browser: trust the label, or don&#x27;t.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A response declares Content-Type image png but its bytes actually contain an embedded script when the response carries X-Content-Type-Options nosniff the browser trusts the declared type and renders it as an image shown in green when that header is absent the browser sniffs the content notices script like bytes and executes them as html or javascript instead shown in red">
+  <rect x="20" y="15" width="210" height="70" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="125" y="38" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">Content-Type: image/png</text>
+  <text x="125" y="55" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">body: &lt;html&gt;&lt;script&gt;</text>
+  <text x="125" y="70" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">...&lt;/script&gt;&lt;/html&gt;</text>
+
+  <line x1="230" y1="50" x2="280" y2="50" stroke="#8b949e" stroke-width="2" marker-end="url(#a1)"/>
+
+  <polygon points="360,10 460,50 360,90 260,50" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="360" y="46" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">nosniff</text>
+  <text x="360" y="60" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">present?</text>
+
+  <line x1="440" y1="30" x2="540" y2="30" stroke="#3fb950" stroke-width="2" marker-end="url(#a2)"/>
+  <text x="490" y="20" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">yes</text>
+  <rect x="500" y="40" width="130" height="55" rx="8" fill="#1c2430" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="565" y="62" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">Rendered as</text>
+  <text x="565" y="78" fill="#3fb950" font-size="10" text-anchor="middle" font-family="sans-serif">declared image</text>
+
+  <line x1="360" y1="90" x2="360" y2="170" stroke="#f85149" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="382" y="130" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">no</text>
+  <rect x="280" y="175" width="160" height="70" rx="8" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+  <text x="360" y="197" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">Browser sniffs bytes,</text>
+  <text x="360" y="212" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">finds script markers,</text>
+  <text x="360" y="227" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">EXECUTES as HTML/JS</text>
+
+  <defs>
+    <marker id="a1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#3fb950"/></marker>
+    <marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f85149"/></marker>
+  </defs>
+</svg>
+<p>The single presence of <code>X-Content-Type-Options: nosniff</code> is the difference between the browser trusting the declared type and the browser guessing from content — and guessing wrong is exactly how a disguised upload becomes a stored XSS.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: a file-serving endpoint returns whatever bytes were uploaded, alongside a declared <code>Content-Type</code>. Level 1 shows the browser&#x27;s raw sniffing behavior turning a disguised upload into executed script. Level 2 adds the <code>nosniff</code> header and shows the same malicious upload safely rendered instead. Level 3 wires <code>nosniff</code> into a filter that runs uniformly over every response, including a &quot;polyglot&quot; file crafted to look like a valid image while carrying an embedded script tail.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ContentTypeSniffingLevel1 {
+
+    record HttpResponse(int status, Map&lt;String, String&gt; headers, byte[] body) {}
+
+    // A simplified model of what browsers historically did: IGNORE the declared
+    // Content-Type and guess (&quot;sniff&quot;) the real type from the first bytes of the body,
+    // then act on the sniffed type instead of the declared one.
+    static String browserSniffAndRender(HttpResponse response) {
+        String declaredType = response.headers().getOrDefault(&quot;Content-Type&quot;, &quot;application/octet-stream&quot;);
+        String bodyAsText = new String(response.body());
+        boolean looksLikeHtmlOrScript = bodyAsText.contains(&quot;&lt;script&quot;) || bodyAsText.contains(&quot;&lt;html&quot;);
+
+        if (looksLikeHtmlOrScript) {
+            return &quot;SNIFFED as HTML/script -&gt; EXECUTED, ignoring declared Content-Type: &quot; + declaredType;
+        }
+        return &quot;Rendered as declared type: &quot; + declaredType;
+    }
+
+    public static void main(String[] args) {
+        // an uploaded &quot;profile-picture.png&quot; that is actually a disguised HTML/script payload
+        byte[] maliciousUpload = &quot;&lt;html&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;/html&gt;&quot;.getBytes();
+
+        Map&lt;String, String&gt; headers = new LinkedHashMap&lt;&gt;();
+        headers.put(&quot;Content-Type&quot;, &quot;image/png&quot;); // the server DECLARES this is a PNG image
+
+        HttpResponse response = new HttpResponse(200, headers, maliciousUpload);
+        System.out.println(browserSniffAndRender(response));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ContentTypeSniffingLevel1.java</code>, run <code>java ContentTypeSniffingLevel1.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>SNIFFED as HTML/script -&gt; EXECUTED, ignoring declared Content-Type: image/png</code></pre>
+<p>With no protection at all, the browser ignores the declared <code>image/png</code> type, notices the body looks like HTML with a script tag, and would execute it as such — exactly the historical MIME-sniffing behavior <code>nosniff</code> was designed to stop.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ContentTypeSniffingLevel2 {
+
+    record HttpResponse(int status, Map&lt;String, String&gt; headers, byte[] body) {}
+
+    // Spring Security&#x27;s contentTypeOptions() (enabled by default) adds this single header
+    // to every response, instructing the browser to trust the declared Content-Type
+    // instead of guessing from content bytes.
+    static HttpResponse withNosniffHeader(HttpResponse response) {
+        Map&lt;String, String&gt; headers = new LinkedHashMap&lt;&gt;(response.headers());
+        headers.put(&quot;X-Content-Type-Options&quot;, &quot;nosniff&quot;);
+        return new HttpResponse(response.status(), headers, response.body());
+    }
+
+    static String browserRender(HttpResponse response) {
+        String declaredType = response.headers().getOrDefault(&quot;Content-Type&quot;, &quot;application/octet-stream&quot;);
+        boolean nosniff = &quot;nosniff&quot;.equalsIgnoreCase(response.headers().get(&quot;X-Content-Type-Options&quot;));
+        String bodyAsText = new String(response.body());
+        boolean looksLikeHtmlOrScript = bodyAsText.contains(&quot;&lt;script&quot;) || bodyAsText.contains(&quot;&lt;html&quot;);
+
+        if (nosniff) {
+            // the header is present -- the browser is FORBIDDEN from sniffing, no matter what the bytes look like
+            return &quot;Trusting declared Content-Type (nosniff set): &quot; + declaredType;
+        }
+        if (looksLikeHtmlOrScript) {
+            return &quot;SNIFFED as HTML/script -&gt; EXECUTED, ignoring declared Content-Type: &quot; + declaredType;
+        }
+        return &quot;Rendered as declared type: &quot; + declaredType;
+    }
+
+    public static void main(String[] args) {
+        byte[] maliciousUpload = &quot;&lt;html&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;/html&gt;&quot;.getBytes();
+        Map&lt;String, String&gt; headers = new LinkedHashMap&lt;&gt;();
+        headers.put(&quot;Content-Type&quot;, &quot;image/png&quot;);
+
+        HttpResponse withoutProtection = new HttpResponse(200, headers, maliciousUpload);
+        HttpResponse withProtection = withNosniffHeader(withoutProtection);
+
+        System.out.println(&quot;Without nosniff: &quot; + browserRender(withoutProtection));
+        System.out.println(&quot;With nosniff:    &quot; + browserRender(withProtection));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ContentTypeSniffingLevel2.java</code>, run <code>java ContentTypeSniffingLevel2.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>Without nosniff: SNIFFED as HTML/script -&gt; EXECUTED, ignoring declared Content-Type: image/png
+With nosniff:    Trusting declared Content-Type (nosniff set): image/png</code></pre>
+<p><code>withNosniffHeader</code> adds exactly one header, and <code>browserRender</code> checks it before ever inspecting the body — once <code>nosniff</code> is present, the sniffing branch is never reached at all, regardless of what the bytes actually contain.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ContentTypeSniffingLevel3 {
+
+    record HttpResponse(int status, Map&lt;String, String&gt; headers, byte[] body) {}
+    record UploadedFile(String name, String declaredContentType, byte[] bytes) {}
+
+    // Mirrors the HeaderWriterFilter stage of the security filter chain: EVERY response
+    // passing through gets X-Content-Type-Options: nosniff, regardless of which handler
+    // produced it or what content type it declares.
+    static HttpResponse securityHeaderFilter(HttpResponse response) {
+        Map&lt;String, String&gt; headers = new LinkedHashMap&lt;&gt;(response.headers());
+        headers.putIfAbsent(&quot;X-Content-Type-Options&quot;, &quot;nosniff&quot;);
+        return new HttpResponse(response.status(), headers, response.body());
+    }
+
+    static HttpResponse serve(UploadedFile file) {
+        Map&lt;String, String&gt; headers = new LinkedHashMap&lt;&gt;();
+        headers.put(&quot;Content-Type&quot;, file.declaredContentType());
+        HttpResponse raw = new HttpResponse(200, headers, file.bytes());
+        return securityHeaderFilter(raw); // every response is routed through the filter chain
+    }
+
+    static String browserRender(HttpResponse response) {
+        String declaredType = response.headers().getOrDefault(&quot;Content-Type&quot;, &quot;application/octet-stream&quot;);
+        boolean nosniff = &quot;nosniff&quot;.equalsIgnoreCase(response.headers().get(&quot;X-Content-Type-Options&quot;));
+        String bodyAsText = new String(response.body());
+        boolean looksLikeHtmlOrScript = bodyAsText.contains(&quot;&lt;script&quot;) || bodyAsText.contains(&quot;&lt;html&quot;);
+
+        if (nosniff) return &quot;SAFE: trusted declared type &quot; + declaredType;
+        if (looksLikeHtmlOrScript) return &quot;VULNERABLE: sniffed and executed as script, ignoring &quot; + declaredType;
+        return &quot;Rendered as declared type: &quot; + declaredType;
+    }
+
+    public static void main(String[] args) {
+        List&lt;UploadedFile&gt; uploads = List.of(
+                new UploadedFile(&quot;avatar.png&quot;, &quot;image/png&quot;, &quot;PNGrealimagebytes&quot;.getBytes()),
+                // a &quot;polyglot&quot; file: valid-looking image bytes with an embedded script tail --
+                // a classic disguised-upload attack that relies on the browser sniffing content
+                new UploadedFile(&quot;disguised.png&quot;, &quot;image/png&quot;,
+                        &quot;PNG&lt;html&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;/html&gt;&quot;.getBytes()),
+                new UploadedFile(&quot;report.txt&quot;, &quot;text/plain&quot;, &quot;quarterly numbers look fine&quot;.getBytes())
+        );
+
+        for (UploadedFile file : uploads) {
+            HttpResponse response = serve(file);
+            System.out.println(file.name() + &quot; -&gt; &quot; + browserRender(response));
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ContentTypeSniffingLevel3.java</code>, run <code>java ContentTypeSniffingLevel3.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>avatar.png -&gt; SAFE: trusted declared type image/png
+disguised.png -&gt; SAFE: trusted declared type image/png
+report.txt -&gt; SAFE: trusted declared type text/plain</code></pre>
+<p>Because <code>securityHeaderFilter</code> runs on every response <code>serve</code> produces, even the deliberately disguised <code>disguised.png</code> — whose bytes contain a full <code>&lt;script&gt;</code> tag — is reported <code>SAFE</code>, since the <code>nosniff</code> check in <code>browserRender</code> short-circuits before the sniffing logic ever runs. This is the payoff of applying the header uniformly at the filter-chain level instead of per-endpoint: no single handler has to remember to protect itself.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace serving <code>disguised.png</code> from the Level 3 example, from the raw HTTP request through to the browser&#x27;s rendering decision.</p>
+<p><strong>Request:</strong></p>
+<pre><code>GET /files/disguised.png HTTP/1.1
+Host: uploads.example.com</code></pre>
+<p><strong>Response:</strong></p>
+<pre><code>HTTP/1.1 200 OK
+Content-Type: image/png
+X-Content-Type-Options: nosniff
+
+PNG&lt;html&gt;&lt;script&gt;alert(document.cookie)&lt;/script&gt;&lt;/html&gt;</code></pre>
+<ol><li><code>serve(file)</code> builds a raw response first: <code>headers.put(&quot;Content-Type&quot;, file.declaredContentType())</code> sets <code>Content-Type: image/png</code>, exactly the type the (compromised) upload path assigned — the byte content itself was never actually verified to match.</li><li>That raw response is passed into <code>securityHeaderFilter(raw)</code>, which mirrors the security filter chain&#x27;s header-writing stage: it runs on <strong>every</strong> response leaving the application, and <code>headers.putIfAbsent(&quot;X-Content-Type-Options&quot;, &quot;nosniff&quot;)</code> adds the header unless something upstream already set it — this is the &quot;enabled by default, applied uniformly&quot; behavior described in section 3.</li><li><code>browserRender</code> reads the response&#x27;s headers back out: <code>nosniff</code> evaluates to <code>true</code> because the header is present and equals <code>&quot;nosniff&quot;</code>.</li><li>Because the <code>if (nosniff)</code> branch is checked first, the method returns <code>&quot;SAFE: trusted declared type image/png&quot;</code> immediately — it never reaches the <code>looksLikeHtmlOrScript</code> check that would otherwise have found the embedded <code>&lt;script&gt;</code> tag in the body and reported the file as executed.</li><li>Compare this to <code>ContentTypeSniffingLevel1</code>, where the same disguised bytes, served with no <code>nosniff</code> header at all, hit the <code>looksLikeHtmlOrScript</code> branch instead and are reported as sniffed and executed — the only difference between &quot;stored XSS&quot; and &quot;safely rendered as a broken image&quot; is the presence of that one header.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>nosniff</code> doesn&#x27;t make an incorrectly labeled file *display correctly* — it only prevents the browser from executing it as something more dangerous than what was declared. A genuinely mislabeled image will simply fail to render, showing a broken-image icon, rather than silently &quot;fixing itself&quot; via sniffing; that trade-off is the right one.</blockquote>
+<ul><li><code>X-Content-Type-Options: nosniff</code> is enabled by default via <code>contentTypeOptions()</code> — you almost never need to configure it, only to know it&#x27;s there and why.</li><li>The header is a single, cheap, blanket defense: it doesn&#x27;t require auditing every upload handler or content-type declaration in the application to be effective.</li><li>It defends specifically against MIME-sniffing, a different attack surface than CSP&#x27;s script-source restriction or frame-options&#x27; clickjacking protection — layer them together rather than treating any one as sufficient on its own.</li><li>Always pair <code>nosniff</code> with genuinely correct upload validation (checking magic bytes, re-encoding images, restricting file extensions) — <code>nosniff</code> limits the *blast radius* of a mislabeled file, it doesn&#x27;t validate uploads for you.</li><li>A response entirely missing a <code>Content-Type</code> header defeats the purpose regardless of <code>nosniff</code> — always declare an explicit, correct content type alongside the header.</li></ul>
+  <div class="nav"><a class="prv" href="0082-cache-control-headers.html"><span class="mini">← Previous</span>Cache control headers</a><a class="nxt" href="0084-cors-support-cors-dsl-corsconfigurationsource.html"><span class="mini">Next →</span>CORS support (cors DSL & CorsConfigurationSource)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t83";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
