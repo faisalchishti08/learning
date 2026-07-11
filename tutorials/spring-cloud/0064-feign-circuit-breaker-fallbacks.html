@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Feign + Circuit Breaker fallbacks" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-cloud.html">Spring Cloud</a> › 4. Routing & Load Balancing</div>
+  <div class="htitle">
+    <h1>"Feign + Circuit Breaker fallbacks"</h1>
+    <a class="back" href="../../spring-cloud.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Feign integrates directly with Resilience4j circuit breakers (the same underlying mechanism as the Gateway <code>CircuitBreaker</code> filter, covered earlier): setting <code>spring.cloud.openfeign.circuitbreaker.enabled=true</code> wraps every method call on a Feign client in a circuit breaker, and a <code>fallback</code> class implementing the same client interface supplies a default response whenever the circuit is open or the real call fails.</p>
+<pre><code class="lang-java">@FeignClient(name = &quot;billing-service&quot;, fallback = BillingClientFallback.class)
+public interface BillingClient {
+    @GetMapping(&quot;/invoices/{id}&quot;)
+    Invoice getInvoice(@PathVariable String id);
+}
+
+@Component
+class BillingClientFallback implements BillingClient {
+    @Override
+    public Invoice getInvoice(String id) {
+        return new Invoice(id, 0.0); // degraded default, returned when billing-service is unavailable
+    }
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>The Gateway-level <code>CircuitBreaker</code> filter (covered earlier) protects the gateway&#x27;s routing layer; this card is the client-side counterpart — protecting *any* code that calls another service through Feign, not just traffic passing through a gateway. Wrapping a Feign client in a circuit breaker means a struggling <code>billing-service</code> doesn&#x27;t cascade into every caller hanging or failing outright; instead, calls fail fast once the breaker opens, and the fallback supplies a reasonable default so the calling code can often continue functioning in a degraded, but not fully broken, state.</p>
+<p>Reach for Feign circuit breaker fallbacks when:</p>
+<ul><li>A downstream service&#x27;s occasional unavailability shouldn&#x27;t take down the calling service entirely — a sensible default (cached data, a neutral value, an empty result) lets the caller degrade gracefully instead of failing every dependent operation.</li><li>The calling code&#x27;s own callers (or a UI) can meaningfully handle a degraded response — showing &quot;price unavailable&quot; instead of crashing an entire page is a real, common product design choice this pattern supports directly.</li><li>You want the same resilience benefits the Gateway <code>CircuitBreaker</code> filter provides, but for calls made directly between services rather than calls passing through a gateway.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> billingClient.getInvoice(id)
+        |
+        v
+ circuit breaker wraps the call
+        |
+    CLOSED -&gt; call billing-service directly -&gt; success or failure recorded
+        |
+    OPEN (too many recent failures) -&gt; skip the real call entirely -&gt; use fallback immediately
+        |
+    HALF_OPEN (cooldown elapsed) -&gt; allow a trial call -&gt; close or reopen based on its result
+        |
+ either the real response OR the fallback&#x27;s response is returned -- same method signature either way</code></pre>
+<p>The calling code never needs to know which path was taken — both the real call and the fallback satisfy the exact same interface.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A Feign client call is wrapped in a circuit breaker that either forwards to the real backend when closed or returns the fallback implementation's response when open, transparently to the caller">
+  <rect x="20" y="70" width="170" height="40" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="105" y="95" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">billingClient.getInvoice(id)</text>
+
+  <rect x="250" y="60" width="150" height="60" rx="8" fill="#6db33f30" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="325" y="82" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">circuit breaker</text>
+  <text x="325" y="98" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">CLOSED / OPEN / HALF_OPEN</text>
+
+  <rect x="460" y="20" width="150" height="34" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.2"/>
+  <text x="535" y="41" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">real billing-service</text>
+
+  <rect x="460" y="130" width="150" height="34" rx="6" fill="#e6494930" stroke="#e64949" stroke-width="1.2"/>
+  <text x="535" y="151" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">BillingClientFallback</text>
+
+  <line x1="190" y1="90" x2="248" y2="90" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a64)"/>
+  <line x1="400" y1="75" x2="458" y2="40" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a64)"/>
+  <line x1="400" y1="105" x2="458" y2="145" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a64)"/>
+
+  <defs><marker id="a64" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Whichever path the breaker takes, the caller receives a value satisfying the exact same interface contract — no special-casing needed at the call site.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: protect <code>BillingClient.getInvoice</code> with a circuit breaker and fallback. Start with an unprotected client (failures propagate directly), then add the fallback mechanism, then add the full circuit breaker state machine deciding when to use it.</p>
+<h3>Level 1 — Basic</h3>
+<p>Unprotected: a failure propagates directly to the caller.</p>
+<pre><code class="lang-java">public class FeignFallbackLevel1 {
+    record Invoice(String id, double amount) {}
+
+    interface BillingClient {
+        Invoice getInvoice(String id);
+    }
+
+    static BillingClient realClient = id -&gt; { throw new RuntimeException(&quot;billing-service is down&quot;); };
+
+    public static void main(String[] args) {
+        try {
+            Invoice invoice = realClient.getInvoice(&quot;42&quot;);
+            System.out.println(invoice);
+        } catch (RuntimeException e) {
+            System.out.println(&quot;caller sees a raw failure: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java FeignFallbackLevel1.java</code></p>
+<p>Without any protection, the calling code must handle a raw exception directly — every caller of <code>getInvoice</code> has to decide what to do about <code>billing-service</code> being down, individually and repeatedly.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add a fallback implementation of the same interface, used whenever the real call fails.</p>
+<pre><code class="lang-java">public class FeignFallbackLevel2 {
+    record Invoice(String id, double amount) {}
+
+    interface BillingClient {
+        Invoice getInvoice(String id);
+    }
+
+    static BillingClient realClient = id -&gt; { throw new RuntimeException(&quot;billing-service is down&quot;); };
+
+    static BillingClient fallback = id -&gt; new Invoice(id, 0.0); // degraded default -- same interface
+
+    static BillingClient withFallback(BillingClient real, BillingClient fallback) {
+        return id -&gt; {
+            try {
+                return real.getInvoice(id);
+            } catch (RuntimeException e) {
+                System.out.println(&quot;[fallback] real call failed (&quot; + e.getMessage() + &quot;), using fallback&quot;);
+                return fallback.getInvoice(id);
+            }
+        };
+    }
+
+    public static void main(String[] args) {
+        BillingClient protectedClient = withFallback(realClient, fallback);
+        Invoice invoice = protectedClient.getInvoice(&quot;42&quot;); // never throws -- always gets SOME Invoice back
+        System.out.println(&quot;caller received: &quot; + invoice);
+    }
+}</code></pre>
+<p>How to run: <code>java FeignFallbackLevel2.java</code></p>
+<p><code>withFallback</code> wraps <code>realClient</code>, catching any exception and delegating to <code>fallback</code> instead — the calling code now always receives a valid <code>Invoice</code>, either the real one or the degraded default, and never has to handle a raw exception from this call at all.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Add the full circuit breaker state machine deciding when to bypass the real call entirely (once it&#x27;s clearly failing repeatedly) versus still attempting it — combining this card&#x27;s fallback mechanism with the earlier circuit breaker card&#x27;s state machine.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class FeignFallbackLevel3 {
+    record Invoice(String id, double amount) {}
+
+    interface BillingClient { Invoice getInvoice(String id); }
+
+    static BillingClient fallback = id -&gt; new Invoice(id, 0.0);
+
+    static class CircuitBreaker {
+        enum State { CLOSED, OPEN, HALF_OPEN }
+        State state = State.CLOSED;
+        Deque&lt;Boolean&gt; window = new ArrayDeque&lt;&gt;();
+        int windowSize = 3;
+        double failureThreshold = 0.6;
+        long openedAtMs = -1;
+        long cooldownMs = 500;
+
+        Invoice call(String id, BillingClient real, long nowMs) {
+            if (state == State.OPEN) {
+                if (nowMs - openedAtMs &gt;= cooldownMs) { state = State.HALF_OPEN; }
+                else { System.out.println(&quot;[breaker OPEN] skipping real call, using fallback directly&quot;); return fallback.getInvoice(id); }
+            }
+            try {
+                Invoice result = real.getInvoice(id);
+                recordOutcome(false, nowMs);
+                if (state == State.HALF_OPEN) { state = State.CLOSED; window.clear(); System.out.println(&quot;[breaker] trial succeeded -- CLOSED&quot;); }
+                return result;
+            } catch (RuntimeException e) {
+                recordOutcome(true, nowMs);
+                if (state == State.HALF_OPEN) { state = State.OPEN; openedAtMs = nowMs; System.out.println(&quot;[breaker] trial failed -- back to OPEN&quot;); }
+                System.out.println(&quot;[breaker] real call failed, using fallback&quot;);
+                return fallback.getInvoice(id);
+            }
+        }
+
+        void recordOutcome(boolean failed, long nowMs) {
+            window.addLast(failed);
+            if (window.size() &gt; windowSize) window.removeFirst();
+            if (window.size() == windowSize) {
+                long failures = window.stream().filter(b -&gt; b).count();
+                if ((double) failures / windowSize &gt;= failureThreshold &amp;&amp; state == State.CLOSED) {
+                    state = State.OPEN; openedAtMs = nowMs;
+                    System.out.println(&quot;[breaker] threshold crossed -- OPENING&quot;);
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        boolean[] serviceDown = {true};
+        BillingClient realClient = id -&gt; {
+            if (serviceDown[0]) throw new RuntimeException(&quot;billing-service is down&quot;);
+            return new Invoice(id, 199.99);
+        };
+
+        CircuitBreaker breaker = new CircuitBreaker();
+        for (int i = 0; i &lt; 3; i++) System.out.println(&quot;call &quot; + i + &quot; -&gt; &quot; + breaker.call(&quot;42&quot;, realClient, i * 100));
+
+        // this call arrives while OPEN and within cooldown -- fallback used WITHOUT even attempting the real call
+        System.out.println(&quot;call 3 -&gt; &quot; + breaker.call(&quot;42&quot;, realClient, 350));
+
+        serviceDown[0] = false; // service recovers
+        System.out.println(&quot;call 4 (t=700ms, cooldown elapsed) -&gt; &quot; + breaker.call(&quot;42&quot;, realClient, 700));
+    }
+}</code></pre>
+<p>How to run: <code>java FeignFallbackLevel3.java</code></p>
+<p>The first three calls fail (service down), tripping the breaker <code>OPEN</code>. The fourth call, while still within the cooldown window, skips the real call entirely and goes straight to the fallback — no wasted attempt against a service already known to be failing. The final call, after the cooldown has elapsed and the service has genuinely recovered, triggers a <code>HALF_OPEN</code> trial that succeeds, closing the breaker and returning the real <code>Invoice</code> again.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the calls in Level 3.</p>
+<ol><li>Calls <code>0</code> through <code>2</code> (at <code>t=0, 100, 200</code>) each invoke <code>breaker.call</code>, which is currently <code>CLOSED</code>, so each attempts <code>real.getInvoice(&quot;42&quot;)</code> directly. Since <code>serviceDown[0]</code> is <code>true</code>, each throws, caught by the <code>catch</code> block, which calls <code>recordOutcome(true, nowMs)</code> and returns <code>fallback.getInvoice(&quot;42&quot;)</code>. After the third failure, <code>recordOutcome</code> finds the 3-slot window full of failures (<code>3/3 = 1.0 &gt;= 0.6</code>), tripping <code>state</code> to <code>OPEN</code>.</li><li>The fourth call (<code>t=350</code>) finds <code>state == OPEN</code>; it checks <code>350 - openedAtMs &lt; 500</code> (the cooldown hasn&#x27;t elapsed yet, since the breaker just opened around <code>t=200</code>), so it prints the &quot;skipping real call&quot; message and returns <code>fallback.getInvoice(&quot;42&quot;)</code> directly — <code>real.getInvoice</code> is never even attempted this time, sparing the already-struggling service another doomed request.</li><li>Before the fifth call, <code>serviceDown[0] = false</code> runs — the service has genuinely recovered, independent of the breaker&#x27;s own state, which is still <code>OPEN</code>.</li><li>The fifth call (<code>t=700</code>) finds <code>state == OPEN</code> and checks <code>700 - openedAtMs &gt;= 500</code> — enough time has passed, so it transitions to <code>HALF_OPEN</code>. Falling through to the <code>try</code> block, it calls <code>real.getInvoice(&quot;42&quot;)</code>, which now succeeds (the service is back). <code>recordOutcome(false, 700)</code> records success, and since <code>state == HALF_OPEN</code>, it closes the breaker, printing the recovery message, and returns the genuine <code>Invoice(&quot;42&quot;, 199.99)</code>.</li></ol>
+<pre><code>calls 0-2: service down -&gt; failures recorded -&gt; breaker OPENS after call 2
+call 3 (t=350, still in cooldown): OPEN -&gt; fallback used directly, real call skipped entirely
+call 4 (t=700, cooldown elapsed): OPEN -&gt; HALF_OPEN trial -&gt; service recovered -&gt; succeeds -&gt; CLOSED</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the fallback class must implement the *entire* Feign client interface, not just the method that&#x27;s failing — if <code>BillingClient</code> has five methods and only <code>getInvoice</code> typically fails, <code>BillingClientFallback</code> still needs reasonable implementations for all five, or calls to the others through the fallback path throw <code>UnsupportedOperationException</code>-style errors instead of degrading gracefully.</blockquote>
+<ul><li>Feign&#x27;s circuit breaker integration is the client-side, per-call-site counterpart to the Gateway <code>CircuitBreaker</code> filter — same underlying Resilience4j mechanism, applied at a different layer of the system.</li><li>A well-designed fallback returns something genuinely useful to the caller — a cached last-known value, a sensible default, an explicitly &quot;unavailable&quot; marker the UI can render meaningfully — not just null or a generic empty object that might silently propagate as if it were real data.</li><li>The fallback interface constraint (implementing the full client interface) is a real design cost — it&#x27;s worth asking, for each Feign client, whether every method genuinely needs (or can sensibly have) a fallback, or whether some should simply propagate the failure.</li><li><code>spring.cloud.openfeign.circuitbreaker.enabled=true</code> is an application-wide switch; per-client fallback classes are then opt-in via the <code>fallback</code> attribute on each <code>@FeignClient</code> that wants one — clients without a configured fallback still get circuit breaker protection, just without a graceful degraded response.</li></ul>
+  <div class="nav"><a class="prv" href="0063-feign-loadbalancer.html"><span class="mini">← Previous</span>Feign + LoadBalancer</a><a class="nxt" href="0065-request-response-compression.html"><span class="mini">Next →</span>Request/response compression</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-cloud.html", ID = "t64";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Feign error decoding" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-cloud.html">Spring Cloud</a> › 4. Routing & Load Balancing</div>
+  <div class="htitle">
+    <h1>"Feign error decoding"</h1>
+    <a class="back" href="../../spring-cloud.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>By default, any non-2xx response from a Feign call throws a generic <code>FeignException</code> (or one of its status-specific subclasses like <code>FeignException.NotFound</code>), carrying the raw status code and response body. A custom <code>ErrorDecoder</code> bean (touched on in the earlier custom-configuration card, examined in depth here) intercepts this and can translate the raw HTTP failure into whatever exception type — a business-specific exception, a retryable wrapper, a swallowed default — actually fits the calling code&#x27;s needs.</p>
+<pre><code class="lang-java">@Configuration
+class BillingFeignConfig {
+    @Bean
+    ErrorDecoder errorDecoder() {
+        return (methodKey, response) -&gt; switch (response.status()) {
+            case 404 -&gt; new InvoiceNotFoundException();
+            case 429 -&gt; new RetryableException(response.status(), &quot;rate limited&quot;, null, null, null);
+            default -&gt; new ErrorDecoder.Default().decode(methodKey, response); // fall back to Feign&#x27;s default
+        };
+    }
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p><code>FeignException</code> alone forces every caller to inspect a raw status code (<code>e.status() == 404</code>) to figure out what actually went wrong — brittle, repetitive, and easy to get subtly wrong across many call sites. A custom <code>ErrorDecoder</code> moves that translation to one place, so calling code can catch specific, meaningfully-named exception types instead, and — critically — can signal Feign&#x27;s *retry* mechanism (from the earlier LoadBalancer retry card) by throwing a <code>RetryableException</code>, something a generic <code>FeignException</code> doesn&#x27;t do on its own.</p>
+<p>Reach for a custom <code>ErrorDecoder</code> when:</p>
+<ul><li>Calling code needs to distinguish between different failure reasons (not found vs. rate limited vs. server error) with more than a raw status code check — specific exception types make this a compile-time-checkable <code>catch</code> clause instead of a runtime status comparison.</li><li>Certain failures should trigger Feign&#x27;s retry mechanism, but aren&#x27;t naturally recognized as retryable by default — throwing <code>RetryableException</code> from the <code>ErrorDecoder</code> is exactly how to opt specific failure conditions into automatic retry.</li><li>The downstream service&#x27;s error response body carries structured information (an error code, a message) worth extracting into the thrown exception, rather than discarding it along with the rest of the raw response.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> non-2xx response arrives
+        |
+        v
+ ErrorDecoder.decode(methodKey, response)
+        |
+        |-- inspect response.status() and/or response.body()
+        |
+        |-- return a RuntimeException:
+                a specific business exception       -&gt; caller catches it specifically
+                a RetryableException                 -&gt; Feign&#x27;s retry mechanism retries automatically
+                ErrorDecoder.Default&#x27;s own decoding   -&gt; falls back to ordinary FeignException behavior</code></pre>
+<p>The <code>ErrorDecoder</code> is the single place that turns &quot;the HTTP call failed&quot; into &quot;here is exactly what that means and what should happen next.&quot;</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A non 2xx response is routed through a custom ErrorDecoder that inspects the status code and returns either a specific business exception, a retryable exception that triggers Feign retry, or falls back to default handling">
+  <rect x="30" y="70" width="150" height="40" rx="8" fill="#e6494930" stroke="#e64949" stroke-width="1.3"/>
+  <text x="105" y="95" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">non-2xx response</text>
+
+  <rect x="230" y="60" width="170" height="60" rx="8" fill="#6db33f30" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="315" y="82" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">ErrorDecoder</text>
+  <text x="315" y="98" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">inspect status + body</text>
+
+  <rect x="450" y="15" width="160" height="34" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.2"/>
+  <text x="530" y="36" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">specific business exception</text>
+
+  <rect x="450" y="65" width="160" height="34" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.2"/>
+  <text x="530" y="86" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">RetryableException</text>
+
+  <rect x="450" y="115" width="160" height="34" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="530" y="136" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">default FeignException</text>
+
+  <line x1="180" y1="90" x2="228" y2="90" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a67)"/>
+  <line x1="400" y1="75" x2="448" y2="35" stroke="#8b949e" stroke-width="1.1" marker-end="url(#a67)"/>
+  <line x1="400" y1="85" x2="448" y2="82" stroke="#8b949e" stroke-width="1.1" marker-end="url(#a67)"/>
+  <line x1="400" y1="100" x2="448" y2="130" stroke="#8b949e" stroke-width="1.1" marker-end="url(#a67)"/>
+
+  <defs><marker id="a67" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>One decoder, three possible outcomes per failure — a specific exception, an automatic retry trigger, or a fallback to default behavior.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: decode failures from <code>BillingClient</code> calls meaningfully. Start with generic exception handling (the status-code-checking problem), then add a custom decoder producing specific exception types, then add retryable exception signaling for a rate-limit response.</p>
+<h3>Level 1 — Basic</h3>
+<p>Generic exception handling — every caller inspects a raw status code.</p>
+<pre><code class="lang-java">public class FeignErrorDecodingLevel1 {
+    static class FeignException extends RuntimeException {
+        int status;
+        FeignException(int status, String message) { super(message); this.status = status; }
+    }
+
+    static String getInvoice(String id, int simulatedStatus) {
+        if (simulatedStatus &gt;= 400) throw new FeignException(simulatedStatus, &quot;call failed&quot;);
+        return &quot;{\&quot;id\&quot;:\&quot;&quot; + id + &quot;\&quot;}&quot;;
+    }
+
+    public static void main(String[] args) {
+        try {
+            getInvoice(&quot;999&quot;, 404);
+        } catch (FeignException e) {
+            // every caller has to remember to check the raw status code themselves
+            if (e.status == 404) {
+                System.out.println(&quot;handled: invoice not found&quot;);
+            } else {
+                System.out.println(&quot;unhandled failure, status=&quot; + e.status);
+                throw e;
+            }
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java FeignErrorDecodingLevel1.java</code></p>
+<p>Every call site that wants to handle a <code>404</code> specially has to remember to check <code>e.status == 404</code> itself — repeated, easy to get wrong, and gives no compile-time signal about which failure types are expected versus accidentally unhandled.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add a custom <code>ErrorDecoder</code> that translates status codes into specific, meaningfully-named exception types.</p>
+<pre><code class="lang-java">public class FeignErrorDecodingLevel2 {
+    static class FeignHttpFailure { int status; String body; FeignHttpFailure(int status, String body) { this.status = status; this.body = body; } }
+
+    static class InvoiceNotFoundException extends RuntimeException {
+        InvoiceNotFoundException(String id) { super(&quot;invoice &quot; + id + &quot; not found&quot;); }
+    }
+    static class BillingServiceUnavailableException extends RuntimeException {
+        BillingServiceUnavailableException() { super(&quot;billing-service is unavailable&quot;); }
+    }
+    static class UnknownBillingException extends RuntimeException {
+        UnknownBillingException(int status) { super(&quot;unexpected billing-service error: &quot; + status); }
+    }
+
+    interface ErrorDecoder { RuntimeException decode(String requestedId, FeignHttpFailure failure); }
+
+    static ErrorDecoder billingErrorDecoder = (id, failure) -&gt; switch (failure.status) {
+        case 404 -&gt; new InvoiceNotFoundException(id);
+        case 503 -&gt; new BillingServiceUnavailableException();
+        default -&gt; new UnknownBillingException(failure.status);
+    };
+
+    static String getInvoice(String id, FeignHttpFailure simulatedFailure) {
+        if (simulatedFailure != null) throw billingErrorDecoder.decode(id, simulatedFailure);
+        return &quot;{\&quot;id\&quot;:\&quot;&quot; + id + &quot;\&quot;}&quot;;
+    }
+
+    public static void main(String[] args) {
+        try { getInvoice(&quot;999&quot;, new FeignHttpFailure(404, &quot;&quot;)); }
+        catch (InvoiceNotFoundException e) { System.out.println(&quot;caught specifically: &quot; + e.getMessage()); }
+
+        try { getInvoice(&quot;42&quot;, new FeignHttpFailure(503, &quot;&quot;)); }
+        catch (BillingServiceUnavailableException e) { System.out.println(&quot;caught specifically: &quot; + e.getMessage()); }
+    }
+}</code></pre>
+<p>How to run: <code>java FeignErrorDecodingLevel2.java</code></p>
+<p><code>billingErrorDecoder</code> maps each status code to its own specific exception type — calling code now catches <code>InvoiceNotFoundException</code> and <code>BillingServiceUnavailableException</code> as distinct, named types rather than branching on a raw status field, which the compiler can help enforce (unhandled specific <code>catch</code> clauses are visible in the code, rather than an easily-missed <code>if (status == ...)</code> check).</p>
+<h3>Level 3 — Advanced</h3>
+<p>Add retryable exception signaling: a <code>429 Too Many Requests</code> response should trigger Feign&#x27;s automatic retry mechanism (from the earlier LoadBalancer retry card) rather than immediately failing, since rate limiting is often transient.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Supplier;
+
+public class FeignErrorDecodingLevel3 {
+    static class FeignHttpFailure { int status; FeignHttpFailure(int status) { this.status = status; } }
+
+    static class InvoiceNotFoundException extends RuntimeException {
+        InvoiceNotFoundException(String id) { super(&quot;invoice &quot; + id + &quot; not found&quot;); }
+    }
+    static class RetryableException extends RuntimeException {
+        RetryableException(String message) { super(message); }
+    }
+
+    interface ErrorDecoder { RuntimeException decode(String requestedId, FeignHttpFailure failure); }
+
+    static ErrorDecoder billingErrorDecoder = (id, failure) -&gt; switch (failure.status) {
+        case 404 -&gt; new InvoiceNotFoundException(id);
+        case 429 -&gt; new RetryableException(&quot;rate limited, safe to retry&quot;); // signals: try again
+        default -&gt; new RuntimeException(&quot;unexpected error: &quot; + failure.status);
+    };
+
+    // models Feign&#x27;s retry-aware call dispatch: RetryableException triggers automatic retry, others propagate directly
+    static String callWithRetryAwareness(String id, Supplier&lt;FeignHttpFailure&gt; simulatedFailures, int maxRetries) {
+        RuntimeException lastError = null;
+        for (int attempt = 0; attempt &lt;= maxRetries; attempt++) {
+            FeignHttpFailure failure = simulatedFailures.get();
+            if (failure == null) return &quot;{\&quot;id\&quot;:\&quot;&quot; + id + &quot;\&quot;}&quot;; // success
+            RuntimeException decoded = billingErrorDecoder.decode(id, failure);
+            if (decoded instanceof RetryableException) {
+                System.out.println(&quot;attempt &quot; + attempt + &quot;: retryable failure (&quot; + decoded.getMessage() + &quot;), retrying&quot;);
+                lastError = decoded;
+                continue; // Feign&#x27;s retry mechanism would automatically re-attempt here
+            }
+            throw decoded; // non-retryable -- propagate immediately, no further attempts
+        }
+        throw lastError; // exhausted retries
+    }
+
+    public static void main(String[] args) {
+        int[] callCount = {0};
+        Supplier&lt;FeignHttpFailure&gt; rateLimitedThenSucceeds = () -&gt; {
+            callCount[0]++;
+            return callCount[0] &lt; 3 ? new FeignHttpFailure(429) : null; // fails twice with 429, then succeeds
+        };
+
+        String result = callWithRetryAwareness(&quot;42&quot;, rateLimitedThenSucceeds, 3);
+        System.out.println(&quot;final result: &quot; + result);
+    }
+}</code></pre>
+<p>How to run: <code>java FeignErrorDecodingLevel3.java</code></p>
+<p><code>billingErrorDecoder</code> maps <code>429</code> to a <code>RetryableException</code> rather than an immediately-fatal one — <code>callWithRetryAwareness</code> checks specifically for that type and, when it sees one, continues its retry loop instead of throwing, modeling how Feign&#x27;s own retry mechanism recognizes <code>RetryableException</code> as a signal to automatically re-attempt the call. The simulated backend fails with <code>429</code> twice before succeeding, and the retry loop correctly absorbs both failures, ultimately returning the successful response to the caller.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>callWithRetryAwareness</code>&#x27;s execution in Level 3.</p>
+<ol><li><code>attempt=0</code> runs first — <code>simulatedFailures.get()</code> increments <code>callCount</code> to <code>1</code>, and since <code>1 &lt; 3</code>, returns <code>FeignHttpFailure(429)</code>. <code>billingErrorDecoder.decode(&quot;42&quot;, failure)</code> matches <code>case 429</code>, returning a <code>RetryableException</code>. The <code>instanceof RetryableException</code> check is <code>true</code>, so the method prints the retry message and <code>continue</code>s the loop rather than throwing.</li><li><code>attempt=1</code> runs — <code>callCount</code> becomes <code>2</code>, still <code>&lt; 3</code>, so another <code>FeignHttpFailure(429)</code> comes back, decoded to another <code>RetryableException</code>, and the loop retries again.</li><li><code>attempt=2</code> runs — <code>callCount</code> becomes <code>3</code>, no longer <code>&lt; 3</code>, so <code>simulatedFailures.get()</code> returns <code>null</code> this time, meaning success. <code>callWithRetryAwareness</code> returns the successful response string immediately, without ever reaching the <code>RetryableException</code> handling for this attempt.</li><li>The final <code>println</code> shows <code>{&quot;id&quot;:&quot;42&quot;}</code> — the caller received a successful result despite two underlying <code>429</code> failures, because the <code>ErrorDecoder</code>&#x27;s choice to classify <code>429</code> as retryable let the retry loop absorb both transient failures transparently.</li></ol>
+<pre><code>attempt 0 -&gt; 429 -&gt; RetryableException -&gt; retry
+attempt 1 -&gt; 429 -&gt; RetryableException -&gt; retry
+attempt 2 -&gt; success -&gt; return {&quot;id&quot;:&quot;42&quot;} immediately</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> throwing <code>RetryableException</code> from an <code>ErrorDecoder</code> for a status code that *isn&#x27;t* actually safe to retry (a <code>POST</code> that might have partially succeeded server-side before failing, for instance) reintroduces the exact double-execution risk covered in the earlier Gateway <code>Retry</code> filter card — <code>ErrorDecoder</code>-driven retry needs the same idempotency discipline as any other automatic retry mechanism, not an exemption from it just because the decision lives in a different layer.</blockquote>
+<ul><li>A custom <code>ErrorDecoder</code> turns generic HTTP failure handling into specific, meaningfully-named exception types that calling code can catch precisely, replacing scattered raw status-code checks with a single, centralized translation.</li><li>Returning <code>RetryableException</code> from the decoder is the specific mechanism for opting a failure condition into Feign&#x27;s automatic retry behavior — not every failure should be retryable, and the decoder is exactly where that judgment call belongs.</li><li>Falling back to <code>new ErrorDecoder.Default().decode(methodKey, response)</code> for status codes the custom logic doesn&#x27;t specifically handle keeps the rest of Feign&#x27;s default exception behavior intact — a custom decoder doesn&#x27;t need to reinvent handling for every possible status code, only the ones worth specific treatment.</li><li>This pattern — a single point of translation between a raw failure signal and a meaningful application-level type — mirrors the Gateway <code>ErrorDecoder</code>/<code>CircuitBreaker</code> and LoadBalancer retry concepts covered earlier; recognizing the recurring shape (raw failure in, meaningful decision out) makes each new instance of it faster to understand.</li></ul>
+  <div class="nav"><a class="prv" href="0066-logging-levels.html"><span class="mini">← Previous</span>Logging levels</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-cloud.html", ID = "t67";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
