@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Circuit breaker states (closed/open/half-open)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-cloud.html">Spring Cloud</a> › 5. Resilience & Circuit Breaking</div>
+  <div class="htitle">
+    <h1>"Circuit breaker states (closed/open/half-open)"</h1>
+    <a class="back" href="../../spring-cloud.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Earlier cards used CLOSED/OPEN/HALF_OPEN informally; this card examines Resilience4j&#x27;s actual state machine in full, including the two states earlier examples simplified away: <code>DISABLED</code> (circuit breaking turned off entirely — always calls through), and <code>FORCED_OPEN</code> (manually forced open, always uses the fallback, ignoring real failure rates) — both useful operational controls beyond the automatic three-state cycle.</p>
+<pre><code class="lang-java">CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker(&quot;billing-service&quot;);
+
+cb.transitionToOpenState();       // manually force OPEN
+cb.transitionToClosedState();     // manually force back to CLOSED
+cb.transitionToDisabledState();   // turn off circuit breaking entirely for this instance
+cb.transitionToForcedOpenState(); // permanently OPEN until manually transitioned elsewhere</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>The automatic CLOSED → OPEN → HALF_OPEN → CLOSED cycle (covered across earlier cards) handles ordinary failure detection and recovery, but operations sometimes needs to intervene directly — deliberately disabling circuit breaking during a controlled load test (where you *want* to see real failures, not fallback masking), or forcibly opening a circuit ahead of a known, scheduled maintenance window on a downstream dependency, before any real failures have even occurred.</p>
+<p>Understanding the full state set matters when:</p>
+<ul><li>Running a load test or chaos experiment where circuit breaking would interfere with observing real failure behavior — <code>transitionToDisabledState()</code> removes the circuit breaker from the equation entirely, temporarily.</li><li>A downstream service has scheduled maintenance and you want to proactively protect callers *before* it goes down (rather than waiting for real failures to accumulate and trip the breaker naturally) — <code>transitionToForcedOpenState()</code> does this deliberately, ahead of time.</li><li>Debugging a circuit breaker that seems &quot;stuck&quot; — knowing all five states (not just the automatic three) helps correctly diagnose whether it&#x27;s genuinely cycling through OPEN/HALF_OPEN, or has been manually forced into a state that needs manual reversal.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> Automatic cycle:
+   CLOSED --(failure rate exceeds threshold)--&gt; OPEN
+   OPEN --(wait-duration-in-open-state elapses)--&gt; HALF_OPEN
+   HALF_OPEN --(trial calls succeed enough)--&gt; CLOSED
+   HALF_OPEN --(trial calls still failing)--&gt; OPEN
+
+ Manual-only states:
+   DISABLED     -- circuit breaking is off; every call goes straight through, no protection at all
+   FORCED_OPEN  -- always uses the fallback; real calls are never attempted, until manually transitioned out</code></pre>
+<p>DISABLED and FORCED_OPEN sit outside the automatic cycle entirely — nothing but an explicit <code>transitionTo*</code> call moves the breaker into or out of them.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The automatic cycle moves between closed, open, and half open based on failure rate and elapsed time, while disabled and forced open sit outside that cycle and only change on an explicit manual transition">
+  <rect x="30" y="30" width="130" height="40" rx="8" fill="#6db33f30" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="95" y="55" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">CLOSED</text>
+
+  <rect x="240" y="30" width="130" height="40" rx="8" fill="#e6494930" stroke="#e64949" stroke-width="1.5"/>
+  <text x="305" y="55" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">OPEN</text>
+
+  <rect x="450" y="30" width="130" height="40" rx="8" fill="#79c0ff30" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="515" y="55" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">HALF_OPEN</text>
+
+  <line x1="160" y1="50" x2="238" y2="50" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a71)"/>
+  <line x1="370" y1="50" x2="448" y2="50" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a71)"/>
+  <line x1="450" y1="65" x2="170" y2="65" stroke="#8b949e" stroke-width="1.1" marker-end="url(#a71)"/>
+  <text x="320" y="80" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">trial succeeds -&gt; CLOSED</text>
+
+  <rect x="120" y="140" width="150" height="40" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="4,3"/>
+  <text x="195" y="165" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">DISABLED (manual only)</text>
+
+  <rect x="370" y="140" width="180" height="40" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="4,3"/>
+  <text x="460" y="165" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">FORCED_OPEN (manual only)</text>
+
+  <defs><marker id="a71" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>The top row cycles automatically; the bottom row only ever changes when an operator or a piece of code explicitly requests it.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: model all five states for <code>billing-service</code>&#x27;s circuit breaker. Start with just the automatic three-state cycle (already familiar from earlier cards), then add <code>DISABLED</code> for load-testing, then add <code>FORCED_OPEN</code> for proactive maintenance-window protection.</p>
+<h3>Level 1 — Basic</h3>
+<p>The automatic three-state cycle, as a refresher baseline.</p>
+<pre><code class="lang-java">public class CircuitBreakerStatesLevel1 {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+
+    static class CircuitBreaker {
+        State state = State.CLOSED;
+
+        void recordFailure() {
+            if (state == State.CLOSED) { state = State.OPEN; System.out.println(&quot;-&gt; OPEN&quot;); }
+            else if (state == State.HALF_OPEN) { state = State.OPEN; System.out.println(&quot;-&gt; OPEN (trial failed)&quot;); }
+        }
+
+        void recordSuccess() {
+            if (state == State.HALF_OPEN) { state = State.CLOSED; System.out.println(&quot;-&gt; CLOSED (trial succeeded)&quot;); }
+        }
+
+        void cooldownElapsed() {
+            if (state == State.OPEN) { state = State.HALF_OPEN; System.out.println(&quot;-&gt; HALF_OPEN&quot;); }
+        }
+    }
+
+    public static void main(String[] args) {
+        CircuitBreaker cb = new CircuitBreaker();
+        cb.recordFailure();     // CLOSED -&gt; OPEN
+        cb.cooldownElapsed();   // OPEN -&gt; HALF_OPEN
+        cb.recordSuccess();     // HALF_OPEN -&gt; CLOSED
+        System.out.println(&quot;final state: &quot; + cb.state);
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerStatesLevel1.java</code></p>
+<p>This is the familiar automatic cycle from earlier cards — three states, all transitions driven by observed call outcomes and elapsed time, nothing manual involved.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add <code>DISABLED</code>: a manual state where the circuit breaker steps aside entirely, letting every call through regardless of failure rate — useful for load testing.</p>
+<pre><code class="lang-java">public class CircuitBreakerStatesLevel2 {
+    enum State { CLOSED, OPEN, HALF_OPEN, DISABLED }
+
+    static class CircuitBreaker {
+        State state = State.CLOSED;
+
+        void recordFailure() {
+            if (state == State.DISABLED) { System.out.println(&quot;(disabled -- failure ignored for breaker purposes)&quot;); return; }
+            if (state == State.CLOSED) { state = State.OPEN; System.out.println(&quot;-&gt; OPEN&quot;); }
+        }
+
+        boolean callAllowed() {
+            return state != State.OPEN; // DISABLED, CLOSED, HALF_OPEN all permit calls; only OPEN blocks them
+        }
+
+        void transitionToDisabled() { state = State.DISABLED; System.out.println(&quot;-&gt; DISABLED (manual)&quot;); }
+        void transitionToClosed() { state = State.CLOSED; System.out.println(&quot;-&gt; CLOSED (manual)&quot;); }
+    }
+
+    public static void main(String[] args) {
+        CircuitBreaker cb = new CircuitBreaker();
+
+        // simulate a load test: force DISABLED so real failures don&#x27;t trip the breaker and mask results
+        cb.transitionToDisabled();
+        for (int i = 0; i &lt; 5; i++) {
+            cb.recordFailure(); // would normally trip OPEN after enough failures -- but DISABLED ignores them
+        }
+        System.out.println(&quot;after 5 failures while DISABLED, state is still: &quot; + cb.state);
+        System.out.println(&quot;callAllowed: &quot; + cb.callAllowed()); // true -- every call still goes through
+
+        cb.transitionToClosed(); // load test finished, restore normal automatic behavior
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerStatesLevel2.java</code></p>
+<p>While <code>DISABLED</code>, <code>recordFailure</code> explicitly ignores every failure for state-machine purposes — five consecutive failures, which would normally trip a real breaker <code>OPEN</code>, leave the state completely unchanged. <code>callAllowed()</code> returns <code>true</code> throughout, meaning every call — including the real backend calls a load test needs to actually exercise — genuinely goes through, with the circuit breaker&#x27;s usual protective behavior entirely suspended.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Add <code>FORCED_OPEN</code>: proactively protect callers ahead of a scheduled maintenance window, before any real failures occur, and confirm it behaves differently from the automatically-triggered <code>OPEN</code> state (it never auto-transitions to <code>HALF_OPEN</code>, since there&#x27;s no cooldown involved — only a manual transition moves it out).</p>
+<pre><code class="lang-java">public class CircuitBreakerStatesLevel3 {
+    enum State { CLOSED, OPEN, HALF_OPEN, DISABLED, FORCED_OPEN }
+
+    static class CircuitBreaker {
+        State state = State.CLOSED;
+
+        boolean callAllowed() {
+            return state == State.CLOSED || state == State.HALF_OPEN || state == State.DISABLED;
+        }
+
+        void cooldownElapsed() {
+            if (state == State.OPEN) { state = State.HALF_OPEN; System.out.println(&quot;-&gt; HALF_OPEN (automatic)&quot;); }
+            // NOTE: FORCED_OPEN does NOT respond to cooldownElapsed() at all -- only a manual transition moves it
+        }
+
+        void transitionToForcedOpen() { state = State.FORCED_OPEN; System.out.println(&quot;-&gt; FORCED_OPEN (manual)&quot;); }
+        void transitionToClosed() { state = State.CLOSED; System.out.println(&quot;-&gt; CLOSED (manual)&quot;); }
+    }
+
+    public static void main(String[] args) {
+        CircuitBreaker cb = new CircuitBreaker();
+
+        // billing-service has a scheduled maintenance window starting soon -- protect callers proactively
+        cb.transitionToForcedOpen();
+        System.out.println(&quot;callAllowed during maintenance: &quot; + cb.callAllowed()); // false -- fallback used for every call
+
+        // unlike automatic OPEN, waiting doesn&#x27;t help -- FORCED_OPEN ignores cooldown entirely
+        cb.cooldownElapsed();
+        System.out.println(&quot;state after cooldown elapsed (still forced): &quot; + cb.state);
+
+        // maintenance window ends -- an operator (or a scheduled job) explicitly restores normal operation
+        cb.transitionToClosed();
+        System.out.println(&quot;callAllowed after maintenance ends: &quot; + cb.callAllowed()); // true again
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerStatesLevel3.java</code></p>
+<p><code>transitionToForcedOpen()</code> puts the breaker into <code>FORCED_OPEN</code> proactively, before the maintenance window even begins and before any real failures occur — <code>callAllowed()</code> immediately returns <code>false</code>, meaning every caller gets the fallback from this point on. Critically, <code>cooldownElapsed()</code> — which would normally move a real, automatically-triggered <code>OPEN</code> breaker into <code>HALF_OPEN</code> — has no effect at all on <code>FORCED_OPEN</code>, since it&#x27;s designed to require an explicit manual transition to leave; only the final <code>transitionToClosed()</code> call, presumably issued once the maintenance window is confirmed complete, restores normal call flow.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the sequence in Level 3.</p>
+<ol><li><code>cb.transitionToForcedOpen()</code> runs first — this models an operator (or an automated maintenance-window scheduler) proactively calling <code>circuitBreaker.transitionToForcedOpenState()</code> ahead of a known downstream outage, rather than waiting for real failures to accumulate and trip the breaker the normal way. <code>state</code> becomes <code>FORCED_OPEN</code>.</li><li><code>cb.callAllowed()</code> is checked — the method&#x27;s condition (<code>CLOSED || HALF_OPEN || DISABLED</code>) doesn&#x27;t include <code>FORCED_OPEN</code>, so it returns <code>false</code>. Every caller from this point on receives the fallback response immediately, with real calls never attempted, exactly the intended protective effect during the maintenance window.</li><li><code>cb.cooldownElapsed()</code> runs — its logic only checks <code>if (state == State.OPEN)</code>, and <code>state</code> is <code>FORCED_OPEN</code>, not <code>OPEN</code>, so this check fails and nothing happens. This is the crucial distinguishing behavior from ordinary <code>OPEN</code>: waiting out any amount of time never automatically recovers a <code>FORCED_OPEN</code> breaker.</li><li>The <code>println</code> after <code>cooldownElapsed()</code> confirms <code>state</code> is still <code>FORCED_OPEN</code>, unchanged by the elapsed-time check that would have moved a genuinely automatic <code>OPEN</code> breaker into <code>HALF_OPEN</code>.</li><li><code>cb.transitionToClosed()</code> runs last — this models the maintenance window ending and an operator or scheduled job explicitly restoring the breaker to normal, automatic operation. <code>callAllowed()</code> now returns <code>true</code> again, and from this point forward the breaker resumes its ordinary CLOSED-based failure tracking.</li></ol>
+<pre><code>transitionToForcedOpen() -&gt; FORCED_OPEN
+callAllowed() -&gt; false (every call gets the fallback)
+
+cooldownElapsed() -&gt; NO EFFECT (FORCED_OPEN only responds to explicit manual transitions, never to elapsed time)
+state remains FORCED_OPEN
+
+transitionToClosed() -&gt; CLOSED (manual, e.g. once maintenance is confirmed over)
+callAllowed() -&gt; true again</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a <code>FORCED_OPEN</code> breaker that&#x27;s never explicitly transitioned back out stays that way indefinitely — since it doesn&#x27;t respond to elapsed time at all, forgetting to call <code>transitionToClosedState()</code> (or an equivalent) after a maintenance window ends leaves callers permanently receiving fallback responses, potentially long after the actual downstream service has recovered. Any code path that programmatically forces a breaker open should have a clearly corresponding, reliably-triggered path to un-force it.</blockquote>
+<ul><li>The automatic three-state cycle (CLOSED/OPEN/HALF_OPEN) handles ordinary failure detection and recovery without any manual intervention; <code>DISABLED</code> and <code>FORCED_OPEN</code> exist specifically for deliberate operational control outside that automatic behavior.</li><li><code>DISABLED</code> is the right tool for temporarily removing circuit breaking&#x27;s interference during load tests or chaos experiments where observing genuine failure behavior matters more than protection.</li><li><code>FORCED_OPEN</code> is the right tool for proactive protection ahead of a *known* future outage (scheduled maintenance) — protecting callers before failures even start, rather than reactively after enough of them have already occurred.</li><li>Both manual states require an explicit transition to enter and an explicit transition to leave — neither responds to the automatic failure-rate or cooldown-timer logic that governs the CLOSED/OPEN/HALF_OPEN cycle, which is exactly what makes them suitable for deliberate, operator-controlled scenarios.</li></ul>
+  <div class="nav"><a class="prv" href="0070-circuitbreakerfactory-customizers.html"><span class="mini">← Previous</span>CircuitBreakerFactory & customizers</a><a class="nxt" href="0072-bulkhead.html"><span class="mini">Next →</span>Bulkhead</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-cloud.html", ID = "t71";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

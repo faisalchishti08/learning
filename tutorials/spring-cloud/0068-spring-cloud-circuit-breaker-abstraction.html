@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Spring Cloud Circuit Breaker abstraction" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-cloud.html">Spring Cloud</a> › 5. Resilience & Circuit Breaking</div>
+  <div class="htitle">
+    <h1>"Spring Cloud Circuit Breaker abstraction"</h1>
+    <a class="back" href="../../spring-cloud.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Cloud Circuit Breaker is a thin, vendor-neutral abstraction (<code>CircuitBreakerFactory</code>, <code>CircuitBreaker</code>) sitting in front of actual circuit breaker implementations — Resilience4j is the standard choice today (Netflix Hystrix, the historical default, is no longer actively developed) — so application code depends on one consistent API regardless of which underlying library actually does the work.</p>
+<pre><code class="lang-java">@Service
+class OrdersService {
+    private final CircuitBreakerFactory circuitBreakerFactory;
+
+    Invoice getInvoiceWithProtection(String orderId) {
+        CircuitBreaker cb = circuitBreakerFactory.create(&quot;billing-service&quot;);
+        return cb.run(
+            () -&gt; billingClient.getInvoice(orderId),      // the protected call
+            throwable -&gt; new Invoice(orderId, 0.0)          // the fallback
+        );
+    }
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>The earlier cards already used circuit breakers in specific contexts — the Gateway <code>CircuitBreaker</code> filter, Feign&#x27;s circuit breaker fallback integration. This card is the shared abstraction underneath both of those, and the one to reach for directly when protecting *arbitrary* code (not just a Gateway route or a Feign call) — a database call, a call to a non-Feign HTTP client, any operation with a real chance of failing and a sensible fallback.</p>
+<p>Reach for the <code>CircuitBreakerFactory</code> abstraction directly when:</p>
+<ul><li>Protecting code that isn&#x27;t already covered by Gateway&#x27;s <code>CircuitBreaker</code> filter or Feign&#x27;s built-in circuit breaker integration — any arbitrary method call, not necessarily an HTTP call at all.</li><li>You want the option to swap the underlying circuit breaker implementation later without rewriting every call site — depending on the abstraction rather than Resilience4j&#x27;s own API directly keeps that door open, even though Resilience4j is effectively the only realistic choice today.</li><li>Consistent behavior and configuration style are wanted across every protected call in an application, regardless of whether that call happens to go through Gateway, Feign, or plain application code.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> application code
+       |
+       v
+ CircuitBreakerFactory.create(&quot;name&quot;)   &lt;- vendor-neutral: doesn&#x27;t know or care which library is underneath
+       |
+       v
+ CircuitBreaker.run(supplier, fallbackFunction)
+       |
+       |-- CLOSED: runs supplier() -- success returns its result, failure records it and may trip OPEN
+       |-- OPEN: skips supplier() entirely, runs fallbackFunction(throwable) immediately
+       |-- HALF_OPEN: allows a trial run of supplier()</code></pre>
+<p>The abstraction&#x27;s job is to expose exactly this run-with-fallback shape consistently, regardless of which library actually implements the state machine and failure tracking underneath.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Application code depends only on the vendor neutral CircuitBreakerFactory abstraction, which is backed by a swappable underlying implementation such as Resilience4j">
+  <rect x="30" y="30" width="220" height="50" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="140" y="52" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">application code</text>
+  <text x="140" y="68" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">cb.run(supplier, fallback)</text>
+
+  <line x1="140" y1="80" x2="140" y2="110" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a68)"/>
+
+  <rect x="30" y="115" width="220" height="50" rx="8" fill="#6db33f30" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="140" y="137" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">CircuitBreakerFactory</text>
+  <text x="140" y="153" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">vendor-neutral abstraction</text>
+
+  <rect x="380" y="115" width="230" height="50" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.2"/>
+  <text x="495" y="137" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Resilience4j (swappable)</text>
+  <text x="495" y="153" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">actual state machine + tracking</text>
+
+  <line x1="250" y1="140" x2="378" y2="140" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a68)"/>
+
+  <defs><marker id="a68" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Application code talks only to the abstraction; the concrete circuit breaker implementation is an interchangeable detail behind it.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: protect a call to a downstream <code>orders-service</code> dependency (not through Gateway or Feign, just direct application code) using the abstraction&#x27;s shape. Start with an unprotected call, then wrap it in the abstract run-with-fallback pattern, then swap the &quot;implementation&quot; underneath without touching the calling code — demonstrating the abstraction&#x27;s actual value.</p>
+<h3>Level 1 — Basic</h3>
+<p>Unprotected — a direct call with no circuit breaker at all.</p>
+<pre><code class="lang-java">import java.util.function.Supplier;
+
+public class CircuitBreakerAbstractionLevel1 {
+    record Invoice(String id, double amount) {}
+
+    static Supplier&lt;Invoice&gt; billingCall = () -&gt; { throw new RuntimeException(&quot;billing-service is down&quot;); };
+
+    public static void main(String[] args) {
+        try {
+            Invoice invoice = billingCall.get();
+            System.out.println(invoice);
+        } catch (RuntimeException e) {
+            System.out.println(&quot;caller sees a raw failure: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerAbstractionLevel1.java</code></p>
+<p>No abstraction, no fallback — exactly the baseline the circuit breaker abstraction is meant to improve on, familiar from earlier cards.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Introduce the abstract <code>run(supplier, fallback)</code> shape, independent of any specific underlying implementation.</p>
+<pre><code class="lang-java">import java.util.function.Function;
+import java.util.function.Supplier;
+
+public class CircuitBreakerAbstractionLevel2 {
+    record Invoice(String id, double amount) {}
+
+    // the abstraction: application code only ever calls THIS shape
+    interface CircuitBreaker {
+        &lt;T&gt; T run(Supplier&lt;T&gt; supplier, Function&lt;Throwable, T&gt; fallback);
+    }
+
+    // a minimal, no-real-state-machine implementation -- just try/catch, standing in for &quot;some backing library&quot;
+    static class SimpleCircuitBreaker implements CircuitBreaker {
+        public &lt;T&gt; T run(Supplier&lt;T&gt; supplier, Function&lt;Throwable, T&gt; fallback) {
+            try {
+                return supplier.get();
+            } catch (Throwable t) {
+                return fallback.apply(t);
+            }
+        }
+    }
+
+    static Supplier&lt;Invoice&gt; billingCall = () -&gt; { throw new RuntimeException(&quot;billing-service is down&quot;); };
+
+    public static void main(String[] args) {
+        CircuitBreaker cb = new SimpleCircuitBreaker();
+        Invoice invoice = cb.run(billingCall, throwable -&gt; new Invoice(&quot;unknown&quot;, 0.0));
+        System.out.println(&quot;caller received: &quot; + invoice); // never throws, always gets an Invoice
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerAbstractionLevel2.java</code></p>
+<p>Calling code now depends only on the <code>CircuitBreaker</code> interface&#x27;s <code>run</code> method — it has no idea <code>SimpleCircuitBreaker</code> is a bare try/catch with no real failure-rate tracking or state machine underneath. That&#x27;s precisely the abstraction&#x27;s point: the calling code&#x27;s shape is stable, while the implementation behind it can be anything satisfying the same interface.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Swap in a more sophisticated implementation (with real failure tracking, mirroring what Resilience4j actually provides) behind the exact same interface, with zero changes to the calling code — demonstrating the abstraction&#x27;s real value.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+public class CircuitBreakerAbstractionLevel3 {
+    record Invoice(String id, double amount) {}
+
+    interface CircuitBreaker {
+        &lt;T&gt; T run(Supplier&lt;T&gt; supplier, Function&lt;Throwable, T&gt; fallback);
+    }
+
+    // a more realistic implementation, with actual state tracking -- this is what a Resilience4j-backed
+    // implementation of the SAME interface would provide underneath the Spring Cloud Circuit Breaker abstraction
+    static class TrackingCircuitBreaker implements CircuitBreaker {
+        enum State { CLOSED, OPEN }
+        State state = State.CLOSED;
+        Deque&lt;Boolean&gt; window = new ArrayDeque&lt;&gt;();
+        int windowSize = 3;
+
+        public &lt;T&gt; T run(Supplier&lt;T&gt; supplier, Function&lt;Throwable, T&gt; fallback) {
+            if (state == State.OPEN) {
+                System.out.println(&quot;[TrackingCircuitBreaker] OPEN -- skipping real call&quot;);
+                return fallback.apply(new RuntimeException(&quot;circuit open&quot;));
+            }
+            try {
+                T result = supplier.get();
+                recordOutcome(false);
+                return result;
+            } catch (Throwable t) {
+                recordOutcome(true);
+                return fallback.apply(t);
+            }
+        }
+
+        void recordOutcome(boolean failed) {
+            window.addLast(failed);
+            if (window.size() &gt; windowSize) window.removeFirst();
+            if (window.size() == windowSize &amp;&amp; window.stream().allMatch(b -&gt; b)) {
+                state = State.OPEN;
+                System.out.println(&quot;[TrackingCircuitBreaker] all recent calls failed -- OPENING&quot;);
+            }
+        }
+    }
+
+    static Supplier&lt;Invoice&gt; billingCall = () -&gt; { throw new RuntimeException(&quot;billing-service is down&quot;); };
+
+    // this method is UNCHANGED from Level 2 in shape -- it only depends on the CircuitBreaker interface
+    static Invoice protectedCall(CircuitBreaker cb) {
+        return cb.run(billingCall, throwable -&gt; new Invoice(&quot;unknown&quot;, 0.0));
+    }
+
+    public static void main(String[] args) {
+        CircuitBreaker cb = new TrackingCircuitBreaker(); // swapped implementation, same interface
+        for (int i = 0; i &lt; 5; i++) {
+            System.out.println(&quot;call &quot; + i + &quot; -&gt; &quot; + protectedCall(cb));
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerAbstractionLevel3.java</code></p>
+<p><code>protectedCall</code>&#x27;s body is identical in shape to Level 2&#x27;s usage — it calls <code>cb.run(...)</code> and nothing more — but <code>cb</code> is now a <code>TrackingCircuitBreaker</code> with genuine failure-window tracking, and after enough consecutive failures it actually trips <code>OPEN</code> and starts skipping the real call entirely, printing a distinct message. This is the abstraction delivering on its promise: the *calling code* (<code>protectedCall</code>) never changed at all between Level 2 and Level 3, only the concrete implementation behind the shared <code>CircuitBreaker</code> interface did — exactly mirroring how swapping from Resilience4j to a hypothetical alternative implementation of Spring Cloud Circuit Breaker wouldn&#x27;t require touching any application code depending on the abstraction.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the five calls in Level 3.</p>
+<ol><li>Calls <code>0</code> through <code>2</code> each invoke <code>protectedCall(cb)</code>, which calls <code>cb.run(billingCall, fallback)</code>. Since <code>state</code> starts <code>CLOSED</code>, each call attempts <code>supplier.get()</code> (i.e., <code>billingCall.get()</code>), which always throws. The <code>catch</code> block calls <code>recordOutcome(true)</code> and returns <code>fallback.apply(t)</code>, producing <code>Invoice(&quot;unknown&quot;, 0.0)</code> each time. After the third failure, <code>recordOutcome</code> finds the 3-slot window full and all <code>true</code> (all failures), so it flips <code>state</code> to <code>OPEN</code> and prints the &quot;OPENING&quot; message.</li><li>Call <code>3</code> invokes <code>protectedCall(cb)</code> again — this time <code>run</code> immediately checks <code>state == OPEN</code>, which is now <code>true</code>, so it prints the &quot;skipping real call&quot; message and returns <code>fallback.apply(...)</code> directly, without ever calling <code>billingCall.get()</code> again — the failing backend is spared a fourth doomed attempt.</li><li>Call <code>4</code> behaves identically to call <code>3</code> — still <code>OPEN</code>, still skips the real call, still returns the fallback <code>Invoice</code>.</li><li>Across all five calls, <code>protectedCall</code>&#x27;s own source code never changed and never needed to know anything about <code>TrackingCircuitBreaker</code>&#x27;s internal state machine or failure window — it only ever called the abstract <code>run</code> method, exactly the separation of concerns the Spring Cloud Circuit Breaker abstraction is designed to provide between application code and whatever concrete resilience library sits underneath it.</li></ol>
+<pre><code>call 0: CLOSED -&gt; try real call -&gt; fails -&gt; fallback -&gt; window=[F]
+call 1: CLOSED -&gt; try real call -&gt; fails -&gt; fallback -&gt; window=[F,F]
+call 2: CLOSED -&gt; try real call -&gt; fails -&gt; fallback -&gt; window=[F,F,F] -&gt; ALL failed -&gt; OPEN
+call 3: OPEN -&gt; real call skipped entirely -&gt; fallback
+call 4: OPEN -&gt; real call skipped entirely -&gt; fallback
+
+protectedCall()&#x27;s own code: IDENTICAL across all 5 calls and across Level 2 vs Level 3</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the abstraction&#x27;s genericity means it necessarily exposes only the lowest-common-denominator configuration surface across possible implementations — for Resilience4j-specific tuning (custom <code>SlidingWindowType</code>, specific <code>ignoreExceptions</code> lists, detailed metrics tags), you still need to configure the Resilience4j-specific customizer (a later card), not the abstract <code>CircuitBreakerFactory</code> API alone. The abstraction covers the common case cleanly; deep tuning still requires reaching into the concrete implementation.</blockquote>
+<ul><li>Spring Cloud Circuit Breaker&#x27;s value is exactly what Level 3 demonstrated directly: calling code depends on a stable interface, while the underlying implementation (its state machine, failure tracking, thresholds) can evolve or be swapped without touching every call site.</li><li>This abstraction is what both the Gateway <code>CircuitBreaker</code> filter and Feign&#x27;s circuit breaker integration are built on top of — understanding it directly explains the shared vocabulary (<code>run</code>, fallback function, CLOSED/OPEN/HALF_OPEN) across all three contexts.</li><li>Reach for <code>CircuitBreakerFactory</code> directly (rather than relying on Gateway or Feign&#x27;s built-in integration) whenever protecting code that isn&#x27;t already an HTTP call routed through either of those — database calls, message queue operations, any operation with a meaningful failure mode and a sensible fallback.</li><li>In practice today, Resilience4j is the only actively-maintained implementation choice — the abstraction&#x27;s vendor-neutrality is more about isolating application code from implementation details than about realistically swapping vendors, since Hystrix (the historical alternative) is no longer actively developed.</li></ul>
+  <div class="nav"><a class="prv" href="0067-feign-error-decoding.html"><span class="mini">← Previous</span>Feign error decoding</a><a class="nxt" href="0069-resilience4j-implementation.html"><span class="mini">Next →</span>Resilience4j implementation</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-cloud.html", ID = "t68";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
