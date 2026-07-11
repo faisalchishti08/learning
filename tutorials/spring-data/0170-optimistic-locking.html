@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Optimistic locking" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-data.html">Spring Data</a> › 9. Spring Data Neo4j</div>
+  <div class="htitle">
+    <h1>"Optimistic locking"</h1>
+    <a class="back" href="../../spring-data.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Optimistic locking in Spring Data Neo4j uses a <code>@Version</code> field on a <code>@Node</code> entity to detect concurrent modifications — two saves racing against the same node — and rejects the second one with an exception instead of silently letting it overwrite the first. The same <code>@Version</code> mechanism from the JPA and MongoDB sections earlier applies here, unchanged in concept.</p>
+<pre><code class="lang-java">@Node
+class Customer {
+    @Id String id;
+    String name;
+
+    @Version Long version;
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Without any locking, two concurrent updates to the same node — say, two requests both editing a customer&#x27;s profile — can race: the second write silently overwrites the first&#x27;s changes, and whoever saved last simply wins, with no error and no way to detect it happened. Optimistic locking catches that instead of hiding it.</p>
+<p>Reach for optimistic locking when:</p>
+<ul><li>Multiple request threads, services, or users can plausibly update the same node concurrently, and silent last-write-wins would cause a real data-loss bug.</li><li>You want to detect the conflict cheaply — no locks held during the read, just a version check at write time — rather than pessimistically locking the node for the duration of an edit.</li><li>The application can meaningfully respond to a conflict (retry, merge, tell the user &quot;someone else changed this&quot;) rather than crash outright.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> Thread A: read Customer{id=c1, version=3}
+ Thread B: read Customer{id=c1, version=3}        -- both read the SAME version
+
+ Thread A: save Customer{id=c1, version=3}    -- succeeds, version bumped to 4 in the graph
+ Thread B: save Customer{id=c1, version=3}    -- version in graph is now 4, not 3
+                                                  -&gt; OptimisticLockingFailureException</code></pre>
+<p>The version check happens at write time, comparing the version the caller last read against the version currently stored — a mismatch means someone else wrote in between.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two threads read the same version, one save succeeds and bumps the version, the second save fails a version check">
+  <rect x="20" y="20" width="270" height="35" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="155" y="42" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Thread A reads version=3</text>
+
+  <rect x="350" y="20" width="270" height="35" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="485" y="42" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Thread B reads version=3</text>
+
+  <rect x="20" y="90" width="270" height="35" rx="6" fill="#6db33f30" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="155" y="112" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">A saves -&gt; version bumped to 4</text>
+
+  <rect x="350" y="90" width="270" height="35" rx="6" fill="#79c0ff30" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="485" y="112" fill="#e6edf3" font-size="8.2" text-anchor="middle" font-family="sans-serif">B saves version=3 -&gt; graph has 4</text>
+
+  <rect x="350" y="150" width="270" height="30" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="485" y="170" fill="#79c0ff" font-size="8.2" text-anchor="middle" font-family="sans-serif">OptimisticLockingFailureException</text>
+</svg>
+<p>Both threads read the same version; whichever saves second finds the stored version has already moved on and fails.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: two concurrent edits to the same customer profile, evolving from unprotected concurrent saves silently losing an update, to a <code>@Version</code>-checked save that rejects the stale write, to a retry loop that re-reads and re-applies the change after a conflict — the production-realistic response to a caught conflict.</p>
+<h3>Level 1 — Basic</h3>
+<p>Show the unprotected baseline: two &quot;concurrent&quot; saves, the second silently overwriting the first with no error and no way to detect it happened.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class OptimisticLockingLevel1 {
+    public static void main(String[] args) {
+        GraphStore store = new GraphStore();
+        store.save(new Customer(&quot;c1&quot;, &quot;Amara&quot;, &quot;amara@old.example&quot;));
+
+        // Two threads both read the same starting state.
+        Customer readByThreadA = store.findById(&quot;c1&quot;);
+        Customer readByThreadB = store.findById(&quot;c1&quot;);
+
+        readByThreadA.email = &quot;amara@work.example&quot;;
+        store.save(readByThreadA); // wins
+
+        readByThreadB.phone = &quot;+234-000-0000&quot;; // a DIFFERENT edit, made against the OLD state
+        store.save(readByThreadB); // silently overwrites A&#x27;s email change back to &quot;amara@old.example&quot;
+
+        Customer found = store.findById(&quot;c1&quot;);
+        System.out.println(&quot;email=&quot; + found.email + &quot; phone=&quot; + found.phone); // A&#x27;s email change is LOST
+    }
+}
+
+class Customer {
+    String id, name, email, phone;
+    Customer(String id, String name, String email) { this.id = id; this.name = name; this.email = email; }
+}
+
+class GraphStore {
+    private final Map&lt;String, Customer&gt; nodes = new HashMap&lt;&gt;();
+    void save(Customer c) { nodes.put(c.id, c); } // last write wins, unconditionally
+    Customer findById(String id) {
+        Customer c = nodes.get(id);
+        Customer copy = new Customer(c.id, c.name, c.email); copy.phone = c.phone;
+        return copy;
+    }
+}</code></pre>
+<p>How to run: <code>java OptimisticLockingLevel1.java</code></p>
+<p>Thread B&#x27;s save silently discards Thread A&#x27;s email change, because B&#x27;s in-memory copy was read *before* A&#x27;s save happened, and nothing checks for that — this is exactly the class of bug optimistic locking exists to catch.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add a <code>@Version</code> field and a save that checks it, rejecting a save whose version doesn&#x27;t match what&#x27;s currently stored.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class OptimisticLockingLevel2 {
+    public static void main(String[] args) {
+        GraphStore store = new GraphStore();
+        store.save(new Customer(&quot;c1&quot;, &quot;Amara&quot;, &quot;amara@old.example&quot;, 0L));
+
+        Customer readByThreadA = store.findById(&quot;c1&quot;);
+        Customer readByThreadB = store.findById(&quot;c1&quot;); // both read version=1
+
+        readByThreadA.email = &quot;amara@work.example&quot;;
+        store.save(readByThreadA); // succeeds: version 1 matches, bumped to 2
+
+        readByThreadB.phone = &quot;+234-000-0000&quot;;
+        try {
+            store.save(readByThreadB); // version 1 no longer matches stored version 2
+        } catch (OptimisticLockingFailureException e) {
+            System.out.println(&quot;Conflict detected: &quot; + e.getMessage());
+        }
+
+        Customer found = store.findById(&quot;c1&quot;);
+        System.out.println(&quot;email=&quot; + found.email + &quot; version=&quot; + found.version); // A&#x27;s change preserved
+    }
+}
+
+class OptimisticLockingFailureException extends RuntimeException {
+    OptimisticLockingFailureException(String message) { super(message); }
+}
+
+class Customer {
+    String id, name, email, phone;
+    Long version; // @Version
+    Customer(String id, String name, String email, Long version) {
+        this.id = id; this.name = name; this.email = email; this.version = version;
+    }
+}
+
+class GraphStore {
+    private final Map&lt;String, Customer&gt; nodes = new HashMap&lt;&gt;();
+    void save(Customer c) {
+        Customer stored = nodes.get(c.id);
+        if (stored != null &amp;&amp; !stored.version.equals(c.version)) {
+            throw new OptimisticLockingFailureException(
+                &quot;Customer &quot; + c.id + &quot; was modified concurrently (expected version &quot; + c.version + &quot;, found &quot; + stored.version + &quot;)&quot;);
+        }
+        c.version = (stored == null ? 0L : stored.version) + 1;
+        nodes.put(c.id, c);
+    }
+    Customer findById(String id) {
+        Customer c = nodes.get(id);
+        Customer copy = new Customer(c.id, c.name, c.email, c.version); copy.phone = c.phone;
+        return copy;
+    }
+}</code></pre>
+<p>How to run: <code>java OptimisticLockingLevel2.java</code></p>
+<p>Thread A&#x27;s save succeeds and bumps the version from 1 to 2. Thread B&#x27;s save carries the stale <code>version=1</code> it read before A&#x27;s save, the check in <code>save()</code> catches the mismatch against the now-stored <code>version=2</code>, and throws instead of silently overwriting — A&#x27;s email change survives.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Add a retry loop around the conflicting save: on catching the exception, re-read the current state, re-apply the intended change on top of the fresh version, and try again — the realistic production response to a caught conflict, rather than just surfacing the error to the caller.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.*;
+
+public class OptimisticLockingLevel3 {
+    public static void main(String[] args) {
+        GraphStore store = new GraphStore();
+        store.save(new Customer(&quot;c1&quot;, &quot;Amara&quot;, &quot;amara@old.example&quot;, 0L));
+
+        Customer readByThreadA = store.findById(&quot;c1&quot;);
+        readByThreadA.email = &quot;amara@work.example&quot;;
+        store.save(readByThreadA); // succeeds first, bumps version 1 -&gt; 2
+
+        // Thread B retries its phone-number update until it succeeds against the CURRENT version.
+        saveWithRetry(store, &quot;c1&quot;, customer -&gt; customer.phone = &quot;+234-000-0000&quot;, 3);
+
+        Customer found = store.findById(&quot;c1&quot;);
+        System.out.println(&quot;email=&quot; + found.email + &quot; phone=&quot; + found.phone + &quot; version=&quot; + found.version);
+    }
+
+    static void saveWithRetry(GraphStore store, String id, Consumer&lt;Customer&gt; mutation, int maxAttempts) {
+        for (int attempt = 1; attempt &lt;= maxAttempts; attempt++) {
+            Customer fresh = store.findById(id); // re-read the CURRENT version on every attempt
+            mutation.accept(fresh);
+            try {
+                store.save(fresh);
+                System.out.println(&quot;Saved on attempt &quot; + attempt);
+                return;
+            } catch (OptimisticLockingFailureException e) {
+                System.out.println(&quot;Attempt &quot; + attempt + &quot; conflicted, retrying: &quot; + e.getMessage());
+            }
+        }
+        throw new IllegalStateException(&quot;Gave up after &quot; + maxAttempts + &quot; attempts&quot;);
+    }
+}
+
+class OptimisticLockingFailureException extends RuntimeException {
+    OptimisticLockingFailureException(String message) { super(message); }
+}
+
+class Customer {
+    String id, name, email, phone;
+    Long version;
+    Customer(String id, String name, String email, Long version) {
+        this.id = id; this.name = name; this.email = email; this.version = version;
+    }
+}
+
+class GraphStore {
+    private final Map&lt;String, Customer&gt; nodes = new HashMap&lt;&gt;();
+    void save(Customer c) {
+        Customer stored = nodes.get(c.id);
+        if (stored != null &amp;&amp; !stored.version.equals(c.version)) {
+            throw new OptimisticLockingFailureException(
+                &quot;expected version &quot; + c.version + &quot;, found &quot; + stored.version);
+        }
+        c.version = (stored == null ? 0L : stored.version) + 1;
+        nodes.put(c.id, c);
+    }
+    Customer findById(String id) {
+        Customer c = nodes.get(id);
+        Customer copy = new Customer(c.id, c.name, c.email, c.version); copy.phone = c.phone;
+        return copy;
+    }
+}</code></pre>
+<p>How to run: <code>java OptimisticLockingLevel3.java</code></p>
+<p><code>saveWithRetry</code> re-reads the customer fresh on every attempt — so its first attempt already picks up the post-Thread-A <code>version=2</code> and the phone-number edit is applied on top of the *current* state, succeeding on the very first try, with no conflict at all this time, because the retry loop always operates against fresh data rather than a stale in-memory copy.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts in <code>main</code> for Level 3. Thread A&#x27;s flow runs first and completes fully: it reads <code>version=1</code>, sets a new email, saves, and the store bumps the version to <code>2</code>. This finishes before Thread B&#x27;s retry loop begins in this deliberately sequential demo.</p>
+<p><code>saveWithRetry</code> then runs: attempt 1 calls <code>store.findById(&quot;c1&quot;)</code>, which returns the *already-updated* state with <code>version=2</code> and Amara&#x27;s new email intact — the mutation (setting <code>phone</code>) is applied to that fresh copy, and the save succeeds immediately, since its version matches what&#x27;s currently stored:</p>
+<pre><code>Saved on attempt 1
+email=amara@work.example phone=+234-000-0000 version=3</code></pre>
+<p>In a real concurrent system, Thread B&#x27;s *first* attempt would likely conflict (if it read <code>version=1</code> before Thread A&#x27;s save landed) — the retry loop&#x27;s actual value shows up when it catches an <code>OptimisticLockingFailureException</code>, discards its stale copy, re-reads the current node, and reapplies just its own intended change (<code>phone</code>), rather than reapplying a whole stale object that would clobber Thread A&#x27;s <code>email</code> change again.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a retry loop that re-saves the *entire* stale object (rather than re-reading fresh and reapplying only the intended field-level change) can still silently clobber a concurrent change — the safety optimistic locking provides depends on the retry logic re-reading current state, not just resubmitting the same stale object with a bumped version number.</blockquote>
+<blockquote>Gotcha: <code>@Version</code> fields must not be set manually by application code — Spring Data manages the value entirely; hand-setting or incrementing it defeats the conflict check and can cause legitimate saves to fail or conflicting saves to silently succeed.</blockquote>
+<ul><li><code>@Version</code> detects concurrent modification at write time by comparing the version read against the version currently stored — no locks held during reads, unlike pessimistic locking.</li><li>A version mismatch throws <code>OptimisticLockingFailureException</code> rather than silently allowing a last-write-wins overwrite.</li><li>The realistic response to a caught conflict is a retry that re-reads fresh state and reapplies just the intended change — not blindly resubmitting the same stale object.</li><li>The mechanism and annotation are identical to <code>@Version</code> in the JPA and MongoDB sections earlier in this course — Spring Data&#x27;s optimistic locking support is shared across modules.</li></ul>
+  <div class="nav"><a class="prv" href="0169-auditing.html"><span class="mini">← Previous</span>Auditing</a><a class="nxt" href="0171-custom-conversions.html"><span class="mini">Next →</span>Custom conversions</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-data.html", ID = "t170";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
