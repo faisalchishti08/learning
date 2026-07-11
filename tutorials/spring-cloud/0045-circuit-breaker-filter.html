@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Circuit breaker filter" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-cloud.html">Spring Cloud</a> › 4. Routing & Load Balancing</div>
+  <div class="htitle">
+    <h1>"Circuit breaker filter"</h1>
+    <a class="back" href="../../spring-cloud.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <code>CircuitBreaker</code> GatewayFilter wraps a route&#x27;s backend call in a circuit breaker (backed by Resilience4j): if the backend fails repeatedly, the circuit &quot;opens&quot; and Gateway stops even attempting to call it for a cooldown period, immediately returning a fallback response instead — protecting both the failing backend from further load and the gateway itself from piling up slow, doomed requests.</p>
+<pre><code class="lang-yaml">filters:
+  - name: CircuitBreaker
+    args:
+      name: ordersCircuitBreaker
+      fallbackUri: forward:/fallback/orders</code></pre>
+<pre><code class="lang-java">@RestController
+class FallbackController {
+    @GetMapping(&quot;/fallback/orders&quot;)
+    Map&lt;String, String&gt; ordersFallback() {
+        return Map.of(&quot;message&quot;, &quot;orders-service is temporarily unavailable, please try again shortly&quot;);
+    }
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p><code>Retry</code> (covered earlier) helps with transient, one-off failures, but retrying a backend that&#x27;s genuinely down or overwhelmed just adds more load to an already-struggling service and makes callers wait through every retry attempt before eventually failing anyway. A circuit breaker instead tracks the failure rate over a rolling window, and once it crosses a threshold, stops sending traffic entirely for a cooldown period — failing fast with an immediate fallback instead of making every caller wait out a doomed call.</p>
+<p>Reach for <code>CircuitBreaker</code> when:</p>
+<ul><li>A backend&#x27;s failure could cascade — if it&#x27;s slow or down, letting every gateway request pile up waiting on it can exhaust gateway resources and take down healthy routes too.</li><li>You want a defined fallback behavior (a cached response, a friendly error, a degraded feature) instead of every caller individually experiencing a raw connection timeout or 5xx error.</li><li>The failure pattern is sustained, not just an isolated blip — circuit breakers and retries are complementary, often used together: retry a handful of times, and if the failure rate stays high across many requests, trip the breaker.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> CLOSED (normal):     requests flow through to the backend
+        |
+        |  failure rate crosses threshold over a rolling window
+        v
+ OPEN:                requests immediately return the fallback, backend is NOT called at all
+        |
+        |  after a cooldown period
+        v
+ HALF_OPEN:           a limited number of trial requests are allowed through
+        |
+        |-- succeed enough -&gt; back to CLOSED
+        |-- still failing   -&gt; back to OPEN, cooldown resets</code></pre>
+<p>The breaker tracks aggregate health and stops sending traffic the moment it looks bad, rather than letting every individual request discover the failure the hard way.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The circuit breaker cycles between closed, open, and half open states based on the observed failure rate and a cooldown timer">
+  <rect x="30" y="20" width="150" height="50" rx="8" fill="#6db33f30" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="105" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">CLOSED</text>
+
+  <rect x="245" y="20" width="150" height="50" rx="8" fill="#e6494930" stroke="#e64949" stroke-width="1.5"/>
+  <text x="320" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">OPEN</text>
+
+  <rect x="460" y="20" width="150" height="50" rx="8" fill="#79c0ff30" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="535" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">HALF_OPEN</text>
+
+  <line x1="180" y1="45" x2="243" y2="45" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a45)"/>
+  <text x="210" y="35" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">threshold</text>
+
+  <line x1="395" y1="45" x2="458" y2="45" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a45)"/>
+  <text x="425" y="35" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">cooldown</text>
+
+  <line x1="535" y1="75" x2="320" y2="120" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a45)"/>
+  <text x="450" y="115" fill="#8b949e" font-size="6.5" font-family="sans-serif">trial fails -&gt; back to OPEN</text>
+
+  <line x1="480" y1="70" x2="140" y2="70" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a45)"/>
+  <text x="320" y="90" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">trial succeeds -&gt; back to CLOSED</text>
+
+  <defs><marker id="a45" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>The breaker moves between three states based purely on observed outcomes and elapsed cooldown time, never on manual intervention.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: protect calls to a flaky <code>orders-service</code> with a circuit breaker. Start with an unprotected direct call, then add failure-rate tracking that trips the breaker, then add the half-open trial and recovery cycle.</p>
+<h3>Level 1 — Basic</h3>
+<p>Unprotected calls — every request waits out every failure directly.</p>
+<pre><code class="lang-java">import java.util.function.Supplier;
+
+public class CircuitBreakerLevel1 {
+    record Response(int status, String body) {}
+
+    static Response callBackend(Supplier&lt;Response&gt; backend) {
+        return backend.get(); // no protection at all -- every failure is fully absorbed by the caller
+    }
+
+    public static void main(String[] args) {
+        int[] callCount = {0};
+        Supplier&lt;Response&gt; flakyBackend = () -&gt; {
+            callCount[0]++;
+            return new Response(503, &quot;Service Unavailable&quot;); // this backend is down, every call fails
+        };
+
+        for (int i = 0; i &lt; 5; i++) {
+            Response r = callBackend(flakyBackend);
+            System.out.println(&quot;call &quot; + i + &quot; -&gt; &quot; + r.status());
+        }
+        System.out.println(&quot;total backend calls made: &quot; + callCount[0]); // 5 -- all wasted on a dead backend
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerLevel1.java</code></p>
+<p>Every one of the five calls reaches the backend directly, even though it&#x27;s clearly down after the first failure — no protection, no fallback, and the backend keeps taking traffic it can&#x27;t serve.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add failure-rate tracking over a rolling window, tripping the breaker open once the threshold is crossed.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Supplier;
+
+public class CircuitBreakerLevel2 {
+    record Response(int status, String body) {}
+
+    static class CircuitBreaker {
+        enum State { CLOSED, OPEN }
+        State state = State.CLOSED;
+        Deque&lt;Boolean&gt; window = new ArrayDeque&lt;&gt;(); // true = failure, sliding window of recent outcomes
+        int windowSize = 5;
+        double failureThreshold = 0.5; // trip if &gt;= 50% of the window failed
+
+        Response call(Supplier&lt;Response&gt; backend, Response fallback) {
+            if (state == State.OPEN) {
+                return fallback; // backend is NOT called at all while open
+            }
+            Response result = backend.get();
+            recordOutcome(result.status() &gt;= 500);
+            return result;
+        }
+
+        void recordOutcome(boolean failed) {
+            window.addLast(failed);
+            if (window.size() &gt; windowSize) window.removeFirst();
+            if (window.size() == windowSize) {
+                long failures = window.stream().filter(b -&gt; b).count();
+                if ((double) failures / windowSize &gt;= failureThreshold) {
+                    state = State.OPEN;
+                    System.out.println(&quot;[breaker] threshold crossed -- OPENING circuit&quot;);
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        CircuitBreaker breaker = new CircuitBreaker();
+        Supplier&lt;Response&gt; flakyBackend = () -&gt; new Response(503, &quot;Service Unavailable&quot;);
+        Response fallback = new Response(200, &quot;{\&quot;message\&quot;:\&quot;temporarily unavailable\&quot;}&quot;);
+
+        for (int i = 0; i &lt; 8; i++) {
+            Response r = breaker.call(flakyBackend, fallback);
+            System.out.println(&quot;call &quot; + i + &quot; -&gt; &quot; + r.status() + &quot; (state=&quot; + breaker.state + &quot;)&quot;);
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerLevel2.java</code></p>
+<p><code>recordOutcome</code> tracks a sliding window of the last 5 outcomes; once the window fills and at least 50% are failures, <code>state</code> flips to <code>OPEN</code>. From that point on, <code>call</code> returns <code>fallback</code> immediately without ever invoking <code>backend.get()</code> — the backend stops receiving traffic entirely, and every caller after that gets a fast, predictable fallback response instead of a slow failure.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Add the cooldown-driven <code>HALF_OPEN</code> recovery cycle: after a cooldown period, allow a trial request through, and either close the circuit (backend recovered) or reopen it (still failing).</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Supplier;
+
+public class CircuitBreakerLevel3 {
+    record Response(int status, String body) {}
+
+    static class CircuitBreaker {
+        enum State { CLOSED, OPEN, HALF_OPEN }
+        State state = State.CLOSED;
+        Deque&lt;Boolean&gt; window = new ArrayDeque&lt;&gt;();
+        int windowSize = 5;
+        double failureThreshold = 0.5;
+        long openedAtMs = -1;
+        long cooldownMs = 1000;
+
+        Response call(Supplier&lt;Response&gt; backend, Response fallback, long nowMs) {
+            if (state == State.OPEN) {
+                if (nowMs - openedAtMs &gt;= cooldownMs) {
+                    state = State.HALF_OPEN;
+                    System.out.println(&quot;[breaker] cooldown elapsed -- HALF_OPEN, allowing a trial request&quot;);
+                } else {
+                    return fallback;
+                }
+            }
+            if (state == State.HALF_OPEN) {
+                Response result = backend.get();
+                if (result.status() &lt; 500) {
+                    state = State.CLOSED;
+                    window.clear();
+                    System.out.println(&quot;[breaker] trial succeeded -- CLOSING circuit&quot;);
+                    return result;
+                } else {
+                    state = State.OPEN;
+                    openedAtMs = nowMs;
+                    System.out.println(&quot;[breaker] trial failed -- back to OPEN, cooldown reset&quot;);
+                    return fallback;
+                }
+            }
+            Response result = backend.get();
+            recordOutcome(result.status() &gt;= 500, nowMs);
+            return result;
+        }
+
+        void recordOutcome(boolean failed, long nowMs) {
+            window.addLast(failed);
+            if (window.size() &gt; windowSize) window.removeFirst();
+            if (window.size() == windowSize) {
+                long failures = window.stream().filter(b -&gt; b).count();
+                if ((double) failures / windowSize &gt;= failureThreshold) {
+                    state = State.OPEN;
+                    openedAtMs = nowMs;
+                    System.out.println(&quot;[breaker] threshold crossed -- OPENING circuit&quot;);
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        CircuitBreaker breaker = new CircuitBreaker();
+        Response fallback = new Response(200, &quot;{\&quot;message\&quot;:\&quot;temporarily unavailable\&quot;}&quot;);
+        boolean[] recovered = {false};
+        Supplier&lt;Response&gt; backend = () -&gt; recovered[0]
+                ? new Response(200, &quot;{\&quot;orderId\&quot;:42}&quot;)
+                : new Response(503, &quot;Service Unavailable&quot;);
+
+        for (int i = 0; i &lt; 5; i++) System.out.println(&quot;call &quot; + i + &quot; -&gt; &quot; + breaker.call(backend, fallback, i * 100).status());
+
+        recovered[0] = true; // backend comes back to life
+        System.out.println(&quot;call 5 (t=1600ms) -&gt; &quot; + breaker.call(backend, fallback, 1600).status()); // cooldown elapsed, trial call
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerLevel3.java</code></p>
+<p>The first five calls (<code>t=0</code> to <code>t=400</code>) fill the sliding window with failures and trip the breaker <code>OPEN</code> around the fifth call. At <code>t=1600</code>, more than the <code>1000ms</code> cooldown has passed since the breaker opened, so <code>call</code> transitions to <code>HALF_OPEN</code> and allows exactly one trial request through — since <code>recovered[0]</code> is now <code>true</code>, that trial succeeds, and the breaker immediately closes, ready to resume normal traffic.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the sequence in Level 3.</p>
+<ol><li>Calls <code>0</code> through <code>4</code> run with <code>recovered[0] = false</code>, so <code>backend</code> always returns <code>503</code>. Each call goes through the <code>state == CLOSED</code> path (initially), calling <code>backend.get()</code> directly and recording the failure via <code>recordOutcome</code>. Once the fifth outcome fills the 5-slot window with all failures, the failure ratio (<code>5/5 = 1.0</code>) crosses the <code>0.5</code> threshold, and <code>state</code> flips to <code>OPEN</code> with <code>openedAtMs</code> set to the current <code>nowMs</code>.</li><li><code>recovered[0] = true</code> runs — this models <code>orders-service</code> actually recovering (a restart completes, the dependency it needed comes back), independent of the breaker&#x27;s own state, which still shows <code>OPEN</code> at this point.</li><li>The final call passes <code>nowMs = 1600</code>. <code>call</code> checks <code>state == OPEN</code>, computes <code>1600 - openedAtMs</code>, and since that&#x27;s <code>&gt;= 1000</code> (the cooldown), transitions to <code>HALF_OPEN</code> and prints the transition message.</li><li>Still inside the same <code>call</code> invocation, the <code>state == HALF_OPEN</code> branch now runs: it invokes <code>backend.get()</code> for a single trial request. Because <code>recovered[0]</code> is <code>true</code>, this returns <code>200</code>, which is <code>&lt; 500</code>, so the breaker sets <code>state = CLOSED</code>, clears the failure window, prints the recovery message, and returns the successful <code>200</code> response directly to the caller — the very first real traffic to reach the backend since the breaker opened.</li></ol>
+<pre><code>calls 0-4: backend down -&gt; window fills with failures -&gt; OPEN at call 4
+   (calls after that, before t=1600, would all hit the fallback immediately)
+
+t=1600: cooldown (1000ms) has elapsed since opening
+   -&gt; HALF_OPEN -&gt; one trial call allowed through
+   -&gt; backend has recovered -&gt; trial succeeds -&gt; CLOSED</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> while <code>HALF_OPEN</code>, only a limited number of trial requests are allowed through (this example uses just one) — if many concurrent requests arrive during that window, letting all of them through as &quot;trials&quot; defeats the purpose (a still-struggling backend gets hit with a burst right as it&#x27;s trying to recover). Real circuit breaker implementations cap the number of concurrent trial calls explicitly.</blockquote>
+<ul><li>A circuit breaker fails fast once it&#x27;s confident the backend is unhealthy, sparing both the backend from pointless additional load and callers from waiting out doomed requests one at a time.</li><li><code>Retry</code> and <code>CircuitBreaker</code> are complementary, not redundant — retry absorbs brief, isolated blips; the circuit breaker protects against sustained failure across many requests.</li><li>The <code>fallbackUri</code> should return something genuinely useful to the caller (a cached value, a clear &quot;try again shortly&quot; message) rather than just another generic error — it&#x27;s the difference callers actually experience during an outage.</li><li>Circuit breaker thresholds (window size, failure ratio, cooldown duration) are workload-specific tuning — too sensitive and normal traffic blips trip it unnecessarily; too lax and it fails to protect a genuinely struggling backend in time.</li></ul>
+  <div class="nav"><a class="prv" href="0044-global-filters.html"><span class="mini">← Previous</span>Global filters</a><a class="nxt" href="0046-rate-limiting-requestratelimiter-redis.html"><span class="mini">Next →</span>Rate limiting (RequestRateLimiter / Redis)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-cloud.html", ID = "t45";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

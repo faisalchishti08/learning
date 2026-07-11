@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Rate limiting (RequestRateLimiter / Redis)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-cloud.html">Spring Cloud</a> › 4. Routing & Load Balancing</div>
+  <div class="htitle">
+    <h1>"Rate limiting (RequestRateLimiter / Redis)"</h1>
+    <a class="back" href="../../spring-cloud.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <code>RequestRateLimiter</code> GatewayFilter caps how many requests a given caller (identified by a <code>KeyResolver</code> — often the client&#x27;s API key, IP address, or user ID) can make in a given period, using a token-bucket algorithm backed by Redis, so the limit works correctly even across multiple Gateway instances sharing the same Redis store.</p>
+<pre><code class="lang-yaml">filters:
+  - name: RequestRateLimiter
+    args:
+      redis-rate-limiter.replenishRate: 10   # tokens added per second
+      redis-rate-limiter.burstCapacity: 20    # bucket size -- max tokens that can accumulate
+      key-resolver: &quot;#{@apiKeyResolver}&quot;</code></pre>
+<pre><code class="lang-java">@Bean
+KeyResolver apiKeyResolver() {
+    return exchange -&gt; Mono.just(exchange.getRequest().getHeaders().getFirst(&quot;X-Api-Key&quot;));
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Without rate limiting, a single misbehaving client (a buggy retry loop, a scraper, an abusive user) can consume disproportionate backend capacity, degrading service for every other caller. <code>RequestRateLimiter</code> enforces a per-key budget directly at the gateway, before requests ever reach a backend — and because it&#x27;s Redis-backed rather than in-memory, the limit is correctly enforced across an entire fleet of gateway instances, not just per-instance (which would let a client multiply their effective limit by hitting different gateway nodes).</p>
+<p>Reach for <code>RequestRateLimiter</code> when:</p>
+<ul><li>Multiple external clients (API consumers, mobile app users, partner integrations) share backend capacity, and one client&#x27;s excessive traffic shouldn&#x27;t degrade service for everyone else.</li><li>Gateway runs as multiple instances behind a load balancer — an in-memory-only rate limiter would let a client&#x27;s requests spread across instances to evade the intended limit.</li><li>You want burst tolerance (short spikes above the steady-state rate are fine) rather than a hard, unforgiving per-second cap — the token bucket model naturally supports this.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> token bucket per key:
+   - starts with `burstCapacity` tokens
+   - refills at `replenishRate` tokens/second, capped at burstCapacity
+   - each request consumes 1 token
+   - request allowed if a token is available; rejected (429) if the bucket is empty</code></pre>
+<p>Steady traffic within <code>replenishRate</code> never depletes the bucket; short bursts are absorbed by whatever tokens have accumulated, up to <code>burstCapacity</code>.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A token bucket refills at a steady rate and each request consumes one token, with requests rejected once the bucket is empty until it refills">
+  <rect x="230" y="20" width="180" height="120" rx="10" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="320" y="40" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">token bucket</text>
+  <rect x="250" y="55" width="140" height="70" rx="4" fill="#0d1117" stroke="#6db33f" stroke-width="1"/>
+  <rect x="250" y="90" width="140" height="35" rx="4" fill="#6db33f60"/>
+  <text x="320" y="112" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">tokens available</text>
+
+  <line x1="320" y1="20" x2="320" y2="5" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="320" y="0" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">refills at replenishRate/s</text>
+
+  <rect x="30" y="65" width="130" height="30" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1"/>
+  <text x="95" y="85" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">request arrives</text>
+  <line x1="160" y1="80" x2="228" y2="80" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a46)"/>
+
+  <rect x="480" y="40" width="130" height="30" rx="6" fill="#6db33f30" stroke="#6db33f" stroke-width="1.2"/>
+  <text x="545" y="60" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">token available -&gt; 200</text>
+  <rect x="480" y="100" width="130" height="30" rx="6" fill="#e6494930" stroke="#e64949" stroke-width="1.2"/>
+  <text x="545" y="120" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">bucket empty -&gt; 429</text>
+
+  <line x1="410" y1="70" x2="478" y2="55" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a46)"/>
+  <line x1="410" y1="100" x2="478" y2="115" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a46)"/>
+
+  <defs><marker id="a46" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Each request draws one token; availability of a token — not a raw request counter — decides pass or reject.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: rate-limit an API key calling <code>orders-service</code>. Start with a fixed per-key request counter (the naive, wrong approach), then implement a real token bucket with steady refill, then add multi-key isolation showing one caller&#x27;s traffic never affects another&#x27;s budget.</p>
+<h3>Level 1 — Basic</h3>
+<p>A naive fixed counter — the problem a token bucket actually solves.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class RateLimitLevel1 {
+    static Map&lt;String, Integer&gt; requestCounts = new HashMap&lt;&gt;();
+    static final int LIMIT_PER_MINUTE = 5;
+
+    static boolean allow(String apiKey) {
+        int count = requestCounts.merge(apiKey, 1, Integer::sum);
+        return count &lt;= LIMIT_PER_MINUTE; // once the minute&#x27;s count is exceeded, EVERYTHING is rejected until reset
+    }
+
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 7; i++) {
+            System.out.println(&quot;request &quot; + i + &quot; -&gt; &quot; + (allow(&quot;key-1&quot;) ? &quot;200&quot; : &quot;429&quot;));
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java RateLimitLevel1.java</code></p>
+<p>A raw counter has no notion of *when* requests happened — it just counts up to a limit and then rejects everything until some external reset, which produces awkward all-or-nothing behavior at period boundaries instead of the smoother, continuously-refilling budget a token bucket provides.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Implement a real token bucket: tokens refill continuously based on elapsed time, not in a lump-sum reset.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class RateLimitLevel2 {
+    static class TokenBucket {
+        double tokens;
+        double replenishRate;   // tokens per second
+        double burstCapacity;   // max tokens
+        long lastRefillMs;
+
+        TokenBucket(double replenishRate, double burstCapacity, long nowMs) {
+            this.replenishRate = replenishRate;
+            this.burstCapacity = burstCapacity;
+            this.tokens = burstCapacity; // start full
+            this.lastRefillMs = nowMs;
+        }
+
+        boolean tryConsume(long nowMs) {
+            double elapsedSeconds = (nowMs - lastRefillMs) / 1000.0;
+            tokens = Math.min(burstCapacity, tokens + elapsedSeconds * replenishRate); // refill based on elapsed time
+            lastRefillMs = nowMs;
+            if (tokens &gt;= 1) {
+                tokens -= 1;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    public static void main(String[] args) {
+        TokenBucket bucket = new TokenBucket(2.0, 5.0, 0); // 2 tokens/sec, burst up to 5
+
+        long[] requestTimesMs = {0, 100, 200, 300, 400, 500, 3000}; // 6 rapid requests, then one much later
+        for (int i = 0; i &lt; requestTimesMs.length; i++) {
+            boolean allowed = bucket.tryConsume(requestTimesMs[i]);
+            System.out.println(&quot;t=&quot; + requestTimesMs[i] + &quot;ms -&gt; &quot; + (allowed ? &quot;200&quot; : &quot;429&quot;));
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java RateLimitLevel2.java</code></p>
+<p><code>tryConsume</code> refills tokens proportionally to elapsed time on every call, then consumes one if available — the first 5 rapid requests (within the initial burst capacity) succeed, the 6th fails because the bucket is drained faster than it refills at this pace, and the request at <code>t=3000ms</code> succeeds again because nearly 2.5 seconds elapsed since the last check, refilling the bucket well past 1 token.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Add multiple independent keys, modeling how a Redis-backed limiter isolates each caller&#x27;s budget — one client exhausting their limit never affects another&#x27;s.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class RateLimitLevel3 {
+    static class TokenBucket {
+        double tokens, replenishRate, burstCapacity;
+        long lastRefillMs;
+
+        TokenBucket(double replenishRate, double burstCapacity, long nowMs) {
+            this.replenishRate = replenishRate;
+            this.burstCapacity = burstCapacity;
+            this.tokens = burstCapacity;
+            this.lastRefillMs = nowMs;
+        }
+
+        boolean tryConsume(long nowMs) {
+            double elapsedSeconds = (nowMs - lastRefillMs) / 1000.0;
+            tokens = Math.min(burstCapacity, tokens + elapsedSeconds * replenishRate);
+            lastRefillMs = nowMs;
+            if (tokens &gt;= 1) { tokens -= 1; return true; }
+            return false;
+        }
+    }
+
+    // one bucket PER KEY -- this map is what would live in Redis in a real, multi-instance gateway deployment
+    static Map&lt;String, TokenBucket&gt; buckets = new HashMap&lt;&gt;();
+
+    static boolean allow(String apiKey, long nowMs) {
+        TokenBucket bucket = buckets.computeIfAbsent(apiKey, k -&gt; new TokenBucket(2.0, 5.0, nowMs));
+        return bucket.tryConsume(nowMs);
+    }
+
+    public static void main(String[] args) {
+        // key-1 makes 6 rapid requests, exhausting its bucket
+        for (int i = 0; i &lt; 6; i++) {
+            System.out.println(&quot;key-1 request &quot; + i + &quot; -&gt; &quot; + (allow(&quot;key-1&quot;, i * 100) ? &quot;200&quot; : &quot;429&quot;));
+        }
+
+        // key-2, a completely different caller, makes its own first request at the same time -- unaffected by key-1
+        System.out.println(&quot;key-2 request 0 -&gt; &quot; + (allow(&quot;key-2&quot;, 500) ? &quot;200&quot; : &quot;429&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java RateLimitLevel3.java</code></p>
+<p><code>buckets</code> maps each <code>apiKey</code> to its own independent <code>TokenBucket</code> — <code>key-1</code> burning through its budget with six rapid requests has zero effect on <code>key-2</code>&#x27;s bucket, which starts fresh and full. This directly mirrors how a real Redis-backed <code>RequestRateLimiter</code> keys its rate-limit state: each distinct <code>KeyResolver</code> result (an API key, a user ID, an IP address) gets its own isolated bucket in Redis, correctly enforced across every gateway instance sharing that Redis store.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the sequence in Level 3.</p>
+<ol><li>The loop calls <code>allow(&quot;key-1&quot;, nowMs)</code> six times at <code>nowMs = 0, 100, 200, 300, 400, 500</code> — each call resolves (or creates, on the first call) <code>key-1</code>&#x27;s <code>TokenBucket</code>, initialized full at <code>5.0</code> tokens.</li><li>Requests <code>0</code> through <code>4</code> (at <code>t=0</code> through <code>t=400</code>) each consume roughly one token, with only a small amount of refill happening between them (100ms apart, at <code>2.0</code> tokens/sec, that&#x27;s <code>0.2</code> tokens refilled per gap) — since the bucket started at <code>5.0</code>, all five succeed, draining it close to empty.</li><li>Request <code>5</code> (at <code>t=500</code>) finds the bucket has refilled only slightly since the last consumption and doesn&#x27;t have a full token available, so <code>tryConsume</code> returns <code>false</code>, printing <code>429</code>.</li><li><code>allow(&quot;key-2&quot;, 500)</code> runs — this is <code>key-2</code>&#x27;s very first request ever, so <code>computeIfAbsent</code> creates a brand-new <code>TokenBucket</code> for it, starting full at <code>5.0</code> tokens, completely independent of whatever happened to <code>key-1</code>&#x27;s bucket. The consumption succeeds immediately, printing <code>200</code>.</li><li>The key takeaway is visible directly in the output: <code>key-1</code> being rate-limited at <code>t=500</code> has no bearing whatsoever on <code>key-2</code>&#x27;s request at the exact same timestamp — the per-key isolation is what makes rate limiting fair across many independent callers sharing one gateway.</li></ol>
+<pre><code>key-1&#x27;s bucket: 5.0 -&gt; 4.0 -&gt; 3.0 -&gt; 2.0 -&gt; 1.0 -&gt; (~0.2, refilled a bit) -&gt; consume fails -&gt; 429
+key-2&#x27;s bucket: (freshly created) 5.0 -&gt; consume succeeds -&gt; 200
+
+key-1 and key-2 never share state -- one client&#x27;s limit never borrows from another&#x27;s</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the <code>KeyResolver</code> choice determines what&#x27;s actually being rate-limited — resolving by IP address means every user behind the same corporate NAT or mobile carrier shares one bucket, while resolving by API key or authenticated user ID isolates correctly per actual caller. Picking the wrong key can either rate-limit innocent co-located users together or fail to limit a single abusive caller who rotates IPs.</blockquote>
+<ul><li>Token bucket rate limiting naturally tolerates short bursts (up to <code>burstCapacity</code>) while still enforcing a steady-state average rate (<code>replenishRate</code>) — a better fit for real traffic patterns than a hard fixed-window counter.</li><li>Redis-backing is what makes the limit correct across multiple gateway instances — an in-memory-only limiter would let a client multiply its effective limit by however many gateway instances it happens to hit.</li><li>Each rate-limited key needs its own isolated bucket state — conflating keys (or choosing too coarse a key) either under- or over-limits the wrong set of callers.</li><li>A <code>429 Too Many Requests</code> response should generally include a <code>Retry-After</code> header so well-behaved clients know when to try again, rather than immediately retrying and just consuming more of their own budget.</li></ul>
+  <div class="nav"><a class="prv" href="0045-circuit-breaker-filter.html"><span class="mini">← Previous</span>Circuit breaker filter</a><a class="nxt" href="0047-tls-ssl.html"><span class="mini">Next →</span>TLS & SSL</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-cloud.html", ID = "t46";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
