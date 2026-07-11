@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Filters & the FilterChainProxy / DelegatingFilterProxy" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 1. Architecture & Fundamentals</div>
+  <div class="htitle">
+    <h1>"Filters & the FilterChainProxy / DelegatingFilterProxy"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Security intercepts requests using the Servlet API&#x27;s own <code>Filter</code> mechanism, but wires them into the application through two bridging components — <code>DelegatingFilterProxy</code>, a single, thin Servlet <code>Filter</code> registered directly with the servlet container that delegates every request to a named Spring bean (decoupling Spring Security&#x27;s filters from needing to be manually registered with the container), and <code>FilterChainProxy</code>, the actual Spring bean <code>DelegatingFilterProxy</code> delegates to, which internally holds and invokes Spring Security&#x27;s own full, ordered chain of specific-purpose filters (authentication, CSRF protection, session management, and others).</p>
+<pre><code class="lang-java">// registered ONCE with the servlet container, regardless of how many Spring Security filters actually exist
+// (Spring Boot auto-configures this automatically -- rarely hand-written)
+public class DelegatingFilterProxy implements Filter {
+    public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) {
+        // delegates to the Spring-managed &quot;springSecurityFilterChain&quot; bean -- which IS a FilterChainProxy
+        springSecurityFilterChain.doFilter(req, res, chain);
+    }
+}</code></pre>
+<pre><code>FilterChainProxy internally holds the ORDERED list:
+  [ SecurityContextPersistenceFilter, CsrfFilter, UsernamePasswordAuthenticationFilter, ..., AuthorizationFilter ]</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>The Servlet API&#x27;s own <code>Filter</code> mechanism is the natural place to intercept every request before it reaches application code, but registering many individual, fine-grained security filters directly with the servlet container is awkward — servlet container filter registration typically happens outside of Spring&#x27;s own dependency injection and configuration lifecycle, making it hard to configure Spring Security&#x27;s filters using ordinary Spring beans and properties. <code>DelegatingFilterProxy</code> solves this by being the *only* filter the servlet container itself needs to know about — a thin adapter that simply hands off to whatever Spring-managed bean is configured to actually handle security — while <code>FilterChainProxy</code> (the bean it delegates to) is where Spring Security&#x27;s real, rich, Spring-configured filter chain actually lives, fully able to use dependency injection, <code>@Bean</code> configuration, and all of Spring&#x27;s usual machinery.</p>
+<p>Reach for understanding this two-layer bridging when:</p>
+<ul><li>Debugging why a security filter isn&#x27;t being invoked, or is being invoked in an unexpected order — knowing that <code>DelegatingFilterProxy</code> is a thin, single entry point and <code>FilterChainProxy</code> is where the actual ordered chain lives clarifies where to look (almost always within <code>FilterChainProxy</code>&#x27;s configuration, not the servlet-level registration).</li><li>Understanding how Spring Security integrates with a servlet container without requiring manual, container-specific filter registration for every individual security concern — this bridging is what lets <code>SecurityFilterChain</code> beans (the next card) be configured entirely through ordinary Spring <code>@Bean</code> methods.</li><li>Adding a custom filter into Spring Security&#x27;s own chain — custom filters are added to the <code>FilterChainProxy</code>&#x27;s internal ordered list (via <code>HttpSecurity</code>&#x27;s configuration API), not registered separately with the servlet container, which is what keeps custom security logic consistently ordered relative to Spring Security&#x27;s own built-in filters.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> servlet container&#x27;s OWN filter registration:
+   [ ONE entry: DelegatingFilterProxy ]   &lt;- the container knows about exactly this one thin filter
+
+ DelegatingFilterProxy.doFilter(request, response, chain):
+   delegates to the Spring bean named &quot;springSecurityFilterChain&quot;
+        |
+        v
+ that bean IS a FilterChainProxy, which internally holds the REAL, ordered list:
+   [ SecurityContextPersistenceFilter -&gt; CsrfFilter -&gt; UsernamePasswordAuthenticationFilter -&gt; ... -&gt; AuthorizationFilter ]
+
+ EACH filter in this internal list runs in order, each deciding whether to
+ pass the request along to the NEXT filter, or short-circuit (reject) it</code></pre>
+<p>The servlet container&#x27;s own filter registration stays maximally simple (one entry), while all of Spring Security&#x27;s actual complexity and configurability lives inside the Spring-managed <code>FilterChainProxy</code>.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The servlet container registers only DelegatingFilterProxy which delegates to a Spring managed FilterChainProxy bean containing the actual ordered list of Spring Security filters that a request passes through in sequence">
+  <rect x="20" y="20" width="180" height="46" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="110" y="42" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">servlet container</text>
+  <text x="110" y="56" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">registers ONE filter</text>
+
+  <rect x="250" y="20" width="180" height="46" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="340" y="48" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">DelegatingFilterProxy</text>
+
+  <rect x="480" y="20" width="140" height="46" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="550" y="48" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">FilterChainProxy</text>
+
+  <rect x="70" y="110" width="500" height="46" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.1"/>
+  <text x="320" y="132" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">SecurityContext -&gt; CSRF -&gt; Authentication -&gt; ... -&gt; Authorization filters</text>
+  <text x="320" y="146" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">the REAL, ordered, Spring-managed chain -- lives INSIDE FilterChainProxy</text>
+
+  <defs><marker id="a4" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <line x1="200" y1="43" x2="250" y2="43" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a4)"/>
+  <line x1="430" y1="43" x2="480" y2="43" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a4)"/>
+  <line x1="550" y1="66" x2="550" y2="110" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#a4)"/>
+</svg>
+<p>One thin servlet-registered adapter, delegating to a rich, Spring-managed chain that&#x27;s where all the actual security logic lives.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: model the two-layer bridging directly — a single &quot;container-registered&quot; delegating filter forwarding to a Spring-managed chain of ordered inner filters, each able to short-circuit the request. Start with a single delegating filter forwarding to an empty chain, then add multiple ordered inner filters, then add a filter that short-circuits the chain, demonstrating exactly how a rejection at one filter stops the remaining filters (and the eventual controller) from ever running.</p>
+<h3>Level 1 — Basic</h3>
+<p>A single delegating filter forwarding to an (initially empty) inner chain — modeling <code>DelegatingFilterProxy</code>&#x27;s bridging role alone.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Function;
+
+public class FilterChainLevel1 {
+    record Request(String path, boolean hasValidSession) {}
+
+    // stands in for FilterChainProxy -- holds the REAL, ordered list of security filters
+    static class FilterChainProxy {
+        List&lt;Function&lt;Request, Boolean&gt;&gt; filters = new ArrayList&lt;&gt;(); // each filter: request -&gt; &quot;should continue?&quot;
+        boolean process(Request request) {
+            for (Function&lt;Request, Boolean&gt; filter : filters) {
+                if (!filter.apply(request)) return false; // this filter REJECTED -- stop here
+            }
+            return true; // every filter passed
+        }
+    }
+
+    // stands in for DelegatingFilterProxy -- the ONLY thing the &quot;servlet container&quot; itself knows about
+    static class DelegatingFilterProxy {
+        FilterChainProxy delegate;
+        DelegatingFilterProxy(FilterChainProxy delegate) { this.delegate = delegate; }
+        boolean doFilter(Request request) {
+            System.out.println(&quot;DelegatingFilterProxy: delegating to FilterChainProxy&quot;);
+            return delegate.process(request);
+        }
+    }
+
+    public static void main(String[] args) {
+        FilterChainProxy chain = new FilterChainProxy(); // empty for now -- no filters configured yet
+        DelegatingFilterProxy container = new DelegatingFilterProxy(chain);
+
+        boolean result = container.doFilter(new Request(&quot;/orders&quot;, true));
+        System.out.println(&quot;request allowed through? &quot; + result);
+    }
+}</code></pre>
+<p>How to run: <code>java FilterChainLevel1.java</code></p>
+<p>With <code>chain.filters</code> empty, <code>process</code> trivially returns <code>true</code> for any request — this models the bridging structure alone, before any actual security filters are added to the internal chain.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add multiple ordered inner filters, each contributing its own check, running in sequence.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Function;
+
+public class FilterChainLevel2 {
+    record Request(String path, boolean hasValidSession, boolean hasCsrfToken) {}
+
+    static class FilterChainProxy {
+        List&lt;Function&lt;Request, Boolean&gt;&gt; filters = new ArrayList&lt;&gt;();
+        boolean process(Request request) {
+            for (Function&lt;Request, Boolean&gt; filter : filters) {
+                if (!filter.apply(request)) return false;
+            }
+            return true;
+        }
+    }
+
+    static class DelegatingFilterProxy {
+        FilterChainProxy delegate;
+        DelegatingFilterProxy(FilterChainProxy delegate) { this.delegate = delegate; }
+        boolean doFilter(Request request) { return delegate.process(request); }
+    }
+
+    public static void main(String[] args) {
+        FilterChainProxy chain = new FilterChainProxy();
+
+        // ordered EXACTLY as Spring Security would order them: session/context first, then CSRF, etc.
+        chain.filters.add(request -&gt; {
+            System.out.println(&quot;filter 1 (SecurityContext): checking session validity&quot;);
+            return request.hasValidSession();
+        });
+        chain.filters.add(request -&gt; {
+            System.out.println(&quot;filter 2 (CSRF): checking CSRF token&quot;);
+            return request.hasCsrfToken();
+        });
+
+        DelegatingFilterProxy container = new DelegatingFilterProxy(chain);
+
+        boolean result = container.doFilter(new Request(&quot;/orders&quot;, true, true));
+        System.out.println(&quot;request allowed through? &quot; + result);
+    }
+}</code></pre>
+<p>How to run: <code>java FilterChainLevel2.java</code></p>
+<p>Both filters run in the order they were added, each printing its own check before returning — with both checks passing (<code>hasValidSession=true</code>, <code>hasCsrfToken=true</code>), the request is ultimately allowed through, having passed through two distinct, independently-added filters exactly as <code>FilterChainProxy</code> would invoke its own internally-ordered list of real Spring Security filters.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Add a filter that short-circuits the chain (a missing CSRF token, for instance), demonstrating that a rejection at one filter stops every remaining filter — and the eventual controller — from ever running.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Function;
+
+public class FilterChainLevel3 {
+    record Request(String path, boolean hasValidSession, boolean hasCsrfToken) {}
+
+    static class FilterChainProxy {
+        List&lt;Function&lt;Request, Boolean&gt;&gt; filters = new ArrayList&lt;&gt;();
+        boolean process(Request request) {
+            for (int i = 0; i &lt; filters.size(); i++) {
+                boolean passed = filters.get(i).apply(request);
+                if (!passed) {
+                    System.out.println(&quot;  -&gt; REJECTED at filter index &quot; + i + &quot; -- chain STOPS here, remaining filters SKIPPED&quot;);
+                    return false;
+                }
+            }
+            System.out.println(&quot;  -&gt; ALL filters passed&quot;);
+            return true;
+        }
+    }
+
+    static class DelegatingFilterProxy {
+        FilterChainProxy delegate;
+        DelegatingFilterProxy(FilterChainProxy delegate) { this.delegate = delegate; }
+        boolean doFilter(Request request) { return delegate.process(request); }
+    }
+
+    static void simulateControllerIfAllowed(boolean chainResult) {
+        if (chainResult) System.out.println(&quot;  controller method: RUNS&quot;);
+        else System.out.println(&quot;  controller method: NEVER RUNS&quot;);
+    }
+
+    public static void main(String[] args) {
+        FilterChainProxy chain = new FilterChainProxy();
+        chain.filters.add(request -&gt; { System.out.println(&quot;filter 0 (SecurityContext)&quot;); return request.hasValidSession(); });
+        chain.filters.add(request -&gt; { System.out.println(&quot;filter 1 (CSRF)&quot;); return request.hasCsrfToken(); });
+        chain.filters.add(request -&gt; { System.out.println(&quot;filter 2 (Authorization) -- should NEVER print if filter 1 rejects&quot;); return true; });
+
+        DelegatingFilterProxy container = new DelegatingFilterProxy(chain);
+
+        System.out.println(&quot;-- request WITH a valid session but MISSING CSRF token --&quot;);
+        boolean result = container.doFilter(new Request(&quot;/orders&quot;, true, false)); // hasCsrfToken=false
+        simulateControllerIfAllowed(result);
+    }
+}</code></pre>
+<p>How to run: <code>java FilterChainLevel3.java</code></p>
+<p><code>filter 2</code>&#x27;s print statement never appears in the output — the chain stops at <code>filter 1</code> (index <code>1</code>), because <code>hasCsrfToken</code> is <code>false</code>, and <code>process</code>&#x27;s loop returns <code>false</code> immediately without ever calling <code>filters.get(2)</code> — <code>simulateControllerIfAllowed(false)</code> correctly reports the controller method never ran, exactly mirroring how a real CSRF rejection in Spring Security&#x27;s <code>FilterChainProxy</code> prevents every subsequent filter (including the eventual authorization checks and the target controller method) from ever executing.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>chain.process(request)</code> in Level 3 with <code>hasCsrfToken = false</code>.</p>
+<ol><li>The <code>for</code> loop begins with <code>i = 0</code> — <code>filters.get(0).apply(request)</code> runs <code>filter 0</code>&#x27;s lambda, printing its label and returning <code>request.hasValidSession()</code>, which is <code>true</code> — <code>passed</code> is <code>true</code>, so the <code>if (!passed)</code> check is <code>false</code>, and the loop continues.</li><li><code>i = 1</code> — <code>filters.get(1).apply(request)</code> runs <code>filter 1</code>&#x27;s lambda, printing its label and returning <code>request.hasCsrfToken()</code>, which is <code>false</code> this time — <code>passed</code> is <code>false</code>.</li><li><code>if (!passed)</code> is now <code>true</code>, so the method prints the rejection message specifically identifying <code>&quot;filter index 1&quot;</code> as where the chain stopped, and immediately <code>return false</code> — this exits the loop and the method entirely, without the loop&#x27;s <code>i</code> ever reaching <code>2</code>.</li><li>Because <code>filters.get(2)</code> (the &quot;Authorization&quot; filter, deliberately labeled to note it should never print) is never called, its <code>println</code> never executes — the printed output correctly shows only <code>filter 0</code> and <code>filter 1</code>&#x27;s labels, with no trace of <code>filter 2</code> at all.</li><li><code>container.doFilter(request)</code> returns <code>false</code>, matching what <code>process</code> returned, and <code>simulateControllerIfAllowed(false)</code> correctly reports the controller method never ran — this precisely mirrors a real Spring Security <code>CsrfFilter</code> rejection: the request never proceeds past that specific filter, and every filter (and the eventual controller) positioned after it in the chain simply never executes for this particular request.</li></ol>
+<pre><code>process(request with hasCsrfToken=false):
+  i=0: filter 0 (SecurityContext) -&gt; hasValidSession=true -&gt; PASS, continue
+  i=1: filter 1 (CSRF) -&gt; hasCsrfToken=false -&gt; FAIL
+       -&gt; REJECTED at filter index 1, chain STOPS
+       -&gt; filter 2 (Authorization) NEVER CALLED, never even printed
+  process() returns false
+  controller method: NEVER RUNS</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the specific *order* filters run in matters enormously and is not arbitrary — a CSRF check running before session/authentication establishment, for instance, would be checking a token against a security context that hasn&#x27;t even been populated yet. Spring Security carefully defines a specific, documented default ordering for its built-in filters, and custom filters added via <code>HttpSecurity</code>&#x27;s configuration API must be inserted at a deliberate position relative to that existing order (using methods like <code>addFilterBefore</code>/<code>addFilterAfter</code>), not appended arbitrarily — the next card on <code>SecurityFilterChain</code> and the one after on filter ordering cover this in more depth.</blockquote>
+<ul><li><code>DelegatingFilterProxy</code> is the single, thin bridge between the servlet container&#x27;s own filter registration mechanism and Spring&#x27;s dependency-injection-managed bean configuration — it exists purely to avoid needing to register Spring Security&#x27;s many individual filters directly and separately with the container.</li><li><code>FilterChainProxy</code> is the actual Spring-managed bean holding Spring Security&#x27;s real, ordered list of filters — this is where the meaningful security logic and configuration genuinely live, and it&#x27;s fully configurable through ordinary Spring <code>@Bean</code> methods and the <code>HttpSecurity</code> DSL.</li><li>Any single filter in the chain rejecting a request immediately stops that request from proceeding any further — neither the remaining filters in the chain nor the eventual target controller method ever execute for a rejected request, which is what makes the filter chain an effective, fail-closed security enforcement mechanism.</li><li>Spring Boot&#x27;s auto-configuration handles wiring up <code>DelegatingFilterProxy</code> and <code>FilterChainProxy</code> automatically for a typical application — most day-to-day Spring Security configuration work happens entirely through <code>HttpSecurity</code>/<code>SecurityFilterChain</code> beans (the next card), without ever needing to interact with <code>DelegatingFilterProxy</code> directly.</li></ul>
+  <div class="nav"><a class="prv" href="0003-servlet-vs-reactive-webflux-support.html"><span class="mini">← Previous</span>Servlet vs reactive (WebFlux) support</a><a class="nxt" href="0005-securityfilterchain.html"><span class="mini">Next →</span>SecurityFilterChain</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t4";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
