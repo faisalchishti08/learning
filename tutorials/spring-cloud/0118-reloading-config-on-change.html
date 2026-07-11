@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Reloading config on change" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-cloud.html">Spring Cloud</a> › 8. Security, Vault & Kubernetes</div>
+  <div class="htitle">
+    <h1>"Reloading config on change"</h1>
+    <a class="back" href="../../spring-cloud.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Cloud Kubernetes can watch ConfigMaps and Secrets for changes (via the Kubernetes API&#x27;s watch mechanism, or by periodically polling) and automatically trigger a configuration refresh — either restarting the application context (<code>spring.cloud.kubernetes.reload.strategy=restart_context</code>) or refreshing only <code>@RefreshScope</code> beans (<code>refresh</code>, matching the <code>/actuator/refresh</code> mechanism from earlier Config Server cards) — the moment a ConfigMap or Secret an application depends on is updated, with no manual <code>/actuator/refresh</code> call or Spring Cloud Bus broadcast needed.</p>
+<pre><code class="lang-properties">spring.cloud.kubernetes.reload.enabled=true
+spring.cloud.kubernetes.reload.strategy=refresh
+spring.cloud.kubernetes.reload.mode=event</code></pre>
+<pre><code class="lang-java">@RefreshScope
+@Component
+class RateLimitConfig {
+    @Value(&quot;${rate-limit}&quot;)
+    String rateLimit; // automatically re-bound when the backing ConfigMap changes, no manual trigger needed
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Earlier cards established <code>/actuator/busrefresh</code> as the mechanism for broadcasting a configuration reload across a fleet on demand, triggered by an operator or a Git webhook — but that still requires *something* to notice a configuration change happened and issue the trigger. Spring Cloud Kubernetes&#x27;s reload feature closes this final gap specifically for Kubernetes-native configuration: because Kubernetes&#x27; own API server already provides a watch mechanism that notifies subscribers the instant a ConfigMap or Secret&#x27;s contents change, Spring Cloud Kubernetes can subscribe to that watch directly and initiate the refresh itself, with zero external trigger, webhook, or bus broadcast required — updating a ConfigMap&#x27;s data with <code>kubectl apply</code> is, by itself, sufficient to propagate that change into every subscribed application&#x27;s running configuration.</p>
+<p>Reach for config reload on change when:</p>
+<ul><li>Configuration lives in Kubernetes ConfigMaps/Secrets (from the earlier <code>PropertySource</code> card) and should take effect automatically the moment it&#x27;s updated, without a separate manual refresh trigger or redeploy.</li><li><code>refresh</code> mode (re-binding <code>@RefreshScope</code> beans) is sufficient for the kind of configuration changing — this is generally preferable to <code>restart_context</code> mode, since it avoids the disruption of a full application context restart for what might be a small property change.</li><li><code>restart_context</code> mode is specifically needed because the changed configuration affects beans or wiring that <code>@RefreshScope</code>&#x27;s narrower rebinding can&#x27;t reach — a heavier-handed but more thorough reload, appropriate when configuration changes require re-initializing more of the application than <code>@RefreshScope</code> alone covers.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> operator runs: kubectl apply -f updated-configmap.yaml
+        |
+        v
+ Kubernetes API server updates the ConfigMap object, notifies WATCHERS
+        |
+        v
+ Spring Cloud Kubernetes&#x27;s watch subscription receives the change notification
+        |
+        v
+ reload triggered automatically:
+   mode=refresh          -&gt; only @RefreshScope beans rebind (lighter-weight)
+   mode=restart_context   -&gt; the WHOLE application context restarts (heavier, but more thorough)
+
+ NO operator action beyond the original kubectl apply -- NO /actuator/busrefresh call needed</code></pre>
+<p>The watch-driven trigger is what distinguishes this from the Config-Server-plus-Bus approach covered in earlier cards — there, an external event (a webhook, a manual call) initiates the broadcast; here, the platform&#x27;s own change notification does.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An operator applies an updated ConfigMap which the Kubernetes API server propagates as a watch notification directly to the application triggering an automatic refresh scope rebind with no separate manual trigger step">
+  <rect x="20" y="20" width="140" height="46" rx="8" fill="#1c2430" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="90" y="48" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">kubectl apply</text>
+
+  <rect x="230" y="20" width="180" height="46" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="320" y="42" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">Kubernetes API server</text>
+  <text x="320" y="56" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">notifies watchers</text>
+
+  <rect x="480" y="20" width="140" height="46" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="550" y="42" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">application</text>
+  <text x="550" y="56" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">auto-refreshes</text>
+
+  <defs><marker id="a118" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <line x1="160" y1="43" x2="230" y2="43" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a118)"/>
+  <line x1="410" y1="43" x2="480" y2="43" stroke="#8b949e" stroke-width="1.3" marker-end="url(#a118)"/>
+</svg>
+<p>Three steps, zero manual &quot;trigger the refresh&quot; action from the operator beyond the original config change itself.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: model a watch-driven ConfigMap change notification triggering an automatic rebind of <code>@RefreshScope</code>-style beans, contrasted against a plain (non-reloading) bean that keeps its stale value. Start with a bean requiring manual refresh (the baseline problem), then add watch-driven automatic refresh, then add <code>restart_context</code>-style full reinitialization for a case where lighter refresh isn&#x27;t sufficient.</p>
+<h3>Level 1 — Basic</h3>
+<p>A plain, non-reloading configuration bean — its value is fixed at construction and never changes, even if the underlying source is updated.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class ReloadConfigLevel1 {
+    static Map&lt;String, String&gt; configMapData = new HashMap&lt;&gt;(Map.of(&quot;rate-limit&quot;, &quot;100/min&quot;));
+
+    static class RateLimitConfig {
+        String rateLimit;
+        RateLimitConfig() { this.rateLimit = configMapData.get(&quot;rate-limit&quot;); } // bound ONCE, at construction
+    }
+
+    public static void main(String[] args) {
+        RateLimitConfig config = new RateLimitConfig();
+        System.out.println(&quot;initial rate limit: &quot; + config.rateLimit);
+
+        configMapData.put(&quot;rate-limit&quot;, &quot;50/min&quot;); // ConfigMap updated -- but the bean was NEVER told
+        System.out.println(&quot;after ConfigMap update, bean STILL reports: &quot; + config.rateLimit + &quot; (STALE)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ReloadConfigLevel1.java</code></p>
+<p>Even though <code>configMapData</code> was updated to <code>&quot;50/min&quot;</code>, <code>config.rateLimit</code> still reports the original <code>&quot;100/min&quot;</code>, because it was read once at construction and never re-read — this staleness is exactly what automatic reload eliminates.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add a watch mechanism: a listener subscribed to ConfigMap changes automatically triggers a rebind, mirroring <code>@RefreshScope</code>&#x27;s behavior under <code>mode=refresh</code>.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Consumer;
+
+public class ReloadConfigLevel2 {
+    static class ConfigMapWatcher {
+        Map&lt;String, String&gt; data;
+        List&lt;Consumer&lt;Map&lt;String, String&gt;&gt;&gt; listeners = new ArrayList&lt;&gt;();
+        ConfigMapWatcher(Map&lt;String, String&gt; initialData) { this.data = new HashMap&lt;&gt;(initialData); }
+
+        void subscribe(Consumer&lt;Map&lt;String, String&gt;&gt; listener) { listeners.add(listener); }
+
+        void applyUpdate(Map&lt;String, String&gt; newData) {
+            data = new HashMap&lt;&gt;(newData);
+            System.out.println(&quot;ConfigMap updated -- notifying &quot; + listeners.size() + &quot; watcher(s)&quot;);
+            for (Consumer&lt;Map&lt;String, String&gt;&gt; listener : listeners) listener.accept(data); // automatic notification
+        }
+    }
+
+    static class RateLimitConfig {
+        String rateLimit;
+        void rebind(Map&lt;String, String&gt; newData) {
+            rateLimit = newData.get(&quot;rate-limit&quot;);
+            System.out.println(&quot;RateLimitConfig REBOUND: rateLimit=&quot; + rateLimit);
+        }
+    }
+
+    public static void main(String[] args) {
+        ConfigMapWatcher watcher = new ConfigMapWatcher(Map.of(&quot;rate-limit&quot;, &quot;100/min&quot;));
+        RateLimitConfig config = new RateLimitConfig();
+        config.rebind(watcher.data); // initial bind
+
+        watcher.subscribe(config::rebind); // registers for FUTURE automatic updates
+
+        System.out.println(&quot;-- operator runs kubectl apply with an updated ConfigMap --&quot;);
+        watcher.applyUpdate(Map.of(&quot;rate-limit&quot;, &quot;50/min&quot;)); // triggers automatic rebind, no manual call needed
+
+        System.out.println(&quot;final rateLimit: &quot; + config.rateLimit);
+    }
+}</code></pre>
+<p>How to run: <code>java ReloadConfigLevel2.java</code></p>
+<p><code>watcher.applyUpdate</code> is the only call the &quot;operator&quot; makes — <code>config.rebind</code> runs automatically as a direct consequence, because it was registered as a listener via <code>watcher.subscribe(config::rebind)</code>, exactly mirroring how Spring Cloud Kubernetes&#x27;s watch on a real ConfigMap automatically triggers <code>@RefreshScope</code> bean rebinding with no separate refresh call needed from the operator.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Add <code>restart_context</code>-style handling: a configuration change that a lighter <code>refresh</code> can&#x27;t fully address (say, a change affecting bean wiring itself, not just a property value) triggers a full context &quot;restart&quot; — modeled as tearing down and rebuilding every registered component.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Consumer;
+
+public class ReloadConfigLevel3 {
+    static class ConfigMapWatcher {
+        Map&lt;String, String&gt; data;
+        List&lt;Consumer&lt;Map&lt;String, String&gt;&gt;&gt; refreshListeners = new ArrayList&lt;&gt;();
+        Runnable restartContextHandler;
+        ConfigMapWatcher(Map&lt;String, String&gt; initialData) { this.data = new HashMap&lt;&gt;(initialData); }
+
+        void subscribeRefresh(Consumer&lt;Map&lt;String, String&gt;&gt; listener) { refreshListeners.add(listener); }
+        void onRestartRequired(Runnable handler) { restartContextHandler = handler; }
+
+        void applyUpdate(Map&lt;String, String&gt; newData, boolean requiresFullRestart) {
+            data = new HashMap&lt;&gt;(newData);
+            if (requiresFullRestart) {
+                System.out.println(&quot;change requires FULL context restart (mode=restart_context)&quot;);
+                restartContextHandler.run();
+            } else {
+                System.out.println(&quot;change is refresh-scope-safe (mode=refresh)&quot;);
+                for (Consumer&lt;Map&lt;String, String&gt;&gt; listener : refreshListeners) listener.accept(data);
+            }
+        }
+    }
+
+    static class ApplicationContext {
+        String rateLimit;
+        boolean fullyReinitialized = false;
+
+        void rebindRefreshScope(Map&lt;String, String&gt; newData) { rateLimit = newData.get(&quot;rate-limit&quot;); }
+
+        void restartFully(Map&lt;String, String&gt; newData) {
+            System.out.println(&quot;tearing down and rebuilding the ENTIRE application context...&quot;);
+            rateLimit = newData.get(&quot;rate-limit&quot;);
+            fullyReinitialized = true;
+        }
+    }
+
+    public static void main(String[] args) {
+        ConfigMapWatcher watcher = new ConfigMapWatcher(Map.of(&quot;rate-limit&quot;, &quot;100/min&quot;, &quot;connection-pool.strategy&quot;, &quot;fixed&quot;));
+        ApplicationContext ctx = new ApplicationContext();
+        ctx.rebindRefreshScope(watcher.data);
+
+        watcher.subscribeRefresh(ctx::rebindRefreshScope);
+        watcher.onRestartRequired(() -&gt; ctx.restartFully(watcher.data));
+
+        System.out.println(&quot;-- simple rate-limit change (refresh-safe) --&quot;);
+        watcher.applyUpdate(Map.of(&quot;rate-limit&quot;, &quot;50/min&quot;, &quot;connection-pool.strategy&quot;, &quot;fixed&quot;), false);
+        System.out.println(&quot;rateLimit=&quot; + ctx.rateLimit + &quot;, fully reinitialized? &quot; + ctx.fullyReinitialized);
+
+        System.out.println(&quot;-- connection-pool STRATEGY change (needs restart_context) --&quot;);
+        watcher.applyUpdate(Map.of(&quot;rate-limit&quot;, &quot;50/min&quot;, &quot;connection-pool.strategy&quot;, &quot;elastic&quot;), true);
+        System.out.println(&quot;rateLimit=&quot; + ctx.rateLimit + &quot;, fully reinitialized? &quot; + ctx.fullyReinitialized);
+    }
+}</code></pre>
+<p>How to run: <code>java ReloadConfigLevel3.java</code></p>
+<p>The first update (<code>requiresFullRestart=false</code>) triggers only <code>ctx.rebindRefreshScope</code>, leaving <code>ctx.fullyReinitialized</code> at <code>false</code>; the second update (<code>requiresFullRestart=true</code>) instead triggers <code>ctx.restartFully</code>, which sets <code>fullyReinitialized</code> to <code>true</code> — modeling how a configuration change affecting something beyond simple <code>@RefreshScope</code>-bound values (bean wiring, connection pool implementation strategy) genuinely needs the heavier <code>restart_context</code> mode to take full effect correctly, rather than the lighter <code>refresh</code> mode alone.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the second <code>applyUpdate</code> call (<code>requiresFullRestart=true</code>) in Level 3.</p>
+<ol><li><code>watcher.applyUpdate(Map.of(...), true)</code> is called — <code>data</code> is updated to the new map, and because <code>requiresFullRestart</code> is <code>true</code>, the <code>if</code> branch runs instead of the <code>else</code>.</li><li><code>println</code> reports the full-restart requirement, then <code>restartContextHandler.run()</code> executes — this was registered earlier as <code>() -&gt; ctx.restartFully(watcher.data)</code>, a lambda capturing <code>ctx</code> and a reference to <code>watcher.data</code> (evaluated at call time, so it reads the already-updated data).</li><li>Inside <code>ctx.restartFully(newData)</code>, <code>println</code> reports the teardown/rebuild happening, <code>rateLimit</code> is set to <code>newData.get(&quot;rate-limit&quot;)</code> (<code>&quot;50/min&quot;</code>, unchanged from the previous update since only <code>connection-pool.strategy</code> changed this time), and <code>fullyReinitialized</code> is set to <code>true</code>.</li><li>Note that <code>refreshListeners</code> (which would include <code>ctx::rebindRefreshScope</code>) was never invoked on this path — the <code>if</code>/<code>else</code> branching means exactly one of the two reload strategies runs per update, never both, mirroring how a real Spring Cloud Kubernetes deployment is configured with one <code>reload.strategy</code> value, not a per-change choice between the two.</li><li>The final <code>println</code> confirms <code>rateLimit=50/min</code> (correct, carried through via <code>restartFully</code>&#x27;s own explicit rebinding) and <code>fullyReinitialized=true</code>, correctly reflecting that this particular update took the heavier path.</li></ol>
+<pre><code>applyUpdate(newData, requiresFullRestart=true):
+  if true  -&gt; restartContextHandler.run() -&gt; ctx.restartFully(newData)
+                -&gt; rateLimit rebound, fullyReinitialized = true
+  (refreshListeners NEVER called on this path)
+
+applyUpdate(newData, requiresFullRestart=false):
+  else -&gt; refreshListeners each notified -&gt; ctx.rebindRefreshScope(newData)
+                -&gt; rateLimit rebound, fullyReinitialized UNCHANGED (stays false)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>restart_context</code> mode restarts the *entire* Spring application context, which briefly makes the application unavailable to serve requests during that restart — using it as the default reload strategy for every configuration change, rather than reserving it specifically for changes <code>@RefreshScope</code>&#x27;s lighter rebinding genuinely can&#x27;t handle, introduces avoidable downtime on every routine configuration update. Default to <code>refresh</code> mode unless a specific, identified need for full context restart exists.</blockquote>
+<ul><li>Watch-driven reload eliminates the need for a separate manual trigger (an <code>/actuator/busrefresh</code> call, a webhook) specifically for Kubernetes-native ConfigMap/Secret changes — the platform&#x27;s own change notification is the trigger.</li><li><code>refresh</code> mode (rebinding <code>@RefreshScope</code> beans) is the lighter-weight, generally preferable option for configuration changes that are simple property value updates; <code>restart_context</code> mode is reserved for changes that affect deeper wiring <code>@RefreshScope</code> alone can&#x27;t reach.</li><li>This reload mechanism builds directly on the ConfigMap/Secrets <code>PropertySource</code> from the earlier card — reload is specifically about *when* a refresh happens (automatically, on watched change) rather than changing how configuration values are read into the application in the first place.</li><li>Testing reload behavior deliberately (updating a ConfigMap in a test or staging environment and confirming the expected refresh or restart actually occurs) is worth doing explicitly before relying on it in production, since the practical behavior depends on correctly configured RBAC permissions for the application to watch ConfigMaps/Secrets via the Kubernetes API in the first place.</li></ul>
+  <div class="nav"><a class="prv" href="0117-kubernetes-native-load-balancing.html"><span class="mini">← Previous</span>Kubernetes-native load balancing</a><a class="nxt" href="0119-leader-election.html"><span class="mini">Next →</span>Leader election</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-cloud.html", ID = "t118";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

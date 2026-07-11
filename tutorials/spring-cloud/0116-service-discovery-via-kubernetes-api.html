@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Service discovery via Kubernetes API" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-cloud.html">Spring Cloud</a> › 8. Security, Vault & Kubernetes</div>
+  <div class="htitle">
+    <h1>"Service discovery via Kubernetes API"</h1>
+    <a class="back" href="../../spring-cloud.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Cloud Kubernetes&#x27;s <code>DiscoveryClient</code> implementation queries the Kubernetes API server (or watches it) for <code>Endpoints</code>/<code>EndpointSlice</code> objects belonging to a named Kubernetes <code>Service</code>, returning the current, live set of healthy pod IPs backing that Service — the same <code>DiscoveryClient.getInstances(&quot;order-service&quot;)</code> call application code already uses for Eureka-based discovery (an earlier card), now backed by Kubernetes&#x27; own service registry instead of a separately-run Eureka server.</p>
+<pre><code class="lang-java">@Autowired DiscoveryClient discoveryClient;
+
+List&lt;ServiceInstance&gt; instances = discoveryClient.getInstances(&quot;order-service&quot;);
+// backed by the Kubernetes API&#x27;s Endpoints for the Service named &quot;order-service&quot; -- NOT a separate Eureka registry</code></pre>
+<pre><code class="lang-yaml">apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+spec:
+  selector:
+    app: order-service
+  ports:
+    - port: 8080</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Kubernetes already maintains its own authoritative, continuously-updated registry of which pods are healthy and ready to receive traffic for a given <code>Service</code> — this is precisely the <code>Endpoints</code>/<code>EndpointSlice</code> object the platform updates automatically as pods start, stop, pass, or fail readiness probes. Running a separate Eureka server to duplicate this same &quot;which instances are currently healthy&quot; information inside a Kubernetes cluster is redundant infrastructure solving an already-solved problem; Spring Cloud Kubernetes&#x27;s discovery implementation queries this native Kubernetes registry directly, so <code>DiscoveryClient.getInstances(...)</code> calls resolve against ground truth the platform itself maintains, with no separate registration/heartbeat mechanism (as Eureka requires) needed at all.</p>
+<p>Reach for Kubernetes-native discovery when:</p>
+<ul><li>Deploying entirely within Kubernetes and wanting service discovery to be a natural consequence of already-existing Kubernetes <code>Service</code> objects, rather than requiring applications to additionally register themselves with a separate Eureka server on top.</li><li>Migrating a Eureka-based Spring Cloud application onto Kubernetes — since both implement the same <code>DiscoveryClient</code> interface, existing application code calling <code>discoveryClient.getInstances(...)</code> or using <code>@LoadBalanced</code> clients typically needs no changes, only a dependency and configuration swap.</li><li>Wanting discovery data to always reflect Kubernetes&#x27; own live pod readiness state exactly, with no possibility of drift between &quot;what Eureka&#x27;s registry says&quot; and &quot;what Kubernetes itself considers healthy&quot; — a discrepancy that can occur with a separately-maintained registry if heartbeat timing or failure detection differs even slightly from Kubernetes&#x27; own readiness probing.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> Kubernetes Service &quot;order-service&quot; selects pods labeled app=order-service
+
+ Kubernetes CONTINUOUSLY maintains the Endpoints/EndpointSlice for that Service:
+   pod-1 (10.244.0.12) passes readiness probe -&gt; ADDED to Endpoints
+   pod-2 (10.244.0.13) passes readiness probe -&gt; ADDED to Endpoints
+   pod-1 FAILS readiness probe                -&gt; REMOVED from Endpoints (platform does this automatically)
+
+ discoveryClient.getInstances(&quot;order-service&quot;)
+   -&gt; queries the Kubernetes API for the CURRENT Endpoints of Service &quot;order-service&quot;
+   -&gt; returns whatever pod IPs are CURRENTLY listed -- always reflects Kubernetes&#x27; own live state</code></pre>
+<p>No application-level heartbeat or self-registration step is required — a pod becomes discoverable purely by matching a Service&#x27;s label selector and passing its readiness probe, both mechanisms Kubernetes itself already manages independent of Spring Cloud Kubernetes.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A Kubernetes Service continuously tracks which pods are currently ready via its Endpoints object and a call to getInstances queries the Kubernetes API directly for that live list rather than a separately maintained Eureka registry">
+  <rect x="20" y="20" width="150" height="40" rx="7" fill="#1c2430" stroke="#8b949e" stroke-width="1.2"/>
+  <text x="95" y="44" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">pod-1 (ready)</text>
+  <rect x="20" y="70" width="150" height="40" rx="7" fill="#1c2430" stroke="#f85149" stroke-width="1.2"/>
+  <text x="95" y="94" fill="#f85149" font-size="7.5" text-anchor="middle" font-family="sans-serif">pod-2 (NOT ready)</text>
+
+  <rect x="250" y="45" width="150" height="46" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="325" y="65" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">Service Endpoints</text>
+  <text x="325" y="79" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">only pod-1 listed</text>
+
+  <rect x="480" y="45" width="140" height="46" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="550" y="73" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">getInstances(...)</text>
+
+  <defs><marker id="a116" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <line x1="170" y1="40" x2="250" y2="65" stroke="#6db33f" stroke-width="1.2" marker-end="url(#a116)"/>
+  <line x1="170" y1="90" x2="250" y2="75" stroke="#f85149" stroke-width="1.2" stroke-dasharray="4,3"/>
+  <line x1="400" y1="68" x2="480" y2="68" stroke="#8b949e" stroke-width="1.2" marker-end="url(#a116)"/>
+</svg>
+<p><code>pod-2</code>&#x27;s dashed, unmarked line shows it never reaches the Endpoints object at all while unready — <code>getInstances</code> only ever sees pod-1.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: model a Kubernetes-style Endpoints object that tracks pod readiness dynamically, queried through a <code>DiscoveryClient</code>-shaped interface — showing discovery results change automatically as pod readiness changes, with no separate registration call from the application itself. Start with a static snapshot, then add dynamic readiness tracking, then simulate a rolling deployment where old and new pods briefly coexist, correctly reflected in discovery results throughout.</p>
+<h3>Level 1 — Basic</h3>
+<p>A static Endpoints snapshot, queried through a <code>DiscoveryClient</code>-shaped interface.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class K8sDiscoveryLevel1 {
+    interface DiscoveryClient { List&lt;String&gt; getInstances(String serviceName); }
+
+    static class KubernetesDiscoveryClient implements DiscoveryClient {
+        Map&lt;String, List&lt;String&gt;&gt; endpoints = Map.of(
+                &quot;order-service&quot;, List.of(&quot;10.244.0.12:8080&quot;, &quot;10.244.0.13:8080&quot;)
+        );
+        public List&lt;String&gt; getInstances(String serviceName) {
+            return endpoints.getOrDefault(serviceName, List.of());
+        }
+    }
+
+    public static void main(String[] args) {
+        DiscoveryClient discovery = new KubernetesDiscoveryClient();
+        System.out.println(&quot;order-service instances: &quot; + discovery.getInstances(&quot;order-service&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java K8sDiscoveryLevel1.java</code></p>
+<p>A fixed <code>endpoints</code> map stands in for a real Kubernetes <code>Endpoints</code> object&#x27;s current pod list — <code>getInstances</code> simply looks it up, with no application-level registration step involved anywhere in this flow.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add dynamic readiness: pods can transition between ready and not-ready, and <code>getInstances</code> always reflects the current state, updating automatically as readiness changes.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class K8sDiscoveryLevel2 {
+    interface DiscoveryClient { List&lt;String&gt; getInstances(String serviceName); }
+
+    static class PodEndpointRegistry {
+        Map&lt;String, Boolean&gt; podReadiness = new LinkedHashMap&lt;&gt;(); // pod -&gt; ready?
+
+        void setReady(String podIp, boolean ready) {
+            podReadiness.put(podIp, ready);
+            System.out.println(podIp + &quot; readiness set to &quot; + ready);
+        }
+
+        // models the Kubernetes control plane continuously recomputing Endpoints from CURRENT readiness
+        List&lt;String&gt; currentEndpoints() {
+            List&lt;String&gt; ready = new ArrayList&lt;&gt;();
+            for (Map.Entry&lt;String, Boolean&gt; entry : podReadiness.entrySet()) {
+                if (entry.getValue()) ready.add(entry.getKey());
+            }
+            return ready;
+        }
+    }
+
+    static class KubernetesDiscoveryClient implements DiscoveryClient {
+        PodEndpointRegistry registry;
+        KubernetesDiscoveryClient(PodEndpointRegistry registry) { this.registry = registry; }
+        public List&lt;String&gt; getInstances(String serviceName) { return registry.currentEndpoints(); } // ALWAYS live
+    }
+
+    public static void main(String[] args) {
+        PodEndpointRegistry registry = new PodEndpointRegistry();
+        DiscoveryClient discovery = new KubernetesDiscoveryClient(registry);
+
+        registry.setReady(&quot;10.244.0.12:8080&quot;, true);
+        registry.setReady(&quot;10.244.0.13:8080&quot;, true);
+        System.out.println(&quot;instances: &quot; + discovery.getInstances(&quot;order-service&quot;));
+
+        registry.setReady(&quot;10.244.0.13:8080&quot;, false); // pod-2 FAILS its readiness probe
+        System.out.println(&quot;instances after pod-2 fails readiness: &quot; + discovery.getInstances(&quot;order-service&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java K8sDiscoveryLevel2.java</code></p>
+<p>The second <code>getInstances</code> call, made after <code>10.244.0.13:8080</code>&#x27;s readiness flips to <code>false</code>, correctly excludes it from the returned list — no explicit &quot;deregister&quot; call was made by the application; <code>currentEndpoints</code> simply recomputes from whatever <code>podReadiness</code> currently holds, exactly mirroring how a real Kubernetes <code>Endpoints</code> object updates automatically the instant the platform&#x27;s own readiness probing detects a change, with no application-level action required.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Simulate a rolling deployment: new pods (a new version) start and become ready while old pods (the previous version) are still serving traffic, then old pods are terminated one by one — with <code>getInstances</code> correctly reflecting the transitional mixed state throughout.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class K8sDiscoveryLevel3 {
+    interface DiscoveryClient { List&lt;String&gt; getInstances(String serviceName); }
+
+    record Pod(String ip, String version, boolean ready) {}
+
+    static class PodEndpointRegistry {
+        List&lt;Pod&gt; pods = new ArrayList&lt;&gt;();
+        void addOrUpdate(Pod pod) {
+            pods.removeIf(p -&gt; p.ip().equals(pod.ip()));
+            pods.add(pod);
+        }
+        void remove(String ip) { pods.removeIf(p -&gt; p.ip().equals(ip)); }
+        List&lt;String&gt; currentEndpoints() {
+            List&lt;String&gt; ready = new ArrayList&lt;&gt;();
+            for (Pod p : pods) if (p.ready()) ready.add(p.ip() + &quot;(&quot; + p.version() + &quot;)&quot;);
+            return ready;
+        }
+    }
+
+    static class KubernetesDiscoveryClient implements DiscoveryClient {
+        PodEndpointRegistry registry;
+        KubernetesDiscoveryClient(PodEndpointRegistry registry) { this.registry = registry; }
+        public List&lt;String&gt; getInstances(String serviceName) { return registry.currentEndpoints(); }
+    }
+
+    public static void main(String[] args) {
+        PodEndpointRegistry registry = new PodEndpointRegistry();
+        DiscoveryClient discovery = new KubernetesDiscoveryClient(registry);
+
+        // steady state: two v1 pods
+        registry.addOrUpdate(new Pod(&quot;10.244.0.1&quot;, &quot;v1&quot;, true));
+        registry.addOrUpdate(new Pod(&quot;10.244.0.2&quot;, &quot;v1&quot;, true));
+        System.out.println(&quot;steady state: &quot; + discovery.getInstances(&quot;order-service&quot;));
+
+        // rolling deployment begins: one NEW v2 pod starts and becomes ready, v1 pods still serving
+        registry.addOrUpdate(new Pod(&quot;10.244.0.3&quot;, &quot;v2&quot;, true));
+        System.out.println(&quot;mid-rollout (v1 and v2 coexist): &quot; + discovery.getInstances(&quot;order-service&quot;));
+
+        // old v1 pods terminated one by one as the rollout proceeds
+        registry.remove(&quot;10.244.0.1&quot;);
+        System.out.println(&quot;after removing one v1 pod: &quot; + discovery.getInstances(&quot;order-service&quot;));
+
+        registry.remove(&quot;10.244.0.2&quot;);
+        registry.addOrUpdate(new Pod(&quot;10.244.0.4&quot;, &quot;v2&quot;, true));
+        System.out.println(&quot;rollout complete (only v2 remains): &quot; + discovery.getInstances(&quot;order-service&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java K8sDiscoveryLevel3.java</code></p>
+<p>The mid-rollout <code>getInstances</code> call correctly returns three entries — two <code>v1</code> pods and the one new <code>v2</code> pod — accurately reflecting that during a real rolling deployment, old and new pod versions genuinely do coexist and both receive traffic for a transitional period; each subsequent call after a <code>remove</code>/<code>addOrUpdate</code> reflects the registry&#x27;s state at that exact moment, with no caching or staleness, exactly mirroring how load-balanced calls made through a <code>@LoadBalanced</code> client during a real rolling deployment would be distributed across whatever mix of old and new pod versions Kubernetes&#x27; Endpoints object currently lists.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the mid-rollout state transition in Level 3.</p>
+<ol><li>After the two initial <code>addOrUpdate</code> calls, <code>registry.pods</code> contains two <code>Pod</code> records, both <code>version=&quot;v1&quot;</code>, both <code>ready=true</code> — <code>currentEndpoints()</code> returns both, formatted as <code>&quot;10.244.0.1(v1)&quot;</code> and <code>&quot;10.244.0.2(v1)&quot;</code>.</li><li><code>registry.addOrUpdate(new Pod(&quot;10.244.0.3&quot;, &quot;v2&quot;, true))</code> runs — <code>removeIf</code> finds no existing pod with IP <code>&quot;10.244.0.3&quot;</code> (it&#x27;s genuinely new), so nothing is removed, and the new <code>Pod</code> is appended to <code>pods</code>, which now holds three entries: two <code>v1</code> and one <code>v2</code>.</li><li><code>discovery.getInstances(&quot;order-service&quot;)</code> calls <code>registry.currentEndpoints()</code>, which iterates all three pods and finds all three <code>ready=true</code>, returning all three formatted entries — this is the &quot;mid-rollout&quot; printed line, correctly showing both versions coexisting.</li><li><code>registry.remove(&quot;10.244.0.1&quot;)</code> runs <code>pods.removeIf(p -&gt; p.ip().equals(&quot;10.244.0.1&quot;))</code>, which removes exactly that one <code>Pod</code> record, leaving two: one remaining <code>v1</code> pod and the one <code>v2</code> pod.</li><li>The subsequent <code>getInstances</code> call reflects exactly this two-pod state — one <code>v1</code>, one <code>v2</code> — again computed fresh from <code>registry.pods</code>&#x27; current contents, with no memory of the previously-returned three-pod list.</li><li>The final two calls (<code>remove(&quot;10.244.0.2&quot;)</code> then <code>addOrUpdate</code> a second <code>v2</code> pod) bring the registry to a state with zero <code>v1</code> pods and two <code>v2</code> pods, and the final <code>getInstances</code> call correctly reflects the completed rollout — this progression, entirely driven by <code>registry</code> mutations that model what Kubernetes&#x27; own control plane does automatically, required no explicit &quot;rollout complete&quot; signal anywhere in the discovery logic itself.</li></ol>
+<pre><code>steady state:  [v1-pod-1, v1-pod-2]
++ v2 starts:   [v1-pod-1, v1-pod-2, v2-pod-1]     &lt;- BOTH versions live simultaneously
+- v1-pod-1:    [v1-pod-2, v2-pod-1]
+- v1-pod-2, + v2-pod-2: [v2-pod-1, v2-pod-2]      &lt;- rollout complete, only v2 remains
+
+each getInstances() call reflects registry state AT THAT MOMENT -- no caching, no staleness</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> Kubernetes-native discovery reflects *readiness*, not merely pod existence — a pod that&#x27;s running but hasn&#x27;t yet passed its readiness probe (still starting up, or temporarily failing a health check) is correctly excluded from <code>Endpoints</code>/<code>getInstances</code> results, which is the desired behavior; assuming <code>getInstances</code> should return every pod matching a Service&#x27;s label selector regardless of readiness state is a misunderstanding of what the Endpoints object actually represents.</blockquote>
+<ul><li>Kubernetes-native discovery eliminates the need for application-level self-registration and heartbeating entirely — a pod becomes discoverable purely by matching a Service&#x27;s selector and passing its readiness probe, both mechanisms the platform manages independently of the application&#x27;s own code.</li><li>Because <code>getInstances</code> queries live Kubernetes state on every call (or via a watch-based cache kept continuously in sync), discovery results always reflect current reality, including transitional states like a rolling deployment&#x27;s temporary mix of old and new pod versions.</li><li>Application code written against the <code>DiscoveryClient</code> interface (including <code>@LoadBalanced</code> REST clients built on top of it, from earlier cards) works identically whether backed by Kubernetes-native discovery or Eureka — the interface, not the implementation, is what application code depends on.</li><li>Readiness probes are the mechanism that actually controls whether a pod appears in discovery results — a misconfigured or overly lenient readiness probe (one that reports &quot;ready&quot; before the application can genuinely handle traffic) undermines discovery&#x27;s entire value, regardless of how correctly the discovery mechanism itself is configured.</li></ul>
+  <div class="nav"><a class="prv" href="0115-configmap-secrets-propertysource.html"><span class="mini">← Previous</span>ConfigMap & Secrets PropertySource</a><a class="nxt" href="0117-kubernetes-native-load-balancing.html"><span class="mini">Next →</span>Kubernetes-native load balancing</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-cloud.html", ID = "t116";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
