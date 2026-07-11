@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Batch consumers" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-cloud.html">Spring Cloud</a> › 6. Messaging — Stream & Bus</div>
+  <div class="htitle">
+    <h1>"Batch consumers"</h1>
+    <a class="back" href="../../spring-cloud.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A batch consumer is a <code>Function</code>/<code>Consumer</code> bean that receives a <code>List&lt;T&gt;</code> of multiple messages in one invocation, rather than one message at a time — configured via <code>spring.cloud.stream.bindings.&lt;binding&gt;.consumer.batch-mode=true</code> — trading per-message invocation overhead for the efficiency of processing many messages together in a single call (one database batch insert instead of many individual ones, for instance).</p>
+<pre><code class="lang-properties">spring.cloud.stream.bindings.handleOrderBatch-in-0.consumer.batch-mode=true</code></pre>
+<pre><code class="lang-java">@Bean
+Function&lt;List&lt;OrderPlaced&gt;, List&lt;InvoiceRequested&gt;&gt; handleOrderBatch() {
+    return orders -&gt; {
+        // one call handles the WHOLE batch -- e.g. one bulk database insert instead of N individual ones
+        return orders.stream()
+                .map(o -&gt; new InvoiceRequested(o.orderId(), o.amount()))
+                .toList();
+    };
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Processing messages strictly one at a time means every downstream operation (a database write, an external API call) happens once per message — for a workload with real per-call overhead (database round-trip latency, API rate limits counted per call, transaction commit cost), batching many messages into fewer, larger downstream operations can be dramatically more efficient. Batch consumers deliver exactly the underlying batch the broker already groups messages into (Kafka polls return batches internally, for instance) directly to application code, rather than the framework artificially splitting that batch into individual calls.</p>
+<p>Reach for batch consumers when:</p>
+<ul><li>The downstream operation has meaningful per-call overhead that batching genuinely amortizes — a bulk database insert of 100 rows is typically far faster than 100 individual inserts, each paying its own round-trip and transaction cost.</li><li>Throughput matters more than per-message processing latency — batch consumption trades &quot;each message processed the instant it&#x27;s ready&quot; for &quot;messages processed together, once enough have accumulated (or a timeout elapses).&quot;</li><li>The underlying broker already delivers messages in batches internally (true of Kafka&#x27;s consumer poll model) — batch consumption avoids the overhead of the framework splitting an already-batched delivery into individual function invocations, only to potentially need to re-batch it downstream anyway.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> per-message consumer (default):
+   Function&lt;OrderPlaced, InvoiceRequested&gt;
+   invoked ONCE per message -- N messages = N invocations = N downstream operations
+
+ batch consumer:
+   Function&lt;List&lt;OrderPlaced&gt;, List&lt;InvoiceRequested&gt;&gt;
+   invoked ONCE per BATCH -- N messages, batched into groups of size B, = N/B invocations
+   each invocation can perform ONE downstream operation covering the whole batch</code></pre>
+<p>The function signature itself changes from a single value to a <code>List</code> of values — the framework hands over however many messages the broker delivered together in one poll/fetch, rather than iterating and calling the function once per element.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A per message consumer makes one downstream database call per message while a batch consumer receives a whole group of messages at once and makes a single downstream call covering the entire batch">
+  <rect x="20" y="20" width="290" height="70" rx="10" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="165" y="42" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">per-message consumer</text>
+  <text x="165" y="60" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">msg1-&gt;DB call, msg2-&gt;DB call, msg3-&gt;DB call</text>
+  <text x="165" y="76" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">3 messages = 3 downstream calls</text>
+
+  <rect x="330" y="20" width="290" height="70" rx="10" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="475" y="42" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">batch consumer</text>
+  <text x="475" y="60" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">[msg1,msg2,msg3] -&gt; ONE bulk DB call</text>
+  <text x="475" y="76" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">3 messages = 1 downstream call</text>
+
+  <defs><marker id="a90" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Same three messages, dramatically different downstream call volume depending purely on which consumption mode is configured.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: persist <code>OrderPlaced</code> events to a database, measuring the difference batch consumption makes. Start with per-message consumption (many individual downstream calls), then add batch consumption, then measure the actual call-count difference across a realistic message volume.</p>
+<h3>Level 1 — Basic</h3>
+<p>Per-message consumption — one downstream database call for every single message.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Function;
+
+public class BatchConsumersLevel1 {
+    record OrderPlaced(String orderId, double amount) {}
+    record InvoiceRequested(String orderId, double amount) {}
+
+    static int databaseCallCount = 0;
+
+    static void insertOne(InvoiceRequested invoice) {
+        databaseCallCount++; // one call per message
+    }
+
+    static Function&lt;OrderPlaced, InvoiceRequested&gt; handleOrder =
+            order -&gt; new InvoiceRequested(order.orderId(), order.amount());
+
+    public static void main(String[] args) {
+        List&lt;OrderPlaced&gt; incoming = new ArrayList&lt;&gt;();
+        for (int i = 1; i &lt;= 100; i++) incoming.add(new OrderPlaced(String.valueOf(i), i * 1.0));
+
+        for (OrderPlaced order : incoming) {
+            InvoiceRequested invoice = handleOrder.apply(order);
+            insertOne(invoice); // ONE database round-trip PER message
+        }
+
+        System.out.println(&quot;100 messages processed via &quot; + databaseCallCount + &quot; individual database calls&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java BatchConsumersLevel1.java</code></p>
+<p>100 messages produce 100 separate database calls — each one paying its own connection/transaction/network round-trip cost, even though a single bulk insert covering all 100 rows would very likely be dramatically faster overall.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add batch consumption: the function receives a <code>List&lt;OrderPlaced&gt;</code> and performs one bulk database call per batch instead of per message.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Function;
+
+public class BatchConsumersLevel2 {
+    record OrderPlaced(String orderId, double amount) {}
+    record InvoiceRequested(String orderId, double amount) {}
+
+    static int databaseCallCount = 0;
+
+    static void bulkInsert(List&lt;InvoiceRequested&gt; invoices) {
+        databaseCallCount++; // ONE call for the WHOLE batch, regardless of batch size
+    }
+
+    // batch-mode signature: List&lt;T&gt; in, List&lt;R&gt; out
+    static Function&lt;List&lt;OrderPlaced&gt;, List&lt;InvoiceRequested&gt;&gt; handleOrderBatch =
+            orders -&gt; orders.stream().map(o -&gt; new InvoiceRequested(o.orderId(), o.amount())).toList();
+
+    // models how the broker delivers messages already grouped into batches (e.g. one Kafka poll&#x27;s worth)
+    static List&lt;List&lt;OrderPlaced&gt;&gt; deliverInBatches(List&lt;OrderPlaced&gt; messages, int batchSize) {
+        List&lt;List&lt;OrderPlaced&gt;&gt; batches = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; messages.size(); i += batchSize) {
+            batches.add(messages.subList(i, Math.min(i + batchSize, messages.size())));
+        }
+        return batches;
+    }
+
+    public static void main(String[] args) {
+        List&lt;OrderPlaced&gt; incoming = new ArrayList&lt;&gt;();
+        for (int i = 1; i &lt;= 100; i++) incoming.add(new OrderPlaced(String.valueOf(i), i * 1.0));
+
+        List&lt;List&lt;OrderPlaced&gt;&gt; batches = deliverInBatches(incoming, 20); // e.g. Kafka poll returns 20 at a time
+
+        for (List&lt;OrderPlaced&gt; batch : batches) {
+            List&lt;InvoiceRequested&gt; invoices = handleOrderBatch.apply(batch); // ONE call for 20 messages
+            bulkInsert(invoices);
+        }
+
+        System.out.println(&quot;100 messages (in batches of 20) processed via &quot; + databaseCallCount + &quot; database calls&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java BatchConsumersLevel2.java</code></p>
+<p><code>handleOrderBatch</code> is invoked once per batch of 20 messages, and <code>bulkInsert</code> is called once per batch too — 100 messages, delivered in batches of 20, produce just 5 database calls instead of 100, a 20x reduction in downstream call volume purely from restructuring how many messages are handled per invocation.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Measure the actual difference more explicitly across varying batch sizes, and handle a partial-batch failure — one bad message within a batch shouldn&#x27;t necessarily need to fail the entire batch&#x27;s downstream operation, depending on how the batch-level logic is written.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.Function;
+
+public class BatchConsumersLevel3 {
+    record OrderPlaced(String orderId, double amount) {}
+    record InvoiceRequested(String orderId, double amount) {}
+
+    static int databaseCallCount = 0;
+    static List&lt;String&gt; failedOrderIds = new ArrayList&lt;&gt;();
+
+    static void bulkInsert(List&lt;InvoiceRequested&gt; invoices) { databaseCallCount++; }
+
+    static Function&lt;List&lt;OrderPlaced&gt;, List&lt;InvoiceRequested&gt;&gt; handleOrderBatch = orders -&gt; {
+        List&lt;InvoiceRequested&gt; results = new ArrayList&lt;&gt;();
+        for (OrderPlaced order : orders) {
+            if (order.amount() &lt; 0) {
+                // one malformed message within the batch -- handle it individually, don&#x27;t fail the WHOLE batch
+                failedOrderIds.add(order.orderId());
+                continue;
+            }
+            results.add(new InvoiceRequested(order.orderId(), order.amount()));
+        }
+        return results;
+    };
+
+    static List&lt;List&lt;OrderPlaced&gt;&gt; deliverInBatches(List&lt;OrderPlaced&gt; messages, int batchSize) {
+        List&lt;List&lt;OrderPlaced&gt;&gt; batches = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; messages.size(); i += batchSize) {
+            batches.add(messages.subList(i, Math.min(i + batchSize, messages.size())));
+        }
+        return batches;
+    }
+
+    public static void main(String[] args) {
+        List&lt;OrderPlaced&gt; incoming = new ArrayList&lt;&gt;();
+        for (int i = 1; i &lt;= 50; i++) {
+            double amount = (i == 27) ? -10.0 : i * 1.0; // one deliberately malformed message in the middle
+            incoming.add(new OrderPlaced(String.valueOf(i), amount));
+        }
+
+        List&lt;List&lt;OrderPlaced&gt;&gt; batches = deliverInBatches(incoming, 10);
+        for (List&lt;OrderPlaced&gt; batch : batches) {
+            List&lt;InvoiceRequested&gt; invoices = handleOrderBatch.apply(batch);
+            bulkInsert(invoices); // the batch containing the bad message still inserts its 9 GOOD messages
+        }
+
+        System.out.println(&quot;50 messages in batches of 10 -&gt; &quot; + databaseCallCount + &quot; database calls&quot;);
+        System.out.println(&quot;individually failed messages (not blocking their batch): &quot; + failedOrderIds);
+    }
+}</code></pre>
+<p>How to run: <code>java BatchConsumersLevel3.java</code></p>
+<p><code>handleOrderBatch</code> filters out the one malformed message (order <code>&quot;27&quot;</code>, with a negative amount) within its batch, adding it to <code>failedOrderIds</code> for separate handling, while still returning the other nine valid <code>InvoiceRequested</code> results from that same batch — <code>bulkInsert</code> still runs once for that batch, correctly persisting the nine good records rather than either silently including the bad one or failing the entire batch of ten over one bad message.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the batch containing the malformed message in Level 3.</p>
+<ol><li><code>deliverInBatches</code> groups the 50 orders into 5 batches of 10 — the batch containing order <code>&quot;27&quot;</code> is the third batch (orders <code>21</code> through <code>30</code>, zero-indexed as <code>incoming.subList(20, 30)</code>).</li><li>When <code>handleOrderBatch.apply(batch)</code> is called on that specific batch, the <code>for</code> loop iterates all 10 orders within it. For order <code>&quot;27&quot;</code>, <code>order.amount() &lt; 0</code> evaluates <code>true</code> (it was deliberately set to <code>-10.0</code>), so <code>failedOrderIds.add(&quot;27&quot;)</code> runs and <code>continue</code> skips adding anything to <code>results</code> for this one order.</li><li>The other nine orders in that same batch all have positive amounts, so each produces a normal <code>InvoiceRequested</code> added to <code>results</code>.</li><li><code>handleOrderBatch</code> returns <code>results</code>, now containing 9 elements (not 10) for this particular batch — the malformed message was excluded, but the batch-level operation as a whole still completed successfully.</li><li><code>bulkInsert(invoices)</code> runs for this batch exactly as it does for every other batch, inserting the 9 valid records — the one malformed message didn&#x27;t need to fail or block the other nine perfectly good ones within the same batch.</li><li>The final <code>println</code> calls report <code>databaseCallCount</code> at <code>5</code> (still one call per batch, unaffected by the partial failure within one of them) and <code>failedOrderIds</code> containing exactly <code>[&quot;27&quot;]</code> — a clean, auditable record of the one message needing individual attention, without it having compromised the batch efficiency for the other 49 messages.</li></ol>
+<pre><code>batch 3 (orders 21-30): order 27 has amount=-10.0 (invalid)
+   -&gt; excluded from results, added to failedOrderIds
+   -&gt; other 9 orders in the SAME batch still processed normally
+   -&gt; bulkInsert still runs ONCE for this batch, persisting the 9 valid records
+
+total: 5 database calls (one per batch of 10), 1 message flagged individually, 49 successfully persisted</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> batch consumption changes acknowledgment/commit semantics — depending on the broker and configuration, a failure partway through processing a batch can mean the *entire batch* is redelivered on retry (including messages that were already successfully processed before the failure), unlike per-message consumption where each message&#x27;s success/failure is typically tracked independently. Understanding a specific broker&#x27;s exact batch-acknowledgment behavior is essential before relying on batch consumption for genuinely critical data, and handling partial failures gracefully *within* the batch function itself (as Level 3 demonstrated) is often necessary to avoid reprocessing already-successful work.</blockquote>
+<ul><li>Batch consumption trades per-message processing simplicity for genuinely significant downstream efficiency gains, when the downstream operation has real per-call overhead that batching amortizes effectively.</li><li>The function signature itself changes to <code>List&lt;T&gt;</code> in, <code>List&lt;R&gt;</code> out — this is a structurally different contract from the per-message <code>Function&lt;T, R&gt;</code> shape, not merely a configuration toggle on an otherwise-identical function.</li><li>Handling a malformed or invalid message *within* a batch requires deliberate logic inside the batch function (filtering it out, as Level 3 did) — the framework doesn&#x27;t automatically isolate individual bad messages within an otherwise-successful batch the way per-message dead-lettering (an earlier card) does for a single message&#x27;s own delivery.</li><li>Choose batch consumption specifically when downstream call overhead genuinely dominates — for lightweight, low-latency-per-message processing with no meaningful per-call cost to amortize, per-message consumption remains simpler and equally effective.</li></ul>
+  <div class="nav"><a class="prv" href="0089-multiple-binders-multi-binding.html"><span class="mini">← Previous</span>Multiple binders & multi-binding</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-cloud.html", ID = "t90";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
