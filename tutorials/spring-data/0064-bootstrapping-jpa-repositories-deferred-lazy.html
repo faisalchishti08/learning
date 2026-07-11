@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Bootstrapping JPA repositories (deferred/lazy)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-data.html">Spring Data</a> › 2. Spring Data JPA</div>
+  <div class="htitle">
+    <h1>"Bootstrapping JPA repositories (deferred/lazy)"</h1>
+    <a class="back" href="../../spring-data.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>@EnableJpaRepositories(bootstrapMode = ...)</code> controls *when* Spring Data JPA repository proxies are actually wired up during application startup: <code>DEFAULT</code> builds them eagerly as beans are created, <code>DEFERRED</code> builds them but waits until the <code>EntityManagerFactory</code> (Hibernate/JPA&#x27;s expensive-to-build bootstrap object) has fully finished initializing, and <code>LAZY</code> goes further and only builds each individual repository proxy the first time it&#x27;s actually injected and used.</p>
+<pre><code class="lang-java">@EnableJpaRepositories(bootstrapMode = BootstrapMode.DEFERRED)
+@SpringBootApplication
+class Application { }</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Building the JPA <code>EntityManagerFactory</code> is one of the slowest parts of application startup, since it scans all entities, validates mappings, and (depending on configuration) builds a second-level cache. <code>BootstrapMode</code> decides whether repository beans have to wait for that expensive step to fully complete before they themselves become usable, which directly affects how fast the application context finishes starting.</p>
+<p>Reach for a non-default bootstrap mode specifically when:</p>
+<ul><li>Startup time matters (e.g., serverless/cold-start environments, or large applications with hundreds of repositories) and you want repository bean creation to overlap with the <code>EntityManagerFactory</code>&#x27;s own background initialization — <code>DEFERRED</code> mode.</li><li>Only a fraction of your repositories are actually used in any given process run (e.g., a modular monolith where each request path only touches a handful of the total repositories) and you want unused ones to never pay their initialization cost — <code>LAZY</code> mode.</li><li>You&#x27;re debugging a startup-order problem where a repository is injected and used before the persistence layer is ready — understanding <code>DEFAULT</code> (synchronous, in bean-creation order) explains why that failure happens.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> DEFAULT:  repository proxies built AS SOON AS their bean is created
+           -- may block on EntityManagerFactory if it isn&#x27;t ready yet
+
+ DEFERRED: repository proxies built when requested, but the actual work
+           waits until EntityManagerFactory bootstrap has FULLY finished
+           -- lets EMF init run in the background while other beans start
+
+ LAZY:     like DEFERRED, but ALSO delays building each individual
+           repository proxy until it is first actually injected/used
+           -- unused repositories never pay their init cost at all</code></pre>
+<p>Each mode pushes repository initialization later — <code>DEFAULT</code> is immediate, <code>DEFERRED</code> waits for the shared persistence unit, <code>LAZY</code> waits per-repository until first use.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.v3.org/2000/svg" role="img" aria-label="Three bootstrap modes build repository proxies at different points relative to EntityManagerFactory init and first use">
+  <text x="20" y="20" fill="#8b949e" font-size="9.5" font-family="sans-serif">timeline -&gt;</text>
+
+  <rect x="20" y="30" width="150" height="35" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.3"/>
+  <text x="95" y="52" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">DEFAULT: build now</text>
+
+  <rect x="20" y="80" width="150" height="35" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="95" y="102" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">DEFERRED: wait...</text>
+  <rect x="330" y="80" width="150" height="35" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="405" y="102" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">EMF ready -&gt; build</text>
+
+  <rect x="20" y="130" width="150" height="35" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.3"/>
+  <text x="95" y="152" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">LAZY: wait...</text>
+  <rect x="500" y="130" width="120" height="35" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.3"/>
+  <text x="560" y="152" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">first use -&gt; build</text>
+
+  <line x1="170" y1="97" x2="325" y2="97" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="4,3"/>
+  <line x1="170" y1="147" x2="495" y2="147" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="4,3"/>
+</svg>
+<p><code>DEFERRED</code> builds all repositories once the persistence unit is ready; <code>LAZY</code> further delays each one until it is actually used.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: an application wiring several repositories at startup, evolving from eager (<code>DEFAULT</code>-style) construction, to deferred construction that waits for a shared &quot;persistence unit&quot; to finish, to lazy per-repository construction triggered only on first use.</p>
+<h3>Level 1 — Basic</h3>
+<p>Model <code>DEFAULT</code> bootstrap mode: every repository proxy is built immediately as its bean is created.</p>
+<pre><code class="lang-java">import java.util.*;
+
+class EntityManagerFactory {
+    EntityManagerFactory() {
+        System.out.println(&quot;EntityManagerFactory: scanning entities, building mappings...&quot;);
+    }
+}
+
+class Repository {
+    private final String name;
+    Repository(String name, EntityManagerFactory emf) {
+        this.name = name;
+        System.out.println(&quot;  Repository[&quot; + name + &quot;]: proxy built (using EMF)&quot;);
+    }
+}
+
+public class BootstrapLevel1 {
+    public static void main(String[] args) {
+        System.out.println(&quot;Application starting (bootstrapMode = DEFAULT)&quot;);
+        EntityManagerFactory emf = new EntityManagerFactory(); // must finish first
+        // Every repository bean built immediately, in bean-creation order.
+        Repository orders = new Repository(&quot;OrderRepository&quot;, emf);
+        Repository customers = new Repository(&quot;CustomerRepository&quot;, emf);
+        Repository products = new Repository(&quot;ProductRepository&quot;, emf);
+        System.out.println(&quot;Application ready&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java BootstrapLevel1.java</code></p>
+<p>Each <code>Repository</code> is constructed the moment its line runs, and each constructor call happens strictly after <code>emf</code> finished — mirroring <code>DEFAULT</code> mode, where every repository proxy is built synchronously, in bean-creation order, and none of them can start until the <code>EntityManagerFactory</code> they depend on is fully ready.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Model <code>DEFERRED</code> mode: repository beans are created right away as lightweight placeholders, but their actual proxy-building work is queued until the <code>EntityManagerFactory</code> signals it has finished — letting the two initialize concurrently instead of strictly sequentially.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.*;
+
+class EntityManagerFactory {
+    private final List&lt;Runnable&gt; onReady = new ArrayList&lt;&gt;();
+    private boolean ready = false;
+
+    void whenReady(Runnable callback) {
+        if (ready) callback.run(); else onReady.add(callback);
+    }
+
+    void finishInitializing() {
+        System.out.println(&quot;EntityManagerFactory: finished scanning entities and building mappings&quot;);
+        ready = true;
+        onReady.forEach(Runnable::run); // fire all deferred repository builds now
+    }
+}
+
+class DeferredRepository {
+    private final String name;
+    DeferredRepository(String name, EntityManagerFactory emf) {
+        this.name = name;
+        System.out.println(&quot;  Repository[&quot; + name + &quot;]: bean created, deferring proxy build...&quot;);
+        emf.whenReady(() -&gt; System.out.println(&quot;    Repository[&quot; + name + &quot;]: proxy built (EMF was ready)&quot;));
+    }
+}
+
+public class BootstrapLevel2 {
+    public static void main(String[] args) {
+        System.out.println(&quot;Application starting (bootstrapMode = DEFERRED)&quot;);
+        EntityManagerFactory emf = new EntityManagerFactory();
+
+        // These beans are created immediately, but their proxy work is DEFERRED.
+        DeferredRepository orders = new DeferredRepository(&quot;OrderRepository&quot;, emf);
+        DeferredRepository customers = new DeferredRepository(&quot;CustomerRepository&quot;, emf);
+
+        System.out.println(&quot;(other unrelated beans could initialize here, in parallel with EMF)&quot;);
+        emf.finishInitializing(); // only now do the deferred repository builds actually run
+        System.out.println(&quot;Application ready&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java BootstrapLevel2.java</code></p>
+<p>Both <code>DeferredRepository</code> beans print &quot;bean created, deferring...&quot; immediately, but their &quot;proxy built&quot; message only appears after <code>emf.finishInitializing()</code> runs — standing in for how <code>DEFERRED</code> mode lets unrelated application beans keep initializing while the <code>EntityManagerFactory</code> finishes its own expensive work in the background, instead of blocking on it up front like <code>DEFAULT</code> does.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Model <code>LAZY</code> mode: repository proxies are not built even when the <code>EntityManagerFactory</code> becomes ready — only on first actual use, via a lazy-initializing wrapper (standing in for a JDK dynamic proxy).</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.*;
+
+class EntityManagerFactory {
+    private boolean ready = false;
+    void finishInitializing() {
+        System.out.println(&quot;EntityManagerFactory: ready&quot;);
+        ready = true;
+    }
+    boolean isReady() { return ready; }
+}
+
+class RealRepository {
+    private final String name;
+    RealRepository(String name, EntityManagerFactory emf) {
+        this.name = name;
+        if (!emf.isReady()) throw new IllegalStateException(&quot;EMF not ready&quot;);
+        System.out.println(&quot;    Repository[&quot; + name + &quot;]: actual proxy built NOW (first use)&quot;);
+    }
+    void findAll() { System.out.println(&quot;    Repository[&quot; + name + &quot;]: findAll() executed&quot;); }
+}
+
+// Stands in for the lazy JDK dynamic proxy Spring Data creates under bootstrapMode = LAZY.
+class LazyRepository {
+    private final String name;
+    private final EntityManagerFactory emf;
+    private RealRepository real; // null until first real use
+
+    LazyRepository(String name, EntityManagerFactory emf) {
+        this.name = name; this.emf = emf;
+        System.out.println(&quot;  Repository[&quot; + name + &quot;]: lazy proxy created, NOT built yet&quot;);
+    }
+
+    private RealRepository resolve() {
+        if (real == null) real = new RealRepository(name, emf); // built only here, on first call
+        return real;
+    }
+
+    void findAll() { resolve().findAll(); }
+}
+
+public class BootstrapLevel3 {
+    public static void main(String[] args) {
+        System.out.println(&quot;Application starting (bootstrapMode = LAZY)&quot;);
+        EntityManagerFactory emf = new EntityManagerFactory();
+
+        LazyRepository orders = new LazyRepository(&quot;OrderRepository&quot;, emf);
+        LazyRepository customers = new LazyRepository(&quot;CustomerRepository&quot;, emf); // never used below!
+
+        emf.finishInitializing();
+        System.out.println(&quot;Application ready (no repository proxies actually built yet)&quot;);
+
+        System.out.println(&quot;First request arrives, needs OrderRepository:&quot;);
+        orders.findAll(); // THIS triggers the real proxy build, only now
+        // customers.findAll() is never called -&gt; CustomerRepository&#x27;s real proxy is never built
+    }
+}</code></pre>
+<p>How to run: <code>java BootstrapLevel3.java</code></p>
+<p><code>customers</code> is created but never queried, so <code>RealRepository</code> for <code>CustomerRepository</code> is never constructed at all — only <code>orders.findAll()</code> triggers <code>resolve()</code>, which lazily builds the real proxy at that moment. This is the full benefit of <code>LAZY</code> mode: repositories that are never exercised in a given process run never pay their initialization cost.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts in <code>main</code> for Level 3. First, <code>emf</code> is created (not yet ready). Then two <code>LazyRepository</code> wrappers are constructed — each immediately prints &quot;lazy proxy created, NOT built yet&quot; and stores <code>real = null</code>; no <code>RealRepository</code> exists for either at this point.</p>
+<p>Next, <code>emf.finishInitializing()</code> runs, printing &quot;EntityManagerFactory: ready&quot; and flipping <code>ready</code> to <code>true</code> — but critically, this does <strong>not</strong> trigger either <code>LazyRepository</code> to build its real proxy; <code>LAZY</code> mode has no hook that fires on EMF readiness the way <code>DEFERRED</code> did in Level 2.</p>
+<p>&quot;Application ready&quot; prints next, with zero real repository proxies built so far. Then <code>orders.findAll()</code> is called: this invokes <code>resolve()</code>, which sees <code>real == null</code>, so it constructs a <code>new RealRepository(&quot;OrderRepository&quot;, emf)</code> right there — printing &quot;actual proxy built NOW (first use)&quot; — and only then calls <code>findAll()</code> on it, printing &quot;findAll() executed&quot;. <code>customers.findAll()</code> is never called in this program, so <code>CustomerRepository</code>&#x27;s <code>RealRepository</code> is never constructed — its cost is never paid.</p>
+<pre><code>DEFAULT:  emf ready --------&gt; [orders built][customers built][products built] -&gt; app ready
+DEFERRED: emf init (bg) --+-&gt; [orders queued][customers queued]                -&gt; emf ready -&gt; both built -&gt; app ready
+                           |
+LAZY:     emf init -&gt; emf ready -&gt; app ready -&gt; (nothing built) -&gt; first orders.findAll() -&gt; orders built now
+                                                                     (customers never built)</code></pre>
+<p>In a real Spring Boot application with <code>bootstrapMode = BootstrapMode.LAZY</code>, the application context can report &quot;started&quot; well before any repository has actually been fully initialized — the first HTTP request that reaches a controller depending on <code>OrderRepository</code> is what triggers that specific repository&#x27;s real Hibernate-backed implementation to be built, on that request&#x27;s thread, adding a one-time delay to that first request rather than to application startup.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: <code>LAZY</code> mode moves initialization cost from application startup to the *first request* that touches each repository — this can make an individual early request unexpectedly slow (or even fail, if <code>EntityManagerFactory</code> somehow isn&#x27;t fully ready) in exchange for faster startup; it is a genuine tradeoff, not a free win.</blockquote>
+<ul><li><code>DEFAULT</code>: every repository proxy is built synchronously and immediately, in bean-creation order.</li><li><code>DEFERRED</code>: repository beans exist immediately, but proxy construction waits until the shared <code>EntityManagerFactory</code> finishes, letting the two initialize concurrently.</li><li><code>LAZY</code>: goes further — each individual repository&#x27;s proxy is only built the first time it is actually injected and used; unused repositories never pay the cost.</li><li>Use <code>DEFERRED</code>/<code>LAZY</code> to reduce startup time in large applications or many-repository codebases; understand the tradeoff of pushing cost onto first use before adopting <code>LAZY</code> in latency-sensitive request paths.</li></ul>
+  <div class="nav"><a class="prv" href="0063-keyset-pagination-scroll.html"><span class="mini">← Previous</span>Keyset pagination (scroll)</a><a class="nxt" href="0065-persistence-context-entitymanager.html"><span class="mini">Next →</span>Persistence context & EntityManager</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-data.html", ID = "t64";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

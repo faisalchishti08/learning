@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"@Lock (pessimistic/optimistic locking)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-data.html">Spring Data</a> › 2. Spring Data JPA</div>
+  <div class="htitle">
+    <h1>"@Lock (pessimistic/optimistic locking)"</h1>
+    <a class="back" href="../../spring-data.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>@Lock</code> on a repository method controls what concurrency-control strategy JPA applies when the query loads its rows: <strong>optimistic locking</strong> (via a <code>@Version</code> column, checked at commit time) assumes conflicts are rare and detects them after the fact; <strong>pessimistic locking</strong> (<code>PESSIMISTIC_READ</code>/<code>PESSIMISTIC_WRITE</code>, via a database-level row lock) assumes conflicts are likely and prevents them up front by blocking other transactions from touching the same row.</p>
+<pre><code class="lang-java">@Lock(LockModeType.PESSIMISTIC_WRITE)
+@Query(&quot;SELECT o FROM Order o WHERE o.id = :id&quot;)
+Optional&lt;Order&gt; findByIdForUpdate(@Param(&quot;id&quot;) Long id);</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>The persistence context card explained that mutating a managed entity gets written automatically at commit — but said nothing about what happens if *two* transactions load and mutate the *same* row concurrently. <code>@Lock</code> is how you choose the concurrency strategy for a specific query: let both proceed and detect the conflict later (optimistic), or force one to wait for the other to finish (pessimistic).</p>
+<p>Reach for one or the other specifically when:</p>
+<ul><li>Conflicts are rare and you want the highest throughput — use optimistic locking (<code>@Version</code> field on the entity; no <code>@Lock</code> annotation even required, it&#x27;s automatic), and handle the occasional <code>OptimisticLockException</code> by retrying.</li><li>Conflicts are frequent enough that retry-on-failure would thrash, or the operation is a genuine &quot;read this row, then update it based on what I read&quot; sequence that must not be interleaved (e.g., decrementing inventory) — use <code>@Lock(PESSIMISTIC_WRITE)</code> to block concurrent writers on that row until your transaction finishes.</li><li>You need to read a row and guarantee it won&#x27;t change before you finish reading related data, without necessarily needing to write to it — <code>PESSIMISTIC_READ</code> blocks other writers but typically still allows other readers.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code> OPTIMISTIC (default, via @Version):
+   Tx A: SELECT ... (version=1)      Tx B: SELECT ... (version=1)
+   Tx A: UPDATE ... version=2 WHERE version=1   -- succeeds, 1 row affected
+   Tx B: UPDATE ... version=2 WHERE version=1   -- 0 rows affected!
+                                                 -- Spring throws OptimisticLockException
+
+ PESSIMISTIC_WRITE (via @Lock):
+   Tx A: SELECT ... FOR UPDATE   -- row LOCKED
+   Tx B: SELECT ... FOR UPDATE   -- BLOCKS, waits for Tx A to commit/rollback
+   Tx A: commits -&gt; lock released
+   Tx B: proceeds now, sees Tx A&#x27;s committed data</code></pre>
+<p>Optimistic locking lets both transactions run and only fails the loser at commit time; pessimistic locking makes the second transaction wait its turn.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.v3.org/2000/svg" role="img" aria-label="Optimistic locking detects conflicts at commit; pessimistic locking blocks the second transaction upfront">
+  <text x="20" y="20" fill="#e6edf3" font-size="10" font-family="sans-serif">Optimistic</text>
+  <rect x="20" y="30" width="140" height="35" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="90" y="52" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Tx A reads v1</text>
+  <rect x="180" y="30" width="140" height="35" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="250" y="52" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Tx B reads v1</text>
+  <rect x="340" y="30" width="140" height="35" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.3"/>
+  <text x="410" y="52" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Tx A writes -&gt; v2 OK</text>
+  <rect x="500" y="30" width="130" height="35" rx="6" fill="#1c2430" stroke="#f85149" stroke-width="1.3"/>
+  <text x="565" y="46" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Tx B writes -&gt;</text>
+  <text x="565" y="58" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">OptimisticLockException</text>
+
+  <text x="20" y="110" fill="#e6edf3" font-size="10" font-family="sans-serif">Pessimistic</text>
+  <rect x="20" y="120" width="140" height="35" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="90" y="142" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Tx A locks row</text>
+  <rect x="180" y="120" width="140" height="35" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.3" stroke-dasharray="4,3"/>
+  <text x="250" y="142" fill="#8b949e" font-size="8.5" text-anchor="middle" font-family="sans-serif">Tx B BLOCKS...</text>
+  <rect x="340" y="120" width="140" height="35" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.3"/>
+  <text x="410" y="142" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Tx A commits, unlocks</text>
+  <rect x="500" y="120" width="130" height="35" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.3"/>
+  <text x="565" y="142" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Tx B proceeds</text>
+</svg>
+<p>Optimistic locking lets both transactions proceed and fails the loser at write time; pessimistic locking makes the second one wait instead.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: two concurrent updates to the same order&#x27;s inventory count, evolving from a version-checked optimistic model that throws on conflict, to a retry loop around it, to a pessimistic-lock model that serializes access instead of failing.</p>
+<h3>Level 1 — Basic</h3>
+<p>Model optimistic locking directly: an <code>UPDATE</code> conditioned on the version last read, failing loudly if another transaction already changed it.</p>
+<pre><code class="lang-java">import java.util.*;
+
+class OptimisticLockException extends RuntimeException {
+    OptimisticLockException(String msg) { super(msg); }
+}
+
+class Order {
+    long id; int stock; int version;
+    Order(long id, int stock, int version) { this.id = id; this.stock = stock; this.version = version; }
+}
+
+class OrderRepository {
+    private final Map&lt;Long, Order&gt; db;
+    OrderRepository(Map&lt;Long, Order&gt; db) { this.db = db; }
+
+    Order findById(long id) {
+        Order stored = db.get(id);
+        return new Order(stored.id, stored.stock, stored.version); // simulate a separate transaction&#x27;s read
+    }
+
+    // UPDATE orders SET stock = ?, version = version + 1 WHERE id = ? AND version = ?
+    void save(Order toSave) {
+        Order stored = db.get(toSave.id);
+        if (stored.version != toSave.version) {
+            throw new OptimisticLockException(&quot;Row was modified by another transaction (version mismatch)&quot;);
+        }
+        stored.stock = toSave.stock;
+        stored.version = toSave.version + 1; // version bumped on successful write
+    }
+}
+
+public class LockLevel1 {
+    public static void main(String[] args) {
+        Map&lt;Long, Order&gt; db = new HashMap&lt;&gt;(Map.of(1L, new Order(1, 10, 0)));
+        OrderRepository repo = new OrderRepository(db);
+
+        Order txA = repo.findById(1L); // both &quot;transactions&quot; read version 0
+        Order txB = repo.findById(1L);
+
+        txA.stock -= 1; // Tx A decrements stock
+        repo.save(txA);  // succeeds: version still 0 in db, matches txA&#x27;s version 0
+        System.out.println(&quot;Tx A saved. Stock now: &quot; + db.get(1L).stock + &quot;, version: &quot; + db.get(1L).version);
+
+        txB.stock -= 1; // Tx B ALSO decrements stock, from its own (now stale) read
+        try {
+            repo.save(txB); // fails: db version is now 1, but txB still thinks it&#x27;s 0
+        } catch (OptimisticLockException e) {
+            System.out.println(&quot;Tx B failed: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java LockLevel1.java</code></p>
+<p>Tx A&#x27;s save succeeds because the <code>version</code> it read (<code>0</code>) still matches what&#x27;s in <code>db</code>. Tx B&#x27;s save fails because <code>db</code>&#x27;s version was already bumped to <code>1</code> by Tx A&#x27;s successful write — this is exactly the <code>WHERE ... AND version = ?</code> clause Hibernate generates for a <code>@Version</code>-annotated entity, and the zero-rows-affected result is what Spring Data translates into <code>OptimisticLockException</code>.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Wrap the optimistic-locking call in a retry loop — the typical way application code handles the occasional conflict, by re-reading the current state and reapplying the change.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.function.*;
+
+class OptimisticLockException extends RuntimeException {
+    OptimisticLockException(String msg) { super(msg); }
+}
+
+class Order {
+    long id; int stock; int version;
+    Order(long id, int stock, int version) { this.id = id; this.stock = stock; this.version = version; }
+}
+
+class OrderRepository {
+    private final Map&lt;Long, Order&gt; db;
+    OrderRepository(Map&lt;Long, Order&gt; db) { this.db = db; }
+    Order findById(long id) {
+        Order stored = db.get(id);
+        return new Order(stored.id, stored.stock, stored.version);
+    }
+    void save(Order toSave) {
+        Order stored = db.get(toSave.id);
+        if (stored.version != toSave.version) throw new OptimisticLockException(&quot;version mismatch&quot;);
+        stored.stock = toSave.stock;
+        stored.version = toSave.version + 1;
+    }
+}
+
+public class LockLevel2 {
+    // Retries the read-modify-write cycle up to `maxAttempts` times on OptimisticLockException.
+    static void decrementStockWithRetry(OrderRepository repo, long orderId, int maxAttempts) {
+        for (int attempt = 1; attempt &lt;= maxAttempts; attempt++) {
+            try {
+                Order order = repo.findById(orderId); // fresh read each attempt
+                order.stock -= 1;
+                repo.save(order);
+                System.out.println(&quot;Succeeded on attempt &quot; + attempt);
+                return;
+            } catch (OptimisticLockException e) {
+                System.out.println(&quot;Attempt &quot; + attempt + &quot; failed (&quot; + e.getMessage() + &quot;), retrying...&quot;);
+            }
+        }
+        throw new RuntimeException(&quot;Failed after &quot; + maxAttempts + &quot; attempts&quot;);
+    }
+
+    public static void main(String[] args) {
+        Map&lt;Long, Order&gt; db = new HashMap&lt;&gt;(Map.of(1L, new Order(1, 10, 0)));
+        OrderRepository repo = new OrderRepository(db);
+
+        // Simulate a &quot;concurrent&quot; write happening between Tx B&#x27;s read and its save, on attempt 1 only.
+        Order staleRead = repo.findById(1L);
+        staleRead.stock -= 1;
+        repo.save(staleRead); // version becomes 1 -- this represents another transaction winning first
+
+        decrementStockWithRetry(repo, 1L, 3); // attempt 1 uses a fresh read, so it succeeds directly here
+        System.out.println(&quot;Final stock: &quot; + db.get(1L).stock + &quot;, version: &quot; + db.get(1L).version);
+    }
+}</code></pre>
+<p>How to run: <code>java LockLevel2.java</code></p>
+<p><code>decrementStockWithRetry</code> re-reads the current version on *every* attempt, so it always saves against the latest state — a conflict only occurs if another write sneaks in *between* its own read and its own save, not against stale data from before the loop started. This is the standard pattern for handling <code>OptimisticLockException</code> in application code: retry with a fresh read, not with the original stale object.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Model pessimistic locking as an alternative: instead of retrying after a conflict, a second &quot;transaction&quot; blocks until the first releases the lock, guaranteeing no conflict ever occurs.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.locks.*;
+
+class Order {
+    long id; int stock;
+    Order(long id, int stock) { this.id = id; this.stock = stock; }
+}
+
+class OrderRepository {
+    private final Map&lt;Long, Order&gt; db;
+    private final Map&lt;Long, ReentrantLock&gt; rowLocks = new HashMap&lt;&gt;();
+    OrderRepository(Map&lt;Long, Order&gt; db) {
+        this.db = db;
+        for (Long id : db.keySet()) rowLocks.put(id, new ReentrantLock());
+    }
+
+    // @Lock(LockModeType.PESSIMISTIC_WRITE): acquires a real DB row lock (e.g. SELECT ... FOR UPDATE).
+    Order findByIdForUpdate(long id) {
+        rowLocks.get(id).lock(); // blocks here if another &quot;transaction&quot; holds it
+        System.out.println(Thread.currentThread().getName() + &quot;: acquired lock on order &quot; + id);
+        return db.get(id);
+    }
+
+    void saveAndUnlock(Order order) {
+        db.put(order.id, order); // write is safe -- no other transaction could have touched this row
+        rowLocks.get(order.id).unlock();
+        System.out.println(Thread.currentThread().getName() + &quot;: released lock on order &quot; + order.id);
+    }
+}
+
+public class LockLevel3 {
+    public static void main(String[] args) throws InterruptedException {
+        Map&lt;Long, Order&gt; db = new HashMap&lt;&gt;(Map.of(1L, new Order(1, 10)));
+        OrderRepository repo = new OrderRepository(db);
+
+        Runnable decrement = () -&gt; {
+            Order order = repo.findByIdForUpdate(1L); // blocks if locked by the other thread
+            order.stock -= 1;
+            try { Thread.sleep(50); } catch (InterruptedException ignored) {} // simulate work while holding the lock
+            repo.saveAndUnlock(order);
+        };
+
+        Thread txA = new Thread(decrement, &quot;TxA&quot;);
+        Thread txB = new Thread(decrement, &quot;TxB&quot;);
+        txA.start();
+        txB.start();
+        txA.join();
+        txB.join();
+
+        System.out.println(&quot;Final stock (no conflicts possible): &quot; + db.get(1L).stock);
+    }
+}</code></pre>
+<p>How to run: <code>java LockLevel3.java</code></p>
+<p><code>TxA</code> and <code>TxB</code> both call <code>findByIdForUpdate(1L)</code>, but only one acquires <code>rowLocks.get(1L)</code> at a time — whichever thread loses the race prints &quot;acquired lock&quot; only after the winner calls <code>saveAndUnlock</code>, which releases it. Unlike Level 1/2&#x27;s optimistic approach, there is no exception and no retry: the second transaction simply waits its turn, and the final stock is always correctly decremented by both, <code>10 - 1 - 1 = 8</code>.</p>
+<h2>6. Walkthrough</h2>
+<p>Execution starts in <code>main</code> for Level 3. Two threads, <code>TxA</code> and <code>TxB</code>, are started nearly simultaneously, each running the same <code>decrement</code> logic. Whichever thread&#x27;s <code>findByIdForUpdate(1L)</code> call reaches <code>rowLocks.get(1L).lock()</code> first (say <code>TxA</code>) acquires the lock immediately and prints &quot;TxA: acquired lock on order 1&quot;; the other thread (<code>TxB</code>) blocks inside <code>.lock()</code>, unable to proceed.</p>
+<p><code>TxA</code> then decrements <code>order.stock</code> from 10 to 9, sleeps 50ms (standing in for whatever work a real transaction does while holding the row lock), and calls <code>saveAndUnlock</code>, which writes <code>9</code> back into <code>db</code> and releases the lock, printing &quot;TxA: released lock on order 1&quot;.</p>
+<p>The instant the lock is released, <code>TxB</code>&#x27;s blocked <code>.lock()</code> call returns, <code>TxB</code> prints &quot;TxB: acquired lock on order 1&quot;, reads the *already-updated* <code>db.get(1L)</code> (stock now 9, since <code>db</code> is shared), decrements it to 8, sleeps, and saves — printing &quot;TxB: released lock on order 1&quot;. Because <code>TxB</code> could only start after <code>TxA</code> fully finished, it never operates on stale data — no conflict is possible, and the final <code>db.get(1L).stock</code> is deterministically <code>8</code>.</p>
+<pre><code>TxA: lock -&gt; read(10) -&gt; stock=9 -&gt; [sleep] -&gt; save(9), unlock
+                                                          |
+TxB: [blocked...............................] -&gt; lock -&gt; read(9) -&gt; stock=8 -&gt; save(8), unlock</code></pre>
+<p>In a real Spring Data JPA repository, <code>@Lock(LockModeType.PESSIMISTIC_WRITE)</code> on <code>findByIdForUpdate</code> causes Hibernate to issue <code>SELECT * FROM orders WHERE id = ? FOR UPDATE</code> — a genuine database-level row lock. A second transaction calling the same method for the same row blocks at the database level until the first transaction commits or rolls back, exactly mirroring the <code>ReentrantLock</code> behavior above, except enforced by the database itself rather than in-process Java locking.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: pessimistic locks are held for the *entire* duration of the transaction, not just the query — a long-running transaction that acquires a <code>PESSIMISTIC_WRITE</code> lock early and does slow, unrelated work afterward can block every other transaction needing that row for the whole time, risking timeouts or even deadlocks if two transactions try to lock the same rows in different orders.</blockquote>
+<ul><li>Optimistic locking (<code>@Version</code>) lets concurrent transactions proceed and only fails the loser at write time with <code>OptimisticLockException</code> — cheap, but requires the caller to handle retries.</li><li>Pessimistic locking (<code>@Lock(PESSIMISTIC_WRITE)</code>/<code>PESSIMISTIC_READ</code>) blocks conflicting transactions up front via a real database row lock — no exception, but reduces concurrency and risks lock contention or deadlocks.</li><li>Choose optimistic locking when conflicts are rare; choose pessimistic locking when conflicts are common or a strict read-then-write sequence must not be interleaved.</li><li>Always retry on a *fresh read*, not on the original stale entity, when handling <code>OptimisticLockException</code>.</li></ul>
+  <div class="nav"><a class="prv" href="0065-persistence-context-entitymanager.html"><span class="mini">← Previous</span>Persistence context & EntityManager</a><a class="nxt" href="0067-queryhints.html"><span class="mini">Next →</span>@QueryHints</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-data.html", ID = "t66";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
