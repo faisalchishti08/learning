@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Observability (Micrometer) in security" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 6. SAML2 & LDAP & Integrations</div>
+  <div class="htitle">
+    <h1>"Observability (Micrometer) in security"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Security integrates with Micrometer&#x27;s Observation API to emit structured, vendor-neutral telemetry — metrics and distributed tracing spans — around security-relevant operations: authentication attempts, authorization decisions, and filter chain execution, among others. Rather than each application writing its own logging or metrics code around <code>AuthenticationManager.authenticate(...)</code> calls, <code>ObservationRegistry</code>-aware components (wired in automatically by Spring Boot when a <code>Micrometer</code>/<code>ObservationRegistry</code> bean and a tracing implementation are on the classpath) wrap these operations in named <code>Observation</code>s that any registered <code>MeterRegistry</code> (Prometheus, for instance) or tracer (Zipkin, OpenTelemetry) can pick up without Spring Security needing to know which specific observability backend is in use.</p>
+<pre><code class="lang-java">@Bean
+public ObservationRegistry observationRegistry() {
+    ObservationRegistry registry = ObservationRegistry.create();
+    registry.observationConfig()
+            .observationHandler(new DefaultMeterObservationHandler(meterRegistry))
+            .observationHandler(new PropagatingSenderTracingObservationHandler&lt;&gt;(tracer, propagator));
+    return registry;
+}</code></pre>
+<pre><code># example resulting metric (exposed via /actuator/prometheus)
+spring_security_authentications_total{result=&quot;success&quot;} 1523
+spring_security_authentications_total{result=&quot;failure&quot;} 47
+spring_security_authorizations_total{result=&quot;granted&quot;} 8901
+spring_security_authorizations_total{result=&quot;denied&quot;} 12</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Nearly every card in this course has covered *what* Spring Security does — which filter runs, which exception fires, which principal gets built — but a running production application needs to know, continuously and in aggregate, *how often* each of these things happens: how many authentication attempts are failing (a spike might mean a credential-stuffing attack, or an outage at an upstream identity provider), how long authorization decisions take (a slow <code>AuthorizationManager</code> implementation dragging down every request), and where security-related latency sits within a broader distributed trace spanning multiple services. Micrometer&#x27;s Observation API is Spring&#x27;s standard mechanism for exactly this kind of cross-cutting instrumentation — the same abstraction used for HTTP request metrics, database query timing, and message broker instrumentation — and Spring Security&#x27;s integration means security operations get the same first-class observability treatment without bespoke, hand-rolled instrumentation in every application.</p>
+<p>Reach for Spring Security&#x27;s observability integration when:</p>
+<ul><li>Running any production deployment where visibility into authentication/authorization failure rates matters for security monitoring — a sudden spike in failed authentication attempts against one account is a classic brute-force or credential-stuffing signal worth alerting on.</li><li>Debugging latency in a request that passes through several security checks (authentication, multiple authorization rules, a slow custom <code>AuthorizationManager</code>) — distributed tracing spans around each step make it possible to see exactly where time is spent, rather than treating &quot;security&quot; as one opaque block of the request&#x27;s total latency.</li><li>Building dashboards or alerts around authentication/authorization health as part of a broader application observability strategy already using Micrometer/Prometheus/Grafana or a tracing backend like Zipkin/Jaeger.</li><li>Auditing which specific security operations are instrumented by default versus which require custom <code>Observation</code> calls added to bespoke <code>AuthenticationProvider</code>/<code>AuthorizationManager</code> implementations.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code>Micrometer Observation, conceptually:
+    an Observation wraps ONE operation (e.g. &quot;authenticate this request&quot;)
+    it has a NAME, CONTEXTUAL key-value tags (e.g. result=success/failure), and a DURATION
+    ObservationHandlers subscribed to the registry decide WHAT to do with each observation:
+        DefaultMeterObservationHandler       -&gt; emits a METRIC (counter, timer)
+        PropagatingSenderTracingObservationHandler -&gt; emits/propagates a TRACING SPAN
+
+Spring Security&#x27;s observed operations (when observability support is enabled):
+    authentication  -- wraps AuthenticationManager.authenticate(...)
+        tags include: authentication result (success/failure), exception type on failure
+    authorization   -- wraps AuthorizationManager.authorize(...)
+        tags include: decision (granted/denied)
+
+ONE observation, MULTIPLE outputs:
+    the SAME &quot;authenticate this request&quot; event can simultaneously:
+        - increment a Prometheus counter (spring_security_authentications_total)
+        - create a tracing span visible in Zipkin/Jaeger, nested within the overall request&#x27;s trace
+    -- Spring Security&#x27;s code only creates the Observation ONCE; how many and which
+       backends actually consume it is entirely a matter of what&#x27;s registered, decoupled
+       from the instrumented code itself.</code></pre>
+<p>This decoupling — instrument once, consume via any number of registered handlers — is the entire value proposition of the Observation API over hand-rolled, backend-specific instrumentation scattered through application code.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagram showing an authentication attempt wrapped in a single Observation which is then consumed by both a meter handler producing a prometheus counter and a tracing handler producing a span in a distributed trace both derived from the same one instrumented event">
+  <rect x="20" y="90" width="180" height="50" rx="7" fill="#1c2430" stroke="#79c0ff" stroke-width="1.4"/>
+  <text x="110" y="110" fill="#79c0ff" font-size="9.5" text-anchor="middle" font-family="sans-serif">AuthenticationManager</text>
+  <text x="110" y="126" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">.authenticate(...)</text>
+
+  <line x1="200" y1="115" x2="245" y2="115" stroke="#79c0ff" stroke-width="1.6" marker-end="url(#ob125)"/>
+
+  <rect x="250" y="90" width="160" height="50" rx="7" fill="#1c2430" stroke="#8b949e" stroke-width="1.4"/>
+  <text x="330" y="110" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">ONE Observation</text>
+  <text x="330" y="126" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">name + tags + duration</text>
+
+  <line x1="330" y1="90" x2="255" y2="40" stroke="#6db33f" stroke-width="1.5" marker-end="url(#ob125b)"/>
+  <line x1="330" y1="140" x2="255" y2="190" stroke="#f0883e" stroke-width="1.5" marker-end="url(#ob125c)"/>
+
+  <rect x="20" y="10" width="230" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.4"/>
+  <text x="135" y="35" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">Prometheus counter/timer</text>
+
+  <rect x="20" y="170" width="230" height="40" rx="6" fill="#1c2430" stroke="#f0883e" stroke-width="1.4"/>
+  <text x="135" y="195" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">Tracing span (Zipkin/OTel)</text>
+
+  <defs>
+    <marker id="ob125" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="ob125b" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="ob125c" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f0883e"/></marker>
+  </defs>
+</svg>
+<p>One instrumented event, fanned out to as many observability backends as are registered — the instrumented code never needs to know how many, or which.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: a from-scratch Observation-style wrapper around an authentication call, growing from a single metric-emitting handler into multiple simultaneous handlers (metrics and tracing), then into using the recorded tags to demonstrate a real, actionable signal — detecting a spike in failed authentication attempts against one account.</p>
+<h3>Level 1 — Basic</h3>
+<p>Wrap an authentication attempt, emit a simple counter.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.atomic.*;
+
+public class ObservabilityLevel1 {
+    static class AuthenticationException extends RuntimeException {
+        AuthenticationException(String message) { super(message); }
+    }
+
+    static class Counter {
+        private final Map&lt;String, AtomicInteger&gt; countsByTag = new HashMap&lt;&gt;();
+        void increment(String tagValue) { countsByTag.computeIfAbsent(tagValue, k -&gt; new AtomicInteger()).incrementAndGet(); }
+        int get(String tagValue) { return countsByTag.getOrDefault(tagValue, new AtomicInteger()).get(); }
+    }
+
+    // mirrors an &quot;Observation&quot; around AuthenticationManager.authenticate(...)
+    static String authenticateObserved(String username, String password, Map&lt;String, String&gt; validCredentials, Counter counter) {
+        try {
+            if (!password.equals(validCredentials.get(username))) throw new AuthenticationException(&quot;Bad credentials&quot;);
+            counter.increment(&quot;success&quot;);
+            return username;
+        } catch (AuthenticationException e) {
+            counter.increment(&quot;failure&quot;);
+            throw e;
+        }
+    }
+
+    public static void main(String[] args) {
+        Counter authCounter = new Counter();
+        Map&lt;String, String&gt; validCredentials = Map.of(&quot;alice&quot;, &quot;secret123&quot;);
+
+        authenticateObserved(&quot;alice&quot;, &quot;secret123&quot;, validCredentials, authCounter);
+        try { authenticateObserved(&quot;alice&quot;, &quot;WRONG&quot;, validCredentials, authCounter); } catch (AuthenticationException ignored) {}
+        try { authenticateObserved(&quot;alice&quot;, &quot;WRONG-AGAIN&quot;, validCredentials, authCounter); } catch (AuthenticationException ignored) {}
+
+        System.out.println(&quot;spring_security_authentications_total{result=success} &quot; + authCounter.get(&quot;success&quot;));
+        System.out.println(&quot;spring_security_authentications_total{result=failure} &quot; + authCounter.get(&quot;failure&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ObservabilityLevel1.java</code>, run <code>java ObservabilityLevel1.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>spring_security_authentications_total{result=success} 1
+spring_security_authentications_total{result=failure} 2</code></pre>
+<p><code>authenticateObserved</code> mirrors the instrumentation Spring Security wraps around a real <code>AuthenticationManager</code> call — every attempt, successful or not, increments the appropriate counter, exactly the shape of the Prometheus-style metric a <code>DefaultMeterObservationHandler</code> would emit from a real <code>Observation</code>.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Multiple handlers consuming the *same* observed event — a metric handler and a tracing-style handler recording a span — demonstrating the fan-out the Observation API is built around.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.function.*;
+
+public class ObservabilityLevel2 {
+    static class AuthenticationException extends RuntimeException {
+        AuthenticationException(String message) { super(message); }
+    }
+    record Span(String name, String result, long durationMillis) {}
+
+    interface ObservationHandler { void onComplete(String result, long durationMillis); }
+
+    static class MeterHandler implements ObservationHandler {
+        private final Map&lt;String, AtomicInteger&gt; counts = new HashMap&lt;&gt;();
+        public void onComplete(String result, long durationMillis) {
+            counts.computeIfAbsent(result, k -&gt; new AtomicInteger()).incrementAndGet();
+        }
+        int get(String result) { return counts.getOrDefault(result, new AtomicInteger()).get(); }
+    }
+
+    static class TracingHandler implements ObservationHandler {
+        final List&lt;Span&gt; recordedSpans = new ArrayList&lt;&gt;();
+        public void onComplete(String result, long durationMillis) {
+            recordedSpans.add(new Span(&quot;authenticate&quot;, result, durationMillis));
+        }
+    }
+
+    // ONE observed operation, fanning out to EVERY registered handler
+    static String authenticateObserved(String username, String password, Map&lt;String, String&gt; validCredentials,
+                                        List&lt;ObservationHandler&gt; handlers) {
+        long start = System.nanoTime();
+        String result;
+        try {
+            if (!password.equals(validCredentials.get(username))) throw new AuthenticationException(&quot;Bad credentials&quot;);
+            result = &quot;success&quot;;
+            return username;
+        } catch (AuthenticationException e) {
+            result = &quot;failure&quot;;
+            throw e;
+        } finally {
+            long durationMillis = (System.nanoTime() - start) / 1_000_000;
+            for (ObservationHandler handler : handlers) handler.onComplete(result, durationMillis); // FAN OUT
+        }
+    }
+
+    public static void main(String[] args) {
+        MeterHandler meterHandler = new MeterHandler();
+        TracingHandler tracingHandler = new TracingHandler();
+        List&lt;ObservationHandler&gt; handlers = List.of(meterHandler, tracingHandler); // BOTH registered
+
+        Map&lt;String, String&gt; validCredentials = Map.of(&quot;alice&quot;, &quot;secret123&quot;);
+
+        authenticateObserved(&quot;alice&quot;, &quot;secret123&quot;, validCredentials, handlers);
+        try { authenticateObserved(&quot;alice&quot;, &quot;WRONG&quot;, validCredentials, handlers); } catch (AuthenticationException ignored) {}
+
+        System.out.println(&quot;metric counter -- success: &quot; + meterHandler.get(&quot;success&quot;) + &quot;, failure: &quot; + meterHandler.get(&quot;failure&quot;));
+        System.out.println(&quot;tracing spans recorded: &quot; + tracingHandler.recordedSpans().size());
+        for (Span span : tracingHandler.recordedSpans()) {
+            System.out.println(&quot;  span: name=&quot; + span.name() + &quot; result=&quot; + span.result());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ObservabilityLevel2.java</code>, run <code>java ObservabilityLevel2.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output (durations vary, span count and results are the point):</p>
+<pre><code>metric counter -- success: 1, failure: 1
+tracing spans recorded: 2
+  span: name=authenticate result=success
+  span: name=authenticate result=failure</code></pre>
+<p>What changed: <code>authenticateObserved</code> now fans out to a *list* of handlers rather than incrementing one hard-coded counter — both <code>MeterHandler</code> and <code>TracingHandler</code> receive the exact same underlying event, but each does something entirely different with it, exactly mirroring how a real <code>ObservationRegistry</code> can have both a <code>DefaultMeterObservationHandler</code> and a tracing handler registered simultaneously, with the instrumented <code>AuthenticationManager</code> code never needing to know either exists.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Use the recorded, tagged observations to derive a real, actionable security signal — detecting an abnormal spike in failed authentication attempts against one specific username, the kind of pattern a real dashboard or alert built on these metrics would surface.</p>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.atomic.*;
+
+public class ObservabilityLevel3 {
+    static class AuthenticationException extends RuntimeException {
+        AuthenticationException(String message) { super(message); }
+    }
+    record AuthEvent(String username, String result, long timestampMillis) {}
+
+    static class SecurityObservationRecorder {
+        private final List&lt;AuthEvent&gt; events = new ArrayList&lt;&gt;();
+
+        void record(String username, String result) {
+            events.add(new AuthEvent(username, result, System.currentTimeMillis()));
+        }
+
+        // mirrors a dashboard QUERY over the recorded metric/tracing data --
+        // &quot;how many failed attempts against THIS username in the recent window?&quot;
+        long countRecentFailures(String username, long windowMillis) {
+            long now = System.currentTimeMillis();
+            return events.stream()
+                    .filter(e -&gt; e.username().equals(username))
+                    .filter(e -&gt; &quot;failure&quot;.equals(e.result()))
+                    .filter(e -&gt; now - e.timestampMillis() &lt;= windowMillis)
+                    .count();
+        }
+    }
+
+    static String authenticateObserved(String username, String password, Map&lt;String, String&gt; validCredentials,
+                                        SecurityObservationRecorder recorder) {
+        try {
+            if (!password.equals(validCredentials.get(username))) throw new AuthenticationException(&quot;Bad credentials&quot;);
+            recorder.record(username, &quot;success&quot;);
+            return username;
+        } catch (AuthenticationException e) {
+            recorder.record(username, &quot;failure&quot;);
+            throw e;
+        }
+    }
+
+    public static void main(String[] args) {
+        SecurityObservationRecorder recorder = new SecurityObservationRecorder();
+        Map&lt;String, String&gt; validCredentials = Map.of(&quot;alice&quot;, &quot;secret123&quot;, &quot;bob&quot;, &quot;hunter2&quot;);
+
+        // an attacker repeatedly guessing alice&#x27;s password
+        for (int i = 0; i &lt; 8; i++) {
+            try { authenticateObserved(&quot;alice&quot;, &quot;guess&quot; + i, validCredentials, recorder); }
+            catch (AuthenticationException ignored) {}
+        }
+        // bob logging in normally, one legitimate failed typo, then success
+        try { authenticateObserved(&quot;bob&quot;, &quot;wrong-typo&quot;, validCredentials, recorder); } catch (AuthenticationException ignored) {}
+        authenticateObserved(&quot;bob&quot;, &quot;hunter2&quot;, validCredentials, recorder);
+
+        long aliceFailures = recorder.countRecentFailures(&quot;alice&quot;, 60_000);
+        long bobFailures = recorder.countRecentFailures(&quot;bob&quot;, 60_000);
+
+        int alertThreshold = 5;
+        System.out.println(&quot;alice: &quot; + aliceFailures + &quot; recent failures&quot;
+                + (aliceFailures &gt;= alertThreshold ? &quot; -- ALERT: possible credential-stuffing attempt&quot; : &quot;&quot;));
+        System.out.println(&quot;bob: &quot; + bobFailures + &quot; recent failures&quot;
+                + (bobFailures &gt;= alertThreshold ? &quot; -- ALERT&quot; : &quot; -- normal&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ObservabilityLevel3.java</code>, run <code>java ObservabilityLevel3.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>alice: 8 recent failures -- ALERT: possible credential-stuffing attempt
+bob: 1 recent failures -- normal</code></pre>
+<p>What changed: <code>countRecentFailures</code> derives a genuinely actionable security signal from the accumulated observation data — alice&#x27;s eight rapid failed attempts cross the alert threshold, while bob&#x27;s single, ordinary typo followed by a successful login does not — this is exactly the kind of query a real dashboard or alerting rule (built atop the <code>spring_security_authentications_total{result=&quot;failure&quot;}</code> metric, filtered or grouped by a username tag if the observation includes one) would run continuously in production to surface credential-stuffing or brute-force attempts.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace alice&#x27;s eighth failed attempt through the full observation pipeline, from the raw authentication call to the alerting signal.</p>
+<p><strong>Step 1 — the eighth login attempt with a wrong password:</strong></p>
+<pre><code>POST /login HTTP/1.1
+
+username=alice&amp;password=guess7</code></pre>
+<p><strong>Step 2 — <code>AuthenticationManager.authenticate(...)</code> is invoked, wrapped in an Observation</strong> (in the real integration; corresponding to <code>authenticateObserved(&quot;alice&quot;, &quot;guess7&quot;, validCredentials, recorder)</code> in Level 3). The password check fails, <code>AuthenticationException</code> is thrown.</p>
+<p><strong>Step 3 — the observation records the outcome before the exception propagates further.</strong> <code>recorder.record(&quot;alice&quot;, &quot;failure&quot;)</code> runs in the <code>catch</code> block, appending a new <code>AuthEvent(&quot;alice&quot;, &quot;failure&quot;, &lt;current timestamp&gt;)</code> to the recorder&#x27;s list — mirroring how the real <code>Observation</code> captures the <code>result=failure</code> tag at the point the wrapped operation completes (successfully or not), regardless of what happens to the exception afterward.</p>
+<p><strong>Step 4 — in a real deployment, this same event fans out to every registered handler simultaneously</strong> — a <code>DefaultMeterObservationHandler</code> increments <code>spring_security_authentications_total{result=&quot;failure&quot;}</code> in the application&#x27;s Prometheus registry, and (if tracing is configured) a span named something like <code>spring.security.authentications</code> is recorded, nested within the overall HTTP request&#x27;s trace, carrying the same <code>result=failure</code> tag.</p>
+<p><strong>Step 5 — a monitoring query (Level 3&#x27;s <code>countRecentFailures</code>, standing in for a real Prometheus alerting rule or dashboard panel) aggregates these events over a time window.</strong> Filtering for <code>username=alice</code>, <code>result=failure</code>, within the last 60 seconds, finds all eight of alice&#x27;s failed attempts.</p>
+<p><strong>Step 6 — the alert fires.</strong> <code>aliceFailures (8) &gt;= alertThreshold (5)</code> is <code>true</code>, printing the credential-stuffing warning — in a real production system, this would instead trigger a PagerDuty alert, a Slack notification, or an automated response (temporarily rate-limiting further attempts against that account), all derived from metrics Spring Security emitted automatically, with zero custom instrumentation code required in the application beyond registering the observability handlers themselves.</p>
+<pre><code>8x failed authenticate(&quot;alice&quot;, ...) calls
+        |
+        v (each wrapped in an Observation, tagged result=failure)
+metric: spring_security_authentications_total{result=&quot;failure&quot;} incremented 8 times
+        |
+        v (a dashboard/alerting query, run continuously in production)
+countRecentFailures(&quot;alice&quot;, 60s) = 8  &gt;=  threshold (5)  -&gt; ALERT fires</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> observability data (metrics, traces) is only as useful as the granularity of its tags — a metric counting *total* authentication failures across the whole application, without a per-username or per-source-IP dimension, cannot distinguish &quot;one account under sustained attack&quot; from &quot;many accounts each failing once, normally, due to typos.&quot; Designing which tags an observation carries (and being mindful of cardinality — a raw username as a metric tag can create an unbounded number of distinct time series in some backends) is a real design decision, not an afterthought.</blockquote>
+<ul><li>Spring Security&#x27;s Micrometer integration wraps security-relevant operations (authentication, authorization) in <code>Observation</code>s that any number of registered handlers can consume independently — the instrumented code itself never needs to know which observability backends are actually in use.</li><li>The same single observed event can simultaneously produce a metric (for dashboards, alerting thresholds) and a tracing span (for understanding where time is spent within a broader distributed request trace) — this fan-out is the core value of the Observation API over backend-specific, hand-rolled instrumentation.</li><li>A spike in authentication failures, especially concentrated against one account or one source, is a classic, actionable security signal that these metrics make straightforward to detect and alert on in production.</li><li>Tag design (what dimensions an observation carries) directly determines what questions the resulting metrics and traces can actually answer — insufficient granularity limits what a monitoring team can distinguish after the fact.</li><li>This observability layer is purely additive — enabling or disabling it changes nothing about actual authentication or authorization *behavior*; it only affects what telemetry is produced about operations that would happen identically either way.</li></ul>
+  <div class="nav"><a class="prv" href="0124-localization-of-messages.html"><span class="mini">← Previous</span>Localization of messages</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t125";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
