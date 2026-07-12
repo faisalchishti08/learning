@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Blocking vs non-blocking I/O" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 3. Synchronous Communication</div>
+  <div class="htitle">
+    <h1>"Blocking vs non-blocking I/O"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Blocking I/O ties up a thread for the entire duration of an I/O operation (a network call, a disk read) — the thread makes the call and simply sits idle, unable to do anything else, until the operating system signals that data is ready. Non-blocking I/O instead lets a thread issue the I/O request and immediately move on to other work; when the data eventually becomes available, a callback, future, or event loop notifies the code, without ever dedicating a whole thread to sitting and waiting. This distinction sits underneath the <a href="0075-synchronous-request-response-model.md">synchronous request/response model</a>: the *logical* interaction can still be synchronous from the caller&#x27;s point of view (wait for the response before continuing) while the *underlying I/O* is implemented in either a blocking or non-blocking way.</p>
+<h2>2. Why &amp; when</h2>
+<p>A thread blocked on I/O is a thread doing nothing productive but still consuming a real operating system resource — its own stack memory, and one of a finite number of threads the OS can schedule efficiently. A service handling thousands of concurrent slow downstream calls with blocking I/O needs thousands of threads sitting mostly idle, which is expensive and eventually hits hard OS-level limits. Non-blocking I/O lets a small, fixed number of threads handle a much larger number of concurrent in-flight requests, because no thread is ever dedicated to just waiting — it&#x27;s picked back up only when there&#x27;s actual work (data arrived) to do.</p>
+<p>Blocking I/O&#x27;s simplicity (code reads top-to-bottom, easy to debug with a normal stack trace) makes it the right default for most services, especially where concurrency is modest and thread-per-request is affordable. Reach for non-blocking I/O specifically when a service needs to handle very high concurrency — many thousands of simultaneous slow connections — where thread-per-request would exhaust available threads well before it exhausts CPU or memory.</p>
+<h2>3. Core concept</h2>
+<p>A blocking call occupies its calling thread for the operation&#x27;s full duration; a non-blocking call returns control immediately, and a separate notification mechanism delivers the result later, freeing that thread to do other work in the meantime.</p>
+<pre><code>BLOCKING:                              NON-BLOCKING:
+Thread A: call() ---[thread PARKED,   Thread A: call() -&gt; returns immediately
+           doing nothing]---&gt; result             Thread A picks up OTHER work
+Thread A: continues with result                   ... later, event loop delivers result
+                                       Thread A (or another): handles result via callback</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A blocking thread sits idle for the full duration of an I/O call, while a non-blocking thread issues the call, does other work, and is notified later when the result is ready">
+  <text x="160" y="18" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Blocking</text>
+  <line x1="60" y1="35" x2="60" y2="170" stroke="#8b949e"/>
+  <rect x="52" y="50" width="16" height="80" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="120" y="95" fill="#79c0ff" font-size="7.5" font-family="sans-serif">thread idle, waiting</text>
+
+  <text x="480" y="18" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Non-blocking</text>
+  <line x1="380" y1="35" x2="380" y2="170" stroke="#8b949e"/>
+  <rect x="372" y="50" width="16" height="15" fill="#1c2430" stroke="#6db33f"/>
+  <text x="450" y="62" fill="#6db33f" font-size="7.5" font-family="sans-serif">issues call, returns</text>
+  <rect x="372" y="70" width="16" height="25" fill="#1c2430" stroke="#6db33f"/>
+  <text x="450" y="87" fill="#6db33f" font-size="7.5" font-family="sans-serif">does OTHER work</text>
+  <rect x="372" y="120" width="16" height="15" fill="#1c2430" stroke="#6db33f"/>
+  <text x="450" y="132" fill="#6db33f" font-size="7.5" font-family="sans-serif">notified, handles result</text>
+</svg>
+<p>The blocking thread does nothing but wait; the non-blocking thread stays busy with other work in the meantime.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a service needing to make several slow downstream calls concurrently, first with blocking I/O using one thread per call, then with the same work done using Java&#x27;s <code>CompletableFuture</code> to model non-blocking-style composition without dedicating a thread to each wait, then extended to show the thread-count difference under higher concurrency, making the resource-efficiency gap concrete.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: BlockingIO.java -- ONE thread per call, each PARKED for the
+// full duration of its simulated I/O wait.
+public class BlockingIO {
+    static String blockingCall(int id) throws InterruptedException {
+        Thread.sleep(100); // simulated slow I/O -- the thread does NOTHING else during this
+        return &quot;result-&quot; + id;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        long start = System.currentTimeMillis();
+        Thread[] threads = new Thread[3];
+        String[] results = new String[3];
+        for (int i = 0; i &lt; 3; i++) {
+            int id = i;
+            threads[i] = new Thread(() -&gt; {
+                try { results[id] = blockingCall(id); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            });
+            threads[i].start(); // one THREAD dedicated to each blocking call
+        }
+        for (Thread t : threads) t.join();
+        System.out.println(&quot;Results: &quot; + String.join(&quot;, &quot;, results));
+        System.out.println(&quot;Threads used: 3 (one per call, each blocked for its full duration)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BlockingIO.java &amp;&amp; java BlockingIO</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Results: result-0, result-1, result-2
+Threads used: 3 (one per call, each blocked for its full duration)</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: NonBlockingWithFutures.java -- the SAME three calls, now
+// composed via CompletableFuture -- the calling code doesn&#x27;t dedicate a
+// thread to each wait; it registers what to do WHEN the result arrives.
+import java.util.concurrent.*;
+import java.util.*;
+
+public class NonBlockingWithFutures {
+    static ExecutorService ioPool = Executors.newFixedThreadPool(1); // just ONE worker thread, unlike Level 1&#x27;s 3
+
+    static CompletableFuture&lt;String&gt; nonBlockingCall(int id) {
+        return CompletableFuture.supplyAsync(() -&gt; {
+            try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return &quot;result-&quot; + id;
+        }, ioPool);
+    }
+
+    public static void main(String[] args) throws Exception {
+        List&lt;CompletableFuture&lt;String&gt;&gt; futures = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 3; i++) {
+            futures.add(nonBlockingCall(i)); // returns IMMEDIATELY, doesn&#x27;t block main thread
+        }
+        System.out.println(&quot;All 3 calls issued -- main thread was never blocked waiting for any single one&quot;);
+
+        List&lt;String&gt; results = new ArrayList&lt;&gt;();
+        for (CompletableFuture&lt;String&gt; f : futures) results.add(f.get()); // collect final results
+        System.out.println(&quot;Results: &quot; + String.join(&quot;, &quot;, results));
+        ioPool.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac NonBlockingWithFutures.java &amp;&amp; java NonBlockingWithFutures</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>All 3 calls issued -- main thread was never blocked waiting for any single one
+Results: result-0, result-1, result-2</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ThreadCountComparison.java -- make the resource difference
+// concrete: run 20 concurrent &quot;requests&quot; both ways, and report how many
+// THREADS each approach actually needed at its peak.
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.*;
+
+public class ThreadCountComparison {
+    static int REQUEST_COUNT = 20;
+
+    static void blockingApproach() throws InterruptedException {
+        AtomicInteger peakThreads = new AtomicInteger(0);
+        Thread[] threads = new Thread[REQUEST_COUNT];
+        for (int i = 0; i &lt; REQUEST_COUNT; i++) {
+            threads[i] = new Thread(() -&gt; {
+                peakThreads.incrementAndGet(); // one thread PER request, all alive concurrently
+                try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            });
+            threads[i].start();
+        }
+        for (Thread t : threads) t.join();
+        System.out.println(&quot;Blocking approach: peak threads used = &quot; + peakThreads.get());
+    }
+
+    static void nonBlockingApproach() throws InterruptedException {
+        ExecutorService smallPool = Executors.newFixedThreadPool(2); // FIXED, small pool regardless of request count
+        List&lt;CompletableFuture&lt;Void&gt;&gt; futures = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; REQUEST_COUNT; i++) {
+            futures.add(CompletableFuture.runAsync(() -&gt; {
+                try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }, smallPool));
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        System.out.println(&quot;Non-blocking approach: peak threads used = 2 (fixed pool, independent of request count)&quot;);
+        smallPool.shutdown();
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(&quot;Handling &quot; + REQUEST_COUNT + &quot; concurrent requests:&quot;);
+        blockingApproach();
+        nonBlockingApproach();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ThreadCountComparison.java &amp;&amp; java ThreadCountComparison</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Handling 20 concurrent requests:
+Blocking approach: peak threads used = 20
+Non-blocking approach: peak threads used = 2 (fixed pool, independent of request count)</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>blockingCall</code> sleeps for 100ms, standing in for a slow network call, and the calling thread has nothing else to do during that sleep — it is genuinely parked. <code>main</code> starts 3 separate <code>Thread</code> objects, one per call, each of which blocks independently; <code>main</code> then joins all three and prints their results. Three real OS threads were required, each dedicated entirely to waiting.</li><li><strong>Level 2 — composing without dedicating a thread per wait</strong> — <code>nonBlockingCall</code> wraps the same 100ms simulated work in <code>CompletableFuture.supplyAsync</code>, submitted to <code>ioPool</code>, a pool with just *one* worker thread. <code>main</code> calls <code>nonBlockingCall</code> three times in a tight loop; each call returns a <code>CompletableFuture</code> *immediately* — <code>main</code>&#x27;s loop doesn&#x27;t block at all while issuing all three, which is why the &quot;All 3 calls issued&quot; line prints right away, before any of the three simulated calls has actually completed. Only the later <code>f.get()</code> calls actually wait for each future&#x27;s result — and the single worker thread in <code>ioPool</code> processes the three submitted tasks one after another (since it only has one thread), still eventually producing all three results.</li><li><strong>Level 3 — measuring the difference under real concurrency</strong> — <code>blockingApproach</code> starts 20 separate <code>Thread</code> objects, one per simulated request, and <code>peakThreads</code> (incremented once per thread as it starts) ends up at <code>20</code> — the operating system genuinely had 20 threads alive concurrently, each parked in <code>Thread.sleep</code>. <code>nonBlockingApproach</code> instead uses <code>Executors.newFixedThreadPool(2)</code> — a hard cap of 2 threads — and submits all 20 tasks as <code>CompletableFuture.runAsync</code> calls against that fixed pool.</li><li><strong>Tracing what happens with only 2 threads handling 20 tasks</strong> — since the pool has only 2 threads, at most 2 of the 20 tasks can be *actively* running at once; the rest wait in the pool&#x27;s internal queue until a thread frees up. <code>CompletableFuture.allOf(...).join()</code> blocks <code>main</code> until every one of the 20 futures has completed, which naturally takes roughly 10 rounds of 50ms each (20 tasks / 2 threads), rather than all 20 finishing in parallel — a real tradeoff of using fewer threads. <code>main</code> prints that the non-blocking approach needed only <code>2</code> threads at its peak, regardless of <code>REQUEST_COUNT</code> being <code>20</code> (or, in principle, much higher).</li><li><strong>Why this specific number matters</strong> — this simulation still uses a small fixed thread pool rather than true OS-level non-blocking I/O (Java&#x27;s real non-blocking I/O APIs, like NIO&#x27;s selectors, or a reactive framework, would need even fewer threads and wouldn&#x27;t serialize the 20 tasks 2-at-a-time the way this simplified pool-based simulation does) — but the core, generalizable lesson holds: blocking I/O ties thread count directly to concurrent request count, while non-blocking I/O decouples the two, letting a small, fixed number of threads serve a much larger number of concurrent in-flight operations.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> non-blocking I/O trades away easy debuggability for resource efficiency — a stack trace from a blocking call shows the full call chain that led to the wait; a non-blocking callback&#x27;s stack trace often shows only the callback&#x27;s own immediate context, since the code that issued the original call has already returned and moved on. Reach for non-blocking I/O when the concurrency numbers genuinely demand it, not by default, given this real debugging cost.</blockquote>
+<ul><li>A blocking thread occupies a real OS thread for the full duration of an I/O wait; a non-blocking call frees the thread immediately and delivers the result later via a callback, future, or event loop.</li><li>Thread-per-request (blocking I/O) ties thread count directly to concurrent request count — it&#x27;s simple and usually fine, until concurrency grows large enough to exhaust available threads.</li><li>Non-blocking I/O decouples thread count from concurrent request count, letting a small, fixed pool serve far more simultaneous slow operations.</li><li>This distinction is about *implementation*, not about whether the caller&#x27;s own code is logically synchronous or asynchronous — see <a href="0075-synchronous-request-response-model.md">synchronous request/response model</a> for the caller-facing shape, which can be built on top of either blocking or non-blocking I/O underneath.</li><li>Default to blocking I/O&#x27;s simplicity unless concurrency numbers specifically demand non-blocking&#x27;s resource efficiency — the debugging and reasoning cost of non-blocking code is real and shouldn&#x27;t be paid unnecessarily.</li></ul>
+  <div class="nav"><a class="prv" href="0086-backpressure-in-synchronous-calls.html"><span class="mini">← Previous</span>Backpressure in synchronous calls</a><a class="nxt" href="0088-remote-procedure-call-rpc-model.html"><span class="mini">Next →</span>Remote Procedure Call (RPC) model</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t87";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

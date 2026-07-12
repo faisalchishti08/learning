@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Client-side timeouts (connect / read)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 3. Synchronous Communication</div>
+  <div class="htitle">
+    <h1>"Client-side timeouts (connect / read)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A client-side timeout is a maximum time a caller will wait before giving up on an outbound call, and there are two distinct kinds that need separate values: a <strong>connect timeout</strong> bounds how long to wait while establishing the connection itself (the <a href="0095-connection-pooling-keep-alive.md">TCP/TLS handshake</a>), and a <strong>read timeout</strong> bounds how long to wait for the response *after* the connection is established and the request has been sent. Without both configured explicitly, most HTTP client libraries default to waiting indefinitely — a silent, dangerous default in a distributed system.</p>
+<h2>2. Why &amp; when</h2>
+<p>Without a timeout, a caller waiting on a downstream service that has stopped responding (crashed mid-request, network partition, severe overload) will simply wait forever — that calling thread is now permanently occupied doing nothing useful, precisely the resource-exhaustion problem <a href="0086-backpressure-in-synchronous-calls.md">backpressure</a> exists to prevent, except here the trigger is a hung downstream call rather than incoming request volume. Timeouts turn an indefinite hang into a bounded failure: the caller gives up after a defined period, frees its resources, and can then decide how to handle the failure (retry, fall back, or propagate the error) instead of being stuck.</p>
+<p>Configure both connect and read timeouts on *every* outbound call a service makes — there is essentially never a good reason to accept a client library&#x27;s default of unlimited waiting. Set them based on the downstream call&#x27;s realistic behavior: a connect timeout can usually be short (a few seconds — either the network path works or it doesn&#x27;t, quickly), while a read timeout needs to account for the downstream operation&#x27;s actual expected processing time, with some margin, but still bounded well below &quot;forever.&quot;</p>
+<h2>3. Core concept</h2>
+<p>The two timeouts guard two different phases of the call, and a hang in either phase is caught by its own dedicated limit.</p>
+<pre><code>[connect timeout guards this phase]  [read timeout guards this phase]
+TCP+TLS handshake  ---------------&gt;  request sent -------&gt; waiting for response
+     |                                                            |
+  if this hangs past connectTimeout: fail                if this hangs past readTimeout: fail</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A timeline showing the connect phase guarded by a connect timeout and the response-waiting phase guarded by a separate read timeout, each independently bounding how long the caller will wait">
+  <rect x="20" y="40" width="260" height="50" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="150" y="62" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Connecting (handshake)</text>
+  <text x="150" y="80" fill="#79c0ff" font-size="7.5" text-anchor="middle" font-family="sans-serif">guarded by connectTimeout</text>
+
+  <rect x="320" y="40" width="300" height="50" rx="5" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="470" y="62" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Waiting for response</text>
+  <text x="470" y="80" fill="#6db33f" font-size="7.5" text-anchor="middle" font-family="sans-serif">guarded by readTimeout</text>
+
+  <line x1="280" y1="65" x2="320" y2="65" stroke="#8b949e" stroke-width="1.5"/>
+</svg>
+<p>Each phase of the call is bounded by its own independent timeout.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a client calling a downstream service, first with no timeouts at all (a hung call blocks forever, simulated with a bound to keep the example runnable), then fixed with a read timeout that fails fast on a slow response, then extended to distinguish connect timeout failures from read timeout failures, each producing a different, actionable error.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoTimeout.java -- NO timeout configured -- the call waits for
+// however long the downstream service takes, with NO upper bound.
+public class NoTimeout {
+    static String call(int downstreamDelayMs) throws InterruptedException {
+        Thread.sleep(downstreamDelayMs); // the caller waits EXACTLY this long, whatever it is
+        return &quot;response received&quot;;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(&quot;Calling a downstream service that takes 300ms to respond...&quot;);
+        String result = call(300); // if this were 300 SECONDS instead, the caller would wait 300 seconds
+        System.out.println(result);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac NoTimeout.java &amp;&amp; java NoTimeout</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Calling a downstream service that takes 300ms to respond...
+response received</code></pre>
+<p>There is no upper bound here at all — this example happens to complete quickly, but the exact same code would happily wait minutes or hours if the downstream service hung, with no way for the caller to give up on its own.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: WithReadTimeout.java -- configure a READ TIMEOUT: give up if
+// the response doesn&#x27;t arrive within a bounded window, regardless of how
+// long the downstream service actually takes.
+import java.util.concurrent.*;
+
+public class WithReadTimeout {
+    static class ReadTimeoutException extends RuntimeException {
+        ReadTimeoutException(long timeoutMs) { super(&quot;read timed out after &quot; + timeoutMs + &quot;ms&quot;); }
+    }
+
+    static String call(int downstreamDelayMs, long readTimeoutMs) throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future&lt;String&gt; future = executor.submit(() -&gt; {
+            Thread.sleep(downstreamDelayMs);
+            return &quot;response received&quot;;
+        });
+        try {
+            return future.get(readTimeoutMs, TimeUnit.MILLISECONDS); // BOUNDED wait
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            throw new ReadTimeoutException(readTimeoutMs);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;Calling a downstream service that hangs for 5000ms, with a 200ms read timeout...&quot;);
+        try {
+            call(5000, 200); // downstream would take 5 seconds -- FAR beyond our patience
+        } catch (ReadTimeoutException e) {
+            System.out.println(&quot;Caught: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac WithReadTimeout.java &amp;&amp; java WithReadTimeout</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Calling a downstream service that hangs for 5000ms, with a 200ms read timeout...
+Caught: read timed out after 200ms</code></pre>
+<p>The caller gave up after 200ms — a small, bounded, predictable delay — instead of waiting the full 5000ms the downstream service would have actually taken.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: DistinguishingConnectVsReadTimeout.java -- model BOTH timeout
+// types separately, producing a DIFFERENT, more actionable error for
+// each -- a connect failure means &quot;couldn&#x27;t even reach it&quot;; a read
+// failure means &quot;reached it, but it never answered.&quot;
+import java.util.concurrent.*;
+
+public class DistinguishingConnectVsReadTimeout {
+    static class ConnectTimeoutException extends RuntimeException {
+        ConnectTimeoutException(String host) { super(&quot;could not connect to &quot; + host + &quot; within the connect timeout&quot;); }
+    }
+    static class ReadTimeoutException extends RuntimeException {
+        ReadTimeoutException(String host) { super(&quot;connected to &quot; + host + &quot; but response timed out&quot;); }
+    }
+
+    static String call(String host, int connectDelayMs, int readDelayMs, long connectTimeoutMs, long readTimeoutMs) throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future&lt;Void&gt; connectFuture = executor.submit(() -&gt; { Thread.sleep(connectDelayMs); return null; });
+            try {
+                connectFuture.get(connectTimeoutMs, TimeUnit.MILLISECONDS); // PHASE 1: connect
+            } catch (TimeoutException e) {
+                throw new ConnectTimeoutException(host);
+            }
+
+            Future&lt;String&gt; readFuture = executor.submit(() -&gt; { Thread.sleep(readDelayMs); return &quot;response from &quot; + host; });
+            try {
+                return readFuture.get(readTimeoutMs, TimeUnit.MILLISECONDS); // PHASE 2: read
+            } catch (TimeoutException e) {
+                throw new ReadTimeoutException(host);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;Scenario A: unreachable host (connect hangs)&quot;);
+        try {
+            call(&quot;unreachable-service&quot;, 2000, 0, 100, 500); // connect itself hangs past 100ms
+        } catch (ConnectTimeoutException e) {
+            System.out.println(&quot;  Caught: &quot; + e.getMessage());
+        }
+
+        System.out.println(&quot;Scenario B: reachable but slow to respond (read hangs)&quot;);
+        try {
+            call(&quot;slow-service&quot;, 20, 2000, 100, 500); // connects fine (20ms), but response hangs past 500ms
+        } catch (ReadTimeoutException e) {
+            System.out.println(&quot;  Caught: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac DistinguishingConnectVsReadTimeout.java &amp;&amp; java DistinguishingConnectVsReadTimeout</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Scenario A: unreachable host (connect hangs)
+  Caught: could not connect to unreachable-service within the connect timeout
+Scenario B: reachable but slow to respond (read hangs)
+  Caught: connected to slow-service but response timed out</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>call</code> simply sleeps for whatever <code>downstreamDelayMs</code> is passed and returns. <code>main</code> calls it with <code>300</code>, and it completes in roughly 300ms — but nothing about <code>call</code>&#x27;s structure bounds that delay in any way; a <code>downstreamDelayMs</code> of 300000 (5 minutes) or an indefinitely hung real network call would leave the caller waiting exactly that long, with no mechanism to give up.</li><li><strong>Level 2 — bounding the wait with a read timeout</strong> — <code>call</code> now submits the downstream work to an <code>ExecutorService</code> and waits for it via <code>future.get(readTimeoutMs, TimeUnit.MILLISECONDS)</code> — a version of <code>.get()</code> that itself throws <code>TimeoutException</code> if the result isn&#x27;t ready within the specified window, rather than waiting indefinitely. <code>main</code> calls it with a downstream delay of <code>5000</code>ms but a <code>readTimeoutMs</code> of only <code>200</code> — <code>future.get</code> throws <code>TimeoutException</code> after 200ms (long before the simulated 5-second downstream delay would have completed), which is caught, converted into the more descriptive <code>ReadTimeoutException</code>, and re-thrown; <code>main</code>&#x27;s own <code>catch</code> block catches that and prints the message.</li><li><strong>Level 3 — separating the two timeout phases</strong> — <code>call</code> now explicitly models two sequential phases: a <code>connectFuture</code> (simulating the TCP/TLS handshake, taking <code>connectDelayMs</code>) bounded by <code>connectTimeoutMs</code>, and only if that succeeds, a <code>readFuture</code> (simulating waiting for the response, taking <code>readDelayMs</code>) bounded by <code>readTimeoutMs</code>. Each phase throws its own distinct exception type on timeout.</li><li><strong>Tracing Scenario A</strong> — <code>call(&quot;unreachable-service&quot;, 2000, 0, 100, 500)</code> sets <code>connectDelayMs=2000</code> but <code>connectTimeoutMs=100</code> — the connect phase&#x27;s <code>Future.get</code> times out after 100ms, well before the simulated 2000ms handshake would complete, throwing <code>TimeoutException</code>, caught and converted into <code>ConnectTimeoutException</code>. Critically, the *read* phase (<code>readFuture</code>) is never even reached — the method throws before getting there, correctly reflecting that a connection that never succeeded has nothing to &quot;read&quot; from yet.</li><li><strong>Tracing Scenario B</strong> — <code>call(&quot;slow-service&quot;, 20, 2000, 100, 500)</code> sets <code>connectDelayMs=20</code> (well under the 100ms connect timeout, so the connect phase succeeds quickly) but <code>readDelayMs=2000</code> against a <code>readTimeoutMs</code> of only <code>500</code> — the connect phase completes normally, then the read phase&#x27;s <code>Future.get</code> times out after 500ms, throwing <code>TimeoutException</code>, converted into <code>ReadTimeoutException</code>. The distinct exception types printed in <code>main</code>&#x27;s output — &quot;could not connect&quot; versus &quot;connected... but response timed out&quot; — give an operator debugging a real production incident immediately actionable information: Scenario A suggests a network/DNS/firewall problem reaching the host at all, while Scenario B suggests the host is reachable but its own processing (or a downstream dependency *of that* service) is the bottleneck — two very different debugging paths.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a read timeout set too aggressively relative to a downstream operation&#x27;s genuine, expected processing time causes the caller to give up on requests that would have succeeded, generating unnecessary failures and (if combined with a retry policy) unnecessary retry load on an already-working downstream service. Set read timeouts based on the downstream operation&#x27;s real p99 latency plus reasonable margin, not an arbitrary short value chosen for &quot;safety.&quot;</blockquote>
+<ul><li>Connect timeout and read timeout guard two different phases of a call and should be configured (and reasoned about) separately — a hang in either phase has a different likely root cause.</li><li>Never accept a client library&#x27;s default of unlimited waiting — configure both timeouts explicitly on every outbound call.</li><li>Distinguishing connect-timeout failures from read-timeout failures in error messages/logs gives operators a real head start on diagnosing whether the problem is network reachability or downstream processing.</li><li>Timeouts turn an indefinite hang into a bounded, actionable failure — the caller can then decide to retry (see <a href="0082-idempotency-of-operations.md">idempotency of operations</a> for when that&#x27;s safe), fall back, or propagate the error, rather than being stuck.</li><li>This is a direct application of <a href="0086-backpressure-in-synchronous-calls.md">backpressure</a> principles to the outbound side of a call: bounding how long you&#x27;ll wait protects your own service&#x27;s resources from being consumed by a hung downstream dependency.</li></ul>
+  <div class="nav"><a class="prv" href="0095-connection-pooling-keep-alive.html"><span class="mini">← Previous</span>Connection pooling & keep-alive</a><a class="nxt" href="0097-client-side-load-balancing-vs-server-side.html"><span class="mini">Next →</span>Client-side load balancing vs server-side</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t96";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

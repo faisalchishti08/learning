@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"gRPC and HTTP/2" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 3. Synchronous Communication</div>
+  <div class="htitle">
+    <h1>"gRPC and HTTP/2"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>gRPC is Google&#x27;s open-source <a href="0088-remote-procedure-call-rpc-model.md">RPC</a> framework, built on top of HTTP/2 and using <a href="0090-protocol-buffers-protobuf-idl.md">Protocol Buffers</a> as its default serialization format. Its reliance on HTTP/2 specifically (rather than HTTP/1.1, which most REST APIs use) is what unlocks several of its defining capabilities: true request <strong>multiplexing</strong> (many concurrent requests over a single TCP connection, with no head-of-line blocking between them) and native support for <strong>streaming</strong> (a call that sends or receives a sequence of messages over time, not just one request and one response).</p>
+<h2>2. Why &amp; when</h2>
+<p>HTTP/1.1 opens a new connection (or reuses one from a limited pool) per concurrent request, and older HTTP/1.1 pipelining suffers from head-of-line blocking — one slow response can hold up others queued behind it on the same connection. HTTP/2 solves this at the protocol level with multiplexed streams: many logically independent requests and responses share a single TCP connection, interleaved at the frame level, so one slow call never blocks the others. This matters enormously for service-to-service calls in a microservices mesh, where a single service might need to make many concurrent calls to the same downstream dependency — gRPC&#x27;s HTTP/2 foundation lets all of them share one connection efficiently instead of needing many separate ones.</p>
+<p>Choose gRPC when internal service-to-service performance matters (lower latency, higher throughput than typical REST/JSON), when streaming is genuinely needed (a service pushing a continuous sequence of updates), or when strongly-typed, code-generated contracts across languages are valuable. REST over HTTP/1.1 remains the better choice for public APIs (broader client and tooling support, human-readable payloads) and cases where gRPC&#x27;s added infrastructure complexity (proxies, load balancers, and browsers historically needing gRPC-Web translation) isn&#x27;t worth the performance gain.</p>
+<h2>3. Core concept</h2>
+<p>HTTP/1.1 effectively serializes concurrent requests across a small pool of connections; HTTP/2 multiplexes many concurrent request/response streams over one connection, so no single slow call blocks the others sharing it.</p>
+<pre><code>HTTP/1.1 (connection pool of 2):        HTTP/2 (ONE connection, multiplexed):
+conn A: req1 ---[waits]---&gt; req3        conn: req1  afafaf req2 afaf req3   &lt;- interleaved on ONE connection
+conn B: req2 ---[waits]---&gt; req4                     ...all concurrent, no head-of-line blocking</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HTTP 1.1 uses a small pool of separate connections where requests can queue behind each other, while HTTP/2 multiplexes many concurrent request and response streams over a single shared connection">
+  <text x="160" y="18" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">HTTP/1.1 (connection pool)</text>
+  <rect x="40" y="30" width="240" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="160" y="50" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">conn A: req1, then req3 (queued)</text>
+  <rect x="40" y="70" width="240" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="160" y="90" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">conn B: req2, then req4 (queued)</text>
+
+  <text x="480" y="18" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">HTTP/2 (multiplexed)</text>
+  <rect x="360" y="30" width="240" height="70" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="480" y="52" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">ONE connection</text>
+  <text x="480" y="70" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">req1, req2, req3, req4</text>
+  <text x="480" y="87" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">all interleaved, concurrent</text>
+</svg>
+<p>HTTP/2 collapses many logically independent request/response streams onto one shared, multiplexed connection.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: simulate the practical effect of head-of-line blocking versus multiplexing — first modeling HTTP/1.1-style behavior where a slow request on a connection delays everything queued behind it, then modeling HTTP/2-style multiplexing where a slow request never blocks unrelated concurrent requests, then extended to add a streaming call, a capability HTTP/1.1&#x27;s one-request-one-response model doesn&#x27;t support natively at all.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: Http11HeadOfLineBlocking.java -- a SLOW request on a connection
+// delays every OTHER request queued behind it on that SAME connection.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class Http11HeadOfLineBlocking {
+    static String handleRequest(String name, int delayMs) throws InterruptedException {
+        Thread.sleep(delayMs);
+        return name + &quot; done&quot;;
+    }
+
+    public static void main(String[] args) throws Exception {
+        // ONE connection handles req1 (slow) THEN req2 (fast) -- req2 waits behind req1
+        long start = System.currentTimeMillis();
+        String r1 = handleRequest(&quot;req1 (slow, 200ms)&quot;, 200);
+        String r2 = handleRequest(&quot;req2 (fast, 20ms)&quot;, 20); // must wait for req1 to finish first
+        long elapsed = System.currentTimeMillis() - start;
+        System.out.println(r1);
+        System.out.println(r2 + &quot; (had to wait behind req1)&quot;);
+        System.out.println(&quot;Total time: ~&quot; + elapsed + &quot;ms (sum of both -- req2 blocked behind req1)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac Http11HeadOfLineBlocking.java &amp;&amp; java Http11HeadOfLineBlocking</code> (JDK 17+).</p>
+<p>Expected output (elapsed time will vary slightly, always at least 220):</p>
+<pre><code>req1 (slow, 200ms) done
+req2 (fast, 20ms) done (had to wait behind req1)
+Total time: ~220ms (sum of both -- req2 blocked behind req1)</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: Http2Multiplexing.java -- the SAME two requests, now MULTIPLEXED
+// (run concurrently, as HTTP/2 streams sharing one connection would) --
+// the slow request no longer blocks the fast one.
+import java.util.concurrent.*;
+
+public class Http2Multiplexing {
+    static ExecutorService connection = Executors.newFixedThreadPool(2); // ONE &quot;connection,&quot; multiple concurrent streams
+
+    static String handleRequest(String name, int delayMs) throws InterruptedException {
+        Thread.sleep(delayMs);
+        return name + &quot; done&quot;;
+    }
+
+    public static void main(String[] args) throws Exception {
+        long start = System.currentTimeMillis();
+        Future&lt;String&gt; f1 = connection.submit(() -&gt; handleRequest(&quot;req1 (slow, 200ms)&quot;, 200));
+        Future&lt;String&gt; f2 = connection.submit(() -&gt; handleRequest(&quot;req2 (fast, 20ms)&quot;, 20)); // does NOT wait for req1
+
+        String r2 = f2.get(); // req2&#x27;s result is available quickly, independent of req1&#x27;s progress
+        long r2Elapsed = System.currentTimeMillis() - start;
+        System.out.println(r2 + &quot; (available after ~&quot; + r2Elapsed + &quot;ms -- did NOT wait behind req1)&quot;);
+
+        String r1 = f1.get();
+        System.out.println(r1);
+        connection.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac Http2Multiplexing.java &amp;&amp; java Http2Multiplexing</code> (JDK 17+).</p>
+<p>Expected output (timing will vary slightly, but req2 always completes well before req1):</p>
+<pre><code>req2 (fast, 20ms) done (available after ~25ms -- did NOT wait behind req1)
+req1 (slow, 200ms) done</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: StreamingCall.java -- model a gRPC-style SERVER STREAMING call:
+// the server sends a SEQUENCE of messages over time on one call, rather
+// than a single request producing a single response -- something
+// HTTP/1.1&#x27;s request/response model doesn&#x27;t support natively.
+import java.util.*;
+import java.util.function.Consumer;
+
+public class StreamingCall {
+    interface StreamObserver&lt;T&gt; { // models gRPC&#x27;s StreamObserver
+        void onNext(T value);
+        void onCompleted();
+    }
+
+    static void streamOrderUpdates(String orderId, StreamObserver&lt;String&gt; observer) {
+        // simulates the SERVER pushing a SEQUENCE of updates over ONE call
+        observer.onNext(&quot;PLACED&quot;);
+        observer.onNext(&quot;PACKED&quot;);
+        observer.onNext(&quot;SHIPPED&quot;);
+        observer.onNext(&quot;DELIVERED&quot;);
+        observer.onCompleted();
+    }
+
+    public static void main(String[] args) {
+        List&lt;String&gt; received = new ArrayList&lt;&gt;();
+        streamOrderUpdates(&quot;ORD-1&quot;, new StreamObserver&lt;String&gt;() {
+            public void onNext(String status) {
+                received.add(status);
+                System.out.println(&quot;Received update: &quot; + status);
+            }
+            public void onCompleted() {
+                System.out.println(&quot;Stream completed. Total updates received: &quot; + received.size());
+            }
+        });
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac StreamingCall.java &amp;&amp; java StreamingCall</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Received update: PLACED
+Received update: PACKED
+Received update: SHIPPED
+Received update: DELIVERED
+Stream completed. Total updates received: 4</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>handleRequest(&quot;req1 (slow, 200ms)&quot;, 200)</code> and then <code>handleRequest(&quot;req2 (fast, 20ms)&quot;, 20)</code> are called strictly sequentially on <code>main</code>&#x27;s single thread, modeling HTTP/1.1&#x27;s per-connection request handling: req2 cannot even *begin* until req1 finishes, regardless of how fast req2 itself would otherwise be. The total elapsed time (~220ms) is the sum of both — req2&#x27;s own short 20ms delay is dwarfed by having to wait behind req1&#x27;s 200ms first.</li><li><strong>Level 2 — multiplexing removes that ordering constraint</strong> — <code>connection</code>, a 2-thread pool, stands in for one HTTP/2 connection capable of handling multiple concurrent streams. Both <code>f1</code> (req1) and <code>f2</code> (req2) are submitted essentially back-to-back, and because the pool has 2 threads, both begin running *concurrently* rather than one waiting for the other.</li><li><strong>Tracing the timing</strong> — <code>f2.get()</code> is called first and returns after roughly 20-25ms — req2&#x27;s own delay, essentially unaffected by req1 running concurrently in the pool&#x27;s other thread. Only afterward does <code>main</code> call <code>f1.get()</code>, which returns once req1&#x27;s full 200ms completes. The printed timing (<code>~25ms</code>) directly demonstrates that req2&#x27;s completion time was determined by its *own* delay, not by having to wait behind req1&#x27;s — precisely the head-of-line blocking elimination that HTTP/2 multiplexing provides in a real connection.</li><li><strong>Level 3 — a capability HTTP/1.1 can&#x27;t express at all</strong> — <code>streamOrderUpdates</code> takes a <code>StreamObserver</code>, an interface with <code>onNext</code> (called once per message in the sequence) and <code>onCompleted</code> (called once the sequence ends) — this exactly mirrors gRPC&#x27;s real <code>StreamObserver</code> API for server-streaming calls. <code>main</code> calls <code>streamOrderUpdates</code>, providing an anonymous <code>StreamObserver</code> implementation that appends each received status to a <code>received</code> list and prints it as it arrives.</li><li><strong>Tracing the streamed sequence</strong> — <code>streamOrderUpdates</code> calls <code>observer.onNext(&quot;PLACED&quot;)</code>, <code>onNext(&quot;PACKED&quot;)</code>, <code>onNext(&quot;SHIPPED&quot;)</code>, <code>onNext(&quot;DELIVERED&quot;)</code> in order, each triggering the corresponding print statement immediately as it&#x27;s called — so the printed lines appear one at a time, in the exact order the server &quot;pushed&quot; them, followed finally by <code>onCompleted()</code>, which prints the summary line reporting all 4 updates were received. In genuine HTTP/1.1&#x27;s one-request-one-response model, achieving this same &quot;push a sequence of updates over time&quot; behavior would require either repeated polling (the client asking &quot;any update yet?&quot; over and over) or a separate mechanism like WebSockets — gRPC&#x27;s HTTP/2 foundation supports it as a first-class call type.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> HTTP/2 multiplexing happens *within* one TCP connection, but that connection still ultimately traverses one network path — a severe enough network-level problem (packet loss causing TCP-level retransmission) can still affect every multiplexed stream sharing that connection, an effect sometimes called TCP-level head-of-line blocking (which HTTP/3, built on QUIC, addresses further). Multiplexing solves *application-level* head-of-line blocking, not every possible network-layer bottleneck.</blockquote>
+<ul><li>gRPC builds RPC (see <a href="0088-remote-procedure-call-rpc-model.md">RPC model</a>) on top of HTTP/2, gaining true multiplexing and native streaming support as a direct consequence of that protocol choice.</li><li>HTTP/2 multiplexing means a slow concurrent call no longer blocks other calls sharing the same connection — a real, measurable improvement over HTTP/1.1&#x27;s connection-pool-based concurrency.</li><li>Streaming calls (server, client, or bidirectional) let a single call exchange a sequence of messages over time, a capability that doesn&#x27;t fit naturally into HTTP/1.1&#x27;s strict one-request-one-response model.</li><li>Choose gRPC for internal, performance-sensitive service-to-service calls or genuine streaming needs; choose REST/HTTP-1.1-style APIs for public-facing, broadly-compatible, human-debuggable interfaces.</li><li>See <a href="0091-grpc-streaming-server-client-bidirectional.md">gRPC streaming</a> for the full set of streaming call shapes gRPC supports, and <a href="0092-grpc-vs-rest-trade-offs.md">gRPC vs REST trade-offs</a> for a direct comparison to guide the choice between them.</li></ul>
+  <div class="nav"><a class="prv" href="0088-remote-procedure-call-rpc-model.html"><span class="mini">← Previous</span>Remote Procedure Call (RPC) model</a><a class="nxt" href="0090-protocol-buffers-protobuf-idl.html"><span class="mini">Next →</span>Protocol Buffers (protobuf) IDL</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t89";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
