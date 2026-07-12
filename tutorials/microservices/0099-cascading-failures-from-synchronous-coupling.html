@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Cascading failures from synchronous coupling" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 3. Synchronous Communication</div>
+  <div class="htitle">
+    <h1>"Cascading failures from synchronous coupling"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A cascading failure is what happens when <a href="0098-failure-propagation-across-synchronous-chains.md">failure propagation</a> doesn&#x27;t just travel up a chain but *amplifies* as it goes — a slow or failing downstream service causes its callers to exhaust their own resources (threads, connections) while waiting, which makes *those* callers slow or unresponsive too, which cascades to *their* callers, and so on. Unlike simple failure propagation (one bad response causes another), a cascading failure specifically involves resource exhaustion at each hop, which is what turns a single service&#x27;s localized problem into a system-wide outage that can outlast the original failure by a wide margin.</p>
+<h2>2. Why &amp; when</h2>
+<p>The mechanism is specifically about resource exhaustion: a service with a bounded thread pool (see <a href="0086-backpressure-in-synchronous-calls.md">backpressure</a>) handling requests that call a now-slow downstream dependency will have every one of its threads eventually occupied waiting on that dependency, given enough concurrent traffic — at which point the calling service can no longer accept *any* new requests, not even ones that don&#x27;t touch the failing dependency at all. Its own callers then experience the calling service as fully down, not just degraded, and the same resource-exhaustion pattern repeats one level up. This is why a single slow (not even fully down — just slow) service deep in a call graph can take down services with no direct relationship to whatever the original problem was.</p>
+<p>Understand this mechanism specifically to justify why timeouts, circuit breakers, and bulkheads aren&#x27;t optional resilience nice-to-haves — they are what prevents one service&#x27;s resource pool from being consumed entirely by calls to one struggling dependency, which is the specific failure mode that turns a contained problem into a cascading one.</p>
+<h2>3. Core concept</h2>
+<p>Without a bound on how many resources a call to one dependency can consume, a slow dependency can consume *all* of a caller&#x27;s resources, starving unrelated requests that share the same resource pool.</p>
+<pre><code>Service B has a pool of 10 threads, serving requests to BOTH dependency C (now slow) and dependency X (healthy)
+    |
+    v
+As more requests arrive needing C: more of B&#x27;s 10 threads get stuck waiting on C
+    |
+    v
+Eventually: ALL 10 threads are stuck waiting on C
+    |
+    v
+A NEW request needing only X (which is perfectly healthy) has NO thread available -- B appears TOTALLY DOWN</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Service B's shared thread pool becomes entirely consumed by requests waiting on slow dependency C, leaving no threads available for unrelated requests to healthy dependency X, making B appear fully down">
+  <rect x="20" y="20" width="240" height="150" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="140" y="42" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Service B: 10-thread pool</text>
+  <text x="140" y="60" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">ALL 10 threads stuck waiting on C</text>
+  <rect x="35" y="70" width="210" height="80" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="140" y="115" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">[thread][thread][thread]...</text>
+  <text x="140" y="130" fill="#79c0ff" font-size="7" text-anchor="middle" font-family="sans-serif">all waiting on slow C</text>
+
+  <rect x="320" y="20" width="130" height="50" rx="5" fill="#1c2430" stroke="#8b949e"/>
+  <text x="385" y="42" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Dependency C</text>
+  <text x="385" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">(slow)</text>
+
+  <rect x="320" y="120" width="130" height="50" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="385" y="142" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Dependency X</text>
+  <text x="385" y="158" fill="#6db33f" font-size="7" text-anchor="middle" font-family="sans-serif">(healthy, but unreachable -- no threads left!)</text>
+
+  <line x1="260" y1="60" x2="320" y2="45" stroke="#79c0ff" stroke-width="1.5"/>
+  <rect x="480" y="120" width="130" height="50" rx="5" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,3"/>
+  <text x="545" y="142" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">new request for X:</text>
+  <text x="545" y="157" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">BLOCKED, no thread free</text>
+</svg>
+<p>A shared, unbounded resource pool lets a slow dependency starve requests that have nothing to do with it.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: <code>ServiceB</code> handling requests to two independent dependencies, <code>C</code> (which becomes slow) and <code>X</code> (which stays healthy), first with a shared, uncapped-per-dependency thread pool showing how <code>X</code>&#x27;s requests get starved once <code>C</code> degrades, then fixed with a bulkhead — a separate, isolated resource pool per dependency — so a slow <code>C</code> can no longer affect calls to <code>X</code> at all.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: SharedPoolStarvation.java -- ONE shared thread pool serves BOTH
+// dependency C (slow) and dependency X (healthy) -- C&#x27;s slowness
+// starves X&#x27;s requests once the pool fills up with C-bound threads.
+import java.util.concurrent.*;
+
+public class SharedPoolStarvation {
+    static ExecutorService sharedPool = Executors.newFixedThreadPool(3); // ONE pool for everything
+
+    static String callC() throws InterruptedException { Thread.sleep(300); return &quot;C responded&quot;; } // SLOW
+    static String callX() throws InterruptedException { Thread.sleep(10); return &quot;X responded&quot;; }  // fast, healthy
+
+    public static void main(String[] args) throws Exception {
+        // 3 requests for C fill the ENTIRE shared pool (pool size = 3)
+        Future&lt;String&gt; c1 = sharedPool.submit(SharedPoolStarvation::callC);
+        Future&lt;String&gt; c2 = sharedPool.submit(SharedPoolStarvation::callC);
+        Future&lt;String&gt; c3 = sharedPool.submit(SharedPoolStarvation::callC);
+
+        Thread.sleep(20); // let the 3 C-calls occupy the pool first
+        long start = System.currentTimeMillis();
+        Future&lt;String&gt; xRequest = sharedPool.submit(SharedPoolStarvation::callX); // NO thread free -- must wait
+        String xResult = xRequest.get();
+        long elapsed = System.currentTimeMillis() - start;
+        System.out.println(xResult + &quot; -- but had to wait ~&quot; + elapsed + &quot;ms (pool was full of C-bound threads)&quot;);
+
+        c1.get(); c2.get(); c3.get();
+        sharedPool.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac SharedPoolStarvation.java &amp;&amp; java SharedPoolStarvation</code> (JDK 17+).</p>
+<p>Expected output (elapsed time will vary slightly, always at least 250):</p>
+<pre><code>X responded -- but had to wait ~276ms (pool was full of C-bound threads)</code></pre>
+<p><code>X</code> itself only takes 10ms to respond, but the request for it had to wait nearly the full 300ms that <code>C</code>&#x27;s slow calls were occupying the shared pool — <code>X</code>&#x27;s health was completely irrelevant to how long its caller had to wait.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: BulkheadIsolation.java -- give C and X SEPARATE, isolated
+// thread pools (a &quot;bulkhead&quot;) -- C&#x27;s slowness can no longer touch X&#x27;s
+// requests AT ALL, regardless of how much load C is under.
+import java.util.concurrent.*;
+
+public class BulkheadIsolation {
+    static ExecutorService cPool = Executors.newFixedThreadPool(3); // ISOLATED pool for C
+    static ExecutorService xPool = Executors.newFixedThreadPool(3); // ISOLATED pool for X -- unaffected by C
+
+    static String callC() throws InterruptedException { Thread.sleep(300); return &quot;C responded&quot;; }
+    static String callX() throws InterruptedException { Thread.sleep(10); return &quot;X responded&quot;; }
+
+    public static void main(String[] args) throws Exception {
+        Future&lt;String&gt; c1 = cPool.submit(BulkheadIsolation::callC);
+        Future&lt;String&gt; c2 = cPool.submit(BulkheadIsolation::callC);
+        Future&lt;String&gt; c3 = cPool.submit(BulkheadIsolation::callC); // fills C&#x27;s pool ENTIRELY
+
+        Thread.sleep(20);
+        long start = System.currentTimeMillis();
+        Future&lt;String&gt; xRequest = xPool.submit(BulkheadIsolation::callX); // X has its OWN pool -- unaffected
+        String xResult = xRequest.get();
+        long elapsed = System.currentTimeMillis() - start;
+        System.out.println(xResult + &quot; -- took only ~&quot; + elapsed + &quot;ms (C&#x27;s slowness never touched X&#x27;s pool)&quot;);
+
+        c1.get(); c2.get(); c3.get();
+        cPool.shutdown(); xPool.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BulkheadIsolation.java &amp;&amp; java BulkheadIsolation</code> (JDK 17+).</p>
+<p>Expected output (elapsed time will vary slightly, but always well under 300):</p>
+<pre><code>X responded -- took only ~11ms (C&#x27;s slowness never touched X&#x27;s pool)</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: MeasuringCascadeContainment.java -- run BOTH scenarios back to
+// back and print the difference DIRECTLY, making the cascading-failure
+// containment measurable rather than just qualitative.
+import java.util.concurrent.*;
+
+public class MeasuringCascadeContainment {
+    static String callC() throws InterruptedException { Thread.sleep(300); return &quot;C responded&quot;; }
+    static String callX() throws InterruptedException { Thread.sleep(10); return &quot;X responded&quot;; }
+
+    static long measureXLatencyWithSharedPool() throws Exception {
+        ExecutorService sharedPool = Executors.newFixedThreadPool(3);
+        for (int i = 0; i &lt; 3; i++) sharedPool.submit(MeasuringCascadeContainment::callC);
+        Thread.sleep(20);
+        long start = System.currentTimeMillis();
+        sharedPool.submit(MeasuringCascadeContainment::callX).get();
+        long elapsed = System.currentTimeMillis() - start;
+        sharedPool.shutdown();
+        return elapsed;
+    }
+
+    static long measureXLatencyWithBulkhead() throws Exception {
+        ExecutorService cPool = Executors.newFixedThreadPool(3);
+        ExecutorService xPool = Executors.newFixedThreadPool(3);
+        for (int i = 0; i &lt; 3; i++) cPool.submit(MeasuringCascadeContainment::callC);
+        Thread.sleep(20);
+        long start = System.currentTimeMillis();
+        xPool.submit(MeasuringCascadeContainment::callX).get();
+        long elapsed = System.currentTimeMillis() - start;
+        cPool.shutdown(); xPool.shutdown();
+        return elapsed;
+    }
+
+    public static void main(String[] args) throws Exception {
+        long sharedLatency = measureXLatencyWithSharedPool();
+        long bulkheadLatency = measureXLatencyWithBulkhead();
+        System.out.println(&quot;X&#x27;s latency with a SHARED pool (C is slow): ~&quot; + sharedLatency + &quot;ms&quot;);
+        System.out.println(&quot;X&#x27;s latency with an ISOLATED bulkhead pool: ~&quot; + bulkheadLatency + &quot;ms&quot;);
+        System.out.println(&quot;Cascade containment improvement: ~&quot; + (sharedLatency - bulkheadLatency) + &quot;ms saved&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac MeasuringCascadeContainment.java &amp;&amp; java MeasuringCascadeContainment</code> (JDK 17+).</p>
+<p>Expected output (exact numbers will vary, but shared latency is always dramatically higher than bulkhead latency):</p>
+<pre><code>X&#x27;s latency with a SHARED pool (C is slow): ~277ms
+X&#x27;s latency with an ISOLATED bulkhead pool: ~12ms
+Cascade containment improvement: ~265ms saved</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>sharedPool</code>, sized at exactly 3 threads, receives three submissions all calling the slow <code>callC</code> (each sleeping 300ms). <code>main</code> waits 20ms (letting all three occupy the pool), then submits a call to the fast <code>callX</code> — but since all 3 threads in <code>sharedPool</code> are already occupied by the <code>C</code> calls, the <code>X</code> submission has to *wait in the pool&#x27;s internal queue* until one of the <code>C</code> calls finishes and frees a thread. The elapsed time measured around <code>xRequest.get()</code> is therefore close to <code>C</code>&#x27;s full 300ms delay, even though <code>callX</code> itself only takes 10ms to actually run once it finally gets a thread.</li><li><strong>Level 2 — isolating with a bulkhead</strong> — <code>cPool</code> and <code>xPool</code> are now entirely separate <code>ExecutorService</code> instances, each with their own 3 threads. <code>main</code> fills <code>cPool</code> completely with the same three slow <code>C</code> calls, but submits the <code>X</code> call to <code>xPool</code> instead — a completely independent pool that <code>C</code>&#x27;s calls never touch. The elapsed time this time is close to <code>callX</code>&#x27;s own actual 10ms delay, essentially unaffected by how badly <code>cPool</code> is currently backed up.</li><li><strong>Level 3 — measuring the difference directly</strong> — <code>measureXLatencyWithSharedPool</code> and <code>measureXLatencyWithBulkhead</code> package up Level 1&#x27;s and Level 2&#x27;s scenarios respectively as reusable methods returning the measured elapsed time. <code>main</code> calls both in sequence and prints all three numbers: the shared-pool latency (dominated by <code>C</code>&#x27;s slowness), the bulkhead latency (reflecting only <code>X</code>&#x27;s own actual speed), and their difference — making the containment benefit a concrete, measured number rather than just a qualitative claim.</li><li><strong>Why the difference is the whole point</strong> — in both scenarios, <code>dependency C</code> is equally slow and equally overloaded — nothing about <code>C</code>&#x27;s actual health changed between Level 1 and Level 2. The *only* difference is whether <code>X</code>&#x27;s requests share a resource pool with <code>C</code>&#x27;s requests or have their own isolated pool. This isolates the cascading-failure mechanism to exactly one variable: shared versus isolated resource pools, and shows that variable alone determines whether <code>C</code>&#x27;s slowness becomes <code>X</code>&#x27;s problem too.</li><li><strong>Connecting this back to a real service</strong> — in a real <code>ServiceB</code> handling many different kinds of requests (some needing <code>C</code>, some needing <code>X</code>, some needing neither), an isolated bulkhead per downstream dependency (or per request type) is what prevents one dependency&#x27;s outage from exhausting the thread pool that *unrelated* requests also depend on — exactly the mechanism this example measures directly.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> bulkheads add real resource overhead — more separate, smaller thread pools instead of one larger shared pool means each pool individually has less headroom to absorb its own bursts of traffic. Size each isolated pool based on that specific dependency&#x27;s realistic call volume and latency, not just an even split of whatever the shared pool used to have.</blockquote>
+<ul><li>Cascading failure specifically involves resource exhaustion: a slow dependency consumes shared resources (threads, connections) faster than they free up, eventually starving requests that don&#x27;t even touch the slow dependency.</li><li>A bulkhead — an isolated resource pool per dependency or request type — is the direct fix: it caps how much of a caller&#x27;s total capacity any single dependency&#x27;s problems can consume.</li><li>The measured latency difference between a shared pool and an isolated bulkhead, as Level 3 demonstrates, is often dramatic — a slow dependency can inflate unrelated requests&#x27; latency by an order of magnitude when pools are shared.</li><li>This mechanism is why <a href="0096-client-side-timeouts-connect-read.md">client-side timeouts</a> alone aren&#x27;t sufficient protection — a bounded wait per call still consumes a thread for that bounded duration, and enough concurrent bounded waits can still exhaust a shared pool.</li><li>Combine bulkheads with timeouts and (typically) circuit breakers for full protection: bulkheads limit blast radius across dependencies, timeouts bound how long any one call can occupy a resource, and circuit breakers stop sending traffic to a dependency that&#x27;s clearly failing.</li></ul>
+  <div class="nav"><a class="prv" href="0098-failure-propagation-across-synchronous-chains.html"><span class="mini">← Previous</span>Failure propagation across synchronous chains</a><a class="nxt" href="0100-spring-web-mvc-for-rest-endpoints.html"><span class="mini">Next →</span>Spring Web MVC for REST endpoints</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t99";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
