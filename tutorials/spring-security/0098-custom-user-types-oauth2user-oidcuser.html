@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Custom user types (OAuth2User/OidcUser)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 5. OAuth2 & OpenID Connect</div>
+  <div class="htitle">
+    <h1>"Custom user types (OAuth2User/OidcUser)"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The default <code>OAuth2User</code>/<code>OidcUser</code> implementations Spring Security builds after a successful login are generic, provider-agnostic wrappers over a raw claims map — perfectly functional, but they carry no notion of *your* application&#x27;s own concepts: a local user id, an internal role set derived from business rules, or a <code>Set&lt;GrantedAuthority&gt;</code> computed by looking the provider&#x27;s identity up in your own database. Customizing this means implementing your own <code>OAuth2UserService&lt;OAuth2UserRequest, OAuth2User&gt;</code> (for plain OAuth2 logins) or <code>OAuth2UserService&lt;OidcUserRequest, OidcUser&gt;</code> (for OIDC logins) — typically by delegating to the default implementation to do the actual provider communication, then wrapping or replacing its result with a custom type before returning it.</p>
+<pre><code class="lang-java">@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http.oauth2Login(oauth2 -&gt; oauth2
+        .userInfoEndpoint(userInfo -&gt; userInfo
+            .oidcUserService(this::loadOidcUser)      // for OIDC providers
+            .userService(this::loadOAuth2User)));     // for plain OAuth2 providers
+    return http.build();
+}
+
+private OidcUser loadOidcUser(OidcUserRequest request) {
+    OidcUser delegate = new OidcUserService().loadUser(request); // let the default do the real work first
+    return new AppOidcUser(delegate, lookUpLocalAuthorities(delegate.getSubject()));
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Every card in this OAuth2/OIDC section so far has treated the resulting <code>OAuth2User</code>/<code>OidcUser</code> as an opaque bag of provider claims — sufficient for authentication, but insufficient the moment authorization needs to key off something the provider doesn&#x27;t know about, like an internal role assigned by your own admin panel. <code>oauth2Login()</code>&#x27;s default behavior grants every successful login a single flat authority (<code>ROLE_USER</code>, or <code>OAUTH2_USER</code>/<code>OIDC_USER</code>) — reasonable as a default, but rarely what a real application&#x27;s <code>@PreAuthorize</code> expressions actually need to check against.</p>
+<p>Reach for a custom <code>OAuth2UserService</code> when:</p>
+<ul><li>Authorization decisions depend on data that lives in your own database, not the provider&#x27;s profile — for example, mapping the authenticated email to an internal <code>User</code> record and its associated roles.</li><li>Different authorities should be granted based on provider-side data — for instance, granting <code>ROLE_ADMIN</code> only if the provider&#x27;s profile reports the user belongs to a specific organization or group.</li><li>The application needs to persist a local <code>User</code> record the first time a given provider identity logs in (a &quot;just-in-time provisioning&quot; pattern), rather than only ever reading — never writing — local state during login.</li><li>Downstream code wants a strongly-typed principal (<code>getLocalUserId()</code>, <code>getDisplayName()</code>) instead of manually pulling values out of a raw <code>Map&lt;String, Object&gt;</code> via <code>getAttributes()</code>/<code>getClaims()</code> at every call site.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code>Default behavior:
+    OidcUserService.loadUser(request) -&gt; DefaultOidcUser
+        - wraps id_token + userinfo claims
+        - authorities: just ONE, e.g. &quot;OIDC_USER&quot;
+
+Custom behavior (delegating pattern -- almost always the right approach):
+    1. call the DEFAULT service first -- let it do signature validation, claim merging, etc.
+    2. use the delegate&#x27;s claims (subject, email) to look up / provision a LOCAL user record
+    3. compute authorities from LOCAL data (roles table), not just the provider&#x27;s flat default
+    4. wrap everything in a CUSTOM OidcUser implementation that:
+         - implements getAuthorities() -&gt; the computed, real authority set
+         - implements getAttributes(), getIdToken(), getUserInfo() -&gt; delegate to the wrapped DefaultOidcUser
+         - ADDS new accessors specific to your domain, e.g. getLocalUserId()
+
+register the custom service via:
+    http.oauth2Login(oauth2 -&gt; oauth2.userInfoEndpoint(u -&gt; u.oidcUserService(this::loadOidcUser)))</code></pre>
+<p>Delegating to the default implementation rather than reimplementing it from scratch means you never have to duplicate ID token validation, signature verification, or claim-merging logic — you only add what&#x27;s specific to your application.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagram showing a custom OidcUserService delegating to the default OidcUserService to get provider claims validated then looking up a local user record by subject to compute real authorities and wrapping both into a custom OidcUser implementation">
+  <rect x="20" y="30" width="180" height="50" rx="7" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="110" y="50" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">OidcUserRequest</text>
+  <text x="110" y="65" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">(from login flow)</text>
+
+  <line x1="200" y1="55" x2="240" y2="55" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#cu98)"/>
+
+  <rect x="245" y="30" width="180" height="50" rx="7" fill="#1c2430" stroke="#8b949e" stroke-width="1.3"/>
+  <text x="335" y="50" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">default OidcUserService</text>
+  <text x="335" y="65" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">validates + merges claims</text>
+
+  <line x1="335" y1="80" x2="335" y2="110" stroke="#8b949e" stroke-width="1.5" marker-end="url(#cu98)"/>
+  <text x="335" y="102" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">DefaultOidcUser (delegate)</text>
+
+  <line x1="335" y1="115" x2="200" y2="150" stroke="#6db33f" stroke-width="1.5" marker-end="url(#cu98b)"/>
+  <text x="240" y="140" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">subject -&gt; lookup</text>
+
+  <rect x="20" y="155" width="180" height="50" rx="7" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="110" y="175" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">local user database</text>
+  <text x="110" y="190" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">roles, local user id</text>
+
+  <line x1="200" y1="180" x2="400" y2="150" stroke="#6db33f" stroke-width="1.5" marker-end="url(#cu98b)"/>
+
+  <rect x="400" y="120" width="220" height="90" rx="7" fill="#1c2430" stroke="#6db33f" stroke-width="1.6"/>
+  <text x="510" y="145" fill="#6db33f" font-size="10.5" text-anchor="middle" font-family="sans-serif">AppOidcUser</text>
+  <text x="510" y="163" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">getAuthorities() -&gt; computed</text>
+  <text x="510" y="177" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">getClaims() -&gt; delegate.getClaims()</text>
+  <text x="510" y="191" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">getLocalUserId() -&gt; new accessor</text>
+
+  <defs>
+    <marker id="cu98" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="cu98b" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>The custom service wraps, rather than replaces, the default&#x27;s validated result — adding local data without redoing provider-facing work.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: build a minimal delegating <code>CustomOidcUserService</code> that looks up local authorities by subject, grow it to just-in-time provision a brand-new local user on first login, then add a strongly-typed <code>AppOidcUser</code> that exposes a local user id alongside the standard claims.</p>
+<h3>Level 1 — Basic</h3>
+<p>Delegate to a &quot;default&quot; provider result, then compute authorities from a local lookup table.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class CustomOidcUserLevel1 {
+    record DefaultOidcUser(String subject, Map&lt;String, Object&gt; claims) {}
+    record AppOidcUser(DefaultOidcUser delegate, Set&lt;String&gt; authorities) {
+        String getSubject() { return delegate.subject(); }
+        Map&lt;String, Object&gt; getClaims() { return delegate.claims(); }
+    }
+
+    static class LocalUserDirectory {
+        private final Map&lt;String, Set&lt;String&gt;&gt; rolesBySubject = new HashMap&lt;&gt;();
+        void registerRoles(String subject, Set&lt;String&gt; roles) { rolesBySubject.put(subject, roles); }
+        Set&lt;String&gt; rolesFor(String subject) { return rolesBySubject.getOrDefault(subject, Set.of(&quot;ROLE_USER&quot;)); }
+    }
+
+    static AppOidcUser loadOidcUser(DefaultOidcUser delegate, LocalUserDirectory directory) {
+        Set&lt;String&gt; authorities = directory.rolesFor(delegate.subject());
+        return new AppOidcUser(delegate, authorities);
+    }
+
+    public static void main(String[] args) {
+        LocalUserDirectory directory = new LocalUserDirectory();
+        directory.registerRoles(&quot;109283746&quot;, Set.of(&quot;ROLE_USER&quot;, &quot;ROLE_ADMIN&quot;));
+
+        DefaultOidcUser aliceDelegate = new DefaultOidcUser(&quot;109283746&quot;, Map.of(&quot;email&quot;, &quot;alice@example.com&quot;));
+        DefaultOidcUser strangerDelegate = new DefaultOidcUser(&quot;999999999&quot;, Map.of(&quot;email&quot;, &quot;stranger@example.com&quot;));
+
+        AppOidcUser alice = loadOidcUser(aliceDelegate, directory);
+        AppOidcUser stranger = loadOidcUser(strangerDelegate, directory);
+
+        System.out.println(&quot;alice authorities: &quot; + new TreeSet&lt;&gt;(alice.authorities()));
+        System.out.println(&quot;stranger authorities: &quot; + new TreeSet&lt;&gt;(stranger.authorities()));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CustomOidcUserLevel1.java</code>, run <code>java CustomOidcUserLevel1.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>alice authorities: [ROLE_ADMIN, ROLE_USER]
+stranger authorities: [ROLE_USER]</code></pre>
+<p><code>loadOidcUser</code> mirrors the delegating pattern: it never re-derives the subject or claims itself (those came from <code>delegate</code>, standing in for the real, already-validated <code>DefaultOidcUser</code>) — it only adds the one thing the default implementation can&#x27;t know, the locally-assigned role set, falling back to a bare <code>ROLE_USER</code> for anyone not explicitly registered.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add just-in-time provisioning: the very first login from a given subject creates a local user record rather than merely reading one.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class CustomOidcUserLevel2 {
+    record DefaultOidcUser(String subject, Map&lt;String, Object&gt; claims) {}
+    record LocalUser(String subject, String email, Set&lt;String&gt; roles) {}
+    record AppOidcUser(DefaultOidcUser delegate, LocalUser localUser) {
+        String getSubject() { return delegate.subject(); }
+        Set&lt;String&gt; getAuthorities() { return localUser.roles(); }
+    }
+
+    static class LocalUserDirectory {
+        private final Map&lt;String, LocalUser&gt; usersBySubject = new HashMap&lt;&gt;();
+
+        LocalUser findOrProvision(String subject, String email) {
+            LocalUser existing = usersBySubject.get(subject);
+            if (existing != null) return existing;
+
+            // FIRST login for this subject -- provision a brand-new local record with a safe default role
+            LocalUser provisioned = new LocalUser(subject, email, Set.of(&quot;ROLE_USER&quot;));
+            usersBySubject.put(subject, provisioned);
+            System.out.println(&quot;provisioned NEW local user for subject=&quot; + subject + &quot; email=&quot; + email);
+            return provisioned;
+        }
+    }
+
+    static AppOidcUser loadOidcUser(DefaultOidcUser delegate, LocalUserDirectory directory) {
+        String email = String.valueOf(delegate.claims().get(&quot;email&quot;));
+        LocalUser localUser = directory.findOrProvision(delegate.subject(), email);
+        return new AppOidcUser(delegate, localUser);
+    }
+
+    public static void main(String[] args) {
+        LocalUserDirectory directory = new LocalUserDirectory();
+
+        DefaultOidcUser aliceFirstLogin = new DefaultOidcUser(&quot;109283746&quot;, Map.of(&quot;email&quot;, &quot;alice@example.com&quot;));
+        AppOidcUser first = loadOidcUser(aliceFirstLogin, directory);
+        System.out.println(&quot;first login authorities: &quot; + first.getAuthorities());
+
+        // SECOND login, same subject -- must reuse the SAME local record, not provision again
+        DefaultOidcUser aliceSecondLogin = new DefaultOidcUser(&quot;109283746&quot;, Map.of(&quot;email&quot;, &quot;alice@example.com&quot;));
+        AppOidcUser second = loadOidcUser(aliceSecondLogin, directory);
+        System.out.println(&quot;second login authorities: &quot; + second.getAuthorities());
+        System.out.println(&quot;same local user instance reused: &quot; + (first.localUser() == second.localUser()));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CustomOidcUserLevel2.java</code>, run <code>java CustomOidcUserLevel2.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>provisioned NEW local user for subject=109283746 email=alice@example.com
+first login authorities: [ROLE_USER]
+second login authorities: [ROLE_USER]
+same local user instance reused: true</code></pre>
+<p>What changed: <code>findOrProvision</code> only prints its provisioning message once — on alice&#x27;s first login it creates and stores a new <code>LocalUser</code>, and on her second login (a distinct <code>DefaultOidcUser</code> object, but with the same <code>subject</code>) it finds and reuses the *same* stored record rather than creating a duplicate, exactly mirroring how just-in-time provisioning must be idempotent per subject.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Real authority computation should also react to provider-side signals — for example, revoking admin access if the provider&#x27;s own profile no longer reports the user in a trusted group — and must handle a claim (like <code>email</code>) being unexpectedly absent without crashing the whole login.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class CustomOidcUserLevel3 {
+    record DefaultOidcUser(String subject, Map&lt;String, Object&gt; claims) {}
+    record LocalUser(String subject, String email, Set&lt;String&gt; roles) {}
+    record AppOidcUser(DefaultOidcUser delegate, LocalUser localUser) {
+        String getSubject() { return delegate.subject(); }
+        Set&lt;String&gt; getAuthorities() { return localUser.roles(); }
+    }
+
+    static class LocalUserDirectory {
+        private final Map&lt;String, LocalUser&gt; usersBySubject = new HashMap&lt;&gt;();
+
+        LocalUser findOrProvision(String subject, String email) {
+            return usersBySubject.computeIfAbsent(subject, s -&gt; {
+                System.out.println(&quot;provisioned NEW local user for subject=&quot; + s + &quot; email=&quot; + email);
+                return new LocalUser(s, email, Set.of(&quot;ROLE_USER&quot;));
+            });
+        }
+
+        void updateRoles(String subject, Set&lt;String&gt; roles) {
+            LocalUser existing = usersBySubject.get(subject);
+            usersBySubject.put(subject, new LocalUser(existing.subject(), existing.email(), roles));
+        }
+    }
+
+    @SuppressWarnings(&quot;unchecked&quot;)
+    static AppOidcUser loadOidcUser(DefaultOidcUser delegate, LocalUserDirectory directory) {
+        // email can legitimately be absent if the &quot;email&quot; scope wasn&#x27;t granted -- never assume it&#x27;s present
+        Object emailClaim = delegate.claims().get(&quot;email&quot;);
+        String email = emailClaim != null ? String.valueOf(emailClaim) : &quot;unknown@unset.local&quot;;
+
+        LocalUser localUser = directory.findOrProvision(delegate.subject(), email);
+
+        // re-derive authorities from a provider-reported group claim EVERY login, not just at provisioning time --
+        // this means access is revoked automatically if the provider stops reporting the trusted group
+        List&lt;String&gt; groups = (List&lt;String&gt;) delegate.claims().getOrDefault(&quot;groups&quot;, List.of());
+        Set&lt;String&gt; authorities = new LinkedHashSet&lt;&gt;(Set.of(&quot;ROLE_USER&quot;));
+        if (groups.contains(&quot;admins&quot;)) authorities.add(&quot;ROLE_ADMIN&quot;);
+        directory.updateRoles(delegate.subject(), authorities);
+
+        return new AppOidcUser(delegate, directory.findOrProvision(delegate.subject(), email));
+    }
+
+    public static void main(String[] args) {
+        LocalUserDirectory directory = new LocalUserDirectory();
+
+        // login #1: alice is reported as being in the &quot;admins&quot; group by the provider
+        DefaultOidcUser aliceAsAdmin = new DefaultOidcUser(&quot;109283746&quot;,
+                Map.of(&quot;email&quot;, &quot;alice@example.com&quot;, &quot;groups&quot;, List.of(&quot;admins&quot;, &quot;engineering&quot;)));
+        AppOidcUser adminLogin = loadOidcUser(aliceAsAdmin, directory);
+        System.out.println(&quot;login #1 authorities: &quot; + new TreeSet&lt;&gt;(adminLogin.getAuthorities()));
+
+        // login #2, same subject: provider no longer reports &quot;admins&quot; -- access must be REVOKED, not sticky
+        DefaultOidcUser aliceDemoted = new DefaultOidcUser(&quot;109283746&quot;,
+                Map.of(&quot;email&quot;, &quot;alice@example.com&quot;, &quot;groups&quot;, List.of(&quot;engineering&quot;)));
+        AppOidcUser demotedLogin = loadOidcUser(aliceDemoted, directory);
+        System.out.println(&quot;login #2 authorities: &quot; + new TreeSet&lt;&gt;(demotedLogin.getAuthorities()));
+
+        // a user whose provider profile has no &quot;email&quot; claim at all (email scope not granted)
+        DefaultOidcUser noEmailClaim = new DefaultOidcUser(&quot;555000111&quot;, Map.of());
+        AppOidcUser noEmailLogin = loadOidcUser(noEmailClaim, directory);
+        System.out.println(&quot;no-email-claim user authorities: &quot; + noEmailLogin.getAuthorities());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CustomOidcUserLevel3.java</code>, run <code>java CustomOidcUserLevel3.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>provisioned NEW local user for subject=109283746 email=alice@example.com
+login #1 authorities: [ROLE_ADMIN, ROLE_USER]
+login #2 authorities: [ROLE_USER]
+provisioned NEW local user for subject=555000111 email=unknown@unset.local
+no-email-claim user authorities: [ROLE_USER]</code></pre>
+<p>What changed: <code>loadOidcUser</code> now recomputes authorities from the provider&#x27;s <code>groups</code> claim on *every* login and persists that via <code>updateRoles</code>, rather than only ever setting a role once at provisioning — alice&#x27;s second login, where the provider no longer lists her in <code>&quot;admins&quot;</code>, correctly loses <code>ROLE_ADMIN</code>, demonstrating that provider-side group membership should be treated as the current source of truth, checked fresh each time, not a one-time grant. The absent-<code>email</code>-claim case falls back to a stand-in default value rather than throwing a <code>NullPointerException</code> that would otherwise fail the entire login over a missing optional field.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace alice&#x27;s demotion (login #2 in Level 3) end to end, since it&#x27;s the case that reveals why re-deriving authorities every login (rather than only at provisioning) matters.</p>
+<p><strong>Step 1 — the OIDC login flow completes</strong> (cards 0090/0095), and Spring Security&#x27;s default <code>OidcUserService</code> builds a validated <code>DefaultOidcUser</code>. Here, <code>aliceDemoted</code> stands in for that object, with <code>claims()</code> containing <code>groups=[engineering]</code> — critically, <code>admins</code> is no longer present, unlike her first login.</p>
+<p><strong>Step 2 — the custom service is invoked</strong> because <code>oidcUserService(this::loadOidcUser)</code> was registered — this corresponds to <code>loadOidcUser(aliceDemoted, directory)</code> being called.</p>
+<p><strong>Step 3 — the email claim is read defensively.</strong> <code>emailClaim</code> is <code>&quot;alice@example.com&quot;</code> here (present), so <code>email</code> becomes that value directly — this branch exists for the *other* case in this level (the no-email user), but every call passes through the same defensive check.</p>
+<p><strong>Step 4 — the local user is found, not re-provisioned.</strong> <code>directory.findOrProvision(&quot;109283746&quot;, email)</code> — since alice&#x27;s subject already has an entry from login #1 — returns the existing record via <code>computeIfAbsent</code>&#x27;s early exit; no &quot;provisioned NEW local user&quot; message prints for this call, exactly as the earlier <code>Level 2</code> idempotency check confirmed.</p>
+<p><strong>Step 5 — authorities are recomputed from scratch, not merely read.</strong> <code>groups</code> is <code>[&quot;engineering&quot;]</code>; <code>groups.contains(&quot;admins&quot;)</code> evaluates to <code>false</code>, so <code>authorities</code> remains just <code>{ROLE_USER}</code> — <code>ROLE_ADMIN</code> is never added this time, in contrast to login #1 where it was.</p>
+<p><strong>Step 6 — the recomputed authorities are persisted.</strong> <code>directory.updateRoles(&quot;109283746&quot;, {ROLE_USER})</code> overwrites alice&#x27;s stored <code>LocalUser</code>, replacing the version that still had <code>ROLE_ADMIN</code> from login #1.</p>
+<p><strong>Step 7 — the final <code>AppOidcUser</code> is built and returned</strong>, wrapping the now-updated local user. A controller&#x27;s <code>@AuthenticationPrincipal AppOidcUser principal</code> for this request sees <code>getAuthorities()</code> return <code>{ROLE_USER}</code> only — any <code>@PreAuthorize(&quot;hasRole(&#x27;ADMIN&#x27;)&quot;)</code> endpoint that alice could reach during login #1 is now correctly denied to her in this session.</p>
+<pre><code>login #1: groups=[admins, engineering]  -&gt; authorities={ROLE_USER, ROLE_ADMIN} -&gt; persisted
+login #2: groups=[engineering]          -&gt; authorities={ROLE_USER}            -&gt; persisted, OVERWRITING #1&#x27;s grant
+                                                                                    (recomputed EVERY login, not cached)</code></pre>
+<p><strong>Contrast with a naive &quot;only provision once&quot; implementation:</strong> had <code>loadOidcUser</code> only set authorities inside the <code>computeIfAbsent</code> block (at provisioning time) rather than on every call, alice&#x27;s second login would have skipped straight to step 4&#x27;s cache hit and kept her stale <code>ROLE_ADMIN</code> forever, regardless of what the provider reports going forward — a stale-privilege bug that recomputing on every login specifically avoids.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the custom <code>OAuth2UserService</code>/<code>OidcUserService</code> you register replaces the *default* one entirely for the registrations it&#x27;s wired to — if your implementation doesn&#x27;t delegate to a real default (or equivalent logic) for provider communication and claim validation, you silently lose that validation. Always build your custom result on top of a genuinely validated delegate, never bypass it.</blockquote>
+<ul><li>Custom <code>OAuth2User</code>/<code>OidcUser</code> types exist to bridge provider-supplied identity with your application&#x27;s own authorization data (local roles, local user ids) — the provider&#x27;s default claims alone are rarely sufficient for real <code>@PreAuthorize</code> decisions.</li><li>The delegating pattern — call the default service first, then wrap its result — is almost always correct: it preserves ID token validation and claim merging while adding exactly the local logic your application needs.</li><li>Just-in-time provisioning (creating a local user record on first login) must be idempotent per subject — a second login for the same identity should find, not recreate, the local record.</li><li>Prefer recomputing authorities from provider-reported signals (like group membership) on every login rather than only at provisioning time — a one-time grant that&#x27;s never rechecked becomes a stale-privilege bug the moment the provider-side membership changes.</li><li>Guard against optional claims (like <code>email</code>, gated behind a scope that might not have been granted) being absent — a missing claim should degrade gracefully, not throw and fail the entire login.</li></ul>
+  <div class="nav"><a class="prv" href="0097-oidc-logout-rp-initiated.html"><span class="mini">← Previous</span>OIDC logout (RP-initiated)</a><a class="nxt" href="0099-oauth2-resource-server.html"><span class="mini">Next →</span>OAuth2 Resource Server</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t98";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

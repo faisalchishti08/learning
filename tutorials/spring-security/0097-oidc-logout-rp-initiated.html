@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"OIDC logout (RP-initiated)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 5. OAuth2 & OpenID Connect</div>
+  <div class="htitle">
+    <h1>"OIDC logout (RP-initiated)"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Logging a user out of your application&#x27;s own session (clearing <code>SecurityContextHolder</code>, invalidating the <code>HttpSession</code>, deleting the session cookie) does <strong>not</strong> log them out of the identity provider itself — the user&#x27;s browser may still hold a live session with Google or Okta, so visiting &quot;Login with Google&quot; again could silently re-authenticate them with zero interaction. RP-Initiated Logout (RP = &quot;Relying Party,&quot; the OIDC term for your application) is the OIDC extension that closes this gap: it redirects the browser to the provider&#x27;s own logout endpoint after your local logout completes, using the <code>id_token_hint</code> (the ID token from card 0095/0096, presented back to prove which session to end) so the provider can also terminate its session and, per its configured <code>post_logout_redirect_uri</code>, send the browser back to your application afterward. Spring Security wires this via <code>OidcClientInitiatedLogoutSuccessHandler</code>, configured as the <code>logoutSuccessHandler</code> for <code>logout()</code>.</p>
+<pre><code class="lang-java">@Bean
+public SecurityFilterChain filterChain(HttpSecurity http, ClientRegistrationRepository repo) throws Exception {
+    OidcClientInitiatedLogoutSuccessHandler oidcLogoutHandler =
+            new OidcClientInitiatedLogoutSuccessHandler(repo);
+    oidcLogoutHandler.setPostLogoutRedirectUri(&quot;{baseUrl}/&quot;); // where the PROVIDER sends the browser back to
+
+    http.logout(logout -&gt; logout.logoutSuccessHandler(oidcLogoutHandler));
+    return http.build();
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>A plain <code>logout()</code> (no OIDC awareness) only ever touches your own application&#x27;s session state — from the identity provider&#x27;s point of view, nothing happened at all. For applications where this matters little (a single consumer app, low-sensitivity data), that&#x27;s an acceptable gap. But for shared or corporate machines, or any deployment where &quot;click logout&quot; is expected to mean &quot;this device is no longer signed in as me anywhere,&quot; leaving the provider&#x27;s session alive is a real security gap — anyone using the same browser next can reopen the identity provider&#x27;s still-active session and be waved straight back in.</p>
+<p>Reach for RP-Initiated Logout when:</p>
+<ul><li>Deploying on shared or kiosk-style machines where a provider session surviving local logout is a genuine risk.</li><li>Building an internal application against a corporate IdP (Okta, Azure AD) where &quot;logout&quot; is expected, by policy, to mean a full sign-out, not just clearing this one app&#x27;s cookie.</li><li>Implementing &quot;logout everywhere&quot; functionality across multiple applications that all trust the same OIDC provider — RP-initiated logout is one building block toward that (true cross-application single sign-out additionally requires the provider to notify *other* relying parties, which is a separate, provider-side mechanism, front-channel or back-channel logout).</li><li>The provider doesn&#x27;t support RP-initiated logout at all (not every OIDC provider implements the <code>end_session_endpoint</code> from its discovery document) — in that case, <code>OidcClientInitiatedLogoutSuccessHandler</code> has nothing to redirect to, and only local logout is possible; this is important to check before assuming the redirect will work.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code>Plain logout() (no OIDC):
+    1. clear SecurityContextHolder
+    2. invalidate HttpSession, delete cookie
+    3. redirect browser to logoutSuccessUrl (e.g. &quot;/login?logout&quot;)
+    -- provider&#x27;s own session: UNTOUCHED
+
+OidcClientInitiatedLogoutSuccessHandler (RP-Initiated Logout):
+    1. clear SecurityContextHolder
+    2. invalidate HttpSession, delete cookie
+    3. look up the end_session_endpoint from the provider&#x27;s ClientRegistration/discovery metadata
+    4. redirect browser to:
+         {end_session_endpoint}?id_token_hint={the id_token from this session}
+                                &amp;post_logout_redirect_uri={configured callback}
+    5. PROVIDER terminates its own session, then redirects the browser to post_logout_redirect_uri
+    -- provider&#x27;s own session: TERMINATED (if it supports this endpoint)</code></pre>
+<p><code>id_token_hint</code> is what lets the provider know *which* of potentially many active sessions to end — it identifies the specific authentication event this application&#x27;s login corresponded to.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sequence diagram of RP initiated logout the browser posts a logout request to the application which clears its own session and then redirects the browser to the providers end session endpoint carrying an id token hint the provider ends its own session and redirects the browser back to the applications configured post logout redirect uri">
+  <text x="90" y="24" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif">App Server</text>
+  <text x="330" y="24" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="sans-serif">Browser</text>
+  <text x="580" y="24" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Provider</text>
+
+  <line x1="90" y1="35" x2="90" y2="245" stroke="#6db33f" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="330" y1="35" x2="330" y2="245" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="580" y1="35" x2="580" y2="245" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <line x1="330" y1="55" x2="95" y2="55" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#l97)"/>
+  <text x="330" y="48" fill="#e6edf3" font-size="8.5" text-anchor="end" font-family="sans-serif">1. POST /logout</text>
+
+  <rect x="40" y="65" width="220" height="30" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.3"/>
+  <text x="150" y="84" fill="#6db33f" font-size="8.5" text-anchor="middle" font-family="sans-serif">2. clear SecurityContext + session</text>
+
+  <line x1="90" y1="120" x2="325" y2="120" stroke="#6db33f" stroke-width="1.5" marker-end="url(#l97b)"/>
+  <text x="95" y="113" fill="#e6edf3" font-size="8.5" font-family="sans-serif">3. 302 -> end_session_endpoint?id_token_hint=..</text>
+
+  <line x1="330" y1="150" x2="575" y2="150" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#l97)"/>
+  <text x="335" y="143" fill="#e6edf3" font-size="8.5" font-family="sans-serif">4. GET end_session_endpoint</text>
+
+  <rect x="470" y="160" width="150" height="26" rx="5" fill="#1c2430" stroke="#8b949e" stroke-width="1.3"/>
+  <text x="545" y="177" fill="#8b949e" font-size="8.5" text-anchor="middle" font-family="sans-serif">5. end provider session</text>
+
+  <line x1="580" y1="196" x2="335" y2="196" stroke="#8b949e" stroke-width="1.5" marker-end="url(#l97c)"/>
+  <text x="575" y="212" fill="#e6edf3" font-size="8.5" text-anchor="end" font-family="sans-serif">6. 302 -> post_logout_redirect_uri</text>
+
+  <line x1="330" y1="226" x2="95" y2="226" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#l97b)"/>
+  <text x="330" y="238" fill="#e6edf3" font-size="8.5" text-anchor="end" font-family="sans-serif">7. GET post_logout_redirect_uri</text>
+
+  <defs>
+    <marker id="l97" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="l97b" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="l97c" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>The extra two hops (3–6) are what distinguish RP-Initiated Logout from a plain local-only logout.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: model local logout alone, then add the redirect to a provider&#x27;s <code>end_session_endpoint</code> carrying <code>id_token_hint</code>, then handle a provider that doesn&#x27;t support this endpoint at all — falling back gracefully rather than breaking logout entirely.</p>
+<h3>Level 1 — Basic</h3>
+<p>Plain local logout: clear session state, nothing more.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class OidcLogoutLevel1 {
+    static class Session {
+        String principal;
+        String idToken;
+        boolean active = true;
+    }
+
+    static void localLogout(Session session) {
+        session.principal = null;
+        session.idToken = null;
+        session.active = false;
+    }
+
+    public static void main(String[] args) {
+        Session session = new Session();
+        session.principal = &quot;alice&quot;;
+        session.idToken = &quot;id-tok-signed-jwt&quot;;
+
+        System.out.println(&quot;before logout: active=&quot; + session.active + &quot; principal=&quot; + session.principal);
+        localLogout(session);
+        System.out.println(&quot;after logout: active=&quot; + session.active + &quot; principal=&quot; + session.principal);
+        System.out.println(&quot;NOTE: the identity provider&#x27;s own session is untouched by this alone&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>OidcLogoutLevel1.java</code>, run <code>java OidcLogoutLevel1.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>before logout: active=true principal=alice
+after logout: active=false principal=null
+NOTE: the identity provider&#x27;s own session is untouched by this alone</code></pre>
+<p><code>localLogout</code> is exactly what a plain (non-OIDC-aware) <code>logout()</code> configuration does — it clears every trace of the local session, but has no way to reach the provider at all, so a still-active provider session is entirely out of its scope.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add the redirect to the provider&#x27;s <code>end_session_endpoint</code>, carrying <code>id_token_hint</code> and <code>post_logout_redirect_uri</code> — mirroring <code>OidcClientInitiatedLogoutSuccessHandler</code>.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class OidcLogoutLevel2 {
+    static class Session {
+        String principal;
+        String idToken;
+        boolean active = true;
+    }
+
+    record ProviderMetadata(String endSessionEndpoint) {}
+
+    static String buildLogoutRedirect(ProviderMetadata provider, String idToken, String postLogoutRedirectUri) {
+        return provider.endSessionEndpoint()
+                + &quot;?id_token_hint=&quot; + idToken
+                + &quot;&amp;post_logout_redirect_uri=&quot; + postLogoutRedirectUri;
+    }
+
+    static String localLogoutThenBuildProviderRedirect(Session session, ProviderMetadata provider, String appBaseUrl) {
+        String idTokenForHint = session.idToken; // captured BEFORE clearing -- the provider needs it to identify the session
+        session.principal = null;
+        session.idToken = null;
+        session.active = false;
+        return buildLogoutRedirect(provider, idTokenForHint, appBaseUrl + &quot;/&quot;);
+    }
+
+    public static void main(String[] args) {
+        Session session = new Session();
+        session.principal = &quot;alice&quot;;
+        session.idToken = &quot;id-tok-signed-jwt&quot;;
+
+        ProviderMetadata google = new ProviderMetadata(&quot;https://accounts.google.com/logout&quot;);
+
+        String redirectUrl = localLogoutThenBuildProviderRedirect(session, google, &quot;https://app.example.com&quot;);
+
+        System.out.println(&quot;session active after local logout: &quot; + session.active);
+        System.out.println(&quot;redirecting browser to: &quot; + redirectUrl);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>OidcLogoutLevel2.java</code>, run <code>java OidcLogoutLevel2.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>session active after local logout: false
+redirecting browser to: https://accounts.google.com/logout?id_token_hint=id-tok-signed-jwt&amp;post_logout_redirect_uri=https://app.example.com/</code></pre>
+<p>What changed: <code>idTokenForHint</code> is deliberately captured *before* <code>session.idToken</code> is cleared — the local session state is wiped exactly as in Level 1, but the ID token value it held is preserved just long enough to build the provider redirect, since the provider needs it to identify which of its own sessions corresponds to this logout.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Not every provider supports RP-Initiated Logout — its <code>end_session_endpoint</code> might be entirely absent from the provider&#x27;s metadata. Level 3 detects that case and falls back to local-only logout instead of building a broken redirect.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class OidcLogoutLevel3 {
+    static class Session {
+        String principal;
+        String idToken;
+        boolean active = true;
+    }
+
+    record ProviderMetadata(String registrationId, String endSessionEndpoint) {} // endSessionEndpoint may be null
+
+    enum LogoutOutcome { LOCAL_ONLY, LOCAL_AND_PROVIDER_REDIRECT }
+    record LogoutResult(LogoutOutcome outcome, String redirectUrl) {}
+
+    static LogoutResult performLogout(Session session, ProviderMetadata provider, String appBaseUrl) {
+        String idTokenForHint = session.idToken;
+        String registrationId = provider.registrationId();
+
+        // ALWAYS do local logout first, regardless of what the provider supports
+        session.principal = null;
+        session.idToken = null;
+        session.active = false;
+
+        if (provider.endSessionEndpoint() == null) {
+            System.out.println(&quot;provider \&quot;&quot; + registrationId + &quot;\&quot; has no end_session_endpoint -- local logout only&quot;);
+            return new LogoutResult(LogoutOutcome.LOCAL_ONLY, appBaseUrl + &quot;/login?logout&quot;);
+        }
+
+        String redirectUrl = provider.endSessionEndpoint()
+                + &quot;?id_token_hint=&quot; + idTokenForHint
+                + &quot;&amp;post_logout_redirect_uri=&quot; + appBaseUrl + &quot;/&quot;;
+        return new LogoutResult(LogoutOutcome.LOCAL_AND_PROVIDER_REDIRECT, redirectUrl);
+    }
+
+    public static void main(String[] args) {
+        ProviderMetadata google = new ProviderMetadata(&quot;google&quot;, &quot;https://accounts.google.com/logout&quot;);
+        ProviderMetadata legacyIdp = new ProviderMetadata(&quot;legacy-idp&quot;, null); // does NOT support RP-initiated logout
+
+        Session aliceSession = new Session();
+        aliceSession.principal = &quot;alice&quot;;
+        aliceSession.idToken = &quot;id-tok-alice&quot;;
+
+        Session bobSession = new Session();
+        bobSession.principal = &quot;bob&quot;;
+        bobSession.idToken = &quot;id-tok-bob&quot;;
+
+        LogoutResult aliceResult = performLogout(aliceSession, google, &quot;https://app.example.com&quot;);
+        System.out.println(&quot;alice: &quot; + aliceResult.outcome() + &quot; -&gt; &quot; + aliceResult.redirectUrl());
+
+        LogoutResult bobResult = performLogout(bobSession, legacyIdp, &quot;https://app.example.com&quot;);
+        System.out.println(&quot;bob: &quot; + bobResult.outcome() + &quot; -&gt; &quot; + bobResult.redirectUrl());
+
+        System.out.println(&quot;alice session active: &quot; + aliceSession.active + &quot;, bob session active: &quot; + bobSession.active);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>OidcLogoutLevel3.java</code>, run <code>java OidcLogoutLevel3.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>provider &quot;legacy-idp&quot; has no end_session_endpoint -- local logout only
+alice: LOCAL_AND_PROVIDER_REDIRECT -&gt; https://accounts.google.com/logout?id_token_hint=id-tok-alice&amp;post_logout_redirect_uri=https://app.example.com/
+bob: LOCAL_ONLY -&gt; https://app.example.com/login?logout
+alice session active: false, bob session active: false</code></pre>
+<p>What changed: <code>performLogout</code> always clears the local session first — regardless of what happens next — and only *attempts* the provider redirect when <code>endSessionEndpoint</code> is actually present; bob&#x27;s provider has none, so his logout silently degrades to exactly Level 1&#x27;s behavior rather than throwing or building a URL that would 404. Both sessions end up equally logged-out locally; only the provider-side outcome differs.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace alice&#x27;s full logout from Level 3 as a concrete HTTP sequence.</p>
+<p><strong>Step 1 — the browser submits the logout request:</strong></p>
+<pre><code>POST /logout HTTP/1.1
+Host: app.example.com
+Cookie: JSESSIONID=sess-alice</code></pre>
+<p><strong>Step 2 — local logout runs first, unconditionally.</strong> This corresponds to the first three lines inside <code>performLogout</code>: <code>session.principal = null</code>, <code>session.idToken = null</code> (but only after <code>idTokenForHint</code> captured its value), <code>session.active = false</code>. <code>SecurityContextHolder</code> is cleared and the <code>HttpSession</code> is invalidated exactly the same way a plain <code>logout()</code> would do it.</p>
+<p><strong>Step 3 — the provider check.</strong> <code>provider.endSessionEndpoint()</code> for <code>google</code> is <code>&quot;https://accounts.google.com/logout&quot;</code>, non-null, so the method proceeds to build the redirect rather than returning <code>LOCAL_ONLY</code>.</p>
+<p><strong>Step 4 — the redirect is built and sent to the browser:</strong></p>
+<pre><code>HTTP/1.1 302 Found
+Location: https://accounts.google.com/logout?id_token_hint=id-tok-alice&amp;post_logout_redirect_uri=https://app.example.com/
+Set-Cookie: JSESSIONID=; Max-Age=0</code></pre>
+<p>The <code>Set-Cookie</code> header deleting the session cookie happens at the same point Level 3&#x27;s <code>session.active = false</code> did — the application no longer considers this browser authenticated, independent of anything the provider does next.</p>
+<p><strong>Step 5 — the browser follows the redirect to Google:</strong></p>
+<pre><code>GET /logout?id_token_hint=id-tok-alice&amp;post_logout_redirect_uri=https%3A%2F%2Fapp.example.com%2F HTTP/1.1
+Host: accounts.google.com</code></pre>
+<p>Google uses <code>id_token_hint</code> to identify which of potentially several active sessions in this browser corresponds to this application&#x27;s login, and terminates that specific one.</p>
+<p><strong>Step 6 — Google redirects back to the configured <code>post_logout_redirect_uri</code>:</strong></p>
+<pre><code>HTTP/1.1 302 Found
+Location: https://app.example.com/</code></pre>
+<p><strong>Step 7 — the browser lands back on the application, now logged out both locally and at the provider.</strong> A subsequent click on &quot;Login with Google&quot; would require the user to authenticate again — no silently-reused provider session remains, in contrast to bob&#x27;s <code>legacy-idp</code> case, where step 3&#x27;s check failed and only local logout (Level 1&#x27;s behavior) ever ran.</p>
+<pre><code>performLogout(alice, google)
+   local logout            -&gt; ALWAYS runs, regardless of provider support
+   endSessionEndpoint != null -&gt; build provider redirect
+       -&gt; browser -&gt; Google -&gt; Google ends its session -&gt; browser -&gt; back to app
+   RESULT: fully logged out, both locally AND at the provider
+
+performLogout(bob, legacy-idp)
+   local logout            -&gt; ALWAYS runs
+   endSessionEndpoint == null -&gt; skip provider redirect entirely
+   RESULT: logged out locally only; legacy-idp&#x27;s own session (if any) survives</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>id_token_hint</code> must be captured from the session *before* local logout clears it — if the ID token is wiped first and only then read for the redirect, the hint is empty or stale, and the provider either can&#x27;t identify which session to end or silently no-ops the request. Order matters: read what you need from the session, then clear it, not the reverse.</blockquote>
+<ul><li>Local logout and provider (RP-Initiated) logout are two separate steps with two separate scopes — clearing your own <code>SecurityContext</code>/session never, by itself, touches the identity provider&#x27;s session.</li><li><code>OidcClientInitiatedLogoutSuccessHandler</code> adds exactly one thing on top of plain <code>logout()</code>: a redirect to the provider&#x27;s <code>end_session_endpoint</code>, carrying <code>id_token_hint</code> (to identify the session) and <code>post_logout_redirect_uri</code> (where to send the browser afterward).</li><li>Not every provider implements RP-Initiated Logout — check its OIDC discovery metadata for an <code>end_session_endpoint</code> before assuming this redirect will work; when it&#x27;s absent, only local logout is possible, and that&#x27;s a legitimate, expected fallback rather than an error condition.</li><li><code>post_logout_redirect_uri</code> typically must be pre-registered with the provider (much like the login <code>redirect_uri</code>), or the provider will reject or ignore it rather than honoring an arbitrary redirect target.</li><li>True cross-application single sign-out (ending sessions in *other* relying parties too, not just this application and the provider) requires additional provider-side mechanisms (front-channel or back-channel logout notifications) beyond what RP-Initiated Logout alone provides.</li></ul>
+  <div class="nav"><a class="prv" href="0096-oidc-user-info-id-token.html"><span class="mini">← Previous</span>OIDC user info & ID token</a><a class="nxt" href="0098-custom-user-types-oauth2user-oidcuser.html"><span class="mini">Next →</span>Custom user types (OAuth2User/OidcUser)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t97";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

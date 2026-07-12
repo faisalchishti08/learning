@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Authorization Code grant flow" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 5. OAuth2 & OpenID Connect</div>
+  <div class="htitle">
+    <h1>"Authorization Code grant flow"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The Authorization Code grant is the specific OAuth2 protocol — defined by RFC 6749 — that cards 0088 and 0089 have been building toward: the exact sequence of redirects and parameters that lets a browser prove a user authenticated with a provider, without the provider&#x27;s password ever passing through the client application or being visible in a URL that could be logged or leaked. Its defining feature is that the <strong>code</strong> obtained via the browser is short-lived and single-use, and the <strong>exchange</strong> of that code for an actual access token happens over a direct, authenticated, server-to-server channel — a <code>client_secret</code> proves it&#x27;s really the registered application asking, not just anyone who intercepted the code. Spring Security implements the two halves as two separate filters: <code>OAuth2AuthorizationRequestRedirectFilter</code> builds and sends the initial redirect (and remembers the request it sent, including a <code>state</code> value, for later verification), and <code>OAuth2LoginAuthenticationFilter</code> (already introduced in card 0088) handles the callback and drives the code-for-token exchange via a <code>OAuth2AccessTokenResponseClient</code>.</p>
+<pre><code class="lang-java">@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http.oauth2Login(oauth2 -&gt; oauth2
+        .authorizationEndpoint(auth -&gt; auth.baseUri(&quot;/oauth2/authorization&quot;))
+        .redirectionEndpoint(redir -&gt; redir.baseUri(&quot;/login/oauth2/code/*&quot;)));
+    return http.build();
+}</code></pre>
+<p>The defaults shown here (<code>/oauth2/authorization/{registrationId}</code> to start, <code>/login/oauth2/code/{registrationId}</code> to receive the callback) are rarely overridden — they exist mostly to show that these are configurable paths, not magic strings baked into the protocol itself.</p>
+<h2>2. Why &amp; when</h2>
+<p>Earlier OAuth2 grant types (the deprecated Implicit grant, Resource Owner Password Credentials) either exposed tokens directly in a browser-visible URL fragment or required the client application to collect the user&#x27;s password itself — both defeat the entire point of delegating authentication. The Authorization Code grant&#x27;s two-hop design (browser gets a code, server exchanges it for a token) exists specifically so that the only thing ever visible to the browser, and therefore to browser history, referrer headers, or a shoulder-surfing observer, is a single-use code that is useless without also knowing the client&#x27;s secret. This is why it remains the recommended grant for any application with a confidential backend server — which is the overwhelming majority of what <code>oauth2Login()</code> is used for.</p>
+<p>Reach for understanding this flow in detail when:</p>
+<ul><li>Debugging a login that fails partway through — nearly every failure (<code>redirect_uri_mismatch</code>, <code>invalid_grant</code>, a <code>state</code> mismatch) corresponds to exactly one step below going wrong, and knowing which step lets you read the error correctly.</li><li>Explaining to a security reviewer why access tokens never appear in browser-accessible logs — the code-for-token exchange is the one hop in the entire flow that never touches the browser.</li><li>Deciding whether PKCE (Proof Key for Code Exchange) is needed — required for public clients (mobile apps, single-page apps with no confidential backend) that can&#x27;t safely hold a <code>client_secret</code>, and Spring Security&#x27;s <code>authorization_code</code> support enables it automatically for such clients.</li><li>Implementing <code>client_credentials</code> or <code>refresh_token</code> grants (card 0094) — understanding what makes the authorization code grant distinct (a code obtained via user interaction) clarifies why those other grants skip the browser redirect entirely.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code>Authorization Code grant, in order:
+
+  1. Client app redirects browser to authorization endpoint, with:
+       response_type=code, client_id, redirect_uri, scope, state (CSRF nonce)
+  2. User authenticates + consents AT the provider (invisible to the client app)
+  3. Provider redirects browser back to redirect_uri, with:
+       code (short-lived, single-use), state (echoed back UNCHANGED)
+  4. Client app verifies the echoed `state` matches what it sent in step 1
+       -- MISMATCH means this callback wasn&#x27;t triggered by THIS app&#x27;s own redirect: reject it (CSRF protection)
+  5. Client app&#x27;s SERVER exchanges the code, server-to-server:
+       POST token endpoint: grant_type=authorization_code, code, redirect_uri, client_id, client_secret
+  6. Provider validates the code (unused? not expired? redirect_uri matches step 1?) and returns:
+       access_token, (refresh_token), (id_token if OIDC), expires_in
+  7. Client app now has a token it can use to call APIs -- and card 0088&#x27;s userinfo fetch can proceed</code></pre>
+<p>Steps 1–4 are entirely visible to (and partly protected by) the browser; steps 5–6 are the one hop that never is.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sequence diagram showing the client app redirecting the browser to the authorization endpoint with a state value the browser authenticating at the provider and being redirected back with a code and the same state which the client app verifies matches before exchanging the code for a token directly with the provider over a server to server channel">
+  <text x="90" y="24" fill="#6db33f" font-size="11" text-anchor="middle" font-family="sans-serif">Client Server</text>
+  <text x="330" y="24" fill="#79c0ff" font-size="11" text-anchor="middle" font-family="sans-serif">Browser</text>
+  <text x="580" y="24" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">Provider</text>
+
+  <line x1="90" y1="35" x2="90" y2="285" stroke="#6db33f" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="330" y1="35" x2="330" y2="285" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="580" y1="35" x2="580" y2="285" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <rect x="40" y="50" width="220" height="30" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.2"/>
+  <text x="150" y="69" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">1. generate state=xyz, store it</text>
+
+  <line x1="90" y1="100" x2="325" y2="100" stroke="#6db33f" stroke-width="1.5" marker-end="url(#g90)"/>
+  <text x="95" y="93" fill="#e6edf3" font-size="8.5" font-family="sans-serif">2. 302 -> authorize?...&amp;state=xyz</text>
+
+  <line x1="330" y1="128" x2="575" y2="128" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#g90)"/>
+  <text x="335" y="121" fill="#e6edf3" font-size="8.5" font-family="sans-serif">3. GET /authorize (login + consent)</text>
+
+  <line x1="580" y1="156" x2="335" y2="156" stroke="#8b949e" stroke-width="1.5" marker-end="url(#g90c)"/>
+  <text x="575" y="149" fill="#e6edf3" font-size="8.5" text-anchor="end" font-family="sans-serif">4. 302 -> redirect_uri?code=..&amp;state=xyz</text>
+
+  <line x1="330" y1="184" x2="95" y2="184" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#g90)"/>
+  <text x="330" y="177" fill="#e6edf3" font-size="8.5" text-anchor="end" font-family="sans-serif">5. GET callback?code=..&amp;state=xyz</text>
+
+  <rect x="40" y="196" width="220" height="26" rx="5" fill="#1c2430" stroke="#f85149" stroke-width="1.2"/>
+  <text x="150" y="213" fill="#f85149" font-size="8.5" text-anchor="middle" font-family="sans-serif">6. state=xyz == stored xyz ? else REJECT</text>
+
+  <line x1="90" y1="240" x2="575" y2="240" stroke="#6db33f" stroke-width="1.6" stroke-dasharray="6,3" marker-end="url(#g90b)"/>
+  <text x="95" y="233" fill="#6db33f" font-size="8.5" font-family="sans-serif">7. POST /token (code, client_secret) -- browser NOT involved</text>
+
+  <line x1="580" y1="266" x2="95" y2="266" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6,3" marker-end="url(#g90c)"/>
+  <text x="575" y="259" fill="#e6edf3" font-size="8.5" text-anchor="end" font-family="sans-serif">8. access_token (+ refresh_token, id_token)</text>
+
+  <defs>
+    <marker id="g90" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="g90b" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="g90c" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p><code>state</code> is generated before the redirect and verified after the callback; only a matching pair lets the exchange in step 7 proceed.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: a from-scratch simulation of the grant&#x27;s mechanics — a <code>Client</code> that starts the flow and holds pending <code>state</code> values, an <code>AuthorizationServer</code> that issues codes and later tokens — grown from a bare happy path into <code>state</code> verification, then into single-use/expiring codes.</p>
+<h3>Level 1 — Basic</h3>
+<p>The bare happy path: request a code, exchange it for a token.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class AuthCodeGrantLevel1 {
+    static class AuthorizationServer {
+        private final Map&lt;String, String&gt; issuedCodes = new HashMap&lt;&gt;(); // code -&gt; username
+        private int counter = 0;
+
+        String authorize(String username) {
+            String code = &quot;code-&quot; + (++counter); // provider mints a fresh, unpredictable code
+            issuedCodes.put(code, username);
+            return code;
+        }
+
+        String exchange(String code, String clientSecret) {
+            if (!&quot;correct-secret&quot;.equals(clientSecret)) throw new IllegalStateException(&quot;invalid_client&quot;);
+            String username = issuedCodes.get(code);
+            if (username == null) throw new IllegalStateException(&quot;invalid_grant: unknown code&quot;);
+            return &quot;access-token-for-&quot; + username;
+        }
+    }
+
+    public static void main(String[] args) {
+        AuthorizationServer server = new AuthorizationServer();
+
+        // step 1-4 collapsed: user authenticates at the provider, browser comes back with a code
+        String code = server.authorize(&quot;alice&quot;);
+        System.out.println(&quot;received code: &quot; + code);
+
+        // step 5-6: server-to-server exchange
+        String accessToken = server.exchange(code, &quot;correct-secret&quot;);
+        System.out.println(&quot;access token: &quot; + accessToken);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>AuthCodeGrantLevel1.java</code>, run <code>java AuthCodeGrantLevel1.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>received code: code-1
+access token: access-token-for-alice</code></pre>
+<p><code>authorize</code> stands in for the entire browser round trip (steps 1–4 of the core concept); <code>exchange</code> stands in for the server-to-server hop (steps 5–6) and requires the correct <code>client_secret</code>, mirroring how the provider authenticates the *client application itself*, separately from the end user.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Add <code>state</code> generation and verification — the CSRF defense that step 4 of the core concept depends on — modeled as a <code>Client</code> that tracks its own pending states.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class AuthCodeGrantLevel2 {
+    static class AuthorizationServer {
+        private final Map&lt;String, String&gt; issuedCodes = new HashMap&lt;&gt;();
+        private int counter = 0;
+
+        String authorize(String username) {
+            String code = &quot;code-&quot; + (++counter);
+            issuedCodes.put(code, username);
+            return code;
+        }
+
+        String exchange(String code, String clientSecret) {
+            if (!&quot;correct-secret&quot;.equals(clientSecret)) throw new IllegalStateException(&quot;invalid_client&quot;);
+            String username = issuedCodes.remove(code); // consumed here in Level 3, tracked from Level 2 on
+            if (username == null) throw new IllegalStateException(&quot;invalid_grant: unknown code&quot;);
+            return &quot;access-token-for-&quot; + username;
+        }
+    }
+
+    static class Client {
+        private final Set&lt;String&gt; pendingStates = new HashSet&lt;&gt;();
+        private int stateCounter = 0;
+
+        // step 1: build the redirect, remembering the state we sent
+        String startLogin() {
+            String state = &quot;state-&quot; + (++stateCounter);
+            pendingStates.add(state);
+            System.out.println(&quot;redirecting browser with state=&quot; + state);
+            return state;
+        }
+
+        // step 6: verify the callback&#x27;s state matches something WE generated
+        void verifyState(String returnedState) {
+            if (!pendingStates.remove(returnedState)) {
+                throw new IllegalStateException(&quot;state mismatch -- possible CSRF, rejecting callback&quot;);
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        AuthorizationServer server = new AuthorizationServer();
+        Client client = new Client();
+
+        String state = client.startLogin();
+        String code = server.authorize(&quot;alice&quot;);
+
+        // callback arrives carrying the SAME state the provider echoed back
+        client.verifyState(state);
+        System.out.println(&quot;state verified, proceeding with exchange&quot;);
+
+        String accessToken = server.exchange(code, &quot;correct-secret&quot;);
+        System.out.println(&quot;access token: &quot; + accessToken);
+
+        // an attacker&#x27;s forged callback, with a state the client never generated
+        try {
+            client.verifyState(&quot;state-forged-by-attacker&quot;);
+        } catch (IllegalStateException e) {
+            System.out.println(&quot;forged callback rejected: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>AuthCodeGrantLevel2.java</code>, run <code>java AuthCodeGrantLevel2.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>redirecting browser with state=state-1
+state verified, proceeding with exchange
+access token: access-token-for-alice
+forged callback rejected: state mismatch -- possible CSRF, rejecting callback</code></pre>
+<p>What changed: <code>Client</code> now tracks every <code>state</code> it generates and requires the callback to present one of them before continuing — a forged callback (one an attacker tricked a victim&#x27;s browser into visiting, carrying the attacker&#x27;s own code) is rejected here because its <code>state</code> was never issued by *this* client&#x27;s own <code>startLogin</code> call, which is precisely the cross-site request forgery this parameter defends against.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Real codes are single-use and expire quickly. Level 3 adds both: exchanging the same code twice fails, and a code presented after its short lifetime has elapsed fails too, mirroring the two most common <code>invalid_grant</code> causes in production.</p>
+<pre><code class="lang-java">import java.time.*;
+import java.util.*;
+
+public class AuthCodeGrantLevel3 {
+    record IssuedCode(String username, Instant expiresAt) {}
+
+    static class AuthorizationServer {
+        private final Map&lt;String, IssuedCode&gt; issuedCodes = new HashMap&lt;&gt;();
+        private int counter = 0;
+        private final Duration codeLifetime;
+
+        AuthorizationServer(Duration codeLifetime) { this.codeLifetime = codeLifetime; }
+
+        String authorize(String username) {
+            String code = &quot;code-&quot; + (++counter);
+            issuedCodes.put(code, new IssuedCode(username, Instant.now().plus(codeLifetime)));
+            return code;
+        }
+
+        String exchange(String code, String clientSecret) {
+            if (!&quot;correct-secret&quot;.equals(clientSecret)) throw new IllegalStateException(&quot;invalid_client&quot;);
+            // remove() makes the code single-use: a second exchange attempt finds nothing
+            IssuedCode issued = issuedCodes.remove(code);
+            if (issued == null) throw new IllegalStateException(&quot;invalid_grant: code unknown or already used&quot;);
+            if (Instant.now().isAfter(issued.expiresAt())) throw new IllegalStateException(&quot;invalid_grant: code expired&quot;);
+            return &quot;access-token-for-&quot; + issued.username();
+        }
+    }
+
+    static class Client {
+        private final Set&lt;String&gt; pendingStates = new HashSet&lt;&gt;();
+        private int stateCounter = 0;
+
+        String startLogin() {
+            String state = &quot;state-&quot; + (++stateCounter);
+            pendingStates.add(state);
+            return state;
+        }
+
+        void verifyState(String returnedState) {
+            if (!pendingStates.remove(returnedState)) throw new IllegalStateException(&quot;state mismatch&quot;);
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        AuthorizationServer server = new AuthorizationServer(Duration.ofMillis(50)); // deliberately short, for this demo
+        Client client = new Client();
+
+        String state = client.startLogin();
+        String code = server.authorize(&quot;alice&quot;);
+        client.verifyState(state);
+
+        // FIRST exchange: succeeds
+        String accessToken = server.exchange(code, &quot;correct-secret&quot;);
+        System.out.println(&quot;first exchange: &quot; + accessToken);
+
+        // REPLAY: same code, exchanged a second time -- must fail, codes are single-use
+        try {
+            server.exchange(code, &quot;correct-secret&quot;);
+        } catch (IllegalStateException e) {
+            System.out.println(&quot;replay rejected: &quot; + e.getMessage());
+        }
+
+        // a SECOND, fresh code that is allowed to expire before it&#x27;s ever exchanged
+        String state2 = client.startLogin();
+        String slowCode = server.authorize(&quot;bob&quot;);
+        client.verifyState(state2);
+        Thread.sleep(100); // simulate a slow network / user delay past the code&#x27;s short lifetime
+
+        try {
+            server.exchange(slowCode, &quot;correct-secret&quot;);
+        } catch (IllegalStateException e) {
+            System.out.println(&quot;expired code rejected: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>AuthCodeGrantLevel3.java</code>, run <code>java AuthCodeGrantLevel3.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>first exchange: access-token-for-alice
+replay rejected: invalid_grant: code unknown or already used
+expired code rejected: invalid_grant: code expired</code></pre>
+<p>What changed: <code>issuedCodes.remove(code)</code> (rather than a non-destructive <code>get</code>) makes every code single-use — a second exchange attempt with the same code, whether from a genuine retry or an attacker who intercepted it in transit, finds nothing left to consume; and each code now carries its own <code>expiresAt</code>, rejecting an exchange that arrives too late even if the code was never used, mirroring a provider&#x27;s typical code lifetime of well under a minute.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace Level 3&#x27;s full happy path — <code>client.startLogin()</code> through <code>server.exchange(code, &quot;correct-secret&quot;)</code> for alice — as a concrete HTTP exchange, then show why the replay fails.</p>
+<p><strong>Step 1 — the client builds and remembers a <code>state</code>, then redirects:</strong></p>
+<pre><code>GET /oauth2/authorization/github HTTP/1.1
+Host: app.example.com</code></pre>
+<pre><code>HTTP/1.1 302 Found
+Location: https://github.com/login/oauth/authorize?response_type=code&amp;client_id=abc123&amp;redirect_uri=https%3A%2F%2Fapp.example.com%2Flogin%2Foauth2%2Fcode%2Fgithub&amp;scope=read:user&amp;state=state-1</code></pre>
+<p>This corresponds to <code>client.startLogin()</code> returning <code>&quot;state-1&quot;</code> and the client remembering it in <code>pendingStates</code>.</p>
+<p><strong>Step 2 — the user authenticates and consents at the provider</strong> (outside the code entirely — <code>server.authorize(&quot;alice&quot;)</code> is the point where the provider has already decided to let this login proceed and is about to hand back a code).</p>
+<p><strong>Step 3 — the provider redirects back, echoing <code>state</code> unchanged:</strong></p>
+<pre><code>HTTP/1.1 302 Found
+Location: https://app.example.com/login/oauth2/code/github?code=code-1&amp;state=state-1</code></pre>
+<p><strong>Step 4 — the callback request arrives:</strong></p>
+<pre><code>GET /login/oauth2/code/github?code=code-1&amp;state=state-1 HTTP/1.1
+Host: app.example.com</code></pre>
+<p><code>client.verifyState(&quot;state-1&quot;)</code> removes <code>&quot;state-1&quot;</code> from <code>pendingStates</code> and finds it present — the callback is accepted as genuinely originating from this client&#x27;s own redirect, not a forged one.</p>
+<p><strong>Step 5 — the server-to-server exchange, never touching the browser:</strong></p>
+<pre><code>POST /login/oauth/access_token HTTP/1.1
+Host: github.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code&amp;code=code-1&amp;redirect_uri=https%3A%2F%2Fapp.example.com%2Flogin%2Foauth2%2Fcode%2Fgithub&amp;client_id=abc123&amp;client_secret=correct-secret</code></pre>
+<p>This corresponds to <code>server.exchange(&quot;code-1&quot;, &quot;correct-secret&quot;)</code>: inside, <code>issuedCodes.remove(&quot;code-1&quot;)</code> both retrieves and deletes the entry in one step, returning <code>IssuedCode(&quot;alice&quot;, expiresAt)</code>; the expiry check passes (only a few milliseconds have elapsed); the method returns <code>&quot;access-token-for-alice&quot;</code>.</p>
+<p><strong>Step 6 — the provider&#x27;s real response would look like:</strong></p>
+<pre><code>HTTP/1.1 200 OK
+Content-Type: application/json
+
+{&quot;access_token&quot;:&quot;access-token-for-alice&quot;,&quot;token_type&quot;:&quot;Bearer&quot;,&quot;expires_in&quot;:3600}</code></pre>
+<p><strong>Step 7 — the replay.</strong> A second <code>server.exchange(&quot;code-1&quot;, &quot;correct-secret&quot;)</code> call re-runs <code>issuedCodes.remove(&quot;code-1&quot;)</code> — but the entry was already deleted in step 5, so <code>remove</code> returns <code>null</code>, and the method throws <code>invalid_grant: code unknown or already used</code> immediately, before the expiry check is even reached.</p>
+<pre><code>first call:  remove(&quot;code-1&quot;) -&gt; IssuedCode(alice, ...)   [found + deleted together]
+second call: remove(&quot;code-1&quot;) -&gt; null                      [nothing left to find]
+             -&gt; invalid_grant</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a mismatched or missing <code>state</code> on the callback should always be treated as a hard failure, never logged-and-ignored — it is the one check standing between &quot;this callback genuinely followed from a redirect this application itself issued&quot; and a cross-site request forgery where an attacker tricks a victim&#x27;s browser into completing a login (or account-linking flow) the attacker initiated, potentially binding the victim&#x27;s session to the attacker&#x27;s provider account.</blockquote>
+<ul><li>The Authorization Code grant&#x27;s two-hop shape — browser gets a code, server exchanges it for a token — exists so the actual access token never appears anywhere the browser (or its history, or a referrer header) can see it.</li><li><code>state</code> is generated before the redirect and must be verified after the callback; a mismatch means the callback did not originate from this application&#x27;s own redirect and must be rejected.</li><li>Authorization codes are single-use and short-lived by design — <code>invalid_grant</code> on exchange almost always means one of those two properties was violated (a retry reused an already-consumed code, or too much time elapsed between redirect and exchange).</li><li>The exchange step requires a <code>client_secret</code>, authenticating the *application*, not the user — this is why public clients that cannot safely hold a secret (mobile apps, SPAs) need PKCE as an additional layer rather than relying on the secret alone.</li><li>Everything covered here is the mechanics <code>oauth2Login()</code> (card 0088) drives automatically and <code>ClientRegistration</code> (card 0089) configures — application code essentially never implements this exchange by hand.</li></ul>
+  <div class="nav"><a class="prv" href="0089-clientregistration-clientregistrationrepository.html"><span class="mini">← Previous</span>ClientRegistration & ClientRegistrationRepository</a><a class="nxt" href="0091-oauth2authorizedclient-repository-service.html"><span class="mini">Next →</span>OAuth2AuthorizedClient & repository/service</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t90";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

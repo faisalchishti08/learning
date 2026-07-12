@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"OAuth2 Login (social login)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 5. OAuth2 & OpenID Connect</div>
+  <div class="htitle">
+    <h1>"OAuth2 Login (social login)"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>oauth2Login()</code> is the <code>HttpSecurity</code> DSL method that wires an entire &quot;Login with Google&quot; / &quot;Login with GitHub&quot; flow into a <code>SecurityFilterChain</code> — delegating the actual authentication decision to an external OAuth2 or OpenID Connect provider instead of checking a username/password against your own database. Under the hood it registers <code>OAuth2LoginAuthenticationFilter</code>, which listens for the provider&#x27;s callback (by default any path matching <code>/login/oauth2/code/*</code>), drives the authorization-code-for-token exchange, fetches the user&#x27;s profile from the provider, and — on success — wraps that profile as an <code>OAuth2User</code> (or <code>OidcUser</code> when the provider also issues an OpenID Connect ID token) and hands it to the <code>AuthenticationManager</code>. The resulting <code>Authentication</code> is what ends up in <code>SecurityContextHolder</code>, exactly like a form-login <code>Authentication</code> would, so the rest of the application (<code>@AuthenticationPrincipal</code>, <code>SecurityContext</code>-based authorization) doesn&#x27;t need to know or care that the credential check happened on someone else&#x27;s server.</p>
+<pre><code class="lang-java">@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+        .authorizeHttpRequests(auth -&gt; auth
+            .requestMatchers(&quot;/&quot;, &quot;/error&quot;, &quot;/login/**&quot;).permitAll()
+            .anyRequest().authenticated())
+        .oauth2Login(oauth2 -&gt; oauth2
+            .loginPage(&quot;/login&quot;) // a custom page listing &quot;Login with GitHub&quot; / &quot;Login with Google&quot; links
+            .userInfoEndpoint(userInfo -&gt; userInfo.userAuthoritiesMapper(this::mapAuthorities)));
+    return http.build();
+}</code></pre>
+<p>This card is the entry point for the whole OAuth2/OpenID Connect section: it gives the end-to-end picture at a high level. The next two cards go deep on the two pieces this one only gestures at — <code>ClientRegistration</code>/<code>ClientRegistrationRepository</code> (the per-provider connection details) and the Authorization Code grant itself (the exact redirect-and-exchange protocol).</p>
+<h2>2. Why &amp; when</h2>
+<p>Every prior card in this course assumed *your* application owns the credential check — a <code>UserDetailsService</code>, a <code>PasswordEncoder</code>, a database of hashed passwords. Social login exists because that ownership is often a liability rather than an asset: storing passwords means being responsible for hashing them correctly, rotating them, defending against credential-stuffing, and handling resets, and users increasingly distrust yet another site asking them to create yet another password. Delegating authentication to Google, GitHub, Microsoft, or a corporate identity provider (Okta, Azure AD) moves that liability to an organization whose entire job is running that infrastructure securely, and gives users a one-click login using an account they already trust and already have open in another tab.</p>
+<p>Reach for <code>oauth2Login()</code> when:</p>
+<ul><li>Building a consumer-facing product where reducing signup friction matters — &quot;Continue with Google&quot; converts better than a fresh registration form.</li><li>Building an internal or B2B application that should authenticate against a company&#x27;s existing identity provider via OpenID Connect (Okta, Azure AD, Auth0) rather than maintaining a separate user store.</li><li>You want to avoid ever touching a user&#x27;s raw password — with social login, the password never crosses your servers at all, only an authorization code and, later, tokens.</li><li>You still need a *local* account concept afterward (e.g., to store application-specific preferences) — <code>oauth2Login()</code> authenticates the person, but linking that identity to your own user table (by email, or by provider + subject id) is your application&#x27;s job, not Spring Security&#x27;s.</li></ul>
+<p>It&#x27;s not exclusive of other authentication methods — <code>oauth2Login()</code> and <code>formLogin()</code> can be configured side by side, letting users choose either path to the same authenticated <code>SecurityContext</code>.</p>
+<h2>3. Core concept</h2>
+<pre><code>oauth2Login() registers OAuth2LoginAuthenticationFilter and wires it against every configured ClientRegistration.
+
+High-level steps for ONE provider (say &quot;github&quot;):
+  1. Browser asks the client app to start login       -&gt; GET /oauth2/authorization/github
+  2. Client app redirects the browser to the provider  -&gt; 302 to https://github.com/login/oauth/authorize?...
+  3. User authenticates + consents AT THE PROVIDER      -&gt; outside Spring Security&#x27;s code entirely
+  4. Provider redirects the browser back with a CODE    -&gt; 302 to /login/oauth2/code/github?code=...&amp;state=...
+  5. OAuth2LoginAuthenticationFilter catches that callback path, and SERVER-TO-SERVER (no browser involved):
+       a. exchanges the code for an access token (and ID token, for OIDC) at the provider&#x27;s /token endpoint
+       b. calls the provider&#x27;s user-info endpoint with that access token to fetch the profile
+  6. Filter wraps the profile as an OAuth2User/OidcUser -&gt; AuthenticationManager -&gt; SecurityContextHolder
+
+Steps 1-4 are the ClientRegistration&#x27;s job to describe correctly (card 0089).
+Steps 4-5&#x27;s exact protocol is the Authorization Code grant (card 0090).
+This card only needs step 6 in detail: what comes OUT of a successful login.</code></pre>
+<p>Everything downstream of step 6 — <code>@PreAuthorize</code>, <code>@AuthenticationPrincipal OAuth2User</code>, <code>SecurityContextHolder.getContext().getAuthentication()</code> — behaves exactly as it would for any other authentication mechanism covered earlier in this course.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sequence diagram of OAuth2 login the browser asks the client app to start login the client app redirects the browser to the authorization server the browser authenticates there and is redirected back to the client app with a code the client app then exchanges that code directly with the authorization server server to server for an access token and builds an OAuth2User which is stored in the security context">
+  <text x="90" y="28" fill="#6db33f" font-size="12" text-anchor="middle" font-family="sans-serif">Client App</text>
+  <text x="340" y="28" fill="#79c0ff" font-size="12" text-anchor="middle" font-family="sans-serif">Browser</text>
+  <text x="590" y="28" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">Authorization Server</text>
+
+  <line x1="90" y1="40" x2="90" y2="300" stroke="#6db33f" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="340" y1="40" x2="340" y2="300" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="590" y1="40" x2="590" y2="300" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <line x1="340" y1="65" x2="95" y2="65" stroke="#79c0ff" stroke-width="1.6" marker-end="url(#o1)"/>
+  <text x="340" y="58" fill="#e6edf3" font-size="9" text-anchor="end" font-family="sans-serif">1. GET /oauth2/authorization/github</text>
+
+  <line x1="90" y1="95" x2="335" y2="95" stroke="#6db33f" stroke-width="1.6" marker-end="url(#o2)"/>
+  <text x="95" y="88" fill="#e6edf3" font-size="9" font-family="sans-serif">2. 302 Location: github.com/.../authorize?...</text>
+
+  <line x1="340" y1="125" x2="585" y2="125" stroke="#79c0ff" stroke-width="1.6" marker-end="url(#o1)"/>
+  <text x="345" y="118" fill="#e6edf3" font-size="9" font-family="sans-serif">3. GET /authorize (user logs in + consents)</text>
+
+  <line x1="590" y1="155" x2="345" y2="155" stroke="#8b949e" stroke-width="1.6" marker-end="url(#o3)"/>
+  <text x="585" y="148" fill="#e6edf3" font-size="9" text-anchor="end" font-family="sans-serif">4. 302 Location: /login/oauth2/code/github?code=..</text>
+
+  <line x1="340" y1="185" x2="95" y2="185" stroke="#79c0ff" stroke-width="1.6" marker-end="url(#o1)"/>
+  <text x="340" y="178" fill="#e6edf3" font-size="9" text-anchor="end" font-family="sans-serif">5. GET /login/oauth2/code/github?code=..</text>
+
+  <line x1="90" y1="215" x2="585" y2="215" stroke="#6db33f" stroke-width="1.6" stroke-dasharray="6,3" marker-end="url(#o2)"/>
+  <text x="95" y="208" fill="#6db33f" font-size="9" font-family="sans-serif">6. POST /token (server-to-server, client_secret) -- browser NOT involved</text>
+
+  <line x1="590" y1="245" x2="95" y2="245" stroke="#8b949e" stroke-width="1.6" stroke-dasharray="6,3" marker-end="url(#o3)"/>
+  <text x="585" y="238" fill="#e6edf3" font-size="9" text-anchor="end" font-family="sans-serif">7. access_token + user profile</text>
+
+  <rect x="40" y="265" width="220" height="34" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.4"/>
+  <text x="150" y="286" fill="#6db33f" font-size="9.5" text-anchor="middle" font-family="sans-serif">8. build OAuth2User -&gt; SecurityContext</text>
+
+  <defs>
+    <marker id="o1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="o2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="o3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Steps 1–5 all bounce through the browser; step 6&#x27;s code-for-token exchange is the one hop that never touches it.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: a small in-memory simulation of <code>oauth2Login()</code>&#x27;s end result — a fake <code>AuthorizationServer</code> standing in for a real provider, and a <code>login</code> helper standing in for <code>OAuth2LoginAuthenticationFilter</code> — grown from a single provider into multiple providers with per-provider attribute keys, then into realistic failure paths (denied consent, cross-provider account collisions).</p>
+<h3>Level 1 — Basic</h3>
+<p>One provider (GitHub), one user, a successful login that populates a <code>SecurityContext</code>-equivalent.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class OAuth2LoginLevel1 {
+    // simulates ONE provider&#x27;s user database -- in reality this lives on GitHub&#x27;s own servers, never ours
+    static class AuthorizationServer {
+        final Map&lt;String, Map&lt;String, Object&gt;&gt; users = new LinkedHashMap&lt;&gt;();
+
+        AuthorizationServer() {
+            Map&lt;String, Object&gt; octocat = new LinkedHashMap&lt;&gt;();
+            octocat.put(&quot;login&quot;, &quot;octocat&quot;);
+            octocat.put(&quot;id&quot;, 1);
+            octocat.put(&quot;name&quot;, &quot;The Octocat&quot;);
+            users.put(&quot;octocat&quot;, octocat);
+        }
+
+        // simulates the user approving consent at the provider, which then hands back their profile
+        Map&lt;String, Object&gt; authenticate(String username) {
+            return users.get(username);
+        }
+    }
+
+    // mirrors Spring Security&#x27;s OAuth2User: a principal backed by a provider&#x27;s raw attribute map
+    record OAuth2User(String nameAttributeKey, Map&lt;String, Object&gt; attributes) {
+        String getName() { return String.valueOf(attributes.get(nameAttributeKey)); }
+    }
+
+    // mirrors SecurityContextHolder -- holds &quot;the current authenticated principal&quot;
+    static OAuth2User currentPrincipal;
+
+    public static void main(String[] args) {
+        AuthorizationServer github = new AuthorizationServer();
+
+        // simulates the browser returning from GitHub&#x27;s consent screen with an approved login
+        Map&lt;String, Object&gt; attributes = github.authenticate(&quot;octocat&quot;);
+        OAuth2User principal = new OAuth2User(&quot;login&quot;, attributes);
+
+        currentPrincipal = principal; // OAuth2LoginAuthenticationFilter would do this on success
+
+        System.out.println(&quot;Authenticated principal: &quot; + currentPrincipal.getName());
+        System.out.println(&quot;Attributes: &quot; + currentPrincipal.attributes());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>OAuth2LoginLevel1.java</code>, run <code>java OAuth2LoginLevel1.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>Authenticated principal: octocat
+Attributes: {login=octocat, id=1, name=The Octocat}</code></pre>
+<p><code>nameAttributeKey</code> is <code>&quot;login&quot;</code> here because that&#x27;s the field GitHub&#x27;s profile response uses to identify the user — <code>getName()</code> looks that key up in the raw attribute map rather than assuming a fixed field name, since every provider calls its identifier something different.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Real applications register more than one provider. Level 2 adds Google alongside GitHub, each with its own <code>nameAttributeKey</code> (GitHub uses <code>login</code>, Google uses <code>sub</code>), and a <code>login</code> helper standing in for <code>OAuth2LoginAuthenticationFilter</code> that assigns a default authority to every successful login.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class OAuth2LoginLevel2 {
+    static class AuthorizationServer {
+        final String registrationId;
+        final String nameAttributeKey;
+        final Map&lt;String, Map&lt;String, Object&gt;&gt; users = new LinkedHashMap&lt;&gt;();
+
+        AuthorizationServer(String registrationId, String nameAttributeKey) {
+            this.registrationId = registrationId;
+            this.nameAttributeKey = nameAttributeKey;
+        }
+
+        void register(String username, Map&lt;String, Object&gt; attributes) { users.put(username, attributes); }
+
+        Map&lt;String, Object&gt; authenticate(String username) { return users.get(username); }
+    }
+
+    record OAuth2User(String registrationId, String nameAttributeKey, Map&lt;String, Object&gt; attributes, Set&lt;String&gt; authorities) {
+        String getName() { return String.valueOf(attributes.get(nameAttributeKey)); }
+    }
+
+    static OAuth2User currentPrincipal;
+
+    // mirrors OAuth2LoginAuthenticationFilter: given a provider and username, drives the whole login
+    static OAuth2User login(AuthorizationServer server, String username) {
+        Map&lt;String, Object&gt; attributes = server.authenticate(username);
+        if (attributes == null) {
+            throw new IllegalStateException(&quot;provider denied or unknown user&quot;);
+        }
+        Set&lt;String&gt; authorities = Set.of(&quot;ROLE_USER&quot;); // default authority every successful OAuth2 login gets
+        return new OAuth2User(server.registrationId, server.nameAttributeKey, attributes, authorities);
+    }
+
+    public static void main(String[] args) {
+        AuthorizationServer github = new AuthorizationServer(&quot;github&quot;, &quot;login&quot;);
+        Map&lt;String, Object&gt; octocatAttrs = new LinkedHashMap&lt;&gt;();
+        octocatAttrs.put(&quot;login&quot;, &quot;octocat&quot;);
+        octocatAttrs.put(&quot;id&quot;, 1);
+        github.register(&quot;octocat&quot;, octocatAttrs);
+
+        AuthorizationServer google = new AuthorizationServer(&quot;google&quot;, &quot;sub&quot;);
+        Map&lt;String, Object&gt; aliceAttrs = new LinkedHashMap&lt;&gt;();
+        aliceAttrs.put(&quot;sub&quot;, &quot;109283746&quot;);
+        aliceAttrs.put(&quot;email&quot;, &quot;alice@example.com&quot;);
+        google.register(&quot;alice&quot;, aliceAttrs);
+
+        currentPrincipal = login(github, &quot;octocat&quot;);
+        System.out.println(&quot;[&quot; + currentPrincipal.registrationId() + &quot;] principal=&quot; + currentPrincipal.getName()
+                + &quot; authorities=&quot; + currentPrincipal.authorities());
+
+        currentPrincipal = login(google, &quot;alice&quot;);
+        System.out.println(&quot;[&quot; + currentPrincipal.registrationId() + &quot;] principal=&quot; + currentPrincipal.getName()
+                + &quot; authorities=&quot; + currentPrincipal.authorities());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>OAuth2LoginLevel2.java</code>, run <code>java OAuth2LoginLevel2.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>[github] principal=octocat authorities=[ROLE_USER]
+[google] principal=109283746 authorities=[ROLE_USER]</code></pre>
+<p>What changed: <code>login</code> is now generic over *any* <code>AuthorizationServer</code>, and each provider carries its own <code>nameAttributeKey</code> — GitHub&#x27;s principal name comes from <code>login</code>, Google&#x27;s comes from <code>sub</code>, and neither provider needs to agree with the other on what to call it. This is exactly the piece card 0089&#x27;s <code>ClientRegistration.userNameAttributeName</code> configures explicitly per registration.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Real logins fail, and real users authenticate with the same email through two different providers. Level 3 adds a denied-consent path (mirroring a failed exchange reaching <code>AuthenticationFailureHandler</code> instead of success) and a same-email-different-provider collision (mirroring the account-linking decision an application must make itself — Spring Security does not merge accounts across providers automatically).</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class OAuth2LoginLevel3 {
+    static class AuthorizationServer {
+        final String registrationId;
+        final String nameAttributeKey;
+        final Map&lt;String, Map&lt;String, Object&gt;&gt; users = new LinkedHashMap&lt;&gt;();
+        final Set&lt;String&gt; deniedUsers = new HashSet&lt;&gt;();
+
+        AuthorizationServer(String registrationId, String nameAttributeKey) {
+            this.registrationId = registrationId;
+            this.nameAttributeKey = nameAttributeKey;
+        }
+
+        void register(String username, Map&lt;String, Object&gt; attributes) { users.put(username, attributes); }
+        void denyConsent(String username) { deniedUsers.add(username); }
+
+        Map&lt;String, Object&gt; authenticate(String username) {
+            if (deniedUsers.contains(username)) return null; // user clicked &quot;Cancel&quot; on the consent screen
+            return users.get(username);
+        }
+    }
+
+    record OAuth2User(String registrationId, String nameAttributeKey, Map&lt;String, Object&gt; attributes, Set&lt;String&gt; authorities) {
+        String getName() { return String.valueOf(attributes.get(nameAttributeKey)); }
+    }
+
+    static class OAuth2AuthenticationException extends RuntimeException {
+        OAuth2AuthenticationException(String message) { super(message); }
+    }
+
+    static OAuth2User currentPrincipal;
+    // tracks which email has already logged in via which provider -- simulates account-linking detection
+    static final Map&lt;String, String&gt; emailToRegistrationId = new LinkedHashMap&lt;&gt;();
+
+    static OAuth2User login(AuthorizationServer server, String username) {
+        Map&lt;String, Object&gt; attributes = server.authenticate(username);
+        if (attributes == null) {
+            // mirrors OAuth2LoginAuthenticationFilter&#x27;s failure path -&gt; AuthenticationFailureHandler
+            throw new OAuth2AuthenticationException(&quot;access_denied: user did not approve the &quot; + server.registrationId + &quot; consent screen&quot;);
+        }
+
+        Object email = attributes.get(&quot;email&quot;);
+        if (email != null) {
+            String existingProvider = emailToRegistrationId.get(email);
+            if (existingProvider != null &amp;&amp; !existingProvider.equals(server.registrationId)) {
+                System.out.println(&quot;WARNING: email &quot; + email + &quot; already linked to provider \&quot;&quot; + existingProvider
+                        + &quot;\&quot; -- this login via \&quot;&quot; + server.registrationId + &quot;\&quot; creates a SEPARATE account unless you link them&quot;);
+            } else {
+                emailToRegistrationId.put((String) email, server.registrationId);
+            }
+        }
+
+        return new OAuth2User(server.registrationId, server.nameAttributeKey, attributes, Set.of(&quot;ROLE_USER&quot;));
+    }
+
+    static void attemptLogin(AuthorizationServer server, String username) {
+        try {
+            currentPrincipal = login(server, username);
+            System.out.println(&quot;[&quot; + server.registrationId + &quot;] SUCCESS principal=&quot; + currentPrincipal.getName());
+        } catch (OAuth2AuthenticationException e) {
+            currentPrincipal = null; // SecurityContext stays empty -- a failed login never sets a principal
+            System.out.println(&quot;[&quot; + server.registrationId + &quot;] FAILED: &quot; + e.getMessage());
+        }
+    }
+
+    public static void main(String[] args) {
+        AuthorizationServer github = new AuthorizationServer(&quot;github&quot;, &quot;login&quot;);
+        Map&lt;String, Object&gt; octocatAttrs = new LinkedHashMap&lt;&gt;();
+        octocatAttrs.put(&quot;login&quot;, &quot;octocat&quot;);
+        octocatAttrs.put(&quot;email&quot;, &quot;octocat@example.com&quot;);
+        github.register(&quot;octocat&quot;, octocatAttrs);
+
+        AuthorizationServer google = new AuthorizationServer(&quot;google&quot;, &quot;sub&quot;);
+        Map&lt;String, Object&gt; sameEmailAttrs = new LinkedHashMap&lt;&gt;();
+        sameEmailAttrs.put(&quot;sub&quot;, &quot;555000111&quot;);
+        sameEmailAttrs.put(&quot;email&quot;, &quot;octocat@example.com&quot;); // SAME email as the GitHub account above
+        google.register(&quot;octocat.g&quot;, sameEmailAttrs);
+        google.denyConsent(&quot;bob&quot;); // bob will click &quot;Cancel&quot; on Google&#x27;s consent screen
+
+        attemptLogin(github, &quot;octocat&quot;);
+        attemptLogin(google, &quot;octocat.g&quot;);
+        attemptLogin(google, &quot;bob&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>OAuth2LoginLevel3.java</code>, run <code>java OAuth2LoginLevel3.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>[github] SUCCESS principal=octocat
+WARNING: email octocat@example.com already linked to provider &quot;github&quot; -- this login via &quot;google&quot; creates a SEPARATE account unless you link them
+[google] SUCCESS principal=555000111
+[google] FAILED: access_denied: user did not approve the google consent screen</code></pre>
+<p>What changed: <code>login</code> can now fail (bob&#x27;s Google consent was denied, so <code>authenticate</code> returns <code>null</code> and <code>login</code> throws instead of returning a principal — <code>attemptLogin</code> catches it and leaves <code>currentPrincipal</code> untouched, exactly mirroring how a rejected authorization never reaches <code>SecurityContextHolder</code>), and a second, independent success path now detects that two *different* provider identities share the same email address without silently merging them — that decision is left to the application.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the first success in Level 3, <code>attemptLogin(github, &quot;octocat&quot;)</code>, as if it were a real HTTP exchange end to end.</p>
+<p><strong>Step 1 — browser starts the login:</strong></p>
+<pre><code>GET /oauth2/authorization/github HTTP/1.1
+Host: app.example.com</code></pre>
+<p>This hits <code>OAuth2AuthorizationRequestRedirectFilter</code> (registered automatically by <code>oauth2Login()</code>), which builds an authorization request from GitHub&#x27;s <code>ClientRegistration</code> (card 0089) and responds:</p>
+<pre><code>HTTP/1.1 302 Found
+Location: https://github.com/login/oauth/authorize?client_id=abc123&amp;redirect_uri=https%3A%2F%2Fapp.example.com%2Flogin%2Foauth2%2Fcode%2Fgithub&amp;scope=read:user&amp;state=xyz&amp;response_type=code</code></pre>
+<p><strong>Step 2 — the browser follows the redirect to GitHub.</strong> The user logs in and clicks &quot;Authorize&quot; — this is entirely outside Spring Security&#x27;s code, which is why <code>AuthorizationServer.authenticate(&quot;octocat&quot;)</code> in Level 3 just returns a canned attribute map rather than simulating a login form: from the client application&#x27;s point of view, everything up to this point is a black box it doesn&#x27;t control.</p>
+<p><strong>Step 3 — GitHub redirects back with a one-time code:</strong></p>
+<pre><code>HTTP/1.1 302 Found
+Location: https://app.example.com/login/oauth2/code/github?code=SplxlOBeZQQYbYS6WxSbIA&amp;state=xyz</code></pre>
+<p><strong>Step 4 — the browser follows that redirect, hitting the callback:</strong></p>
+<pre><code>GET /login/oauth2/code/github?code=SplxlOBeZQQYbYS6WxSbIA&amp;state=xyz HTTP/1.1
+Host: app.example.com</code></pre>
+<p>This path matches <code>OAuth2LoginAuthenticationFilter</code>&#x27;s default pattern (<code>/login/oauth2/code/*</code>), so the filter takes over from here.</p>
+<p><strong>Step 5 — server-to-server token exchange (the browser is not involved in this hop at all):</strong></p>
+<pre><code>POST /login/oauth/access_token HTTP/1.1
+Host: github.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code&amp;code=SplxlOBeZQQYbYS6WxSbIA&amp;redirect_uri=https%3A%2F%2Fapp.example.com%2Flogin%2Foauth2%2Fcode%2Fgithub&amp;client_id=abc123&amp;client_secret=***</code></pre>
+<p>GitHub responds with an access token; the filter then calls GitHub&#x27;s user-info endpoint with that token. That whole step corresponds, in the code, to <code>github.authenticate(&quot;octocat&quot;)</code> returning the <code>attributes</code> map — the simulation collapses &quot;exchange code for token&quot; and &quot;fetch profile with token&quot; into one method call, since this card&#x27;s focus is the *result*, not the wire protocol (card 0090 unpacks that exchange in full).</p>
+<p><strong>Step 6 — building the principal:</strong> <code>login(github, &quot;octocat&quot;)</code> constructs <code>new OAuth2User(&quot;github&quot;, &quot;login&quot;, attributes, Set.of(&quot;ROLE_USER&quot;))</code>. <code>currentPrincipal = principal;</code> mirrors <code>SecurityContextHolder.getContext().setAuthentication(...)</code> — from this point on, a controller parameter typed <code>@AuthenticationPrincipal OAuth2User</code> resolves to this exact object.</p>
+<p><strong>Step 7 — the client app responds to the browser&#x27;s step-4 request:</strong></p>
+<pre><code>HTTP/1.1 302 Found
+Location: https://app.example.com/
+Set-Cookie: JSESSIONID=9F6A2B...; HttpOnly; Secure</code></pre>
+<p>The session cookie is how the browser&#x27;s *next* request gets recognized as the same authenticated user — <code>oauth2Login()</code> still relies on the ordinary HTTP session under the hood, exactly like <code>formLogin()</code> does.</p>
+<p>The second and third <code>attemptLogin</code> calls in Level 3 skip straight to step 6&#x27;s outcome: <code>octocat.g</code>&#x27;s login succeeds and prints the account-linking <code>WARNING</code> (its <code>email</code> collides with <code>octocat</code>&#x27;s GitHub account, but no code here merges the two), while <code>bob</code>&#x27;s login never gets past <code>authenticate</code> returning <code>null</code> — no redirect back with a code would ever have arrived in a real system, so no <code>SecurityContext</code> gets populated, and the client would render its configured <code>failureUrl</code> instead of a <code>200 OK</code>.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>SecurityContextHolder</code> is only ever populated on a *successful* exchange. A denied consent, a network failure during the token exchange, or a provider outage all leave the context empty — there is no partial or &quot;logged in but unverified&quot; state, so code that assumes <code>@AuthenticationPrincipal</code> is non-null on any request reaching an <code>authenticated()</code>-protected endpoint is safe, but code that runs *before* authorization is enforced must not assume a principal exists yet.</blockquote>
+<blockquote><strong>Gotcha:</strong> <code>OAuth2User</code> and <code>OidcUser</code> are not the same thing. A provider that only implements plain OAuth2 (no OpenID Connect) gives you an <code>OAuth2User</code> built purely from the userinfo endpoint&#x27;s response; a provider that also issues an ID token (Google, and any OIDC-compliant provider) gives you an <code>OidcUser</code>, which additionally exposes the ID token&#x27;s claims (<code>iss</code>, <code>aud</code>, <code>exp</code>, and whatever the provider includes). Code written against <code>OAuth2User</code> still works for <code>OidcUser</code> (it&#x27;s a subtype), but code that needs ID-token-specific claims must cast or type against <code>OidcUser</code> explicitly.</blockquote>
+<ul><li><code>oauth2Login()</code> wires the entire redirect-callback-exchange-userinfo pipeline automatically for every configured provider — application code only needs to react to the resulting <code>OAuth2User</code>/<code>OidcUser</code>, not implement any of the protocol steps.</li><li><code>OAuth2LoginAuthenticationFilter</code> intercepts the default <code>/login/oauth2/code/*</code> callback pattern; the code-for-token exchange it triggers happens server-to-server, never through the browser.</li><li>A principal only appears in the <code>SecurityContext</code> after a *successful* exchange — denied consent, provider errors, and network failures all leave it empty rather than partially populated.</li><li>Linking two different providers&#x27; identities to one local account (by matching email, for instance) is entirely the application&#x27;s responsibility — Spring Security treats <code>github:octocat</code> and <code>google:octocat.g</code> as two unrelated principals even if their email attributes match.</li><li>Each provider names its stable identifier differently (<code>login</code> for GitHub, <code>sub</code> for Google) — this is exactly what <code>ClientRegistration.userNameAttributeName</code> (card 0089) exists to configure per registration, rather than hard-coding one convention everywhere.</li></ul>
+  <div class="nav"><a class="prv" href="0087-encoding-firewall-request-validation.html"><span class="mini">← Previous</span>Encoding / Firewall request validation</a><a class="nxt" href="0089-clientregistration-clientregistrationrepository.html"><span class="mini">Next →</span>ClientRegistration & ClientRegistrationRepository</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t88";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
