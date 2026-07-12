@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"JWT-based (bearer token) authentication" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 5. OAuth2 & OpenID Connect</div>
+  <div class="htitle">
+    <h1>"JWT-based (bearer token) authentication"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>oauth2ResourceServer(oauth2 -&gt; oauth2.jwt(...))</code> is the specific configuration that wires the JWT half of card 0099&#x27;s resource server support: it registers a <code>BearerTokenAuthenticationFilter</code> that extracts the token from the <code>Authorization: Bearer &lt;token&gt;</code> header, hands it to a <code>JwtDecoder</code> for decoding and validation, and — on success — wraps the result in a <code>JwtAuthenticationToken</code>, Spring Security&#x27;s <code>Authentication</code> implementation whose principal is the decoded <code>Jwt</code> object itself (its header, its claims, its raw token value all remain accessible). This card is the entry point for the rest of the section: the next three cards go deep on the three moving parts this one only names — <code>JwtDecoder</code>/JWK sets (card 0101), the specific validators that check claims like <code>iss</code>/<code>aud</code>/<code>exp</code> (card 0103), and mapping claims to authorities (card 0104).</p>
+<pre><code class="lang-java">@Bean
+public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    http
+        .authorizeHttpRequests(auth -&gt; auth
+            .requestMatchers(&quot;/public/**&quot;).permitAll()
+            .anyRequest().authenticated())
+        .oauth2ResourceServer(oauth2 -&gt; oauth2.jwt(Customizer.withDefaults()))
+        .sessionManagement(session -&gt; session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+    return http.build();
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>Card 0099 introduced the resource server role in the abstract and contrasted it with opaque tokens at a high level; this card exists because &quot;just call <code>.jwt()</code>&quot; glosses over several real decisions an application must make: where the decoder gets its keys from, what happens when a token is malformed rather than merely invalid, and how the resulting principal differs from the <code>UserDetails</code>-based principal every earlier card in this course assumed. Every one of those decisions shows up the moment a real request with a real (or malformed, or expired) bearer token hits the filter chain.</p>
+<p>Reach for understanding this filter&#x27;s behavior specifically when:</p>
+<ul><li>Debugging a <code>401</code> response on an endpoint — the JWT path&#x27;s failure modes (missing header, malformed token, failed decode, failed validation) each produce a distinct <code>WWW-Authenticate</code> error, and knowing which one fired narrows the cause immediately.</li><li>Deciding what the authenticated principal actually is in controller code — <code>@AuthenticationPrincipal Jwt jwt</code> (not a <code>UserDetails</code>) is the idiomatic way to access claims directly in a JWT-secured endpoint.</li><li>Configuring <code>sessionCreationPolicy(STATELESS)</code> alongside this filter — since the bearer token is presented fresh on every request, there is no reason to create or consult an <code>HttpSession</code>, and doing so anyway wastes memory without buying anything.</li><li>Composing JWT resource server support with <code>oauth2Login()</code> in the same application (e.g., a backend that both logs browser users in via OIDC *and* exposes an API other services call with bearer tokens) — the two filters coexist in the same chain, keyed to different endpoints via <code>securityMatcher</code>.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code>Incoming request:
+    GET /api/orders
+    Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6...
+
+BearerTokenAuthenticationFilter (registered by .jwt(...)):
+  1. no header at all, or wrong scheme  -&gt; pass through UNAUTHENTICATED (later blocked by authorizeHttpRequests)
+  2. header present, malformed (not even valid JWT structure)
+       -&gt; decode() throws BadJwtException -&gt; 401, error=&quot;invalid_token&quot;
+  3. header present, well-formed JWT, but signature/claims invalid
+       -&gt; decode() throws JwtValidationException -&gt; 401, error=&quot;invalid_token&quot;
+  4. header present, valid JWT
+       -&gt; JwtAuthenticationConverter builds a JwtAuthenticationToken
+       -&gt; SecurityContextHolder populated FOR THIS REQUEST ONLY (no session)
+       -&gt; authorizeHttpRequests evaluates normally against this Authentication
+
+Principal type: org.springframework.security.oauth2.jwt.Jwt
+    jwt.getSubject()      -- the &quot;sub&quot; claim
+    jwt.getClaims()       -- full claim map
+    jwt.getTokenValue()   -- the raw, original JWT string
+    jwt.getHeaders()      -- alg, kid, typ</code></pre>
+<p>Unlike <code>formLogin()</code>&#x27;s principal (typically a <code>UserDetails</code>), a JWT resource server&#x27;s principal is the token itself — there is no separate &quot;load the user&quot; step unless a custom <code>JwtAuthenticationConverter</code> (card 0104) is added to bridge to one.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagram showing a request with a bearer token being processed by the bearer token authentication filter which decodes the jwt and on success builds a JwtAuthenticationToken with the decoded Jwt as its principal or on failure returns a 401 with a WWW Authenticate header describing the error">
+  <rect x="20" y="20" width="200" height="46" rx="7" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="120" y="40" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">GET /api/orders</text>
+  <text x="120" y="55" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Authorization: Bearer ...</text>
+
+  <line x1="220" y1="43" x2="260" y2="43" stroke="#79c0ff" stroke-width="1.6" marker-end="url(#jw100)"/>
+
+  <rect x="265" y="10" width="240" height="66" rx="7" fill="#1c2430" stroke="#6db33f" stroke-width="1.6"/>
+  <text x="385" y="32" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">BearerTokenAuthenticationFilter</text>
+  <text x="385" y="48" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">extract -&gt; JwtDecoder.decode(token)</text>
+  <text x="385" y="62" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">(card 0101)</text>
+
+  <line x1="385" y1="76" x2="230" y2="130" stroke="#f85149" stroke-width="1.5" marker-end="url(#jw100b)"/>
+  <line x1="385" y1="76" x2="470" y2="130" stroke="#6db33f" stroke-width="1.5" marker-end="url(#jw100c)"/>
+
+  <rect x="70" y="132" width="220" height="60" rx="7" fill="#1c2430" stroke="#f85149" stroke-width="1.3"/>
+  <text x="180" y="152" fill="#f85149" font-size="9.5" text-anchor="middle" font-family="sans-serif">decode FAILS</text>
+  <text x="180" y="168" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">401 Unauthorized</text>
+  <text x="180" y="182" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">WWW-Authenticate: Bearer error="invalid_token"</text>
+
+  <rect x="360" y="132" width="240" height="76" rx="7" fill="#1c2430" stroke="#6db33f" stroke-width="1.6"/>
+  <text x="480" y="152" fill="#6db33f" font-size="9.5" text-anchor="middle" font-family="sans-serif">decode SUCCEEDS</text>
+  <text x="480" y="168" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">JwtAuthenticationToken</text>
+  <text x="480" y="182" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">principal = Jwt (sub, claims, raw value)</text>
+  <text x="480" y="196" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">-&gt; SecurityContext for THIS request only</text>
+
+  <defs>
+    <marker id="jw100" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="jw100b" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f85149"/></marker>
+    <marker id="jw100c" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>Every request stands alone: decode failure or success is decided fresh, with no session to fall back on.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: a minimal <code>BearerTokenAuthenticationFilter</code> simulation that extracts a header, decodes a token, and builds a principal — grown from a bare pass/fail case into distinguishing missing-header from malformed-token from failed-validation, then into a full request-handling loop producing the right HTTP status and error code for each case.</p>
+<h3>Level 1 — Basic</h3>
+<p>Extract the header, decode, build a principal on success.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class JwtAuthLevel1 {
+    record Jwt(String subject, Map&lt;String, Object&gt; claims, String rawValue) {}
+    record JwtAuthenticationToken(Jwt principal) {}
+
+    static class JwtDecoder {
+        private final Set&lt;String&gt; validTokens;
+        JwtDecoder(Set&lt;String&gt; validTokens) { this.validTokens = validTokens; }
+
+        Jwt decode(String token) {
+            if (!validTokens.contains(token)) throw new IllegalArgumentException(&quot;invalid_token&quot;);
+            return new Jwt(&quot;alice&quot;, Map.of(&quot;sub&quot;, &quot;alice&quot;, &quot;scope&quot;, &quot;read:orders&quot;), token);
+        }
+    }
+
+    static JwtAuthenticationToken authenticate(String authorizationHeader, JwtDecoder decoder) {
+        String token = authorizationHeader.substring(&quot;Bearer &quot;.length());
+        Jwt jwt = decoder.decode(token);
+        return new JwtAuthenticationToken(jwt);
+    }
+
+    public static void main(String[] args) {
+        JwtDecoder decoder = new JwtDecoder(Set.of(&quot;valid-jwt-abc&quot;));
+
+        JwtAuthenticationToken authentication = authenticate(&quot;Bearer valid-jwt-abc&quot;, decoder);
+        System.out.println(&quot;authenticated subject: &quot; + authentication.principal().subject());
+        System.out.println(&quot;raw token preserved: &quot; + authentication.principal().rawValue());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>JwtAuthLevel1.java</code>, run <code>java JwtAuthLevel1.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>authenticated subject: alice
+raw token preserved: valid-jwt-abc</code></pre>
+<p><code>authenticate</code> mirrors <code>BearerTokenAuthenticationFilter</code>&#x27;s happy path: extract the token, decode it, wrap the result — the principal (<code>Jwt</code>) retains the raw token value alongside its parsed claims, exactly like the real <code>Jwt</code> class does.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Distinguish the three ways a request can fail to authenticate: no header, malformed token, and a token that decodes structurally but fails validation.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class JwtAuthLevel2 {
+    record Jwt(String subject, Map&lt;String, Object&gt; claims, String rawValue) {}
+    record JwtAuthenticationToken(Jwt principal) {}
+
+    static class BadJwtException extends RuntimeException {
+        BadJwtException(String message) { super(message); }
+    }
+    static class JwtValidationException extends RuntimeException {
+        JwtValidationException(String message) { super(message); }
+    }
+
+    static class JwtDecoder {
+        private final Map&lt;String, Long&gt; wellFormedTokens = new HashMap&lt;&gt;(); // token -&gt; expiresAt epoch seconds
+
+        void registerWellFormed(String token, long expiresAtEpochSeconds) {
+            wellFormedTokens.put(token, expiresAtEpochSeconds);
+        }
+
+        Jwt decode(String token) {
+            if (!token.startsWith(&quot;eyJ&quot;)) { // stands in for &quot;not even valid JWT structure&quot;
+                throw new BadJwtException(&quot;malformed JWT&quot;);
+            }
+            Long expiresAt = wellFormedTokens.get(token);
+            if (expiresAt == null) {
+                throw new BadJwtException(&quot;unknown token&quot;);
+            }
+            if (System.currentTimeMillis() / 1000 &gt;= expiresAt) {
+                throw new JwtValidationException(&quot;token expired&quot;);
+            }
+            return new Jwt(&quot;alice&quot;, Map.of(&quot;sub&quot;, &quot;alice&quot;), token);
+        }
+    }
+
+    enum Outcome { NO_HEADER, MALFORMED, VALIDATION_FAILED, SUCCESS }
+    record AuthResult(Outcome outcome, String detail, JwtAuthenticationToken authentication) {}
+
+    static AuthResult authenticate(String authorizationHeader, JwtDecoder decoder) {
+        if (authorizationHeader == null || !authorizationHeader.startsWith(&quot;Bearer &quot;)) {
+            return new AuthResult(Outcome.NO_HEADER, &quot;no bearer token presented&quot;, null);
+        }
+        String token = authorizationHeader.substring(&quot;Bearer &quot;.length());
+        try {
+            Jwt jwt = decoder.decode(token);
+            return new AuthResult(Outcome.SUCCESS, &quot;ok&quot;, new JwtAuthenticationToken(jwt));
+        } catch (BadJwtException e) {
+            return new AuthResult(Outcome.MALFORMED, e.getMessage(), null);
+        } catch (JwtValidationException e) {
+            return new AuthResult(Outcome.VALIDATION_FAILED, e.getMessage(), null);
+        }
+    }
+
+    public static void main(String[] args) {
+        JwtDecoder decoder = new JwtDecoder();
+        decoder.registerWellFormed(&quot;eyJ.valid.token&quot;, System.currentTimeMillis() / 1000 + 3600);
+        decoder.registerWellFormed(&quot;eyJ.expired.token&quot;, System.currentTimeMillis() / 1000 - 60);
+
+        System.out.println(authenticate(null, decoder));
+        System.out.println(authenticate(&quot;Bearer not-a-jwt-at-all&quot;, decoder));
+        System.out.println(authenticate(&quot;Bearer eyJ.expired.token&quot;, decoder));
+        System.out.println(authenticate(&quot;Bearer eyJ.valid.token&quot;, decoder));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>JwtAuthLevel2.java</code>, run <code>java JwtAuthLevel2.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>AuthResult[outcome=NO_HEADER, detail=no bearer token presented, authentication=null]
+AuthResult[outcome=MALFORMED, detail=malformed JWT, authentication=null]
+AuthResult[outcome=VALIDATION_FAILED, detail=token expired, authentication=null]
+AuthResult[outcome=SUCCESS, detail=ok, authentication=JwtAuthenticationToken[principal=Jwt[subject=alice, claims={sub=alice}, rawValue=eyJ.valid.token]]]</code></pre>
+<p>What changed: <code>authenticate</code> now distinguishes four distinct outcomes rather than one binary pass/fail — no header at all is not an error (it&#x27;s simply unauthenticated, left for <code>authorizeHttpRequests</code> to reject), a structurally invalid token is a different failure (<code>BadJwtException</code>) from one that parses but fails a check like expiry (<code>JwtValidationException</code>) — this mirrors the real distinction between <code>BadJwtException</code> and <code>JwtValidationException</code> that Spring Security&#x27;s own <code>JwtDecoder</code> implementations throw.</p>
+<h3>Level 3 — Advanced</h3>
+<p>Map each outcome to the actual HTTP response a client would receive, including the <code>WWW-Authenticate</code> header&#x27;s <code>error</code> parameter, and show how a downstream controller accesses claims via the principal once authentication succeeds.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class JwtAuthLevel3 {
+    record Jwt(String subject, Map&lt;String, Object&gt; claims, String rawValue) {
+        Object claim(String name) { return claims.get(name); }
+    }
+    record JwtAuthenticationToken(Jwt principal) {}
+
+    static class BadJwtException extends RuntimeException { BadJwtException(String m) { super(m); } }
+    static class JwtValidationException extends RuntimeException { JwtValidationException(String m) { super(m); } }
+
+    static class JwtDecoder {
+        private final Map&lt;String, Map&lt;String, Object&gt;&gt; wellFormedTokens = new HashMap&lt;&gt;();
+        private final Map&lt;String, Long&gt; expiries = new HashMap&lt;&gt;();
+
+        void register(String token, Map&lt;String, Object&gt; claims, long expiresAtEpochSeconds) {
+            wellFormedTokens.put(token, claims);
+            expiries.put(token, expiresAtEpochSeconds);
+        }
+
+        Jwt decode(String token) {
+            if (!token.startsWith(&quot;eyJ&quot;)) throw new BadJwtException(&quot;malformed JWT&quot;);
+            Map&lt;String, Object&gt; claims = wellFormedTokens.get(token);
+            if (claims == null) throw new BadJwtException(&quot;unknown token&quot;);
+            if (System.currentTimeMillis() / 1000 &gt;= expiries.get(token)) throw new JwtValidationException(&quot;token expired&quot;);
+            return new Jwt(String.valueOf(claims.get(&quot;sub&quot;)), claims, token);
+        }
+    }
+
+    record HttpResponse(int status, String wwwAuthenticate, String body) {}
+
+    // mirrors BearerTokenAuthenticationEntryPoint&#x27;s response shaping on failure
+    static HttpResponse handleRequest(String authorizationHeader, JwtDecoder decoder) {
+        if (authorizationHeader == null || !authorizationHeader.startsWith(&quot;Bearer &quot;)) {
+            return new HttpResponse(401, &quot;Bearer realm=\&quot;api\&quot;&quot;, &quot;&quot;);
+        }
+        String token = authorizationHeader.substring(&quot;Bearer &quot;.length());
+        try {
+            Jwt jwt = decoder.decode(token);
+            // &quot;controller&quot; logic: use the authenticated principal&#x27;s claims directly
+            String scope = String.valueOf(jwt.claim(&quot;scope&quot;));
+            String body = &quot;{\&quot;orders\&quot;:[],\&quot;authenticatedAs\&quot;:\&quot;&quot; + jwt.subject() + &quot;\&quot;,\&quot;grantedScope\&quot;:\&quot;&quot; + scope + &quot;\&quot;}&quot;;
+            return new HttpResponse(200, null, body);
+        } catch (BadJwtException e) {
+            return new HttpResponse(401, &quot;Bearer error=\&quot;invalid_token\&quot;, error_description=\&quot;&quot; + e.getMessage() + &quot;\&quot;&quot;, &quot;&quot;);
+        } catch (JwtValidationException e) {
+            return new HttpResponse(401, &quot;Bearer error=\&quot;invalid_token\&quot;, error_description=\&quot;&quot; + e.getMessage() + &quot;\&quot;&quot;, &quot;&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        JwtDecoder decoder = new JwtDecoder();
+        decoder.register(&quot;eyJ.valid.token&quot;, Map.of(&quot;sub&quot;, &quot;alice&quot;, &quot;scope&quot;, &quot;read:orders&quot;),
+                System.currentTimeMillis() / 1000 + 3600);
+
+        HttpResponse noHeader = handleRequest(null, decoder);
+        System.out.println(&quot;no header -&gt; &quot; + noHeader.status() + &quot; WWW-Authenticate: &quot; + noHeader.wwwAuthenticate());
+
+        HttpResponse malformed = handleRequest(&quot;Bearer not-a-jwt&quot;, decoder);
+        System.out.println(&quot;malformed -&gt; &quot; + malformed.status() + &quot; WWW-Authenticate: &quot; + malformed.wwwAuthenticate());
+
+        HttpResponse success = handleRequest(&quot;Bearer eyJ.valid.token&quot;, decoder);
+        System.out.println(&quot;valid -&gt; &quot; + success.status() + &quot; body: &quot; + success.body());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>JwtAuthLevel3.java</code>, run <code>java JwtAuthLevel3.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>no header -&gt; 401 WWW-Authenticate: Bearer realm=&quot;api&quot;
+malformed -&gt; 401 WWW-Authenticate: Bearer error=&quot;invalid_token&quot;, error_description=&quot;malformed JWT&quot;
+valid -&gt; 200 body: {&quot;orders&quot;:[],&quot;authenticatedAs&quot;:&quot;alice&quot;,&quot;grantedScope&quot;:&quot;read:orders&quot;}</code></pre>
+<p>What changed: <code>handleRequest</code> now produces the actual HTTP-visible response for each case, including the distinct <code>WWW-Authenticate</code> header shape (a bare realm challenge when no credential was presented at all, versus an <code>error=&quot;invalid_token&quot;</code> challenge when one was presented but rejected) — this is precisely the signal a well-behaved API client uses to distinguish &quot;you need to log in&quot; from &quot;your token is bad, get a new one&quot; without any human reading server logs.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the successful request from Level 3 end to end, then contrast it with the malformed-token case.</p>
+<p><strong>Step 1 — the inbound request:</strong></p>
+<pre><code>GET /api/orders HTTP/1.1
+Host: api.example.com
+Authorization: Bearer eyJ.valid.token</code></pre>
+<p><strong>Step 2 — the filter extracts the token.</strong> <code>handleRequest</code> checks the header starts with <code>&quot;Bearer &quot;</code> (it does) and slices off <code>&quot;eyJ.valid.token&quot;</code> — corresponding to <code>BearerTokenAuthenticationFilter</code> pulling the raw token value out of the header before anything else happens.</p>
+<p><strong>Step 3 — decoding.</strong> <code>decoder.decode(&quot;eyJ.valid.token&quot;)</code> runs: the structural check (<code>startsWith(&quot;eyJ&quot;)</code>) passes, the token is found in <code>wellFormedTokens</code>, and the expiry check (<code>System.currentTimeMillis() / 1000 &gt;= expiries.get(token)</code>) is <code>false</code> since the registered expiry is an hour in the future — no exception is thrown, and a <code>Jwt</code> is constructed with <code>subject=&quot;alice&quot;</code> and the full claims map.</p>
+<p><strong>Step 4 — the principal reaches &quot;controller&quot; logic.</strong> <code>jwt.claim(&quot;scope&quot;)</code> reads <code>&quot;read:orders&quot;</code> straight out of the decoded claims — this corresponds to a real controller parameter typed <code>@AuthenticationPrincipal Jwt jwt</code> giving direct, typed access to exactly this data, with no separate database lookup required.</p>
+<p><strong>Step 5 — the response:</strong></p>
+<pre><code>HTTP/1.1 200 OK
+Content-Type: application/json
+
+{&quot;orders&quot;:[],&quot;authenticatedAs&quot;:&quot;alice&quot;,&quot;grantedScope&quot;:&quot;read:orders&quot;}</code></pre>
+<p><strong>Contrast — the malformed case, step by step:</strong> <code>handleRequest(&quot;Bearer not-a-jwt&quot;, decoder)</code> extracts <code>&quot;not-a-jwt&quot;</code>, calls <code>decoder.decode</code>, and immediately fails the <code>startsWith(&quot;eyJ&quot;)</code> structural check — <code>BadJwtException(&quot;malformed JWT&quot;)</code> is thrown before any claim, signature, or expiry logic ever runs. The <code>catch (BadJwtException e)</code> block builds a <code>401</code> with <code>error=&quot;invalid_token&quot;</code> and the specific description, never reaching the &quot;controller&quot; body-building line at all.</p>
+<pre><code>GET /api/orders, Authorization: Bearer eyJ.valid.token
+  -&gt; extract token
+  -&gt; decode(): structural check OK -&gt; lookup OK -&gt; expiry check OK -&gt; Jwt built
+  -&gt; Authentication populated for THIS request
+  -&gt; &quot;controller&quot;: jwt.claim(&quot;scope&quot;) -&gt; &quot;read:orders&quot;
+  -&gt; 200 OK, body reflects authenticated principal&#x27;s own claims
+
+GET /api/orders, Authorization: Bearer not-a-jwt
+  -&gt; extract token
+  -&gt; decode(): structural check FAILS -&gt; BadJwtException, thrown immediately
+  -&gt; 401, WWW-Authenticate: Bearer error=&quot;invalid_token&quot;
+  -&gt; &quot;controller&quot; NEVER reached</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a missing <code>Authorization</code> header is *not* itself a <code>401</code> from the JWT filter — it simply leaves the request unauthenticated, and whether that&#x27;s acceptable depends entirely on <code>authorizeHttpRequests</code> (a <code>permitAll()</code> matcher lets it through, <code>anyRequest().authenticated()</code> rejects it). Conflating &quot;no credential presented&quot; with &quot;credential rejected&quot; in custom error-handling code produces confusing responses; keep them distinct, as <code>BearerTokenAuthenticationEntryPoint</code> does.</blockquote>
+<ul><li>The JWT resource server path decodes and validates the token entirely within the request, producing a <code>JwtAuthenticationToken</code> whose principal is the <code>Jwt</code> object itself — not a <code>UserDetails</code>.</li><li>Failures fall into distinct categories with distinct meanings: no credential presented, a structurally malformed token, and a well-formed-but-invalid token (expired, bad signature, wrong issuer) — each should surface a different, useful signal to the caller.</li><li>No <code>HttpSession</code> is created or consulted for this authentication path — each request is authenticated fresh from its own bearer token, which is precisely what makes <code>SessionCreationPolicy.STATELESS</code> the natural pairing.</li><li><code>@AuthenticationPrincipal Jwt jwt</code> in controller code gives direct access to claims without any additional lookup — the token itself carries everything the request needs to know about who is calling and what they&#x27;re allowed to do.</li><li>The next three cards unpack what this card treats as a black box: where <code>JwtDecoder</code> gets its verification keys (card 0101), which specific claims it checks (card 0103), and how claims become <code>GrantedAuthority</code> objects (card 0104).</li></ul>
+  <div class="nav"><a class="prv" href="0099-oauth2-resource-server.html"><span class="mini">← Previous</span>OAuth2 Resource Server</a><a class="nxt" href="0101-jwtdecoder-jwk-set.html"><span class="mini">Next →</span>JwtDecoder & JWK set</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t100";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
