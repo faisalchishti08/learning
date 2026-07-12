@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Backpressure in synchronous calls" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 3. Synchronous Communication</div>
+  <div class="htitle">
+    <h1>"Backpressure in synchronous calls"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Backpressure is what happens — intentionally or accidentally — when a system pushes back against incoming work it cannot currently handle, rather than accepting unlimited requests and collapsing under the load. In synchronous, <a href="0075-synchronous-request-response-model.md">request/response</a> systems, this typically means bounding the number of concurrent in-flight requests a service will accept (via a limited thread pool or connection pool) and rejecting or queuing anything beyond that bound, rather than letting unlimited requests queue up in unbounded memory until the service runs out of resources and fails catastrophically for everyone.</p>
+<h2>2. Why &amp; when</h2>
+<p>Every synchronous service has a real, finite capacity — a limited number of threads, database connections, or CPU cores — beyond which it simply cannot process more work at once, no matter how many requests arrive. Without backpressure, a burst of traffic beyond that capacity causes requests to queue up unbounded: memory grows, response times climb for every request (including ones that would otherwise have been fast), and eventually the service either runs out of memory or every request times out anyway — a failure mode far worse than cleanly rejecting the excess up front. Backpressure converts an uncontrolled, system-wide collapse into a controlled, partial degradation: some requests get a fast, clear rejection, while requests within capacity continue to be served normally and promptly.</p>
+<p>Apply backpressure at any synchronous entry point that could plausibly receive more concurrent load than it can actually process — an API gateway, a service&#x27;s own HTTP endpoint, a connection pool to a downstream dependency. It matters most for the services deepest in a dependency chain, since without it, an overload there can cascade backward through every caller in the chain (see <a href="0075-synchronous-request-response-model.md">chained synchronous calls</a>).</p>
+<h2>3. Core concept</h2>
+<p>A bounded pool accepts work up to its capacity; requests beyond that capacity are rejected immediately (fast failure) rather than queued indefinitely (slow, cascading failure).</p>
+<pre><code>Capacity: 3 concurrent requests
+Request 1, 2, 3 arrive -&gt; accepted, processing
+Request 4 arrives      -&gt; REJECTED immediately (fast, clear failure)
+                           NOT queued indefinitely behind 1, 2, 3</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A bounded pool of three worker slots accepts three requests; a fourth request is rejected immediately rather than queued indefinitely">
+  <rect x="20" y="20" width="600" height="80" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="320" y="42" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Bounded pool (capacity=3)</text>
+  <rect x="60" y="55" width="80" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="100" y="77" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">req 1</text>
+  <rect x="180" y="55" width="80" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="220" y="77" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">req 2</text>
+  <rect x="300" y="55" width="80" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="340" y="77" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">req 3</text>
+  <rect x="440" y="55" width="140" height="35" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,3"/>
+  <text x="510" y="77" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">(no room)</text>
+
+  <rect x="260" y="140" width="150" height="35" rx="4" fill="#1c2430" stroke="#8b949e"/>
+  <text x="335" y="162" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">req 4: REJECTED immediately</text>
+  <line x1="335" y1="140" x2="335" y2="100" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="4,3"/>
+</svg>
+<p>Capacity is fixed; excess load is rejected fast rather than queued and left to degrade everything.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a service receiving concurrent requests, first with unbounded acceptance causing every request to slow down together as load grows, then fixed with a bounded pool that rejects excess load immediately, then extended to add a small bounded *queue* on top of the pool — a common middle ground between &quot;reject immediately&quot; and &quot;accept unlimited.&quot;</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UnboundedAcceptance.java -- accept EVERY request into an
+// unbounded queue -- as load grows past real capacity, EVERY request&#x27;s
+// wait time grows too, including ones that arrived early.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class UnboundedAcceptance {
+    static ExecutorService pool = Executors.newFixedThreadPool(2); // real capacity: 2 concurrent workers
+
+    static int process(int requestId) throws InterruptedException {
+        Thread.sleep(100); // simulated processing time
+        return requestId;
+    }
+
+    public static void main(String[] args) throws Exception {
+        List&lt;Future&lt;Integer&gt;&gt; futures = new ArrayList&lt;&gt;();
+        for (int i = 1; i &lt;= 5; i++) {
+            int id = i;
+            futures.add(pool.submit(() -&gt; process(id))); // ALL 5 accepted, queued behind only 2 workers
+        }
+        for (Future&lt;Integer&gt; f : futures) {
+            System.out.println(&quot;Completed request: &quot; + f.get());
+        }
+        pool.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac UnboundedAcceptance.java &amp;&amp; java UnboundedAcceptance</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Completed request: 1
+Completed request: 2
+Completed request: 3
+Completed request: 4
+Completed request: 5</code></pre>
+<p>All 5 requests eventually complete, but with only 2 real workers, requests 3, 4, and 5 each wait behind earlier ones — with no limit on how many requests could be queued this way, a large enough burst could queue thousands of requests, each waiting longer and longer, and consuming memory the whole time.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: BoundedRejection.java -- accept ONLY as many CONCURRENT requests
+// as real capacity allows; reject anything beyond that IMMEDIATELY.
+import java.util.concurrent.*;
+
+public class BoundedRejection {
+    static Semaphore capacity = new Semaphore(2); // real capacity: 2 concurrent requests
+
+    static String handleRequest(int requestId) {
+        if (!capacity.tryAcquire()) { // non-blocking: fail FAST if no capacity, don&#x27;t wait
+            return &quot;request &quot; + requestId + &quot;: REJECTED (503, no capacity)&quot;;
+        }
+        try {
+            Thread.sleep(50); // simulated processing time
+            return &quot;request &quot; + requestId + &quot;: completed&quot;;
+        } catch (InterruptedException e) {
+            return &quot;request &quot; + requestId + &quot;: interrupted&quot;;
+        } finally {
+            capacity.release();
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        // simulate 2 requests holding capacity WHILE a 3rd arrives
+        Thread worker1 = new Thread(() -&gt; System.out.println(handleRequest(1)));
+        Thread worker2 = new Thread(() -&gt; System.out.println(handleRequest(2)));
+        worker1.start();
+        worker2.start();
+        Thread.sleep(10); // let workers 1 and 2 acquire capacity first
+        System.out.println(handleRequest(3)); // capacity is full -- rejected immediately, no wait
+        worker1.join();
+        worker2.join();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BoundedRejection.java &amp;&amp; java BoundedRejection</code> (JDK 17+).</p>
+<p>Expected output (order of request 1/2 completion may vary slightly, but request 3 always rejects immediately):</p>
+<pre><code>request 3: REJECTED (503, no capacity)
+request 1: completed
+request 2: completed</code></pre>
+<p>Request 3 gets an immediate, clear rejection instead of waiting behind requests 1 and 2 — its caller finds out right away that capacity is exhausted, rather than experiencing an unexplained delay.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: BoundedQueueThenReject.java -- a common middle ground: allow a
+// SMALL bounded queue on top of the worker pool (absorb brief bursts),
+// but still reject once even that queue fills -- never grow unbounded.
+import java.util.concurrent.*;
+
+public class BoundedQueueThenReject {
+    static ThreadPoolExecutor pool = new ThreadPoolExecutor(
+        2, 2,                                  // 2 core/max worker threads -- real capacity
+        0L, TimeUnit.MILLISECONDS,
+        new ArrayBlockingQueue&lt;&gt;(1),           // a SMALL bounded queue -- absorbs 1 extra request
+        new ThreadPoolExecutor.AbortPolicy()   // reject (throw) once pool AND queue are both full
+    );
+
+    static String process(int requestId) throws InterruptedException {
+        Thread.sleep(50);
+        return &quot;request &quot; + requestId + &quot;: completed&quot;;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        for (int i = 1; i &lt;= 4; i++) {
+            int id = i;
+            try {
+                pool.submit(() -&gt; {
+                    try { System.out.println(process(id)); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                });
+                System.out.println(&quot;request &quot; + id + &quot;: accepted (worker or queue slot found)&quot;);
+            } catch (RejectedExecutionException e) {
+                System.out.println(&quot;request &quot; + id + &quot;: REJECTED (pool AND queue both full)&quot;);
+            }
+        }
+        Thread.sleep(200); // let accepted work finish before shutdown
+        pool.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BoundedQueueThenReject.java &amp;&amp; java BoundedQueueThenReject</code> (JDK 17+).</p>
+<p>Expected output (interleaving of &quot;accepted&quot;/&quot;completed&quot; lines may vary, but exactly 3 requests are accepted and request 4 is rejected):</p>
+<pre><code>request 1: accepted (worker or queue slot found)
+request 2: accepted (worker or queue slot found)
+request 3: accepted (worker or queue slot found)
+request 4: REJECTED (pool AND queue both full)
+request 1: completed
+request 2: completed
+request 3: completed</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — a fixed thread pool with 2 workers accepts all 5 submitted tasks via <code>pool.submit</code>, since <code>ExecutorService</code>&#x27;s default internal queue is unbounded. <code>main</code> collects all 5 <code>Future</code>s and blocks on each via <code>.get()</code>, printing completions in submission order. All 5 requests do eventually complete, but requests 3, 4, and 5 each had to wait behind earlier ones with no limit on how much further queuing could occur under heavier load — a large burst here would keep queuing invisibly, consuming memory and stretching every request&#x27;s latency, with no early warning to any caller.</li><li><strong>Level 2 — rejecting immediately instead of queuing</strong> — <code>capacity</code> is a <code>Semaphore</code> initialized with <code>2</code> permits, representing real processing capacity. <code>handleRequest</code> calls <code>capacity.tryAcquire()</code>, a *non-blocking* check: if a permit is available, it&#x27;s taken and the request proceeds; if not, the method returns a rejection message immediately, without waiting at all. <code>main</code> starts two threads that each successfully acquire a permit and begin their simulated 50ms of work, then (after a short sleep to let them start) calls <code>handleRequest(3)</code> on the main thread directly — with both permits already held, <code>tryAcquire()</code> returns <code>false</code> immediately, and request 3&#x27;s rejection prints right away, well before requests 1 and 2 finish.</li><li><strong>Level 3 — a small buffer before rejecting</strong> — <code>ThreadPoolExecutor</code> is configured with exactly 2 core/max threads (matching Level 2&#x27;s real capacity) plus a small <code>ArrayBlockingQueue&lt;&gt;(1)</code> — room for exactly one extra request to wait briefly — and an <code>AbortPolicy</code>, which throws <code>RejectedExecutionException</code> once both the 2 worker slots and the 1 queue slot are all occupied.</li><li><strong>Tracing the four submissions</strong> — request 1 finds a free worker thread and is accepted, printing its &quot;accepted&quot; line immediately. Request 2 similarly finds the second free worker thread and is accepted. Request 3 finds both worker threads busy, but the queue has room (its 1 slot is empty), so it&#x27;s accepted into the queue and will run as soon as a worker frees up. Request 4 finds both worker threads busy *and* the queue&#x27;s single slot already occupied by request 3 — <code>pool.submit</code> throws <code>RejectedExecutionException</code>, caught by <code>main</code>&#x27;s try/catch, printing the rejection line for request 4.</li><li><strong>Contrasting the three levels</strong> — Level 1 would have quietly queued all 5 requests, potentially into the thousands under a large enough burst, with degrading service for everyone. Level 2 rejects the instant real capacity is exhausted, with zero tolerance for even a brief burst. Level 3 strikes a middle ground: it absorbs one request&#x27;s worth of brief burst via the small bounded queue, but still guarantees a hard ceiling — once that queue is also full, new requests are rejected immediately rather than piling up without bound, giving both some burst tolerance and a hard backpressure limit.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> an unbounded queue in front of a bounded worker pool (as in Level 1, where the <code>ExecutorService</code>&#x27;s internal queue has no size limit) provides zero real backpressure, even though the worker pool itself is bounded — the illusion of a capacity limit is undermined entirely by an unbounded queue sitting in front of it. Always bound the queue too, or skip it and reject immediately, as Level 2 and 3 both do.</blockquote>
+<ul><li>Backpressure converts an unbounded, system-wide collapse under overload into a controlled, partial degradation: some requests fail fast and clearly, while requests within real capacity continue to be served promptly.</li><li>A non-blocking capacity check (Level 2&#x27;s <code>tryAcquire</code>) rejects excess load immediately, with no added latency for the rejected request or for requests already being served.</li><li>A small, explicitly bounded queue (Level 3) can absorb brief bursts without sacrificing the hard ceiling that real backpressure requires — the key word is *bounded*; an unbounded queue defeats the purpose entirely.</li><li>Apply backpressure at every synchronous entry point in a chain, especially the deepest, most heavily depended-upon services — without it, one overloaded service&#x27;s queue can quietly cascade slowness back through every caller in the chain (see <a href="0075-synchronous-request-response-model.md">synchronous request/response model</a>).</li><li>This is the synchronous counterpart to flow control in asynchronous, event-driven systems — the same underlying problem (a consumer that can&#x27;t keep up with incoming work) solved with a different mechanism appropriate to the request/response shape.</li></ul>
+  <div class="nav"><a class="prv" href="0085-json-protobuf-avro-serialization.html"><span class="mini">← Previous</span>JSON / Protobuf / Avro serialization</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t86";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

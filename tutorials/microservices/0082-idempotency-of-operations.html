@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Idempotency of operations" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 3. Synchronous Communication</div>
+  <div class="htitle">
+    <h1>"Idempotency of operations"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>An operation is idempotent when performing it multiple times produces the same end result as performing it once. This is a property you *design into* an operation, not something that just happens to be true — as touched on in <a href="0078-http-verbs-status-code-semantics.md">HTTP verbs &amp; status code semantics</a>, <code>GET</code>, <code>PUT</code>, and <code>DELETE</code> are idempotent by convention, but achieving that in practice requires the underlying business logic to actually behave that way, which doesn&#x27;t happen automatically just by choosing the right verb.</p>
+<h2>2. Why &amp; when</h2>
+<p>In a distributed system, a caller frequently cannot tell whether a request it sent actually succeeded — the request might have been processed and only the *response* got lost on the way back, in which case retrying re-executes an operation that already happened. Idempotent operations make this ambiguity harmless: retry as many times as needed, and the end state is identical to a single successful call. Non-idempotent operations turn that same ambiguity into a real bug — retrying &quot;charge the customer $50&quot; after a lost response can charge them twice.</p>
+<p>Design every operation that might reasonably need retrying — which, in a microservices system with network calls between services, is nearly all of them — to be idempotent wherever the operation&#x27;s actual semantics allow it. For operations where true idempotency isn&#x27;t naturally achievable (like &quot;create a new order&quot;), use an <a href="0083-idempotency-keys-for-safe-retries.md">idempotency key</a> to make retries safe anyway.</p>
+<h2>3. Core concept</h2>
+<p>Idempotency is achieved by designing the operation around an absolute target state or a unique identity check, not around a relative action that accumulates with each call.</p>
+<pre><code>NOT idempotent:  balance = balance + 50          (each call adds another 50)
+IS idempotent:   balance = 50                     (each call sets the SAME final value)
+
+NOT idempotent:  createOrder()                    (each call creates ANOTHER order)
+IS idempotent:   createOrderIfNotExists(orderKey)  (each call with the SAME key has ONE effect)</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A relative increment operation applied three times results in three different balances, while an absolute set operation applied three times always results in the same final balance">
+  <text x="160" y="20" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">balance += 50 (relative, NOT idempotent)</text>
+  <rect x="20" y="35" width="90" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="65" y="55" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">50</text>
+  <rect x="130" y="35" width="90" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="175" y="55" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">100</text>
+  <rect x="240" y="35" width="90" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="285" y="55" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">150</text>
+  <text x="175" y="80" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">3 identical calls -&gt; 3 DIFFERENT results</text>
+
+  <text x="480" y="110" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">balance = 50 (absolute, idempotent)</text>
+  <rect x="340" y="125" width="90" height="30" rx="4" fill="#1c2430" stroke="#6db33f"/><text x="385" y="145" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">50</text>
+  <rect x="450" y="125" width="90" height="30" rx="4" fill="#1c2430" stroke="#6db33f"/><text x="495" y="145" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">50</text>
+  <rect x="560" y="125" width="60" height="30" rx="4" fill="#1c2430" stroke="#6db33f"/><text x="590" y="145" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">50</text>
+  <text x="480" y="170" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">3 identical calls -&gt; SAME result every time</text>
+</svg>
+<p>Relative operations accumulate on retry; absolute operations converge to the same state on retry.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a customer loyalty-points balance, first incremented with a relative, non-idempotent operation that breaks under retry, then fixed by redesigning it as an idempotent, absolute &quot;set&quot; operation, then extended to a realistic case — order creation — where a true absolute-set redesign isn&#x27;t natural, solved instead with a uniqueness check keyed by a client-supplied identifier.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: RelativeIncrementBreaksOnRetry.java -- addPoints is RELATIVE:
+// retrying it (because the response was lost) adds points AGAIN.
+import java.util.*;
+
+public class RelativeIncrementBreaksOnRetry {
+    static Map&lt;String, Integer&gt; balances = new HashMap&lt;&gt;(Map.of(&quot;cust-1&quot;, 0));
+
+    static void addPoints(String customerId, int points) {
+        balances.merge(customerId, points, Integer::sum);
+    }
+
+    public static void main(String[] args) {
+        addPoints(&quot;cust-1&quot;, 50);          // first attempt -- succeeds server-side
+        System.out.println(&quot;(response lost on the wire, client retries...)&quot;);
+        addPoints(&quot;cust-1&quot;, 50);          // retry -- but this ADDS 50 AGAIN
+        System.out.println(&quot;Balance: &quot; + balances.get(&quot;cust-1&quot;) + &quot; (should be 50, not 100)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac RelativeIncrementBreaksOnRetry.java &amp;&amp; java RelativeIncrementBreaksOnRetry</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>(response lost on the wire, client retries...)
+Balance: 100 (should be 50, not 100)</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: AbsoluteSetIsIdempotent.java -- redesign the operation around
+// an ABSOLUTE target state instead of a relative delta -- now retrying
+// is safe, because every call sets the SAME final value.
+import java.util.*;
+
+public class AbsoluteSetIsIdempotent {
+    static Map&lt;String, Integer&gt; balances = new HashMap&lt;&gt;(Map.of(&quot;cust-1&quot;, 0));
+
+    static void setBalance(String customerId, int newBalance) {
+        balances.put(customerId, newBalance); // ABSOLUTE -- overwrites, doesn&#x27;t accumulate
+    }
+
+    public static void main(String[] args) {
+        setBalance(&quot;cust-1&quot;, 50);
+        System.out.println(&quot;(response lost on the wire, client retries...)&quot;);
+        setBalance(&quot;cust-1&quot;, 50); // retry -- SAME final value, no harm done
+        System.out.println(&quot;Balance: &quot; + balances.get(&quot;cust-1&quot;) + &quot; (correct, regardless of retry count)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac AbsoluteSetIsIdempotent.java &amp;&amp; java AbsoluteSetIsIdempotent</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>(response lost on the wire, client retries...)
+Balance: 50 (correct, regardless of retry count)</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: UniquenessCheckForCreation.java -- &quot;create an order&quot; has no
+// natural absolute-set form (you can&#x27;t just &quot;set&quot; a new resource into
+// existence idempotently) -- so make it idempotent via a UNIQUENESS
+// CHECK keyed by a caller-supplied identifier instead.
+import java.util.*;
+
+public class UniquenessCheckForCreation {
+    static Map&lt;String, String&gt; ordersByRequestKey = new LinkedHashMap&lt;&gt;(); // requestKey -&gt; orderId
+    static int nextOrderId = 1;
+
+    static String createOrder(String requestKey, String sku) {
+        if (ordersByRequestKey.containsKey(requestKey)) {
+            String existingOrderId = ordersByRequestKey.get(requestKey);
+            System.out.println(&quot;  [duplicate request detected for key=&quot; + requestKey + &quot;, returning EXISTING order &quot; + existingOrderId + &quot;]&quot;);
+            return existingOrderId; // idempotent: same key -&gt; same result, no new order created
+        }
+        String orderId = &quot;ORD-&quot; + (nextOrderId++);
+        ordersByRequestKey.put(requestKey, orderId);
+        System.out.println(&quot;  [new order created: &quot; + orderId + &quot; for key=&quot; + requestKey + &quot;]&quot;);
+        return orderId;
+    }
+
+    public static void main(String[] args) {
+        String requestKey = &quot;client-generated-key-abc123&quot;;
+        String first = createOrder(requestKey, &quot;widget&quot;);
+        System.out.println(&quot;(response lost on the wire, client retries with the SAME key...)&quot;);
+        String retried = createOrder(requestKey, &quot;widget&quot;);
+        System.out.println(&quot;First call returned: &quot; + first + &quot;, retry returned: &quot; + retried + &quot; -- same order, no duplicate&quot;);
+        System.out.println(&quot;Total orders created: &quot; + new HashSet&lt;&gt;(ordersByRequestKey.values()).size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac UniquenessCheckForCreation.java &amp;&amp; java UniquenessCheckForCreation</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>  [new order created: ORD-1 for key=client-generated-key-abc123]
+(response lost on the wire, client retries with the SAME key...)
+  [duplicate request detected for key=client-generated-key-abc123, returning EXISTING order ORD-1]
+First call returned: ORD-1, retry returned: ORD-1 -- same order, no duplicate
+Total orders created: 1</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>addPoints</code> uses <code>Integer::sum</code> to merge a *relative* delta into the existing balance. <code>main</code> calls it twice with <code>50</code>, simulating a lost response followed by a client retry, and the balance ends up at <code>100</code> — double the correct value — because each call unconditionally added <code>50</code> on top of whatever was already there.</li><li><strong>Level 2 — redesigning around an absolute target</strong> — <code>setBalance</code> replaces the existing value outright with <code>balances.put</code>, rather than merging a delta. Calling it twice with the same target value <code>50</code> leaves the balance at exactly <code>50</code> both times — the second call is a genuine no-op in terms of end state, which is precisely what idempotency requires.</li><li><strong>Level 3 — a case where &quot;absolute set&quot; doesn&#x27;t naturally apply</strong> — creating a new order has no meaningful absolute target state to &quot;set to&quot; the way a balance does; each legitimate call is supposed to create something new. <code>createOrder</code> solves this differently: it takes a <code>requestKey</code> — an identifier the *client* generates once per logical intent and reuses on every retry of that same logical request — and checks <code>ordersByRequestKey</code> for that key before creating anything.</li><li><strong>Tracing the two calls in <code>main</code></strong> — the first <code>createOrder(requestKey, &quot;widget&quot;)</code> finds no existing entry for <code>requestKey</code>, so it proceeds to the &quot;new order&quot; branch: assigns <code>ORD-1</code>, stores the mapping, prints the creation message, and returns <code>&quot;ORD-1&quot;</code>. The second call, simulating the client&#x27;s retry with the *identical* <code>requestKey* (because the client is retrying what it believes might be the same failed request, not creating a new order), finds </code>requestKey<code> already present in </code>ordersByRequestKey<code>, takes the &quot;duplicate detected&quot; branch, prints that diagnostic, and returns the *same* </code>&quot;ORD-1&quot;` without creating anything new.</li><li><strong>Confirming no duplication occurred</strong> — <code>main</code>&#x27;s final line converts <code>ordersByRequestKey.values()</code> to a <code>HashSet</code> (deduplicating any repeated order ids) and prints its size, which is <code>1</code> — proving that despite two calls to <code>createOrder</code>, only one order genuinely exists. This is the general pattern for making an inherently non-idempotent operation (creation) safe to retry: shift from &quot;does the operation itself always converge to the same state&quot; to &quot;does calling it twice with the same identifying key produce the same observable result&quot; — see <a href="0083-idempotency-keys-for-safe-retries.md">idempotency keys for safe retries</a> for the full treatment of this pattern as used over HTTP.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the uniqueness key in Level 3 must be generated by the *client*, once, before the first attempt — and reused unchanged on every retry of that same logical request. If the client instead generates a fresh key on each retry (a common mistake when the key generation is accidentally placed inside the retry loop itself), the uniqueness check never catches the duplicate, and the operation is no more idempotent than Level 1&#x27;s naive version.</blockquote>
+<ul><li>Idempotency must be designed into an operation&#x27;s actual logic — choosing an idempotent HTTP verb alone doesn&#x27;t make the underlying operation behave idempotently.</li><li>Prefer redesigning around an absolute target state (<code>set</code> rather than <code>increment</code>) wherever the operation&#x27;s real-world meaning allows it — this is the simplest, most robust form of idempotency.</li><li>Where an absolute-state redesign genuinely doesn&#x27;t fit (like creating a new resource), use a client-generated, stable-across-retries uniqueness key instead — see <a href="0083-idempotency-keys-for-safe-retries.md">idempotency keys for safe retries</a>.</li><li>Idempotency is what makes blind retries — the simplest, most common way distributed systems recover from transient failures — safe in the first place.</li><li>Test idempotency explicitly: call the same operation twice (or more) with identical input and assert the end state matches a single call, exactly as this tutorial&#x27;s runnable examples do.</li></ul>
+  <div class="nav"><a class="prv" href="0081-content-negotiation.html"><span class="mini">← Previous</span>Content negotiation</a><a class="nxt" href="0083-idempotency-keys-for-safe-retries.html"><span class="mini">Next →</span>Idempotency keys for safe retries</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t82";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

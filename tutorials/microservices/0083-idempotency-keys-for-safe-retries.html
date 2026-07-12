@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Idempotency keys for safe retries" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 3. Synchronous Communication</div>
+  <div class="htitle">
+    <h1>"Idempotency keys for safe retries"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>An idempotency key is a unique identifier — usually a client-generated UUID — sent with a request (typically in an <code>Idempotency-Key</code> HTTP header) so that the server can recognize and safely deduplicate retries of what is logically the *same* request, even though the operation being requested (like creating an order) isn&#x27;t naturally idempotent on its own. This is the practical, HTTP-level implementation of the uniqueness-check technique introduced in <a href="0082-idempotency-of-operations.md">idempotency of operations</a>, standardized as a request header rather than a bespoke application field.</p>
+<h2>2. Why &amp; when</h2>
+<p>A <code>POST /orders</code> call that creates a new order is not idempotent by nature — calling it twice creates two orders. But a client that sends the request and never receives a response (timeout, dropped connection) genuinely cannot tell whether the order was created or not, and needs a safe way to retry. An idempotency key resolves this: the client generates one key per logical attempt to place *this* order, sends it with every retry of that same attempt, and the server, upon seeing a key it has already processed, returns the original result instead of creating a second order.</p>
+<p>Use idempotency keys for any <code>POST</code> (or non-idempotent <code>PATCH</code>) endpoint where a client might reasonably need to retry after an ambiguous failure — payment processing, order creation, any operation with a real-world side effect that must not be duplicated. It&#x27;s less necessary for naturally idempotent endpoints (<code>GET</code>, <code>PUT</code>, <code>DELETE</code>), which don&#x27;t need this extra mechanism at all.</p>
+<h2>3. Core concept</h2>
+<p>The server stores a mapping from idempotency key to the result it produced the first time it saw that key; on any subsequent request with the same key, it returns the stored result directly, without re-executing the operation.</p>
+<pre><code>POST /orders
+Idempotency-Key: 7f3e9a2b-...
+                    |
+        seen before? --- no  --&gt; execute, store (key -&gt; result), return result
+                    |
+                   yes  --&gt; return the STORED result, do NOT re-execute</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two identical POST requests with the same idempotency key: the first executes and stores the result, the second returns the stored result without re-executing">
+  <rect x="20" y="20" width="270" height="70" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="155" y="42" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Request 1: Idempotency-Key: K1</text>
+  <text x="155" y="60" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">key not seen -&gt; EXECUTE, store result</text>
+  <text x="155" y="78" fill="#79c0ff" font-size="7.5" text-anchor="middle" font-family="sans-serif">201 Created, order=ORD-1</text>
+
+  <rect x="350" y="20" width="270" height="70" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="485" y="42" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">Request 2 (retry): Idempotency-Key: K1</text>
+  <text x="485" y="60" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">key ALREADY seen -&gt; skip execution</text>
+  <text x="485" y="78" fill="#79c0ff" font-size="7.5" text-anchor="middle" font-family="sans-serif">201 Created, order=ORD-1 (same!)</text>
+
+  <rect x="200" y="120" width="240" height="40" rx="5" fill="#1c2430" stroke="#8b949e"/>
+  <text x="320" y="145" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">idempotency key store: {K1 -&gt; ORD-1}</text>
+  <line x1="155" y1="90" x2="280" y2="120" stroke="#8b949e" stroke-width="1.2"/>
+  <line x1="485" y1="90" x2="360" y2="120" stroke="#8b949e" stroke-width="1.2"/>
+</svg>
+<p>The idempotency key store is the single source of truth for whether a given logical request has already been executed.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order-creation endpoint, first with no idempotency-key handling (a retry creates a duplicate), then fixed by storing and checking keys before executing, then extended to also detect a client mistake — reusing the same key with genuinely different request data — which should be rejected, not silently accepted as if it were a legitimate retry.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoIdempotencyKey.java -- creating an order with NO idempotency
+// protection -- a retry after a lost response creates a duplicate.
+import java.util.*;
+
+public class NoIdempotencyKey {
+    static List&lt;String&gt; orders = new ArrayList&lt;&gt;();
+    static int nextId = 1;
+
+    static String createOrder(String sku) {
+        String orderId = &quot;ORD-&quot; + (nextId++);
+        orders.add(orderId + &quot;:&quot; + sku);
+        return orderId;
+    }
+
+    public static void main(String[] args) {
+        String first = createOrder(&quot;widget&quot;);
+        System.out.println(&quot;Created: &quot; + first);
+        System.out.println(&quot;(response lost, client retries the SAME logical request)&quot;);
+        String retried = createOrder(&quot;widget&quot;);
+        System.out.println(&quot;Created: &quot; + retried);
+        System.out.println(&quot;Total orders: &quot; + orders.size() + &quot; &quot; + orders);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac NoIdempotencyKey.java &amp;&amp; java NoIdempotencyKey</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Created: ORD-1
+(response lost, client retries the SAME logical request)
+Created: ORD-2
+Total orders: 2 [ORD-1:widget, ORD-2:widget]</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: WithIdempotencyKey.java -- the client sends an Idempotency-Key
+// with every attempt of the SAME logical request; the server stores and
+// checks it before executing.
+import java.util.*;
+
+public class WithIdempotencyKey {
+    record HttpRequest(String idempotencyKey, String sku) {}
+    record HttpResponse(int status, String orderId) {}
+
+    static Map&lt;String, String&gt; resultsByKey = new HashMap&lt;&gt;(); // idempotencyKey -&gt; orderId
+    static List&lt;String&gt; orders = new ArrayList&lt;&gt;();
+    static int nextId = 1;
+
+    static HttpResponse createOrder(HttpRequest req) {
+        if (resultsByKey.containsKey(req.idempotencyKey())) {
+            String existing = resultsByKey.get(req.idempotencyKey());
+            System.out.println(&quot;  [key &quot; + req.idempotencyKey() + &quot; already processed -- returning stored result]&quot;);
+            return new HttpResponse(201, existing);
+        }
+        String orderId = &quot;ORD-&quot; + (nextId++);
+        orders.add(orderId + &quot;:&quot; + req.sku());
+        resultsByKey.put(req.idempotencyKey(), orderId);
+        return new HttpResponse(201, orderId);
+    }
+
+    public static void main(String[] args) {
+        String key = &quot;7f3e9a2b-client-generated&quot;;
+        HttpResponse first = createOrder(new HttpRequest(key, &quot;widget&quot;));
+        System.out.println(&quot;Response: &quot; + first.status() + &quot; &quot; + first.orderId());
+
+        System.out.println(&quot;(response lost, client retries with the SAME key)&quot;);
+        HttpResponse retried = createOrder(new HttpRequest(key, &quot;widget&quot;));
+        System.out.println(&quot;Response: &quot; + retried.status() + &quot; &quot; + retried.orderId());
+
+        System.out.println(&quot;Total orders: &quot; + orders.size() + &quot; &quot; + orders);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac WithIdempotencyKey.java &amp;&amp; java WithIdempotencyKey</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Response: 201 ORD-1
+(response lost, client retries with the SAME key)
+  [key 7f3e9a2b-client-generated already processed -- returning stored result]
+Response: 201 ORD-1
+Total orders: 1 [ORD-1:widget]</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: DetectingKeyReuseWithDifferentPayload.java -- guard against a
+// CLIENT MISTAKE: reusing the same idempotency key for a genuinely
+// DIFFERENT request body -- this must be REJECTED, not silently treated
+// as a safe retry, since the two requests represent different intents.
+import java.util.*;
+
+public class DetectingKeyReuseWithDifferentPayload {
+    record HttpRequest(String idempotencyKey, String sku) {}
+    record StoredResult(String requestFingerprint, String orderId) {}
+    record HttpResponse(int status, String body) {}
+
+    static Map&lt;String, StoredResult&gt; resultsByKey = new HashMap&lt;&gt;();
+    static List&lt;String&gt; orders = new ArrayList&lt;&gt;();
+    static int nextId = 1;
+
+    static String fingerprint(HttpRequest req) { return req.sku(); } // simplified: hash of the real payload in practice
+
+    static HttpResponse createOrder(HttpRequest req) {
+        String fp = fingerprint(req);
+        if (resultsByKey.containsKey(req.idempotencyKey())) {
+            StoredResult stored = resultsByKey.get(req.idempotencyKey());
+            if (!stored.requestFingerprint().equals(fp)) {
+                return new HttpResponse(422, &quot;{\&quot;error\&quot;:\&quot;idempotency key reused with a different request body\&quot;}&quot;);
+            }
+            return new HttpResponse(201, &quot;{\&quot;orderId\&quot;:\&quot;&quot; + stored.orderId() + &quot;\&quot;}&quot;); // genuine retry -- safe
+        }
+        String orderId = &quot;ORD-&quot; + (nextId++);
+        orders.add(orderId + &quot;:&quot; + req.sku());
+        resultsByKey.put(req.idempotencyKey(), new StoredResult(fp, orderId));
+        return new HttpResponse(201, &quot;{\&quot;orderId\&quot;:\&quot;&quot; + orderId + &quot;\&quot;}&quot;);
+    }
+
+    public static void main(String[] args) {
+        String key = &quot;same-key-reused-incorrectly&quot;;
+        HttpResponse first = createOrder(new HttpRequest(key, &quot;widget&quot;));
+        System.out.println(&quot;Request A (sku=widget): &quot; + first.status() + &quot; &quot; + first.body());
+
+        HttpResponse second = createOrder(new HttpRequest(key, &quot;gadget&quot;)); // SAME key, DIFFERENT sku -- a bug or misuse
+        System.out.println(&quot;Request B (sku=gadget, same key!): &quot; + second.status() + &quot; &quot; + second.body());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac DetectingKeyReuseWithDifferentPayload.java &amp;&amp; java DetectingKeyReuseWithDifferentPayload</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Request A (sku=widget): 201 {&quot;orderId&quot;:&quot;ORD-1&quot;}
+Request B (sku=gadget, same key!): 422 {&quot;error&quot;:&quot;idempotency key reused with a different request body&quot;}</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>createOrder</code> has no concept of a key at all; it assigns a new id and appends to <code>orders</code> on every call. <code>main</code> calls it twice, simulating a lost-response retry, and the final <code>orders</code> list shows two separate entries (<code>ORD-1</code> and <code>ORD-2</code>) for what was meant to be one logical order — the exact duplication problem idempotency keys exist to prevent.</li><li><strong>Level 2 — storing and checking the key</strong> — <code>createOrder</code> now first checks <code>resultsByKey.containsKey(req.idempotencyKey())</code>. <code>main</code> sends the *same* <code>key</code> on both calls: the first call finds no entry, proceeds to create <code>ORD-1</code>, and stores <code>key -&gt; &quot;ORD-1&quot;</code>. The second call (the simulated retry) finds <code>key</code> already present, prints the &quot;already processed&quot; diagnostic, and returns the *stored* <code>&quot;ORD-1&quot;</code> directly, without touching <code>orders</code> at all — the final count confirms only one order genuinely exists.</li><li><strong>Level 3 — guarding against key misuse</strong> — real systems must also handle a client bug: sending the *same* idempotency key with a *different* request body (which should never happen for a genuine retry of the same logical intent, but can happen due to a client-side error, like reusing a key across two different orders). <code>fingerprint</code> computes a simplified stand-in for a real hash of the request payload (here, just the <code>sku</code> field); <code>StoredResult</code> now stores both the <code>orderId</code> *and* the <code>requestFingerprint</code> that produced it.</li><li><strong>Tracing Request A and Request B</strong> — <code>createOrder(new HttpRequest(key, &quot;widget&quot;))</code> finds no existing entry for <code>key</code>, computes <code>fp = &quot;widget&quot;</code>, creates <code>ORD-1</code>, and stores <code>key -&gt; StoredResult(&quot;widget&quot;, &quot;ORD-1&quot;)</code>, returning <code>201</code> with <code>ORD-1</code>. <code>createOrder(new HttpRequest(key, &quot;gadget&quot;))</code> reuses the *same* <code>key</code>, finds the stored entry, computes the new request&#x27;s fingerprint as <code>&quot;gadget&quot;</code>, and compares it against the stored <code>&quot;widget&quot;</code> — they don&#x27;t match, so the method returns <code>422</code> with an explicit error, rather than either creating a second order or silently returning <code>ORD-1</code> as if <code>gadget</code> and <code>widget</code> were the same request.</li><li><strong>Why this distinction matters</strong> — silently treating Request B as a safe retry (returning <code>ORD-1</code>) would hide a real bug from the client — they asked for a <code>gadget</code> order and received confirmation of a <code>widget</code> order instead, with no error raised. Silently treating it as a new order (creating <code>ORD-2</code>) would defeat the whole purpose of the idempotency key. Returning <code>422</code> (or <code>409 Conflict</code>, another reasonable choice) makes the conflict explicit and visible, which is the honest, correct response to a request that violates the idempotency key&#x27;s contract.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> idempotency keys need an expiration policy — storing every key forever is an unbounded memory/storage leak. A common approach is to expire stored keys after a window generous enough to cover realistic retry timeframes (minutes to hours), after which a reused key is treated as brand new — a tradeoff between storage cost and how long retry safety is guaranteed.</blockquote>
+<ul><li>The key is generated once by the *client*, per logical attempt, and reused unchanged across every retry of that same attempt — never regenerated inside a retry loop.</li><li>The server&#x27;s job is to store the key alongside the result it produced, and return that stored result — without re-executing the operation — whenever it sees the same key again.</li><li>Detect and reject key reuse with a genuinely different payload explicitly (a <code>409</code>/<code>422</code>), rather than silently treating it as either a safe retry or a new operation — both silent options hide a real problem.</li><li>This is the standardized, HTTP-header-based version of the general uniqueness-check technique from <a href="0082-idempotency-of-operations.md">idempotency of operations</a>.</li><li>Idempotency keys need a bounded expiration window — unbounded storage of every key ever seen is not sustainable in a real, long-running service.</li></ul>
+  <div class="nav"><a class="prv" href="0082-idempotency-of-operations.html"><span class="mini">← Previous</span>Idempotency of operations</a><a class="nxt" href="0084-request-response-payload-design-dtos.html"><span class="mini">Next →</span>Request/response payload design (DTOs)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t83";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
