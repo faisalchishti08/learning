@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Message ordering guarantees" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 4. Asynchronous & Event-Driven Communication</div>
+  <div class="htitle">
+    <h1>"Message ordering guarantees"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Message ordering guarantees describe whether, and under what conditions, a messaging system promises to deliver messages to a consumer in the same order they were produced. Plain queues generally guarantee nothing about order once more than one consumer is involved; systems that need order use a technique like partitioning by key to get &quot;ordered within a partition, unordered across partitions.&quot;</p>
+<h2>2. Why &amp; when</h2>
+<p>Some events only make sense in order: <code>OrderCreated</code> before <code>OrderShipped</code> before <code>OrderDelivered</code> for the *same* order, or <code>AccountDebited</code> before <code>AccountCredited</code> for the *same* transfer. If a consumer sees <code>OrderShipped</code> before <code>OrderCreated</code> because two different workers happened to process them out of turn, the consumer&#x27;s logic can easily end up in an invalid state (shipping an order that, as far as it knows, doesn&#x27;t exist yet).</p>
+<p>Ordering only matters, and needs to be designed for, *within* a related sequence of events — order between *unrelated* events (an event for order 42 versus an event for order 99) is almost never something any consumer actually needs. Recognizing that distinction is what makes ordering practical to guarantee: instead of ordering an entire firehose of unrelated events (expensive, often impossible at scale), a system only needs to order events that share a key.</p>
+<h2>3. Core concept</h2>
+<p>Partitioning by key routes every message with the same key (e.g., the same <code>orderId</code>) to the same partition, and within a single partition, delivery order matches send order; across different partitions (different keys), no ordering relationship is promised or needed.</p>
+<pre><code class="lang-java">// same orderId -&gt; same partition -&gt; guaranteed order for THIS order&#x27;s events
+broker.send(&quot;order-events&quot;, key = &quot;order-42&quot;, event = &quot;OrderCreated&quot;);
+broker.send(&quot;order-events&quot;, key = &quot;order-42&quot;, event = &quot;OrderShipped&quot;);
+// a DIFFERENT orderId can land on a different partition, processed independently, in parallel
+broker.send(&quot;order-events&quot;, key = &quot;order-99&quot;, event = &quot;OrderCreated&quot;);</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Messages with the same key are routed to the same partition and stay in order within it; messages with different keys land on different partitions with no ordering relationship between them">
+  <rect x="20" y="20" width="180" height="70" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="110" y="40" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Partition 0 (key: order-42)</text>
+  <rect x="35" y="50" width="60" height="24" fill="#79c0ff" opacity="0.5"/><text x="65" y="66" font-size="7" text-anchor="middle" fill="#0d1117" font-family="sans-serif">Created</text>
+  <rect x="100" y="50" width="60" height="24" fill="#79c0ff" opacity="0.5"/><text x="130" y="66" font-size="7" text-anchor="middle" fill="#0d1117" font-family="sans-serif">Shipped</text>
+
+  <rect x="20" y="120" width="180" height="70" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="110" y="140" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Partition 1 (key: order-99)</text>
+  <rect x="35" y="150" width="60" height="24" fill="#79c0ff" opacity="0.5"/><text x="65" y="166" font-size="7" text-anchor="middle" fill="#0d1117" font-family="sans-serif">Created</text>
+
+  <text x="380" y="60" fill="#8b949e" font-size="8.5" font-family="sans-serif">order-42's events always arrive Created -&gt; Shipped</text>
+  <text x="380" y="160" fill="#8b949e" font-size="8.5" font-family="sans-serif">order-99's events have no ordering vs. order-42's</text>
+</svg>
+<p>Ordering is guaranteed within a partition (same key); there is no ordering promise across different partitions.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order lifecycle consumer that starts with a single unordered queue (showing out-of-order delivery corrupting state), then adds key-based partitioning so same-order events stay ordered, and finally runs multiple partitions concurrently to show ordering holds within each while different orders process independently in parallel.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UnorderedQueueBug.java -- a single queue with concurrent workers gives NO ordering guarantee.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class UnorderedQueueBug {
+    record Event(String orderId, String type) {}
+
+    public static void main(String[] args) throws InterruptedException {
+        BlockingQueue&lt;Event&gt; queue = new LinkedBlockingQueue&lt;&gt;();
+        // two workers pulling from ONE shared queue -- delivery order to each worker isn&#x27;t guaranteed
+        // relative to the OTHER worker&#x27;s processing time
+        queue.put(new Event(&quot;order-42&quot;, &quot;OrderCreated&quot;));
+        queue.put(new Event(&quot;order-42&quot;, &quot;OrderShipped&quot;));
+
+        Map&lt;String, List&lt;String&gt;&gt; stateByOrder = new ConcurrentHashMap&lt;&gt;();
+        ExecutorService pool = Executors.newFixedThreadPool(2); // TWO workers racing on the same queue
+        Runnable worker = () -&gt; {
+            Event e;
+            try {
+                while ((e = queue.poll(200, TimeUnit.MILLISECONDS)) != null) {
+                    Thread.sleep((long) (Math.random() * 50)); // simulated variable processing time
+                    stateByOrder.computeIfAbsent(e.orderId(), k -&gt; new CopyOnWriteArrayList&lt;&gt;()).add(e.type());
+                }
+            } catch (InterruptedException ignored) { }
+        };
+        pool.submit(worker); pool.submit(worker);
+        pool.shutdown();
+        pool.awaitTermination(2, TimeUnit.SECONDS);
+
+        System.out.println(&quot;order-42 saw events in this order: &quot; + stateByOrder.get(&quot;order-42&quot;));
+        System.out.println(&quot;(run repeatedly -- this can print [OrderShipped, OrderCreated], which is nonsensical)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac UnorderedQueueBug.java &amp;&amp; java UnorderedQueueBug</code> (JDK 17+).</p>
+<p>Because two workers race to pull from the same queue and each has its own random processing delay, <code>OrderShipped</code> can finish being recorded before <code>OrderCreated</code> — the queue delivers messages, but nothing guarantees the *order in which processing completes*.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: PartitionedByKey.java -- routing same-orderId events to the SAME partition,
+// each partition processed sequentially by a single worker, restoring order.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class PartitionedByKey {
+    record Event(String orderId, String type) {}
+
+    static class PartitionedBroker {
+        private final List&lt;BlockingQueue&lt;Event&gt;&gt; partitions;
+        PartitionedBroker(int numPartitions) {
+            partitions = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; numPartitions; i++) partitions.add(new LinkedBlockingQueue&lt;&gt;());
+        }
+        void send(Event e) {
+            int partitionIndex = Math.floorMod(e.orderId().hashCode(), partitions.size()); // SAME key -&gt; SAME partition, always
+            partitions.get(partitionIndex).offer(e);
+        }
+        BlockingQueue&lt;Event&gt; partition(int i) { return partitions.get(i); }
+        int numPartitions() { return partitions.size(); }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        PartitionedBroker broker = new PartitionedBroker(4);
+        broker.send(new Event(&quot;order-42&quot;, &quot;OrderCreated&quot;));
+        broker.send(new Event(&quot;order-42&quot;, &quot;OrderShipped&quot;));
+        broker.send(new Event(&quot;order-42&quot;, &quot;OrderDelivered&quot;));
+
+        Map&lt;String, List&lt;String&gt;&gt; stateByOrder = new ConcurrentHashMap&lt;&gt;();
+        ExecutorService pool = Executors.newFixedThreadPool(broker.numPartitions());
+        // ONE worker per partition -- a partition is only ever drained by a single sequential worker
+        for (int i = 0; i &lt; broker.numPartitions(); i++) {
+            BlockingQueue&lt;Event&gt; p = broker.partition(i);
+            pool.submit(() -&gt; {
+                Event e;
+                try {
+                    while ((e = p.poll(200, TimeUnit.MILLISECONDS)) != null) {
+                        stateByOrder.computeIfAbsent(e.orderId(), k -&gt; new CopyOnWriteArrayList&lt;&gt;()).add(e.type());
+                    }
+                } catch (InterruptedException ignored) { }
+            });
+        }
+        pool.shutdown();
+        pool.awaitTermination(2, TimeUnit.SECONDS);
+
+        System.out.println(&quot;order-42 saw events in this order: &quot; + stateByOrder.get(&quot;order-42&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac PartitionedByKey.java &amp;&amp; java PartitionedByKey</code> (JDK 17+).</p>
+<p>Expected output (always, on every run):</p>
+<pre><code>order-42 saw events in this order: [OrderCreated, OrderShipped, OrderDelivered]</code></pre>
+<p>Every event for <code>&quot;order-42&quot;</code> hashes to the same partition index and is drained by that partition&#x27;s single dedicated worker, so it is processed strictly in send order — no race is even possible.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: OrderedWithinPartitionParallelAcross.java -- proves ordering holds per-order
+// WHILE multiple different orders are processed genuinely concurrently across partitions.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class OrderedWithinPartitionParallelAcross {
+    record Event(String orderId, String type, long sentAtNanos) {}
+
+    static class PartitionedBroker {
+        private final List&lt;BlockingQueue&lt;Event&gt;&gt; partitions;
+        PartitionedBroker(int numPartitions) {
+            partitions = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; numPartitions; i++) partitions.add(new LinkedBlockingQueue&lt;&gt;());
+        }
+        void send(String orderId, String type) {
+            int idx = Math.floorMod(orderId.hashCode(), partitions.size());
+            partitions.get(idx).offer(new Event(orderId, type, System.nanoTime()));
+        }
+        BlockingQueue&lt;Event&gt; partition(int i) { return partitions.get(i); }
+        int numPartitions() { return partitions.size(); }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        PartitionedBroker broker = new PartitionedBroker(4);
+        String[] stages = {&quot;Created&quot;, &quot;Shipped&quot;, &quot;Delivered&quot;};
+        String[] orderIds = {&quot;order-42&quot;, &quot;order-99&quot;, &quot;order-7&quot;}; // multiple INDEPENDENT orders
+
+        for (String stage : stages) {
+            for (String orderId : orderIds) broker.send(orderId, &quot;Order&quot; + stage);
+        }
+
+        Map&lt;String, List&lt;String&gt;&gt; stateByOrder = new ConcurrentHashMap&lt;&gt;();
+        ExecutorService pool = Executors.newFixedThreadPool(broker.numPartitions());
+        for (int i = 0; i &lt; broker.numPartitions(); i++) {
+            BlockingQueue&lt;Event&gt; p = broker.partition(i);
+            pool.submit(() -&gt; {
+                Event e;
+                try {
+                    while ((e = p.poll(200, TimeUnit.MILLISECONDS)) != null) {
+                        Thread.sleep((long) (Math.random() * 20)); // varying processing time PER PARTITION, still fine
+                        stateByOrder.computeIfAbsent(e.orderId(), k -&gt; new CopyOnWriteArrayList&lt;&gt;()).add(e.type());
+                    }
+                } catch (InterruptedException ignored) { }
+            });
+        }
+        pool.shutdown();
+        pool.awaitTermination(2, TimeUnit.SECONDS);
+
+        for (String orderId : orderIds) {
+            System.out.println(orderId + &quot;: &quot; + stateByOrder.get(orderId));
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac OrderedWithinPartitionParallelAcross.java &amp;&amp; java OrderedWithinPartitionParallelAcross</code> (JDK 17+).</p>
+<p>Expected output (order of the three *lines* may vary between runs, but each individual order&#x27;s list is always <code>[OrderCreated, OrderShipped, OrderDelivered]</code>):</p>
+<pre><code>order-42: [OrderCreated, OrderShipped, OrderDelivered]
+order-99: [OrderCreated, OrderShipped, OrderDelivered]
+order-7: [OrderCreated, OrderShipped, OrderDelivered]</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — both worker threads poll the *same* <code>queue</code>, so which worker gets <code>OrderCreated</code> versus <code>OrderShipped</code> is a race; combined with each worker sleeping a random amount before recording its result, the two events can finish being recorded in either order, corrupting the expected <code>order-42</code> lifecycle.</li><li><strong>Level 2, routing by key</strong> — <code>send</code> computes <code>Math.floorMod(e.orderId().hashCode(), partitions.size())</code>, a deterministic function of <code>orderId</code> alone, so every event for <code>&quot;order-42&quot;</code> — regardless of when it was sent — always resolves to the identical partition index.</li><li><strong>Level 2, one worker per partition</strong> — the <code>for</code> loop submits exactly one task per partition, and each task&#x27;s <code>while</code> loop only ever pulls from *that* partition&#x27;s queue; since a <code>BlockingQueue</code> preserves FIFO order and only one thread ever drains a given partition, everything sent to that partition is processed in the exact order it was sent.</li><li><strong>Level 2, the guaranteed result</strong> — because all three <code>order-42</code> events land in the same partition and that partition has exactly one sequential consumer, <code>[OrderCreated, OrderShipped, OrderDelivered]</code> is not merely likely, it is structurally guaranteed by the code — there is no race to win or lose.</li><li><strong>Level 3, multiple orders interleaved at send time</strong> — the nested loop sends <code>Created</code> for all three orders, then <code>Shipped</code> for all three, then <code>Delivered</code> for all three, deliberately interleaving different orders&#x27; events in send order to make sure partitioning, not send timing, is what produces the correct per-order sequence.</li><li><strong>Level 3, partitions running truly in parallel</strong> — each of the four partition workers runs on its own thread with its own random <code>Thread.sleep</code>, so partitions genuinely process at different, unpredictable speeds relative to each other — this models real concurrent partition consumers.</li><li><strong>Level 3, the outcome per order</strong> — despite that cross-partition unpredictability, every individual order&#x27;s list still comes out as <code>[OrderCreated, OrderShipped, OrderDelivered]</code>, because each order&#x27;s three events, however they were interleaved with other orders&#x27; events at send time, always ended up in the same partition and were drained by that partition&#x27;s single worker in FIFO order — proving ordering is preserved *within* a key while different keys are processed with full parallelism.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> picking a partition key that is too coarse (e.g., partitioning by a fixed small <code>region</code> value instead of by <code>orderId</code>) forces unrelated messages to share a partition and lose the parallelism partitioning was supposed to provide; picking a key that is too fine-grained (e.g., a fresh random value per message) gives up ordering entirely, since no two related messages would reliably land on the same partition — the key must exactly match &quot;the set of events that actually need to stay in order relative to each other.&quot;</blockquote>
+<ul><li>Ordering guarantees are almost never &quot;all messages system-wide, in order&quot; — they are &quot;messages that share a key, in order relative to each other.&quot;</li><li>Partitioning by a stable, meaningful key (like <code>orderId</code>) routes related events to the same partition, where a single sequential consumer preserves send order.</li><li>Unrelated messages (different keys, different partitions) have no ordering relationship, and that is fine — most consumers never actually need it.</li><li>The choice of partition key is a real design decision: too coarse loses parallelism, too fine loses the ordering guarantee that was the whole point.</li><li>Systems like Kafka expose this model directly (partitions with per-partition ordering); understanding it explains why &quot;Kafka guarantees ordering&quot; is only true within a partition, not across the whole topic.</li></ul>
+  <div class="nav"><a class="prv" href="0118-at-most-once-at-least-once-exactly-once-delivery.html"><span class="mini">← Previous</span>At-most-once / at-least-once / exactly-once delivery</a><a class="nxt" href="0120-competing-consumers-pattern.html"><span class="mini">Next →</span>Competing consumers pattern</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t119";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
