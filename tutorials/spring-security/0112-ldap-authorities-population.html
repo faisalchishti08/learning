@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"LDAP authorities population" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-security.html">Spring Security</a> › 6. SAML2 & LDAP & Integrations</div>
+  <div class="htitle">
+    <h1>"LDAP authorities population"</h1>
+    <a class="back" href="../../spring-security.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Card 0111&#x27;s <code>BindAuthenticator</code> establishes *who* a user is (their password checked out against the directory), but says nothing about *what they&#x27;re allowed to do* — that&#x27;s <code>LdapAuthoritiesPopulator</code>&#x27;s job, a separate interface invoked immediately after a successful bind to compute the <code>GrantedAuthority</code> set for the resulting <code>Authentication</code>. The default implementation, <code>DefaultLdapAuthoritiesPopulator</code>, searches the directory for <strong>group entries</strong> that list the user&#x27;s DN as a member (a separate part of the directory tree from the user entries themselves, typically under an <code>ou=groups</code> branch), and maps each matching group&#x27;s name into a <code>ROLE_</code>-prefixed authority.</p>
+<pre><code class="lang-java">@Bean
+public LdapAuthoritiesPopulator authoritiesPopulator(BaseLdapPathContextSource contextSource) {
+    DefaultLdapAuthoritiesPopulator populator = new DefaultLdapAuthoritiesPopulator(contextSource, &quot;ou=groups&quot;);
+    populator.setGroupSearchFilter(&quot;(member={0})&quot;); // {0} = the user&#x27;s DN
+    populator.setGroupRoleAttribute(&quot;cn&quot;);            // which attribute of the group entry becomes the role name
+    populator.setRolePrefix(&quot;ROLE_&quot;);
+    populator.setConvertToUpperCase(true);
+    return populator;
+}</code></pre>
+<h2>2. Why &amp; when</h2>
+<p>LDAP directories model group membership as a genuinely separate concept from user identity — a user entry (<code>uid=alice,ou=people,...</code>) doesn&#x27;t itself list &quot;what groups am I in&quot;; instead, group entries (<code>cn=admins,ou=groups,...</code>) list &quot;who are my members,&quot; each as a full DN reference. This inverted structure means computing &quot;what authorities does alice have&quot; requires a *search* — find every group entry whose <code>member</code> attribute contains alice&#x27;s DN — rather than a simple attribute read on alice&#x27;s own entry, and <code>LdapAuthoritiesPopulator</code> exists specifically to encapsulate that search so authentication code doesn&#x27;t need to know LDAP&#x27;s group-membership modeling details.</p>
+<p>Reach for understanding (or customizing) <code>LdapAuthoritiesPopulator</code> when:</p>
+<ul><li>Group membership is the organization&#x27;s primary access-control mechanism — most enterprise LDAP/Active Directory deployments already model roles this way, and mapping it directly into Spring Security authorities avoids duplicating a separate role system in the application.</li><li>The default <code>member={0})</code> search filter doesn&#x27;t match your directory&#x27;s schema — some LDAP schemas use <code>uniqueMember</code> instead of <code>member</code>, or store group membership on the *user* entry via a <code>memberOf</code> attribute rather than on the group entry, each requiring a different populator configuration or a custom implementation.</li><li>Authorities need to combine multiple sources — group membership *and* an attribute on the user&#x27;s own entry (a <code>title</code> or <code>employeeType</code> field, for instance) — which requires a custom <code>LdapAuthoritiesPopulator</code> that queries both and merges the results.</li><li>Debugging why an authenticated LDAP user has no authorities at all (login succeeds, but every <code>@PreAuthorize</code> check fails) — this almost always traces to the group search filter or search base not matching how the directory is actually structured, not to a problem with the bind itself.</li></ul>
+<h2>3. Core concept</h2>
+<pre><code>LDAP directory structure (typical):
+    dc=example,dc=com
+        ou=people
+            uid=alice,ou=people,dc=example,dc=com          &lt;-- USER entries
+            uid=bob,ou=people,dc=example,dc=com
+        ou=groups
+            cn=engineering,ou=groups,dc=example,dc=com      &lt;-- GROUP entries
+                member: uid=alice,ou=people,dc=example,dc=com
+                member: uid=bob,ou=people,dc=example,dc=com
+            cn=admins,ou=groups,dc=example,dc=com
+                member: uid=alice,ou=people,dc=example,dc=com
+
+DefaultLdapAuthoritiesPopulator.getGrantedAuthorities(userData, username):
+  1. SEARCH under groupSearchBase (e.g. &quot;ou=groups&quot;), filter (member={0}), {0} = the user&#x27;s DN
+  2. for EACH matching group entry:
+       read groupRoleAttribute (e.g. &quot;cn&quot;) -&gt; the group&#x27;s name, e.g. &quot;engineering&quot;
+       optionally uppercase it, then prefix with rolePrefix -&gt; &quot;ROLE_ENGINEERING&quot;
+  3. return the full set of GrantedAuthority objects
+
+alice&#x27;s DN appears in BOTH &quot;engineering&quot; and &quot;admins&quot; -&gt; authorities = [ROLE_ENGINEERING, ROLE_ADMINS]
+bob&#x27;s DN appears ONLY in &quot;engineering&quot;                 -&gt; authorities = [ROLE_ENGINEERING]</code></pre>
+<p>This search happens fresh on every login (not cached across logins), since group membership can change between one login and the next, and the populator has no way to know if it has, short of asking again.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagram showing a users DN being used to search group entries whose member attribute contains that DN each matching groups cn attribute becomes a ROLE prefixed authority producing the final authority set for that user">
+  <rect x="20" y="30" width="150" height="46" rx="7" fill="#1c2430" stroke="#79c0ff" stroke-width="1.3"/>
+  <text x="95" y="50" fill="#79c0ff" font-size="9.5" text-anchor="middle" font-family="sans-serif">alice's DN</text>
+  <text x="95" y="64" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">(bind already succeeded)</text>
+
+  <line x1="170" y1="53" x2="210" y2="53" stroke="#79c0ff" stroke-width="1.6" marker-end="url(#la112)"/>
+
+  <rect x="215" y="20" width="220" height="70" rx="7" fill="#1c2430" stroke="#8b949e" stroke-width="1.3"/>
+  <text x="325" y="40" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">SEARCH ou=groups</text>
+  <text x="325" y="56" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">filter: (member=alice's DN)</text>
+  <text x="325" y="72" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">-&gt; matches: engineering, admins</text>
+
+  <line x1="325" y1="90" x2="325" y2="120" stroke="#8b949e" stroke-width="1.6" marker-end="url(#la112b)"/>
+
+  <rect x="220" y="122" width="120" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.3"/>
+  <text x="280" y="146" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">cn=engineering</text>
+
+  <rect x="345" y="122" width="120" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.3"/>
+  <text x="405" y="146" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">cn=admins</text>
+
+  <line x1="280" y1="162" x2="280" y2="185" stroke="#6db33f" stroke-width="1.4" marker-end="url(#la112c)"/>
+  <line x1="405" y1="162" x2="405" y2="185" stroke="#6db33f" stroke-width="1.4" marker-end="url(#la112c)"/>
+
+  <rect x="180" y="188" width="320" height="40" rx="7" fill="#1c2430" stroke="#3fb950" stroke-width="1.4"/>
+  <text x="340" y="212" fill="#3fb950" font-size="9.5" text-anchor="middle" font-family="sans-serif">[ROLE_ENGINEERING, ROLE_ADMINS]</text>
+
+  <defs>
+    <marker id="la112" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#79c0ff"/></marker>
+    <marker id="la112b" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="la112c" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>Group entries reference members, not the other way around — computing a user&#x27;s authorities means searching for every group that names them.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: a from-scratch directory of user and group entries, a search-based authorities populator growing from a single group match into multiple simultaneous memberships, then into a custom populator merging group-derived authorities with an attribute read directly from the user&#x27;s own entry.</p>
+<h3>Level 1 — Basic</h3>
+<p>Search group entries for one matching membership.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class LdapAuthoritiesLevel1 {
+    record GroupEntry(String cn, Set&lt;String&gt; members) {}
+
+    static class LdapDirectory {
+        private final List&lt;GroupEntry&gt; groups = new ArrayList&lt;&gt;();
+        void addGroup(GroupEntry group) { groups.add(group); }
+
+        // mirrors the (member={0}) search filter -- find every group entry naming this DN
+        List&lt;GroupEntry&gt; findGroupsContaining(String userDn) {
+            List&lt;GroupEntry&gt; matches = new ArrayList&lt;&gt;();
+            for (GroupEntry g : groups) if (g.members().contains(userDn)) matches.add(g);
+            return matches;
+        }
+    }
+
+    static Set&lt;String&gt; computeAuthorities(LdapDirectory directory, String userDn) {
+        Set&lt;String&gt; authorities = new LinkedHashSet&lt;&gt;();
+        for (GroupEntry group : directory.findGroupsContaining(userDn)) {
+            authorities.add(&quot;ROLE_&quot; + group.cn().toUpperCase());
+        }
+        return authorities;
+    }
+
+    public static void main(String[] args) {
+        LdapDirectory directory = new LdapDirectory();
+        directory.addGroup(new GroupEntry(&quot;engineering&quot;, Set.of(&quot;uid=alice,ou=people,dc=example,dc=com&quot;)));
+
+        Set&lt;String&gt; authorities = computeAuthorities(directory, &quot;uid=alice,ou=people,dc=example,dc=com&quot;);
+        System.out.println(&quot;alice&#x27;s authorities: &quot; + authorities);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>LdapAuthoritiesLevel1.java</code>, run <code>java LdapAuthoritiesLevel1.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>alice&#x27;s authorities: [ROLE_ENGINEERING]</code></pre>
+<p><code>findGroupsContaining</code> mirrors the <code>(member={0})</code> search filter, and <code>computeAuthorities</code> maps each match&#x27;s <code>cn</code> into a <code>ROLE_</code>-prefixed authority — exactly <code>DefaultLdapAuthoritiesPopulator</code>&#x27;s core job.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>A user in multiple groups simultaneously, and a user in none at all.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class LdapAuthoritiesLevel2 {
+    record GroupEntry(String cn, Set&lt;String&gt; members) {}
+
+    static class LdapDirectory {
+        private final List&lt;GroupEntry&gt; groups = new ArrayList&lt;&gt;();
+        void addGroup(GroupEntry group) { groups.add(group); }
+        List&lt;GroupEntry&gt; findGroupsContaining(String userDn) {
+            List&lt;GroupEntry&gt; matches = new ArrayList&lt;&gt;();
+            for (GroupEntry g : groups) if (g.members().contains(userDn)) matches.add(g);
+            return matches;
+        }
+    }
+
+    static Set&lt;String&gt; computeAuthorities(LdapDirectory directory, String userDn) {
+        Set&lt;String&gt; authorities = new LinkedHashSet&lt;&gt;();
+        for (GroupEntry group : directory.findGroupsContaining(userDn)) {
+            authorities.add(&quot;ROLE_&quot; + group.cn().toUpperCase());
+        }
+        return authorities;
+    }
+
+    public static void main(String[] args) {
+        LdapDirectory directory = new LdapDirectory();
+        String aliceDn = &quot;uid=alice,ou=people,dc=example,dc=com&quot;;
+        String bobDn = &quot;uid=bob,ou=people,dc=example,dc=com&quot;;
+
+        directory.addGroup(new GroupEntry(&quot;engineering&quot;, Set.of(aliceDn, bobDn)));
+        directory.addGroup(new GroupEntry(&quot;admins&quot;, Set.of(aliceDn))); // alice ONLY
+
+        System.out.println(&quot;alice: &quot; + computeAuthorities(directory, aliceDn));
+        System.out.println(&quot;bob: &quot; + computeAuthorities(directory, bobDn));
+
+        String carolDn = &quot;uid=carol,ou=people,dc=example,dc=com&quot;; // authenticated, but in NO groups
+        System.out.println(&quot;carol: &quot; + computeAuthorities(directory, carolDn));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>LdapAuthoritiesLevel2.java</code>, run <code>java LdapAuthoritiesLevel2.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>alice: [ROLE_ENGINEERING, ROLE_ADMINS]
+bob: [ROLE_ENGINEERING]
+carol: []</code></pre>
+<p>What changed: alice&#x27;s DN appears in two group entries&#x27; <code>members</code> sets, yielding two authorities, while bob appears in only one and carol (who authenticated successfully via card 0111&#x27;s bind) appears in none — an empty authority set is a completely valid, unremarkable outcome, distinct from a failed login; it simply means this successfully-authenticated user has no directory-derived permissions at all.</p>
+<h3>Level 3 — Advanced</h3>
+<p>A custom populator merging group-derived authorities with an authority computed directly from an attribute on the user&#x27;s own entry (a <code>title</code> field) — a common real-world extension beyond the default group-only behavior.</p>
+<pre><code class="lang-java">import java.util.*;
+
+public class LdapAuthoritiesLevel3 {
+    record GroupEntry(String cn, Set&lt;String&gt; members) {}
+    record UserEntry(String dn, Map&lt;String, String&gt; attributes) {}
+
+    static class LdapDirectory {
+        private final List&lt;GroupEntry&gt; groups = new ArrayList&lt;&gt;();
+        private final Map&lt;String, UserEntry&gt; usersByDn = new HashMap&lt;&gt;();
+
+        void addGroup(GroupEntry group) { groups.add(group); }
+        void addUser(UserEntry user) { usersByDn.put(user.dn(), user); }
+
+        List&lt;GroupEntry&gt; findGroupsContaining(String userDn) {
+            List&lt;GroupEntry&gt; matches = new ArrayList&lt;&gt;();
+            for (GroupEntry g : groups) if (g.members().contains(userDn)) matches.add(g);
+            return matches;
+        }
+
+        UserEntry findUser(String dn) { return usersByDn.get(dn); }
+    }
+
+    // a CUSTOM LdapAuthoritiesPopulator -- merges group membership AND a user-entry attribute
+    static Set&lt;String&gt; computeMergedAuthorities(LdapDirectory directory, String userDn) {
+        Set&lt;String&gt; authorities = new LinkedHashSet&lt;&gt;();
+
+        // source 1: group membership, exactly as the default populator does it
+        for (GroupEntry group : directory.findGroupsContaining(userDn)) {
+            authorities.add(&quot;ROLE_&quot; + group.cn().toUpperCase());
+        }
+
+        // source 2: an attribute directly on the user&#x27;s OWN entry -- the default populator never reads this
+        UserEntry user = directory.findUser(userDn);
+        if (user != null) {
+            String title = user.attributes().get(&quot;title&quot;);
+            if (&quot;Senior Engineer&quot;.equals(title) || &quot;Staff Engineer&quot;.equals(title)) {
+                authorities.add(&quot;ROLE_SENIOR&quot;); // derived from a job-title attribute, NOT from group membership
+            }
+        }
+
+        return authorities;
+    }
+
+    public static void main(String[] args) {
+        LdapDirectory directory = new LdapDirectory();
+        String aliceDn = &quot;uid=alice,ou=people,dc=example,dc=com&quot;;
+        String bobDn = &quot;uid=bob,ou=people,dc=example,dc=com&quot;;
+
+        directory.addGroup(new GroupEntry(&quot;engineering&quot;, Set.of(aliceDn, bobDn)));
+        directory.addUser(new UserEntry(aliceDn, Map.of(&quot;cn&quot;, &quot;Alice Example&quot;, &quot;title&quot;, &quot;Staff Engineer&quot;)));
+        directory.addUser(new UserEntry(bobDn, Map.of(&quot;cn&quot;, &quot;Bob Example&quot;, &quot;title&quot;, &quot;Junior Engineer&quot;)));
+
+        System.out.println(&quot;alice (Staff Engineer): &quot; + computeMergedAuthorities(directory, aliceDn));
+        System.out.println(&quot;bob (Junior Engineer): &quot; + computeMergedAuthorities(directory, bobDn));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>LdapAuthoritiesLevel3.java</code>, run <code>java LdapAuthoritiesLevel3.java</code> (JDK 17+ runs single files directly).</p>
+<p>Expected output:</p>
+<pre><code>alice (Staff Engineer): [ROLE_ENGINEERING, ROLE_SENIOR]
+bob (Junior Engineer): [ROLE_ENGINEERING]</code></pre>
+<p>What changed: <code>computeMergedAuthorities</code> reads from two genuinely different places in the directory — the group search (source 1, exactly as the default populator does it) and a direct attribute read on the user&#x27;s own entry (source 2, something a real custom <code>LdapAuthoritiesPopulator</code> implementation would add) — alice&#x27;s <code>&quot;title&quot;</code> attribute earns her an additional <code>ROLE_SENIOR</code> that has nothing to do with group membership at all, while bob&#x27;s different title value does not.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace alice&#x27;s full authentication-then-authorization sequence from Level 3, picking up immediately after card 0111&#x27;s bind succeeds.</p>
+<p><strong>Step 1 — the bind succeeds</strong> (card 0111): alice&#x27;s password was verified by the directory itself. At this point, <code>SecurityContextHolder</code> has not yet been populated — the <code>Authentication</code> object still needs its authorities computed.</p>
+<p><strong>Step 2 — the authorities populator is invoked</strong>, corresponding to <code>computeMergedAuthorities(directory, aliceDn)</code> being called with alice&#x27;s now-confirmed DN.</p>
+<p><strong>Step 3 — the group search runs first.</strong> <code>directory.findGroupsContaining(aliceDn)</code> iterates every <code>GroupEntry</code> and checks <code>members().contains(aliceDn)</code> — this corresponds to the real LDAP search operation:</p>
+<pre><code>LDAP Search Request
+  Base: ou=groups,dc=example,dc=com
+  Filter: (member=uid=alice,ou=people,dc=example,dc=com)</code></pre>
+<p>The <code>&quot;engineering&quot;</code> group matches (alice&#x27;s DN is in its <code>members</code> set); its <code>cn</code>, uppercased and prefixed, becomes <code>&quot;ROLE_ENGINEERING&quot;</code>.</p>
+<p><strong>Step 4 — the user-entry attribute is read separately.</strong> <code>directory.findUser(aliceDn)</code> retrieves alice&#x27;s own <code>UserEntry</code>; <code>attributes().get(&quot;title&quot;)</code> returns <code>&quot;Staff Engineer&quot;</code>, which matches the custom condition, adding <code>&quot;ROLE_SENIOR&quot;</code>.</p>
+<p><strong>Step 5 — both sources are merged into one final set:</strong> <code>{ROLE_ENGINEERING, ROLE_SENIOR}</code> — this becomes the <code>Collection&lt;GrantedAuthority&gt;</code> on alice&#x27;s resulting <code>Authentication</code>, populated into <code>SecurityContextHolder</code>.</p>
+<p><strong>Step 6 — an example downstream check.</strong> A controller endpoint guarded with <code>@PreAuthorize(&quot;hasRole(&#x27;SENIOR&#x27;)&quot;)</code> now permits alice&#x27;s request, purely because of her <code>title</code> attribute — bob, with the same group membership but a different title, would be denied the identical endpoint despite both being in <code>&quot;engineering&quot;</code>.</p>
+<pre><code>alice&#x27;s DN
+   -&gt; group search: member of &quot;engineering&quot; -&gt; ROLE_ENGINEERING
+   -&gt; user entry read: title=&quot;Staff Engineer&quot; -&gt; ROLE_SENIOR (group-INDEPENDENT source)
+   -&gt; merged: {ROLE_ENGINEERING, ROLE_SENIOR}
+
+bob&#x27;s DN
+   -&gt; group search: member of &quot;engineering&quot; -&gt; ROLE_ENGINEERING
+   -&gt; user entry read: title=&quot;Junior Engineer&quot; -&gt; (no match, nothing added)
+   -&gt; merged: {ROLE_ENGINEERING}</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> <code>LdapAuthoritiesPopulator</code> runs its search fresh on every single login — it does not cache results across logins, since group membership can change between one login and the next and there&#x27;s no reliable signal telling the populator to invalidate a cache. If a user is added to a new group at the directory level, that change takes effect the moment they next log in, with no application restart or cache eviction required — but conversely, a currently-active session&#x27;s authorities are *not* automatically updated if group membership changes mid-session, since the populator only runs at authentication time, not on every subsequent request.</blockquote>
+<ul><li><code>LdapAuthoritiesPopulator</code> is a distinct step from authentication (card 0111) — it runs only after a bind succeeds, and its entire job is computing the authenticated user&#x27;s <code>GrantedAuthority</code> set.</li><li>The default implementation searches for group entries whose membership attribute (commonly <code>member</code> or <code>uniqueMember</code>) references the user&#x27;s DN — this is the inverse of how a relational &quot;user has roles&quot; table would typically be modeled, since LDAP groups reference their members rather than users referencing their groups.</li><li>An authenticated user with zero matching groups is a normal, valid outcome (an empty authority set), not an error — it simply means this user has no directory-derived permissions.</li><li>A custom populator can merge group-derived authorities with attributes read directly from the user&#x27;s own entry, or from any other source entirely, since the interface only requires producing a final <code>Collection&lt;GrantedAuthority&gt;</code> by whatever means make sense for your directory&#x27;s schema.</li><li>Because the search runs fresh on every login, directory-side group changes take effect on next login automatically — but they do not retroactively affect an already-authenticated, still-active session.</li></ul>
+  <div class="nav"><a class="prv" href="0111-ldap-authentication-bindauthenticator.html"><span class="mini">← Previous</span>LDAP authentication (BindAuthenticator)</a><a class="nxt" href="0113-embedded-ldap-server-for-testing.html"><span class="mini">Next →</span>Embedded LDAP server for testing</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-security.html", ID = "t112";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
