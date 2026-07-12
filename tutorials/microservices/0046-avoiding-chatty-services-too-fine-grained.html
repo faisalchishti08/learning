@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Avoiding chatty services (too fine-grained) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 2. Decomposition & Domain-Driven Design</div>
+  <div class="htitle">
+    <h1>Avoiding chatty services (too fine-grained)</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>chatty service</strong> relationship is a specific symptom of over-fine <a href="0019-service-granularity-nano-micro-macro-mini-services.md">service granularity</a>: completing one logical operation requires many small, back-and-forth network calls between two or more services, where each individual call is itself too fine-grained to be worth its own network round trip. The telltale sign is an &quot;N+1&quot;-style pattern — fetching a list from Service A, then calling Service B once *per item* in that list, turning what should be one or two network hops into dozens.</p>
+<h2>2. Why &amp; when</h2>
+<p>Each network call carries real, fixed overhead — connection setup, serialization, latency — that doesn&#x27;t shrink just because the call itself is doing very little work. A service boundary drawn too finely (say, splitting &quot;get order&quot; and &quot;get order&#x27;s line items&quot; into two separate services when they&#x27;re always needed together) forces every consumer to pay that fixed overhead repeatedly for what&#x27;s conceptually one piece of work. This is the same <a href="0025-fallacies-of-distributed-computing-network-reliable-latency.md">fallacy</a> — assuming latency is negligible — playing out specifically at the boundary between two services rather than within one call.</p>
+<p>Recognize chattiness by counting network calls per logical operation, the same way <a href="0045-right-sizing-services-granularity-decisions.md">right-sizing</a> recommends: if completing one user-facing action requires calling another service more than a small handful of times, that&#x27;s a concrete, measurable signal worth investigating — either by merging the chatty services, or by redesigning the API to return richer, batched responses instead of many small ones.</p>
+<h2>3. Core concept</h2>
+<p>Two API shapes for the same underlying need, with very different call counts:</p>
+<ul><li><strong>Chatty:</strong> <code>getOrder(id)</code> returns just an order header; each of its N line items requires a separate <code>getLineItem(lineItemId)</code> call — N+1 total calls for one logical &quot;get full order&quot; operation.</li><li><strong>Batched:</strong> <code>getOrderWithLineItems(id)</code> returns the order and all its line items in one response — 1 call for the same logical operation.</li></ul>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A chatty pattern makes one call to get an order, then N more calls, one per line item; a batched pattern gets everything in one call">
+  <text x="150" y="20" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">Chatty (N+1)</text>
+  <rect x="30" y="35" width="220" height="35" rx="5" fill="#1c2430" stroke="#f0883e"/>
+  <text x="140" y="57" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">1. getOrder(id) -&gt; header only</text>
+  <rect x="30" y="80" width="220" height="35" rx="5" fill="#1c2430" stroke="#f0883e"/>
+  <text x="140" y="102" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">2..N+1. getLineItem() x N calls</text>
+
+  <text x="500" y="20" fill="#8b949e" font-size="12" text-anchor="middle" font-family="sans-serif">Batched (1 call)</text>
+  <rect x="400" y="50" width="220" height="45" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="510" y="77" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">getOrderWithLineItems(id)</text>
+</svg>
+<p>N+1 small calls versus one call returning everything needed for the operation.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: fetching a full order with its line items, first via a chatty N+1 pattern, then measured to reveal the true cost, then refactored to a single batched call.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ChattyPattern.java -- ONE call per line item, an N+1 pattern
+import java.util.*;
+
+public class ChattyPattern {
+    static Map&lt;String, List&lt;String&gt;&gt; orderLineItemIds = Map.of(&quot;ord-1&quot;, List.of(&quot;li-1&quot;, &quot;li-2&quot;, &quot;li-3&quot;));
+    static int networkCallCount = 0;
+
+    static List&lt;String&gt; getOrderLineItemIds(String orderId) { networkCallCount++; return orderLineItemIds.get(orderId); }
+    static String getLineItem(String lineItemId) { networkCallCount++; return lineItemId + &quot;-detail&quot;; }
+
+    static List&lt;String&gt; getFullOrder(String orderId) {
+        List&lt;String&gt; lineItemIds = getOrderLineItemIds(orderId); // call #1
+        List&lt;String&gt; details = new ArrayList&lt;&gt;();
+        for (String id : lineItemIds) details.add(getLineItem(id)); // one call PER line item
+        return details;
+    }
+
+    public static void main(String[] args) {
+        List&lt;String&gt; order = getFullOrder(&quot;ord-1&quot;);
+        System.out.println(&quot;order details: &quot; + order);
+        System.out.println(&quot;total network calls: &quot; + networkCallCount);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ChattyPattern.java &amp;&amp; java ChattyPattern</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>order details: [li-1-detail, li-2-detail, li-3-detail]
+total network calls: 4</code></pre>
+<p>Getting one order with 3 line items took 4 network calls (1 for the ID list, 3 more for each item individually) — for an order with 100 line items, this pattern would need 101 calls for what&#x27;s conceptually one operation.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: MeasureAtScale.java -- show HOW BADLY the chatty pattern scales
+// as the number of line items grows.
+import java.util.*;
+
+public class MeasureAtScale {
+    static int networkCallCount = 0;
+
+    static List&lt;String&gt; generateLineItemIds(int count) {
+        List&lt;String&gt; ids = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; count; i++) ids.add(&quot;li-&quot; + i);
+        return ids;
+    }
+
+    static List&lt;String&gt; getOrderLineItemIds(int count) { networkCallCount++; return generateLineItemIds(count); }
+    static String getLineItem(String id) { networkCallCount++; return id + &quot;-detail&quot;; }
+
+    static int callsNeededForOrder(int lineItemCount) {
+        networkCallCount = 0;
+        List&lt;String&gt; lineItemIds = getOrderLineItemIds(lineItemCount);
+        for (String id : lineItemIds) getLineItem(id);
+        return networkCallCount;
+    }
+
+    public static void main(String[] args) {
+        for (int lineItems : new int[]{3, 10, 50, 100}) {
+            System.out.println(lineItems + &quot; line items -&gt; &quot; + callsNeededForOrder(lineItems) + &quot; network calls&quot;);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac MeasureAtScale.java &amp;&amp; java MeasureAtScale</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>3 line items -&gt; 4 network calls
+10 line items -&gt; 11 network calls
+50 line items -&gt; 51 network calls
+100 line items -&gt; 101 network calls</code></pre>
+<p>The N+1 pattern&#x27;s cost grows linearly and directly with order size — a large order (100 items) needs over a hundred network round trips just to be read, a genuinely severe, measurable cost that scales with data size rather than staying constant.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: BatchedPattern.java -- refactor to ONE call returning everything,
+// regardless of how many line items the order has.
+import java.util.*;
+
+public class BatchedPattern {
+    static Map&lt;String, List&lt;String&gt;&gt; orderLineItems = Map.of(
+        &quot;ord-1&quot;, List.of(&quot;li-1-detail&quot;, &quot;li-2-detail&quot;, &quot;li-3-detail&quot;)
+    );
+    static int networkCallCount = 0;
+
+    // ONE method, ONE call, returns EVERYTHING needed for the logical operation
+    static List&lt;String&gt; getOrderWithLineItems(String orderId) {
+        networkCallCount++;
+        return orderLineItems.get(orderId);
+    }
+
+    static int callsNeededForOrder(String orderId) {
+        networkCallCount = 0;
+        getOrderWithLineItems(orderId);
+        return networkCallCount;
+    }
+
+    public static void main(String[] args) {
+        List&lt;String&gt; order = getOrderWithLineItems(&quot;ord-1&quot;);
+        System.out.println(&quot;order details: &quot; + order);
+        System.out.println(&quot;total network calls: &quot; + callsNeededForOrder(&quot;ord-1&quot;));
+        System.out.println(&quot;this stays at 1 call regardless of how many line items the order has&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BatchedPattern.java &amp;&amp; java BatchedPattern</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>order details: [li-1-detail, li-2-detail, li-3-detail]
+total network calls: 1
+this stays at 1 call regardless of how many line items the order has</code></pre>
+<p>The production-flavored fix: <code>getOrderWithLineItems</code> returns the order header and all its line items in a single response. Unlike Level 2&#x27;s N+1 pattern, this call count stays constant at <code>1</code> no matter how large the order is — an order with 100 line items costs exactly the same single network round trip as an order with 3.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>getOrderWithLineItems(&quot;ord-1&quot;)</code> is called once directly in <code>main</code>, incrementing <code>networkCallCount</code> to <code>1</code> and returning the full list of line item details, already assembled server-side (standing in for a real service that joined its own local order and line-item tables before responding).</li><li><code>callsNeededForOrder(&quot;ord-1&quot;)</code> is called separately to demonstrate the measurement: it resets <code>networkCallCount</code> to <code>0</code>, calls <code>getOrderWithLineItems</code> once, and returns the resulting count — <code>1</code>.</li><li>Contrast this directly with <code>MeasureAtScale</code>&#x27;s <code>callsNeededForOrder</code>, which had to call <code>getOrderLineItemIds</code> once *and then* <code>getLineItem</code> once per item in a loop — here, there is no loop making per-item network calls at all, because all the data needed was returned in the single initial call.</li><li>The final print states the general property directly: this call count is independent of the order&#x27;s size, because the batching decision was made once, in the API&#x27;s design (return everything needed for &quot;get a full order&quot; in one response), rather than left to the caller to assemble via repeated small calls.</li></ol>
+<pre><code>Chatty (N+1):    getOrderLineItemIds() -&gt; [3 IDs] -&gt; getLineItem() x3  = 4 total calls (scales with order size)
+Batched (1 call): getOrderWithLineItems() -&gt; [everything already included]  = 1 total call (constant, regardless of order size)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> batching too aggressively — returning far more data than a typical caller actually needs, &quot;just in case&quot; — trades the chattiness problem for a different one: large, wasteful responses that slow down the common case to avoid a rare one. Design the batched response around what the *typical* caller of this operation actually needs, not the maximum conceivable superset of everything any caller might ever want.</blockquote>
+<ul><li>A chatty service relationship requires many small network calls to complete one logical operation, most commonly seen as an N+1 pattern: one call to get a list, then one more call per item in that list.</li><li>The concrete cost of chattiness scales directly with data size — a chatty pattern that costs 4 calls for a small order can cost over 100 calls for a large one, since each additional item adds another full network round trip.</li><li>The fix is API design, not just implementation: shape the response to return everything a typical caller needs for the logical operation in one call, rather than leaving the caller to assemble it through repeated small requests.</li><li>Recognizing chattiness is measurable, not just a feeling: count network calls per logical operation, and treat a high, size-dependent count as a concrete signal to redesign the API or reconsider the granularity of the boundary between the two services involved.</li></ul>
+  <div class="nav"><a class="prv" href="0045-right-sizing-services-granularity-decisions.html"><span class="mini">← Previous</span>Right-sizing services (granularity decisions)</a><a class="nxt" href="0047-avoiding-god-services-too-coarse-grained.html"><span class="mini">Next →</span>Avoiding god services (too coarse-grained)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t46";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
