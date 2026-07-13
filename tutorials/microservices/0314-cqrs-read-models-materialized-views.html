@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"CQRS read models / materialized views" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"CQRS read models / materialized views"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A CQRS read model (also called a materialized view in this context) is a pre-built, denormalized data structure maintained specifically to answer one particular kind of query as fast and simply as possible — typically a straightforward lookup by key, with no joins, no aggregation, and no computation needed at read time, because all of that work was already done when the read model was built or updated. A single system commonly maintains several different read models simultaneously, each shaped for a different query pattern, all derived from the same underlying source(s) of truth on the command side.</p>
+<h2>2. Why &amp; when</h2>
+<p>The core idea in <a href="0313-command-query-responsibility-segregation-cqrs.md">CQRS</a> is separating write and read models; a read model is the concrete artifact that separation produces on the read side. Rather than computing a display-ready shape from normalized source data on every single read (as <a href="0312-api-composition-pattern.md">API composition</a> does at request time, or as a naive shared-model system does with repeated joins), a read model does that computation once, ahead of time, and stores the *result* — so a read becomes a trivial, fast lookup instead of repeated work.</p>
+<p>Use a dedicated read model when a specific query pattern is hit frequently enough that doing its underlying joins/aggregation on every read is a genuine performance concern, or when the data needed spans multiple services and synchronous <a href="0312-api-composition-pattern.md">API composition</a> per request is too slow or too fragile (too many services in the critical path). It&#x27;s common and often correct to maintain several different read models for the same underlying data, each shaped for a specific screen or query — a &quot;customer order history&quot; read model shaped very differently from an &quot;admin analytics dashboard&quot; read model, even though both ultimately derive from the same order data.</p>
+<h2>3. Core concept</h2>
+<p>A read model is populated and kept current by consuming events from the command side (see <a href="0315-keeping-read-models-in-sync-via-events.md">keeping read models in sync via events</a>); reads against it are simple, direct lookups with no runtime joining.</p>
+<pre><code class="lang-java">// The READ MODEL: pre-joined, pre-formatted, purpose-built for ONE query pattern.
+@Entity
+class OrderHistoryReadModel {
+    @Id String orderId;
+    String customerName;      // DENORMALIZED from CustomerService
+    String productSummary;    // DENORMALIZED, pre-formatted from OrderService + ProductService
+    LocalDateTime placedAt;
+}
+
+// The QUERY: a trivial lookup, no joins, no per-request assembly.
+@Service
+class OrderHistoryQueryService {
+    List&lt;OrderHistoryReadModel&gt; getOrderHistory(String customerId) {
+        return orderHistoryRepository.findByCustomerId(customerId); // ONE simple query, already denormalized
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The same underlying order data feeds two differently shaped read models built ahead of time for two different query patterns: a customer-facing order history view and an admin analytics dashboard, each optimized purely for its own specific read pattern, so both reads are simple, fast lookups with no runtime joining">
+  <rect x="30" y="60" width="160" height="45" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="110" y="80" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Command-side source data</text>
+  <text x="110" y="95" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">(orders, customers, products)</text>
+
+  <line x1="190" y1="70" x2="330" y2="35" stroke="#8b949e" marker-end="url(#arr314)"/>
+  <line x1="190" y1="95" x2="330" y2="130" stroke="#8b949e" marker-end="url(#arr314)"/>
+
+  <rect x="340" y="15" width="230" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="455" y="33" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Order History read model</text>
+  <text x="455" y="48" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">shaped for: customer-facing history page</text>
+
+  <rect x="340" y="110" width="230" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="455" y="128" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Analytics Dashboard read model</text>
+  <text x="455" y="143" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">shaped for: admin aggregation queries</text>
+
+  <defs><marker id="arr314" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>The same source data feeds multiple, differently-shaped read models, each purpose-built for its own specific query pattern.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a single generic query method forced to reshape raw data differently for two different callers on every call, extended to two dedicated read models pre-built for each caller&#x27;s specific need, and finally showing how the read models can diverge structurally far beyond what a single generic shape could ever efficiently serve — one flat and denormalized for display, one pre-aggregated for analytics.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: OneGenericQueryReshapedRepeatedly.java -- ONE generic method
+// returns raw order data; EVERY caller has to reshape it themselves,
+// repeating the SAME transformation work independently.
+import java.util.*;
+
+public class OneGenericQueryReshapedRepeatedly {
+    record RawOrder(String id, String customerId, double totalCents, String status) {}
+
+    static List&lt;RawOrder&gt; rawOrders = List.of(
+            new RawOrder(&quot;order-1&quot;, &quot;cust-1&quot;, 4999, &quot;SHIPPED&quot;),
+            new RawOrder(&quot;order-2&quot;, &quot;cust-1&quot;, 2999, &quot;PLACED&quot;),
+            new RawOrder(&quot;order-3&quot;, &quot;cust-2&quot;, 9999, &quot;SHIPPED&quot;)
+    );
+
+    // Caller 1: customer-facing history page reshapes it its own way.
+    static List&lt;String&gt; buildCustomerHistoryDisplay(String customerId) {
+        List&lt;String&gt; lines = new ArrayList&lt;&gt;();
+        for (RawOrder o : rawOrders) if (o.customerId().equals(customerId))
+            lines.add(&quot;Order &quot; + o.id() + &quot;: $&quot; + (o.totalCents() / 100) + &quot; (&quot; + o.status() + &quot;)&quot;);
+        return lines;
+    }
+
+    // Caller 2: admin dashboard ALSO has to reshape the SAME raw data, independently.
+    static double buildTotalRevenueForShippedOrders() {
+        double total = 0;
+        for (RawOrder o : rawOrders) if (o.status().equals(&quot;SHIPPED&quot;)) total += o.totalCents();
+        return total / 100;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Customer history: &quot; + buildCustomerHistoryDisplay(&quot;cust-1&quot;));
+        System.out.println(&quot;Total shipped revenue: $&quot; + buildTotalRevenueForShippedOrders()
+                + &quot; -- BOTH callers independently scan and reshape the SAME raw data, every single call.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java OneGenericQueryReshapedRepeatedly.java</code></p>
+<p>Both <code>buildCustomerHistoryDisplay</code> and <code>buildTotalRevenueForShippedOrders</code> independently scan the same <code>rawOrders</code> list and reshape it for their own purposes, every time they&#x27;re called — no shared, pre-built structure exists for either specific need, so both do their own full scan-and-transform work on every call.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: TwoDedicatedReadModels.java -- TWO separate read models are
+// built AHEAD of time, each shaped EXACTLY for its own query pattern;
+// reads become trivial lookups, no scanning or reshaping at read time.
+import java.util.*;
+
+public class TwoDedicatedReadModels {
+    record RawOrder(String id, String customerId, double totalCents, String status) {}
+    static List&lt;RawOrder&gt; rawOrders = List.of(
+            new RawOrder(&quot;order-1&quot;, &quot;cust-1&quot;, 4999, &quot;SHIPPED&quot;),
+            new RawOrder(&quot;order-2&quot;, &quot;cust-1&quot;, 2999, &quot;PLACED&quot;),
+            new RawOrder(&quot;order-3&quot;, &quot;cust-2&quot;, 9999, &quot;SHIPPED&quot;)
+    );
+
+    // READ MODEL 1: pre-built, keyed by customer, ready-to-display strings.
+    static Map&lt;String, List&lt;String&gt;&gt; customerHistoryReadModel = new HashMap&lt;&gt;();
+    // READ MODEL 2: pre-aggregated total, a SINGLE number, always current.
+    static double shippedRevenueReadModel = 0;
+
+    static void rebuildReadModels() {
+        customerHistoryReadModel.clear();
+        shippedRevenueReadModel = 0;
+        for (RawOrder o : rawOrders) {
+            customerHistoryReadModel
+                    .computeIfAbsent(o.customerId(), k -&gt; new ArrayList&lt;&gt;())
+                    .add(&quot;Order &quot; + o.id() + &quot;: $&quot; + (o.totalCents() / 100) + &quot; (&quot; + o.status() + &quot;)&quot;);
+            if (o.status().equals(&quot;SHIPPED&quot;)) shippedRevenueReadModel += o.totalCents() / 100;
+        }
+    }
+
+    public static void main(String[] args) {
+        rebuildReadModels(); // in a real system, this happens incrementally, per event -- see next level
+
+        // BOTH reads are now TRIVIAL lookups -- no scanning, no reshaping.
+        System.out.println(&quot;Customer history (trivial lookup): &quot; + customerHistoryReadModel.get(&quot;cust-1&quot;));
+        System.out.println(&quot;Total shipped revenue (trivial lookup): $&quot; + shippedRevenueReadModel);
+    }
+}</code></pre>
+<p>How to run: <code>java TwoDedicatedReadModels.java</code></p>
+<p><code>customerHistoryReadModel</code> and <code>shippedRevenueReadModel</code> are built once by <code>rebuildReadModels</code> (standing in for an incremental, event-driven update in a real system), each shaped exactly for its own consumer. Reading either one afterward is a direct map lookup or field access — no scanning, no per-call transformation — regardless of how large <code>rawOrders</code> might grow.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: DivergentReadModelShapes.java -- shows the read models diverging
+// FAR beyond what one generic query shape could serve well: one becomes
+// a flat, per-customer LIST for display; the other becomes a fully
+// PRE-AGGREGATED breakdown by status AND by day, something that would be
+// expensive to compute on every read from raw data, but is essentially
+// free to read once maintained incrementally.
+import java.util.*;
+import java.time.LocalDate;
+
+public class DivergentReadModelShapes {
+    record RawOrder(String id, String customerId, double totalCents, String status, LocalDate placedOn) {}
+    static List&lt;RawOrder&gt; rawOrders = List.of(
+            new RawOrder(&quot;order-1&quot;, &quot;cust-1&quot;, 4999, &quot;SHIPPED&quot;, LocalDate.of(2026, 7, 1)),
+            new RawOrder(&quot;order-2&quot;, &quot;cust-1&quot;, 2999, &quot;PLACED&quot;, LocalDate.of(2026, 7, 1)),
+            new RawOrder(&quot;order-3&quot;, &quot;cust-2&quot;, 9999, &quot;SHIPPED&quot;, LocalDate.of(2026, 7, 2))
+    );
+
+    // Read model A: flat, per-customer DISPLAY strings.
+    record CustomerHistoryEntry(String display) {}
+    static Map&lt;String, List&lt;CustomerHistoryEntry&gt;&gt; customerHistoryReadModel = new HashMap&lt;&gt;();
+
+    // Read model B: DEEPLY pre-aggregated -- revenue by (status, day), a
+    // multi-dimensional breakdown that would be an expensive GROUP BY
+    // computed live, but is a trivial lookup once pre-aggregated.
+    record StatusDayKey(String status, LocalDate day) {}
+    static Map&lt;StatusDayKey, Double&gt; revenueByStatusAndDayReadModel = new HashMap&lt;&gt;();
+
+    static void applyOrder(RawOrder o) {
+        customerHistoryReadModel.computeIfAbsent(o.customerId(), k -&gt; new ArrayList&lt;&gt;())
+                .add(new CustomerHistoryEntry(&quot;Order &quot; + o.id() + &quot;: $&quot; + (o.totalCents() / 100)));
+
+        StatusDayKey key = new StatusDayKey(o.status(), o.placedOn());
+        revenueByStatusAndDayReadModel.merge(key, o.totalCents() / 100, Double::sum);
+    }
+
+    public static void main(String[] args) {
+        for (RawOrder o : rawOrders) applyOrder(o); // incremental, ONE order at a time, as events would arrive
+
+        System.out.println(&quot;Read model A (flat, per-customer display): &quot; + customerHistoryReadModel.get(&quot;cust-1&quot;));
+        System.out.println(&quot;Read model B (deeply pre-aggregated, by status+day):&quot;);
+        revenueByStatusAndDayReadModel.forEach((key, revenue) -&gt;
+                System.out.println(&quot;  &quot; + key.status() + &quot; on &quot; + key.day() + &quot;: $&quot; + revenue));
+        System.out.println(&quot;Both are TRIVIAL lookups now, despite representing very DIFFERENT shapes of the SAME underlying order data.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java DivergentReadModelShapes.java</code></p>
+<p><code>applyOrder</code> is called once per order, incrementally — exactly mirroring how a real read model is updated one event at a time as orders are placed, rather than rebuilt from scratch. <code>customerHistoryReadModel</code> stays a flat list of display strings per customer. <code>revenueByStatusAndDayReadModel</code>, in contrast, becomes a genuinely multi-dimensional aggregate — revenue broken down by both status *and* day simultaneously, using <code>merge</code> to incrementally accumulate sums as each order is processed. Reading either read model afterward is a trivial, direct lookup, even though <code>revenueByStatusAndDayReadModel</code> represents a computation (<code>GROUP BY status, day, SUM(total)</code>) that would be comparatively expensive to run live against raw data on every single read — this is the concrete value of maintaining it as a materialized, incrementally-updated view instead.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>DivergentReadModelShapes.main</code>&#x27;s processing of the three orders in order. <strong>Order 1</strong> (<code>&quot;order-1&quot;</code>, customer <code>&quot;cust-1&quot;</code>, <code>$49.99</code>, <code>&quot;SHIPPED&quot;</code>, <code>2026-07-01</code>): <code>applyOrder</code> first appends a <code>CustomerHistoryEntry</code> to <code>customerHistoryReadModel.get(&quot;cust-1&quot;)</code> (creating the list via <code>computeIfAbsent</code> since this is the first order for this customer). It then computes <code>key = StatusDayKey(&quot;SHIPPED&quot;, 2026-07-01)</code> and calls <code>revenueByStatusAndDayReadModel.merge(key, 49.99, Double::sum)</code> — since this key doesn&#x27;t exist yet, <code>merge</code> simply inserts <code>49.99</code> as its initial value.</p>
+<p><strong>Order 2</strong> (<code>&quot;order-2&quot;</code>, customer <code>&quot;cust-1&quot;</code>, <code>$29.99</code>, <code>&quot;PLACED&quot;</code>, <code>2026-07-01</code>): a second entry is appended to <code>customerHistoryReadModel.get(&quot;cust-1&quot;)</code>, now holding two entries. A *different* key, <code>StatusDayKey(&quot;PLACED&quot;, 2026-07-01)</code>, is computed (different status than order 1, same day) — since this key is also new, <code>merge</code> inserts <code>29.99</code> as its value; the <code>&quot;SHIPPED&quot;</code>/<code>2026-07-01</code> entry from order 1 is untouched.</p>
+<p><strong>Order 3</strong> (<code>&quot;order-3&quot;</code>, customer <code>&quot;cust-2&quot;</code>, <code>$99.99</code>, <code>&quot;SHIPPED&quot;</code>, <code>2026-07-02</code>): a new entry list is created for <code>&quot;cust-2&quot;</code> (a different customer, via <code>computeIfAbsent</code> again). The key <code>StatusDayKey(&quot;SHIPPED&quot;, 2026-07-02)</code> is computed — different day than order 1&#x27;s <code>SHIPPED</code> entry, so this is also a new key, and <code>merge</code> inserts <code>99.99</code>.</p>
+<p><strong>After all three orders are applied</strong>, <code>revenueByStatusAndDayReadModel</code> holds exactly three distinct entries: <code>(&quot;SHIPPED&quot;, 2026-07-01) -&gt; 49.99</code>, <code>(&quot;PLACED&quot;, 2026-07-01) -&gt; 29.99</code>, <code>(&quot;SHIPPED&quot;, 2026-07-02) -&gt; 99.99</code> — note that no two orders shared an identical <code>(status, day)</code> combination in this dataset, so every <code>merge</code> call was effectively an insert rather than an accumulation; had a fourth <code>SHIPPED</code> order also landed on <code>2026-07-01</code>, its total would have been *added* to the existing <code>49.99</code> via the <code>Double::sum</code> merge function, incrementally growing that specific aggregate.</p>
+<p><strong>Reading either read model afterward</strong> (as the final <code>System.out.println</code> calls do) is then a direct, already-computed lookup — <code>customerHistoryReadModel.get(&quot;cust-1&quot;)</code> and iterating <code>revenueByStatusAndDayReadModel</code>&#x27;s entries both retrieve already-assembled results, with none of the grouping, filtering, or summing logic re-executed at read time.</p>
+<pre><code>applyOrder(order-1: SHIPPED, 07-01, $49.99) -&gt; history[cust-1] += entry; revenueByStatusDay[SHIPPED,07-01] = 49.99 (new)
+applyOrder(order-2: PLACED,  07-01, $29.99) -&gt; history[cust-1] += entry; revenueByStatusDay[PLACED, 07-01] = 29.99 (new)
+applyOrder(order-3: SHIPPED, 07-02, $99.99) -&gt; history[cust-2] += entry; revenueByStatusDay[SHIPPED,07-02] = 99.99 (new)
+                                    (a 4th SHIPPED/07-01 order would instead ADD to the existing 49.99)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A read model that tries to be generically useful for many different query patterns at once tends to converge back toward the original, un-denormalized shape — the whole value of a read model comes from shaping it deliberately and narrowly for one specific, known query pattern; resist the urge to make it &quot;flexible&quot; at the cost of the performance benefit that narrow shaping provides.</blockquote>
+<ul><li>A read model&#x27;s entire purpose is doing the expensive work (joining, filtering, aggregating) once, ahead of time, so that reads become trivial, fast lookups — this is the direct payoff of accepting CQRS&#x27;s added complexity.</li><li>It&#x27;s normal and often correct to maintain multiple differently-shaped read models derived from the same underlying source data, each purpose-built for one specific query pattern, rather than trying to serve every read from one shared shape.</li><li>Read models are always derived, never authoritative — the actual <a href="0311-data-ownership-system-of-record.md">system of record</a> remains on the command side; a read model can always in principle be rebuilt from scratch by replaying the source events, which is a valuable property for recovering from bugs in the read-model-building logic itself.</li><li>See <a href="0315-keeping-read-models-in-sync-via-events.md">keeping read models in sync via events</a> for the mechanics of how a read model is incrementally updated as new events arrive, rather than rebuilt from scratch on every change.</li></ul>
+  <div class="nav"><a class="prv" href="0313-command-query-responsibility-segregation-cqrs.html"><span class="mini">← Previous</span>Command Query Responsibility Segregation (CQRS)</a><a class="nxt" href="0315-keeping-read-models-in-sync-via-events.html"><span class="mini">Next →</span>Keeping read models in sync via events</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t314";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

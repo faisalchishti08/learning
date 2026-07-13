@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Keeping read models in sync via events" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Keeping read models in sync via events"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This is the specific mechanism that keeps a <a href="0314-cqrs-read-models-materialized-views.md">CQRS read model</a> current after its initial build: the command side publishes an event every time it makes a change, and one or more dedicated event listeners (often called projectors or read-model updaters) subscribe to those events and incrementally apply each one to the read model — updating just the affected portion, not rebuilding the whole thing from scratch. This is the concrete, mechanical bridge that makes CQRS&#x27;s separation between write and read models actually work over time, not just at the moment the read model is first built.</p>
+<h2>2. Why &amp; when</h2>
+<p>A read model built once and never updated becomes permanently stale the instant the underlying data changes — useless for anything beyond a one-time snapshot. Rebuilding the entire read model from scratch on every single change is correct but typically far too slow and wasteful for anything beyond small datasets; production systems instead process each event as it arrives and apply just its specific, incremental effect to the read model — an <code>OrderPlacedEvent</code> adds one new entry, an <code>OrderCancelledEvent</code> updates or removes one existing entry, without touching anything else in the read model.</p>
+<p>Use event-driven incremental updates as the standard approach for any read model expected to stay current over an extended period and across many changes. The <a href="covered elsewhere in this microservices curriculum">transactional outbox pattern</a> is typically used on the publishing side to guarantee an event is reliably published whenever its corresponding write commits, and idempotent, order-aware event handling (processing events in the order they occurred, and handling any given event being delivered more than once safely) is essential on the consuming side, since most messaging systems provide at-least-once delivery rather than exactly-once.</p>
+<h2>3. Core concept</h2>
+<p>Each event type has a corresponding handler that applies its specific, minimal effect to the read model; handlers must be idempotent, since the same event may be redelivered.</p>
+<pre><code class="lang-java">@Component
+class OrderHistoryProjector {
+    private final OrderHistoryReadModelRepository readModelRepository;
+
+    @EventListener
+    void on(OrderPlacedEvent event) {
+        // Idempotent: use the event&#x27;s own ID to detect and skip duplicates.
+        if (readModelRepository.existsByEventId(event.eventId())) return; // already applied, SKIP
+        readModelRepository.save(new OrderHistoryEntry(event.orderId(), event.customerName(),
+                event.summary(), event.eventId()));
+    }
+
+    @EventListener
+    void on(OrderCancelledEvent event) {
+        if (readModelRepository.existsByEventId(event.eventId())) return;
+        readModelRepository.updateStatus(event.orderId(), &quot;CANCELLED&quot;, event.eventId());
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The command side publishes an event stream as changes happen; a projector consumes each event in order and applies its specific incremental effect to the read model, so the read model stays current through a sequence of small updates rather than being rebuilt from scratch on every change">
+  <rect x="20" y="60" width="140" height="35" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="90" y="82" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Event 1: OrderPlaced</text>
+  <rect x="180" y="60" width="140" height="35" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="250" y="82" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Event 2: OrderCancelled</text>
+
+  <line x1="160" y1="77" x2="180" y2="77" stroke="#8b949e" marker-end="url(#arr315)"/>
+  <line x1="320" y1="77" x2="400" y2="77" stroke="#8b949e" marker-end="url(#arr315)"/>
+
+  <rect x="410" y="30" width="200" height="90" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="510" y="50" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Projector</text>
+  <text x="510" y="66" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">applies EACH event's</text>
+  <text x="510" y="78" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">specific, minimal effect</text>
+  <text x="510" y="94" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">to the read model,</text>
+  <text x="510" y="106" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">idempotently, IN ORDER</text>
+
+  <defs><marker id="arr315" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Each event is applied incrementally, in order, idempotently — the read model evolves through a sequence of small updates.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a projector that naively reprocesses an event it has already seen, corrupting the read model, extended to an idempotent projector that correctly detects and skips duplicate events, and finally a projector that additionally enforces correct event ordering, showing what happens (and how it&#x27;s handled) when events for the same entity arrive out of order — a realistic concern with distributed, at-least-once message delivery.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NonIdempotentProjectorCorrupts.java -- a projector that does NOT
+// check for duplicate events; when the SAME event is redelivered
+// (a normal occurrence with at-least-once messaging), it double-applies
+// the effect, corrupting the read model.
+import java.util.*;
+
+public class NonIdempotentProjectorCorrupts {
+    record OrderPlacedEvent(String eventId, String orderId, double amount) {}
+
+    static Map&lt;String, Double&gt; revenueReadModel = new HashMap&lt;&gt;();
+
+    // NOT idempotent -- blindly adds the amount EVERY time it&#x27;s called.
+    static void onOrderPlaced(OrderPlacedEvent event) {
+        revenueReadModel.merge(event.orderId(), event.amount(), Double::sum);
+    }
+
+    public static void main(String[] args) {
+        OrderPlacedEvent event = new OrderPlacedEvent(&quot;evt-1&quot;, &quot;order-1&quot;, 49.99);
+
+        onOrderPlaced(event); // first delivery
+        onOrderPlaced(event); // REDELIVERY -- messaging systems often deliver AT LEAST ONCE, this WILL happen
+
+        System.out.println(&quot;Read model revenue for order-1: $&quot; + revenueReadModel.get(&quot;order-1&quot;)
+                + &quot; -- should be $49.99, but the DUPLICATE delivery double-counted it!&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NonIdempotentProjectorCorrupts.java</code></p>
+<p>The same <code>OrderPlacedEvent</code> is delivered to <code>onOrderPlaced</code> twice, simulating a normal at-least-once redelivery. Because the handler has no way to recognize it has already processed this exact event, it applies the <code>$49.99</code> amount a second time, corrupting the read model to show <code>$99.98</code> — double the correct revenue for a single order.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: IdempotentProjector.java -- tracks which event IDs have already
+// been applied, and SKIPS any event it has already seen, correctly
+// tolerating redelivery without corrupting the read model.
+import java.util.*;
+
+public class IdempotentProjector {
+    record OrderPlacedEvent(String eventId, String orderId, double amount) {}
+
+    static Map&lt;String, Double&gt; revenueReadModel = new HashMap&lt;&gt;();
+    static Set&lt;String&gt; processedEventIds = new HashSet&lt;&gt;(); // tracks WHICH events have already been applied
+
+    static void onOrderPlaced(OrderPlacedEvent event) {
+        if (processedEventIds.contains(event.eventId())) {
+            System.out.println(&quot;  Event &quot; + event.eventId() + &quot; already processed -- SKIPPING (idempotent)&quot;);
+            return; // do NOT re-apply
+        }
+        revenueReadModel.merge(event.orderId(), event.amount(), Double::sum);
+        processedEventIds.add(event.eventId());
+    }
+
+    public static void main(String[] args) {
+        OrderPlacedEvent event = new OrderPlacedEvent(&quot;evt-1&quot;, &quot;order-1&quot;, 49.99);
+
+        onOrderPlaced(event); // first delivery -- applied
+        onOrderPlaced(event); // REDELIVERY -- correctly skipped
+
+        System.out.println(&quot;Read model revenue for order-1: $&quot; + revenueReadModel.get(&quot;order-1&quot;)
+                + &quot; -- correct, DESPITE the duplicate delivery.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java IdempotentProjector.java</code></p>
+<p><code>processedEventIds</code> tracks every event ID already applied to the read model. The first call to <code>onOrderPlaced</code> applies the <code>$49.99</code> amount and records <code>&quot;evt-1&quot;</code> as processed. The second call (the redelivery) checks <code>processedEventIds.contains(&quot;evt-1&quot;)</code>, finds it already there, and returns immediately without touching <code>revenueReadModel</code> again — the final revenue correctly stays at <code>$49.99</code> despite the exact same at-least-once redelivery scenario that corrupted Level 1&#x27;s projector.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: OrderAwareIdempotentProjector.java -- handles a HARDER real-world
+// case: events for the SAME entity can arrive OUT OF ORDER (e.g., due to
+// retries or parallel consumers). Applying an &quot;OrderCancelled&quot; event
+// before its corresponding &quot;OrderPlaced&quot; event has been applied would
+// corrupt the read model. This projector tracks a per-entity sequence
+// number and DEFERS/rejects out-of-order events rather than misapplying them.
+import java.util.*;
+
+public class OrderAwareIdempotentProjector {
+    sealed interface OrderEvent permits OrderPlacedEvent, OrderCancelledEvent {
+        String orderId(); long sequenceNumber();
+    }
+    record OrderPlacedEvent(String orderId, long sequenceNumber, double amount) implements OrderEvent {}
+    record OrderCancelledEvent(String orderId, long sequenceNumber) implements OrderEvent {}
+
+    record ReadModelEntry(double amount, String status, long lastAppliedSequence) {}
+    static Map&lt;String, ReadModelEntry&gt; readModel = new HashMap&lt;&gt;();
+    static List&lt;OrderEvent&gt; deferredEvents = new ArrayList&lt;&gt;(); // events that arrived TOO EARLY, held for later
+
+    static void apply(OrderEvent event) {
+        ReadModelEntry existing = readModel.get(event.orderId());
+        long expectedNextSequence = (existing == null) ? 1 : existing.lastAppliedSequence() + 1;
+
+        if (event.sequenceNumber() != expectedNextSequence) {
+            System.out.println(&quot;  Event for &quot; + event.orderId() + &quot; seq=&quot; + event.sequenceNumber()
+                    + &quot; arrived OUT OF ORDER (expected seq=&quot; + expectedNextSequence + &quot;) -- DEFERRING, not misapplying&quot;);
+            deferredEvents.add(event);
+            return;
+        }
+
+        if (event instanceof OrderPlacedEvent placed) {
+            readModel.put(placed.orderId(), new ReadModelEntry(placed.amount(), &quot;PLACED&quot;, placed.sequenceNumber()));
+        } else if (event instanceof OrderCancelledEvent cancelled) {
+            readModel.put(cancelled.orderId(), new ReadModelEntry(existing.amount(), &quot;CANCELLED&quot;, cancelled.sequenceNumber()));
+        }
+        System.out.println(&quot;  Applied &quot; + event.getClass().getSimpleName() + &quot; seq=&quot; + event.sequenceNumber() + &quot; for &quot; + event.orderId());
+
+        retryDeferredEvents(); // now that the sequence advanced, a previously-deferred event might apply now
+    }
+
+    static void retryDeferredEvents() {
+        List&lt;OrderEvent&gt; toRetry = new ArrayList&lt;&gt;(deferredEvents);
+        deferredEvents.clear();
+        for (OrderEvent e : toRetry) apply(e); // may defer AGAIN if still not next in sequence
+    }
+
+    public static void main(String[] args) {
+        // OrderCancelled (seq=2) arrives BEFORE OrderPlaced (seq=1) -- a realistic
+        // out-of-order delivery scenario.
+        apply(new OrderCancelledEvent(&quot;order-1&quot;, 2));
+        System.out.println(&quot;Read model after out-of-order event: &quot; + readModel.get(&quot;order-1&quot;) + &quot; (correctly NOT yet applied)&quot;);
+
+        apply(new OrderPlacedEvent(&quot;order-1&quot;, 1, 49.99)); // the MISSING seq=1 finally arrives
+        System.out.println(&quot;Read model after seq=1 arrives: &quot; + readModel.get(&quot;order-1&quot;)
+                + &quot; -- the deferred CANCELLED event was automatically retried and applied correctly, IN ORDER.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java OrderAwareIdempotentProjector.java</code></p>
+<p><code>OrderCancelledEvent(seq=2)</code> arrives first. <code>apply</code> computes <code>expectedNextSequence=1</code> (no existing entry yet), sees the incoming event&#x27;s <code>sequenceNumber()</code> is <code>2</code>, not <code>1</code>, and defers it instead of misapplying it — the read model correctly stays empty for <code>&quot;order-1&quot;</code> rather than showing a cancelled order that was never actually recorded as placed. When <code>OrderPlacedEvent(seq=1)</code> subsequently arrives, <code>apply</code> finds it matches the expected sequence, applies it (setting status to <code>&quot;PLACED&quot;</code>), and then calls <code>retryDeferredEvents</code>, which re-attempts the previously deferred cancellation — this time, <code>expectedNextSequence</code> is <code>2</code> (since seq 1 was just applied), matching the deferred event&#x27;s <code>sequenceNumber()</code> of <code>2</code>, so it now applies correctly, updating the status to <code>&quot;CANCELLED&quot;</code>. The final read model correctly reflects both events applied in their true logical order, despite having been delivered out of order.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>OrderAwareIdempotentProjector.main</code> in order. <strong>First</strong>, <code>apply(new OrderCancelledEvent(&quot;order-1&quot;, 2))</code> is called. Inside, <code>readModel.get(&quot;order-1&quot;)</code> returns <code>null</code> (no entry yet), so <code>expectedNextSequence</code> is computed as <code>1</code>. The event&#x27;s own <code>sequenceNumber()</code> is <code>2</code>, which does not equal <code>1</code>, so the out-of-order branch executes: it prints a deferral message and adds the event to <code>deferredEvents</code>, then returns immediately — no changes are made to <code>readModel</code>.</p>
+<p><strong><code>main</code> prints <code>readModel.get(&quot;order-1&quot;)</code></strong>, which is still <code>null</code> — correctly reflecting that nothing has actually been recorded yet, since the cancellation was correctly withheld rather than misapplied against a nonexistent order.</p>
+<p><strong><code>apply(new OrderPlacedEvent(&quot;order-1&quot;, 1, 49.99))</code> is called next.</strong> <code>readModel.get(&quot;order-1&quot;)</code> is still <code>null</code>, so <code>expectedNextSequence</code> is again <code>1</code>. This event&#x27;s <code>sequenceNumber()</code> is <code>1</code>, which *does* match — so the normal application path executes: since it&#x27;s an <code>OrderPlacedEvent</code>, <code>readModel.put(&quot;order-1&quot;, new ReadModelEntry(49.99, &quot;PLACED&quot;, 1))</code> runs, establishing the first real entry.</p>
+<p><strong>Immediately after applying</strong>, <code>retryDeferredEvents()</code> is called. It copies <code>deferredEvents</code> (containing the one previously-deferred <code>OrderCancelledEvent</code>) into <code>toRetry</code>, clears <code>deferredEvents</code>, and calls <code>apply</code> again for that event.</p>
+<p><strong>Inside this nested <code>apply</code> call</strong>, <code>readModel.get(&quot;order-1&quot;)</code> now returns the entry just created (<code>amount=49.99, status=&quot;PLACED&quot;, lastAppliedSequence=1</code>), so <code>expectedNextSequence</code> is computed as <code>1 + 1 = 2</code>. The deferred event&#x27;s <code>sequenceNumber()</code> is <code>2</code>, which now matches — the normal application path executes: since it&#x27;s an <code>OrderCancelledEvent</code>, <code>readModel.put(&quot;order-1&quot;, new ReadModelEntry(existing.amount(), &quot;CANCELLED&quot;, 2))</code> runs, preserving the <code>49.99</code> amount from the existing entry but updating the status to <code>&quot;CANCELLED&quot;</code> and the sequence to <code>2</code>.</p>
+<p><strong>Back in the outer call</strong>, <code>main</code> prints the final <code>readModel.get(&quot;order-1&quot;)</code>, showing <code>ReadModelEntry(amount=49.99, status=&quot;CANCELLED&quot;, lastAppliedSequence=2)</code> — both events have now been correctly applied in their true logical order (placed, then cancelled), even though they were *delivered* in the opposite order.</p>
+<pre><code>apply(Cancelled, seq=2) -- expected seq=1, got seq=2 -&gt; DEFERRED, read model untouched
+apply(Placed, seq=1)    -- expected seq=1, got seq=1 -&gt; APPLIED (status=PLACED)
+        |
+        v  retryDeferredEvents()
+apply(Cancelled, seq=2) [retry] -- expected seq=2, got seq=2 -&gt; APPLIED (status=CANCELLED)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Most real messaging systems (Kafka, RabbitMQ, SQS) guarantee at-least-once delivery, not exactly-once — a projector that assumes every event arrives exactly once, in order, will eventually corrupt its read model in production, even if this never surfaces during testing, since duplicate and out-of-order delivery are relatively rare but inevitable occurrences at scale.</blockquote>
+<ul><li>Every event handler updating a read model must be idempotent — safely re-processable without corrupting state if the same event is delivered more than once, which at-least-once messaging guarantees will eventually happen.</li><li>Events for the same entity can arrive out of order in a distributed system; a projector that cares about ordering (most do) needs an explicit mechanism — a per-entity sequence number, as shown, or partition-ordered consumption guarantees from the messaging system itself — to detect and correctly handle this rather than blindly applying events in whatever order they happen to arrive.</li><li>Deferring an out-of-order event and retrying it once the gap is filled (as in Level 3) is one practical approach; another common approach relies on the messaging system guaranteeing per-key ordering (e.g., Kafka&#x27;s per-partition ordering, keyed by entity ID), which removes the need for application-level sequence tracking at the cost of requiring that guarantee to actually hold.</li><li>A read model that can always be correctly rebuilt from scratch by replaying its full event history in order is a strong, valuable property — it means bugs in projector logic can be fixed and the read model regenerated correctly, rather than needing to reconcile accumulated corruption.</li></ul>
+  <div class="nav"><a class="prv" href="0314-cqrs-read-models-materialized-views.html"><span class="mini">← Previous</span>CQRS read models / materialized views</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t315";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Data duplication & denormalization across services" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Data duplication & denormalization across services"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Data duplication across services means the same piece of information — a product&#x27;s name and price, a customer&#x27;s shipping address — is deliberately stored in more than one service&#x27;s private database, rather than living in exactly one place and being fetched on demand. Denormalization is the closely related technique of storing derived or redundant data (a pre-computed total, a copy of a related record&#x27;s fields) to avoid expensive lookups or joins at read time. In a microservices architecture with <a href="0304-database-per-service-pattern.md">database per service</a>, some amount of both is not just acceptable but often necessary, since cross-service joins aren&#x27;t possible.</p>
+<h2>2. Why &amp; when</h2>
+<p>Without duplication, every time <code>OrderService</code> needs to display a product&#x27;s name alongside an order line item, it would need a synchronous API call to <code>ProductCatalogService</code> — for every single order line, on every single read. This couples <code>OrderService</code>&#x27;s availability and latency to <code>ProductCatalogService</code>&#x27;s availability and latency, for data (a product name) that changes far less often than orders are read. Duplicating a *local, read-only copy* of just the fields actually needed (product name, not the full catalog record) into <code>OrderService</code>&#x27;s own database, kept in sync via <a href="0315-keeping-read-models-in-sync-via-events.md">events</a>, lets <code>OrderService</code> serve reads entirely from its own data, independent of <code>ProductCatalogService</code>&#x27;s availability, at the cost of that copy being slightly stale between sync events.</p>
+<p>Use deliberate, scoped duplication when a service frequently needs a small, relatively stable subset of another service&#x27;s data for its own reads, and synchronous coupling for every read is unacceptable for latency or availability reasons. Duplicate only the specific fields actually needed, not entire records, and always let exactly one service remain the <a href="0311-data-ownership-system-of-record.md">system of record</a> — the duplicated copy is a read-optimized cache of that source of truth, never a second place where the data can be independently written.</p>
+<h2>3. Core concept</h2>
+<p>A service holds its own local, denormalized copy of just the fields it needs from another service&#x27;s data, refreshed via an event whenever the source changes — reads never leave the service&#x27;s own boundary.</p>
+<pre><code class="lang-java">// OrderService&#x27;s OWN local copy -- only the fields IT needs, kept in sync
+// via events from ProductCatalogService, never fetched synchronously per read.
+@Entity
+class OrderLineItem {
+    @Id Long id;
+    String productSku;
+    String productNameSnapshot; // DUPLICATED from ProductCatalogService, may be slightly stale
+    BigDecimal priceSnapshot;   // DENORMALIZED: the price AT ORDER TIME, deliberately never updated later
+    int quantity;
+}
+
+// Kept fresh (for NEW orders, not existing ones -- see below) via an event listener:
+@EventListener
+void onProductRenamed(ProductRenamedEvent event) {
+    // Only affects a LOCAL cache used for lookups when CREATING new orders,
+    // never retroactively rewrites priceSnapshot/productNameSnapshot on past orders.
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ProductCatalogService is the single system of record for product data; OrderService holds a locally duplicated, denormalized copy of just the fields it needs, kept approximately in sync via events, so OrderService's reads never require a synchronous call back to ProductCatalogService">
+  <rect x="30" y="30" width="200" height="50" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="130" y="50" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">ProductCatalogService</text>
+  <text x="130" y="66" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">system of record</text>
+
+  <line x1="230" y1="55" x2="380" y2="55" stroke="#8b949e" stroke-dasharray="3,3" marker-end="url(#arr308)"/>
+  <text x="305" y="45" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">event: ProductRenamed</text>
+
+  <rect x="390" y="30" width="220" height="50" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="500" y="50" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">OrderService</text>
+  <text x="500" y="66" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">local denormalized copy (product name only)</text>
+
+  <text x="320" y="120" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">OrderService reads its OWN copy -- never a synchronous call for every read</text>
+</svg>
+<p>The catalog service owns the truth; the order service keeps a small, event-synced local copy for fast, independent reads.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a synchronous per-read dependency where every order display requires a live call to the product catalog, extended to a locally duplicated snapshot that removes that dependency for reads, and finally showing the deliberate, correct behavior of a price snapshot that must NOT update when the source product&#x27;s price later changes, since an order should reflect the price at the time it was placed.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: SynchronousCoupledReads.java -- every order display requires a
+// LIVE call to ProductCatalogService, coupling OrderService&#x27;s read
+// availability and latency to a completely different service.
+import java.util.*;
+
+public class SynchronousCoupledReads {
+    static class ProductCatalogService {
+        Map&lt;String, String&gt; productNames = new HashMap&lt;&gt;(Map.of(&quot;sku-1&quot;, &quot;Wireless Mouse&quot;));
+        boolean isDown = false;
+        String getProductName(String sku) {
+            if (isDown) throw new RuntimeException(&quot;ProductCatalogService UNAVAILABLE&quot;);
+            return productNames.get(sku);
+        }
+    }
+
+    record OrderLine(String sku, int quantity) {}
+
+    static class OrderService {
+        ProductCatalogService catalogService;
+        OrderService(ProductCatalogService catalogService) { this.catalogService = catalogService; }
+        String displayOrderLine(OrderLine line) {
+            String name = catalogService.getProductName(line.sku()); // SYNCHRONOUS call, EVERY read
+            return line.quantity() + &quot;x &quot; + name;
+        }
+    }
+
+    public static void main(String[] args) {
+        ProductCatalogService catalog = new ProductCatalogService();
+        OrderService orderService = new OrderService(catalog);
+        System.out.println(orderService.displayOrderLine(new OrderLine(&quot;sku-1&quot;, 2)));
+
+        catalog.isDown = true; // catalog service has an outage
+        try {
+            orderService.displayOrderLine(new OrderLine(&quot;sku-1&quot;, 2));
+        } catch (Exception e) {
+            System.out.println(&quot;Order display FAILED because of an UNRELATED service&#x27;s outage: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java SynchronousCoupledReads.java</code></p>
+<p>The first order line displays correctly. Once <code>ProductCatalogService</code> is simulated as down, <code>OrderService</code> cannot even display an *existing* order&#x27;s line item — a read of <code>OrderService</code>&#x27;s own data (the order itself) is blocked entirely by an outage in a completely different service, purely because the product name was never stored locally.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: LocalDenormalizedSnapshot.java -- OrderService stores its OWN
+// local copy of the product name at order-creation time; displaying an
+// existing order NEVER requires calling ProductCatalogService again.
+import java.util.*;
+
+public class LocalDenormalizedSnapshot {
+    static class ProductCatalogService {
+        Map&lt;String, String&gt; productNames = new HashMap&lt;&gt;(Map.of(&quot;sku-1&quot;, &quot;Wireless Mouse&quot;));
+        boolean isDown = false;
+        String getProductName(String sku) {
+            if (isDown) throw new RuntimeException(&quot;ProductCatalogService UNAVAILABLE&quot;);
+            return productNames.get(sku);
+        }
+    }
+
+    // OrderService&#x27;s OWN table -- productNameSnapshot is DUPLICATED data,
+    // captured once, at order creation time.
+    record OrderLine(String sku, int quantity, String productNameSnapshot) {}
+
+    static class OrderService {
+        ProductCatalogService catalogService;
+        List&lt;OrderLine&gt; savedOrderLines = new ArrayList&lt;&gt;();
+        OrderService(ProductCatalogService catalogService) { this.catalogService = catalogService; }
+
+        void createOrderLine(String sku, int quantity) {
+            String name = catalogService.getProductName(sku); // called ONCE, at CREATION time only
+            savedOrderLines.add(new OrderLine(sku, quantity, name));
+        }
+        String displayOrderLine(OrderLine line) {
+            return line.quantity() + &quot;x &quot; + line.productNameSnapshot(); // reads OrderService&#x27;s OWN data, NO external call
+        }
+    }
+
+    public static void main(String[] args) {
+        ProductCatalogService catalog = new ProductCatalogService();
+        OrderService orderService = new OrderService(catalog);
+        orderService.createOrderLine(&quot;sku-1&quot;, 2); // catalog IS up at creation time
+
+        catalog.isDown = true; // catalog service has an outage LATER
+        System.out.println(orderService.displayOrderLine(orderService.savedOrderLines.get(0))
+                + &quot; -- displayed successfully DESPITE ProductCatalogService being down, because this read never touches it.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java LocalDenormalizedSnapshot.java</code></p>
+<p><code>createOrderLine</code> calls the catalog exactly once, at creation time, and stores the result locally as <code>productNameSnapshot</code>. Later, even with <code>ProductCatalogService</code> simulated as fully down, <code>displayOrderLine</code> succeeds — it reads only <code>OrderService</code>&#x27;s own locally duplicated data, with zero dependency on the catalog service&#x27;s availability for this read.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: PriceSnapshotMustNotUpdate.java -- demonstrates the CORRECT,
+// deliberate behavior for denormalized data that represents a POINT IN
+// TIME fact: an order&#x27;s price snapshot must stay FROZEN at order-creation
+// time even after the product&#x27;s CURRENT price later changes, because an
+// order legitimately reflects &quot;the price when this order was placed,&quot; not
+// &quot;the product&#x27;s current price.&quot;
+import java.util.*;
+import java.math.BigDecimal;
+
+public class PriceSnapshotMustNotUpdate {
+    static class ProductCatalogService {
+        Map&lt;String, BigDecimal&gt; currentPrices = new HashMap&lt;&gt;(Map.of(&quot;sku-1&quot;, new BigDecimal(&quot;29.99&quot;)));
+        BigDecimal getCurrentPrice(String sku) { return currentPrices.get(sku); }
+        void changePrice(String sku, BigDecimal newPrice) {
+            System.out.println(&quot;  ProductCatalogService: price for &quot; + sku + &quot; changed to $&quot; + newPrice);
+            currentPrices.put(sku, newPrice);
+        }
+    }
+
+    // priceSnapshot is DENORMALIZED and DELIBERATELY IMMUTABLE once set --
+    // this is NOT staleness to be &quot;fixed&quot; by re-syncing; it is correct,
+    // permanent historical data.
+    record Order(String id, String sku, BigDecimal priceSnapshot) {}
+
+    static class OrderService {
+        ProductCatalogService catalogService;
+        List&lt;Order&gt; orders = new ArrayList&lt;&gt;();
+        OrderService(ProductCatalogService catalogService) { this.catalogService = catalogService; }
+
+        Order placeOrder(String orderId, String sku) {
+            BigDecimal priceAtOrderTime = catalogService.getCurrentPrice(sku); // captured ONCE
+            Order order = new Order(orderId, sku, priceAtOrderTime);
+            orders.add(order);
+            return order;
+        }
+    }
+
+    public static void main(String[] args) {
+        ProductCatalogService catalog = new ProductCatalogService();
+        OrderService orderService = new OrderService(catalog);
+
+        Order order1 = orderService.placeOrder(&quot;order-1&quot;, &quot;sku-1&quot;);
+        System.out.println(&quot;order-1 placed at price snapshot: $&quot; + order1.priceSnapshot());
+
+        catalog.changePrice(&quot;sku-1&quot;, new BigDecimal(&quot;34.99&quot;)); // price goes UP later
+
+        Order order2 = orderService.placeOrder(&quot;order-2&quot;, &quot;sku-1&quot;); // a NEW order, AFTER the price change
+        System.out.println(&quot;order-2 placed at price snapshot: $&quot; + order2.priceSnapshot());
+
+        System.out.println(&quot;order-1&#x27;s snapshot is STILL: $&quot; + order1.priceSnapshot()
+                + &quot; (correctly UNCHANGED -- this order was placed before the price increase, and must reflect THAT price forever)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java PriceSnapshotMustNotUpdate.java</code></p>
+<p><code>order1</code> captures <code>priceSnapshot=$29.99</code> at creation. The catalog&#x27;s price is then changed to <code>$34.99</code>. <code>order2</code>, created *after* the change, correctly captures the new price, <code>$34.99</code>. Crucially, <code>order1.priceSnapshot()</code> remains <code>$29.99</code> — it was never re-read or re-synced from the catalog, because it represents a historical fact (&quot;what this customer agreed to pay&quot;), not a live mirror of the product&#x27;s current price. This is the essential distinction between denormalized data that should be kept approximately fresh via events (like a display name, where staleness for a few seconds is a minor UX issue) and denormalized data that is fundamentally a point-in-time snapshot that must never be overwritten (like a price at time of purchase, where &quot;updating&quot; it would actually be a correctness bug).</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>PriceSnapshotMustNotUpdate.main</code> in order. <strong>First</strong>, <code>catalog.currentPrices</code> starts with <code>&quot;sku-1&quot; -&gt; $29.99</code>.</p>
+<p><strong><code>orderService.placeOrder(&quot;order-1&quot;, &quot;sku-1&quot;)</code> is called.</strong> Inside, <code>catalogService.getCurrentPrice(&quot;sku-1&quot;)</code> reads the catalog&#x27;s *current* price at this exact moment, <code>$29.99</code>, and this value is captured into a new immutable <code>Order</code> record&#x27;s <code>priceSnapshot</code> field. The order is appended to <code>orders</code> and returned as <code>order1</code>. From this point forward, <code>order1.priceSnapshot()</code> is a fixed value baked into that specific <code>Order</code> object — there is no code path in this program that ever mutates it.</p>
+<p><strong><code>catalog.changePrice(&quot;sku-1&quot;, $34.99)</code> is called</strong>, mutating <code>catalog.currentPrices</code> — the *catalog&#x27;s* view of the current price changes. Critically, this method has no awareness of, and no reference to, any previously placed orders; it only updates the catalog&#x27;s own internal state.</p>
+<p><strong><code>orderService.placeOrder(&quot;order-2&quot;, &quot;sku-1&quot;)</code> is called next.</strong> This independently calls <code>catalogService.getCurrentPrice(&quot;sku-1&quot;)</code> again — but now, since <code>catalog.currentPrices</code> was just mutated, this read returns <code>$34.99</code>. A *new* <code>Order</code> record is created with <code>priceSnapshot=$34.99</code> and stored as <code>order2</code>.</p>
+<p><strong>Finally</strong>, <code>order1.priceSnapshot()</code> is read one more time and printed. Since <code>order1</code> is an immutable record created before the price change, and nothing in this program&#x27;s execution path ever touches <code>order1</code> again after its creation, its <code>priceSnapshot</code> field still holds exactly <code>$29.99</code> — the value captured at the moment it was created, entirely unaffected by the later catalog change.</p>
+<p><strong>The essential data-flow distinction</strong>: <code>order1</code> and <code>order2</code> each independently captured a *copy* of the catalog&#x27;s price at their own respective creation times — they are two separate snapshots of a value that changed in between, and both are simultaneously &quot;correct&quot; for what they represent (the price at the time each order was placed), even though they now permanently disagree with each other and with the catalog&#x27;s current price.</p>
+<pre><code>t1: catalog price = $29.99 -&gt; order1.priceSnapshot = $29.99 (frozen forever)
+t2: catalog.changePrice($34.99)  -- catalog&#x27;s CURRENT price changes, order1 is UNTOUCHED
+t3: catalog price = $34.99 -&gt; order2.priceSnapshot = $34.99 (frozen forever, different value)
+t4: order1.priceSnapshot still reads $29.99 -- correct, NOT a sync bug</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Not all duplicated data should be kept &quot;in sync&quot; — some denormalized fields are deliberately point-in-time snapshots (a price at purchase, an address at shipment) that must remain frozen even as the source data changes later, while others (a display name, a category label) genuinely should be refreshed via events to avoid becoming stale. Conflating these two cases — either freezing data that should update, or updating data that should stay frozen — is a common and consequential mistake.</blockquote>
+<ul><li>Duplicate only the specific fields a consuming service actually needs, not entire records, to keep the sync surface area and staleness window as small as possible.</li><li>Explicitly decide, per duplicated field, whether it should be refreshed via events over time (a display-only convenience copy) or frozen permanently at creation time (a historical fact) — this decision should be deliberate and documented, not accidental.</li><li>Duplication trades read-time independence and lower latency for the acceptance of some staleness window for the fields that *are* meant to refresh — this tradeoff should be made consciously per use case, weighing how sensitive that specific read is to staleness.</li><li>Exactly one service remains the <a href="0311-data-ownership-system-of-record.md">system of record</a> for any given fact; duplicated copies elsewhere are always derived, read-optimized views of that source of truth, never independently authoritative or independently writable.</li></ul>
+  <div class="nav"><a class="prv" href="0307-polyglot-persistence.html"><span class="mini">← Previous</span>Polyglot persistence</a><a class="nxt" href="0309-no-distributed-joins-composition-instead.html"><span class="mini">Next →</span>No distributed joins — composition instead</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t308";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

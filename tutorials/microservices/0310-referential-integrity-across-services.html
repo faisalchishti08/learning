@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Referential integrity across services" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Referential integrity across services"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Referential integrity — the guarantee that a foreign key always points to a row that actually exists — is normally enforced automatically by a relational database&#x27;s own constraints within a single schema. Across services, this guarantee disappears entirely: <code>OrderService</code> storing a <code>customerId</code> has no database-level mechanism forcing that ID to correspond to a real, currently-existing customer in <code>CustomerService</code>&#x27;s separate database, because there is no shared foreign key constraint that can span two different database instances.</p>
+<h2>2. Why &amp; when</h2>
+<p>This loss of an automatic guarantee is a direct, unavoidable consequence of <a href="0304-database-per-service-pattern.md">database per service</a> — the same isolation that provides independence also removes the database engine&#x27;s ability to enforce cross-service consistency for you. In practice, references across services need to be treated differently based on how strictly they must hold: some references can tolerate occasionally pointing to a deleted or non-existent entity (a <code>productSku</code> on an old order referencing a since-discontinued product is often fine to leave as-is, since the order is historical), while others need active enforcement through application-level mechanisms — validating a reference at write time via an API call, or using events to propagate deletions/changes so dependent services can react.</p>
+<p>Recognize where strict referential integrity genuinely matters (blocking an operation that would create a dangling reference to something that must exist, like preventing an order for a truly nonexistent customer) versus where eventual, soft consistency is acceptable (a stale display name is a minor issue; an order referencing a deleted customer ID might just need to render as &quot;former customer&quot; rather than blocking anything). Choosing the wrong level of enforcement for a given reference — over-enforcing where staleness would have been fine, or under-enforcing where a dangling reference could cause real harm — is the actual design decision this topic is about.</p>
+<h2>3. Core concept</h2>
+<p>Validate references synchronously (via an API call) at the point of creation when a dangling reference must never be allowed; otherwise, accept it can dangle and handle that gracefully at read time, or propagate deletions via events so dependent data can be cleaned up asynchronously.</p>
+<pre><code class="lang-java">// Option A: SYNCHRONOUS validation at write time -- when the reference
+// MUST be valid before the operation is allowed to proceed.
+@Service
+class OrderService {
+    private final CustomerServiceClient customerClient;
+    void placeOrder(String customerId, List&lt;OrderLine&gt; lines) {
+        if (!customerClient.exists(customerId)) { // API call, validates BEFORE writing
+            throw new IllegalArgumentException(&quot;customer &quot; + customerId + &quot; does not exist&quot;);
+        }
+        // ... proceed with order creation, reference now KNOWN to be valid at this moment
+    }
+}
+
+// Option B: EVENTUAL propagation -- accept the dangling window,
+// react to it via an event instead of blocking anything up front.
+@EventListener
+void onCustomerDeleted(CustomerDeletedEvent event) {
+    orderRepository.markOrdersAsFormerCustomer(event.customerId()); // graceful cleanup, asynchronous
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Within one service's database, a foreign key constraint automatically guarantees a referenced row exists; across services, no such automatic guarantee exists, so each cross-service reference must be deliberately handled either by synchronous validation before writing or by reacting gracefully to events when the referenced entity changes or is deleted">
+  <rect x="30" y="30" width="220" height="60" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="140" y="52" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">WITHIN one database</text>
+  <text x="140" y="68" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">FOREIGN KEY -- enforced automatically</text>
+
+  <rect x="390" y="30" width="220" height="60" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="500" y="48" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">ACROSS services</text>
+  <text x="500" y="64" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">no automatic guarantee --</text>
+  <text x="500" y="76" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">must be handled DELIBERATELY</text>
+
+  <text x="500" y="115" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">validate synchronously at write time, OR</text>
+  <text x="500" y="130" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">accept staleness and react to events</text>
+</svg>
+<p>A database-enforced guarantee within one schema becomes a deliberate design decision once services and databases split apart.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order silently created against a nonexistent customer with no check at all, extended to synchronous validation at write time that blocks the invalid reference from ever being created, and finally handling the harder case — a customer that existed at order time but is later deleted — gracefully via an event-driven reaction instead of leaving a broken dangling reference.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoIntegrityCheck.java -- OrderService accepts a customerId with
+// ZERO validation; an order referencing a customer that DOES NOT EXIST
+// is created silently, with no error and no warning.
+import java.util.*;
+
+public class NoIntegrityCheck {
+    static Set&lt;String&gt; existingCustomerIds = Set.of(&quot;cust-1&quot;, &quot;cust-2&quot;);
+
+    record Order(String id, String customerId) {}
+    static List&lt;Order&gt; orders = new ArrayList&lt;&gt;();
+
+    static void placeOrder(String orderId, String customerId) {
+        orders.add(new Order(orderId, customerId)); // NO check against existingCustomerIds at all
+    }
+
+    public static void main(String[] args) {
+        placeOrder(&quot;order-1&quot;, &quot;cust-999&quot;); // does NOT exist!
+        System.out.println(&quot;Order created: &quot; + orders.get(0)
+                + &quot; -- referencing a customer that DOES NOT EXIST, with no error or warning of any kind.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NoIntegrityCheck.java</code></p>
+<p><code>placeOrder</code> accepts any <code>customerId</code> without checking it against <code>existingCustomerIds</code>, so an order referencing <code>&quot;cust-999&quot;</code>, which was never a real customer, is created successfully — a dangling reference from the moment of creation, invisible until something later tries to look up that customer and fails to find them.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SynchronousValidation.java -- placeOrder now validates the
+// customerId against CustomerService&#x27;s API BEFORE allowing the order to
+// be created, preventing the dangling reference from ever existing.
+import java.util.*;
+
+public class SynchronousValidation {
+    static class CustomerServiceClient {
+        Set&lt;String&gt; existingCustomerIds = Set.of(&quot;cust-1&quot;, &quot;cust-2&quot;);
+        boolean exists(String customerId) { return existingCustomerIds.contains(customerId); } // stands in for an API call
+    }
+
+    record Order(String id, String customerId) {}
+    static List&lt;Order&gt; orders = new ArrayList&lt;&gt;();
+
+    static void placeOrder(CustomerServiceClient customerClient, String orderId, String customerId) {
+        if (!customerClient.exists(customerId)) {
+            throw new IllegalArgumentException(&quot;cannot place order: customer &#x27;&quot; + customerId + &quot;&#x27; does not exist&quot;);
+        }
+        orders.add(new Order(orderId, customerId));
+    }
+
+    public static void main(String[] args) {
+        CustomerServiceClient customerClient = new CustomerServiceClient();
+
+        placeOrder(customerClient, &quot;order-1&quot;, &quot;cust-1&quot;); // VALID
+        System.out.println(&quot;order-1 created successfully: &quot; + orders.get(0));
+
+        try {
+            placeOrder(customerClient, &quot;order-2&quot;, &quot;cust-999&quot;); // INVALID
+        } catch (IllegalArgumentException e) {
+            System.out.println(&quot;order-2 REJECTED before creation: &quot; + e.getMessage()
+                    + &quot; -- the dangling reference was never allowed to exist.&quot;);
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java SynchronousValidation.java</code></p>
+<p><code>placeOrder</code> now calls <code>customerClient.exists(customerId)</code> before writing anything. The valid order for <code>&quot;cust-1&quot;</code> is created normally. The order attempting to reference <code>&quot;cust-999&quot;</code> is rejected with a clear exception *before* any data is written — the dangling reference is prevented structurally, at the cost of <code>placeOrder</code> now depending synchronously on <code>CustomerService</code>&#x27;s availability for every order creation.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: EventDrivenGracefulHandling.java -- handles the HARDER case:
+// cust-1 existed and was VALID when order-1 was created, but is LATER
+// deleted. Rather than leaving order-1 with a silently broken reference,
+// OrderService reacts to a CustomerDeletedEvent and gracefully updates
+// its own data to reflect the deletion, without blocking anything.
+import java.util.*;
+
+public class EventDrivenGracefulHandling {
+    static class Order {
+        String id, customerId;
+        String customerDisplayStatus = &quot;ACTIVE&quot;; // updated gracefully when the customer is later deleted
+        Order(String id, String customerId) { this.id = id; this.customerId = customerId; }
+        public String toString() { return id + &quot; (customer=&quot; + customerId + &quot;, status=&quot; + customerDisplayStatus + &quot;)&quot;; }
+    }
+
+    static List&lt;Order&gt; orders = new ArrayList&lt;&gt;();
+    static Set&lt;String&gt; existingCustomerIds = new HashSet&lt;&gt;(Set.of(&quot;cust-1&quot;));
+
+    static void placeOrder(String orderId, String customerId) {
+        if (!existingCustomerIds.contains(customerId)) throw new IllegalArgumentException(&quot;customer does not exist&quot;);
+        orders.add(new Order(orderId, customerId));
+    }
+
+    // Simulates CustomerService publishing a CustomerDeletedEvent, and
+    // OrderService&#x27;s event listener reacting to it -- NOT a synchronous
+    // check, but a graceful, asynchronous cleanup of dependent data.
+    static void onCustomerDeletedEvent(String customerId) {
+        existingCustomerIds.remove(customerId);
+        for (Order order : orders) {
+            if (order.customerId.equals(customerId)) {
+                order.customerDisplayStatus = &quot;FORMER CUSTOMER (deleted)&quot;; // graceful, not a hard failure
+            }
+        }
+        System.out.println(&quot;  [event] customer &#x27;&quot; + customerId + &quot;&#x27; deleted -- &quot; + orders.size()
+                + &quot; existing order(s) gracefully updated, NOT deleted or broken.&quot;);
+    }
+
+    public static void main(String[] args) {
+        placeOrder(&quot;order-1&quot;, &quot;cust-1&quot;); // valid at creation time
+        System.out.println(&quot;Before deletion: &quot; + orders.get(0));
+
+        onCustomerDeletedEvent(&quot;cust-1&quot;); // customer is later deleted in CustomerService
+
+        System.out.println(&quot;After deletion:  &quot; + orders.get(0)
+                + &quot; -- the order still exists and displays gracefully, rather than being a silently broken dangling reference.&quot;);
+
+        try {
+            placeOrder(&quot;order-2&quot;, &quot;cust-1&quot;); // NEW orders against the now-deleted customer are correctly rejected
+        } catch (IllegalArgumentException e) {
+            System.out.println(&quot;New order against deleted customer correctly REJECTED: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java EventDrivenGracefulHandling.java</code></p>
+<p><code>order-1</code> is created while <code>cust-1</code> is valid. When <code>cust-1</code> is later deleted, <code>onCustomerDeletedEvent</code> — standing in for an event listener reacting to a <code>CustomerDeletedEvent</code> published by <code>CustomerService</code> — updates <code>order-1</code>&#x27;s local <code>customerDisplayStatus</code> field gracefully, rather than leaving the order with a silently dangling <code>customerId</code> that would fail unpredictably if something tried to look up that customer later. The order itself is preserved (historical orders shouldn&#x27;t simply vanish because a customer account was later deleted), but a *new* order attempted against the now-deleted customer is still correctly rejected by the synchronous validation, since <code>existingCustomerIds</code> was updated by the same event.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>EventDrivenGracefulHandling.main</code> in order. <strong>First</strong>, <code>placeOrder(&quot;order-1&quot;, &quot;cust-1&quot;)</code> is called; <code>existingCustomerIds</code> contains <code>&quot;cust-1&quot;</code>, so the check passes, and a new <code>Order</code> is added to <code>orders</code> with <code>customerDisplayStatus=&quot;ACTIVE&quot;</code> (its default).</p>
+<p><strong><code>onCustomerDeletedEvent(&quot;cust-1&quot;)</code> is called</strong>, simulating <code>OrderService</code>&#x27;s event listener reacting to a <code>CustomerDeletedEvent</code> that <code>CustomerService</code> published after actually deleting the customer in its own database. Inside, <code>existingCustomerIds.remove(&quot;cust-1&quot;)</code> updates the local validation set — this is <code>OrderService</code>&#x27;s own, locally-maintained knowledge of which customer IDs are currently valid, kept in sync via events rather than a live cross-service query on every check.</p>
+<p><strong>The method then iterates <code>orders</code></strong>, finds <code>order-1</code> (whose <code>customerId</code> matches <code>&quot;cust-1&quot;</code>), and sets its <code>customerDisplayStatus</code> to <code>&quot;FORMER CUSTOMER (deleted)&quot;</code> — this mutates <code>OrderService</code>&#x27;s own data in response to the event, gracefully reflecting the fact that the referenced customer no longer exists, without deleting the order itself or leaving it in a broken, unexplained state.</p>
+<p><strong><code>orders.get(0)</code> is printed again</strong>, now showing the updated status — the order record itself is unchanged in every other respect (its ID, its customer ID reference, its line items would all remain intact in a real system), only its *display* status reflects the now-known fact that this reference points to a deleted entity.</p>
+<p><strong>Finally, <code>placeOrder(&quot;order-2&quot;, &quot;cust-1&quot;)</code> is attempted.</strong> Since <code>existingCustomerIds</code> no longer contains <code>&quot;cust-1&quot;</code> (removed by the event handler moments earlier), the validation check <code>!existingCustomerIds.contains(customerId)</code> is <code>true</code>, and the method throws <code>IllegalArgumentException</code> — correctly preventing a *new* dangling reference to a customer already known to be deleted, even though this rejection happens via the same locally-maintained set that the event handler keeps updated, not a fresh synchronous call to <code>CustomerService</code> for this specific check.</p>
+<pre><code>placeOrder(&quot;order-1&quot;, &quot;cust-1&quot;)  -- cust-1 IS in existingCustomerIds -&gt; order created, status=ACTIVE
+CustomerService deletes cust-1 -&gt; publishes CustomerDeletedEvent
+OrderService.onCustomerDeletedEvent(&quot;cust-1&quot;)
+        |
+        +-- existingCustomerIds.remove(&quot;cust-1&quot;)     (local validation set updated)
+        +-- order-1.customerDisplayStatus = &quot;FORMER CUSTOMER (deleted)&quot;   (graceful, not broken)
+placeOrder(&quot;order-2&quot;, &quot;cust-1&quot;)  -- cust-1 NOT in existingCustomerIds -&gt; REJECTED</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Treating every cross-service reference as requiring strict, synchronous, always-consistent enforcement recreates tight coupling between services (every write depends on another service&#x27;s availability) — while treating every reference as freely allowed to dangle indefinitely risks confusing or broken behavior wherever that reference is later used. The right choice is per-reference, based on the actual cost of a temporarily dangling reference for that specific case.</blockquote>
+<ul><li>Referential integrity across service boundaries is never automatic — it requires a deliberate choice per reference between synchronous validation at write time and eventual, event-driven reconciliation.</li><li>Synchronous validation is appropriate when a dangling reference must never be allowed to exist even momentarily, at the cost of coupling that write path&#x27;s availability to the referenced service&#x27;s availability.</li><li>Event-driven reconciliation is appropriate when a brief window of staleness is acceptable, and lets the referencing service react gracefully (not necessarily by deleting its own data) once it learns the referenced entity changed or was removed.</li><li>A locally-maintained, event-synced set of valid IDs (as in Level 3) lets a service validate new references quickly, without a synchronous cross-service call on every write, while still staying reasonably current — a common, practical middle ground between the two extremes.</li></ul>
+  <div class="nav"><a class="prv" href="0309-no-distributed-joins-composition-instead.html"><span class="mini">← Previous</span>No distributed joins — composition instead</a><a class="nxt" href="0311-data-ownership-system-of-record.html"><span class="mini">Next →</span>Data ownership & system of record</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t310";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"No distributed joins — composition instead" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"No distributed joins — composition instead"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Once data lives in separate, private databases under <a href="0304-database-per-service-pattern.md">database per service</a>, there is no SQL <code>JOIN</code> that can span across them — a join requires both tables to be queryable within the same database engine and transaction. Composition is the alternative: fetch each piece of data separately from its owning service (via API calls), then combine the results in application code, typically at whichever layer is orchestrating the overall request — an API gateway, a backend-for-frontend, or a dedicated aggregating service.</p>
+<h2>2. Why &amp; when</h2>
+<p>This isn&#x27;t a limitation to work around cleverly — it&#x27;s the direct, unavoidable consequence of the isolation database-per-service deliberately provides. A service that needs data spanning what used to be a single joined query in a monolith must instead call each owning service&#x27;s API and stitch the results together itself. This is more code than a single SQL join, and it introduces new failure modes (any one of the calls can fail or be slow) that a single-database join never had to consider, but it preserves the actual independence that motivated splitting the data apart in the first place.</p>
+<p>Use composition (see the dedicated <a href="0312-api-composition-pattern.md">API composition pattern</a> topic for the full pattern) whenever a request genuinely needs data assembled from more than one service, and accept that this composition happens in application code, typically with the calls made concurrently to bound the added latency, and with each individual call protected by the resilience patterns from earlier in this section (timeouts, circuit breakers, fallbacks) since composition inherently depends on multiple independent services all being available.</p>
+<h2>3. Core concept</h2>
+<p>Instead of one query joining two tables, two separate calls are made and their results are merged in memory, typically concurrently to avoid serializing the latency of each call.</p>
+<pre><code class="lang-java">// NOT POSSIBLE: SELECT o.*, p.name FROM orders o JOIN products p ON o.sku = p.sku
+// (orders and products live in different services&#x27; private databases)
+
+// INSTEAD: fetch independently, compose in application code.
+CompletableFuture&lt;Order&gt; orderFuture = CompletableFuture.supplyAsync(() -&gt; orderClient.getOrder(orderId));
+CompletableFuture&lt;Product&gt; productFuture = orderFuture.thenCompose(order -&gt;
+        CompletableFuture.supplyAsync(() -&gt; productClient.getProduct(order.sku())));
+
+OrderDetailsView view = orderFuture.thenCombine(productFuture,
+        (order, product) -&gt; new OrderDetailsView(order.id(), product.name(), order.quantity())
+).join();</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An aggregating layer calls OrderService and ProductService independently through their APIs, since no database join can span their separate private databases, then combines both results in application code to produce a single composed view for the caller">
+  <rect x="250" y="20" width="140" height="35" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="320" y="42" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Aggregating layer</text>
+
+  <line x1="290" y1="55" x2="130" y2="95" stroke="#8b949e" marker-end="url(#arr309)"/>
+  <line x1="350" y1="55" x2="510" y2="95" stroke="#8b949e" marker-end="url(#arr309)"/>
+
+  <rect x="50" y="100" width="160" height="35" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="130" y="122" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">OrderService API</text>
+
+  <rect x="430" y="100" width="160" height="35" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="510" y="122" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">ProductService API</text>
+
+  <text x="320" y="150" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">results MERGED in application code -- no cross-database JOIN exists</text>
+
+  <defs><marker id="arr309" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>No join spans the two databases; an aggregating layer calls both APIs and merges the results itself.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a monolith-style single query joining orders and products directly, extended to the same result assembled via two independent, sequential API calls once the data is split, and finally the same composition made concurrent to avoid needlessly serializing the two independent calls&#x27; latency.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: MonolithStyleJoin.java -- BEFORE the split: one shared database,
+// one SQL-style join produces the combined view directly.
+import java.util.*;
+
+public class MonolithStyleJoin {
+    record OrderRow(int orderId, String sku, int quantity) {}
+    record ProductRow(String sku, String name) {}
+
+    public static void main(String[] args) {
+        List&lt;OrderRow&gt; orders = List.of(new OrderRow(1, &quot;sku-1&quot;, 2));
+        List&lt;ProductRow&gt; products = List.of(new ProductRow(&quot;sku-1&quot;, &quot;Wireless Mouse&quot;));
+
+        // A single in-memory &quot;join&quot; -- stands in for one SQL JOIN query
+        // that was possible because both tables lived in ONE database.
+        for (OrderRow order : orders) {
+            for (ProductRow product : products) {
+                if (order.sku().equals(product.sku())) {
+                    System.out.println(&quot;Order &quot; + order.orderId() + &quot;: &quot; + order.quantity() + &quot;x &quot; + product.name()
+                            + &quot; (produced by ONE query against ONE shared database)&quot;);
+                }
+            }
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java MonolithStyleJoin.java</code></p>
+<p>Both <code>orders</code> and <code>products</code> live in the same in-memory space (standing in for the same database), so combining them is a trivial nested-loop join — this is the shape of query that becomes impossible the instant the two datasets move into separate services&#x27; private databases.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SequentialComposition.java -- AFTER the split: OrderService and
+// ProductService are separate, with separate APIs; the combined view is
+// now assembled by calling BOTH and merging in application code.
+import java.util.*;
+
+public class SequentialComposition {
+    record Order(int orderId, String sku, int quantity) {}
+    record Product(String sku, String name) {}
+    record OrderDetailsView(int orderId, String productName, int quantity) {}
+
+    static class OrderServiceClient {
+        Order getOrder(int orderId) { return new Order(orderId, &quot;sku-1&quot;, 2); } // stands in for an HTTP call
+    }
+    static class ProductServiceClient {
+        Product getProduct(String sku) { return new Product(sku, &quot;Wireless Mouse&quot;); } // stands in for an HTTP call
+    }
+
+    public static void main(String[] args) {
+        OrderServiceClient orderClient = new OrderServiceClient();
+        ProductServiceClient productClient = new ProductServiceClient();
+
+        // NO join possible -- fetch SEPARATELY, then combine in code.
+        Order order = orderClient.getOrder(1);              // call #1
+        Product product = productClient.getProduct(order.sku()); // call #2, DEPENDS on call #1&#x27;s result
+
+        OrderDetailsView view = new OrderDetailsView(order.orderId(), product.name(), order.quantity());
+        System.out.println(view + &quot; (assembled from TWO separate API calls, composed in application code)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java SequentialComposition.java</code></p>
+<p><code>getOrder</code> and <code>getProduct</code> are now two entirely separate calls, each standing in for a real network request to a different service. <code>getProduct</code> even depends on <code>getOrder</code>&#x27;s result (it needs the <code>sku</code> from the order), so the two calls are inherently sequential here — this reflects a real composition where one call&#x27;s result determines what the next call needs to fetch.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ConcurrentCompositionWithIndependentCalls.java -- when the calls
+// are INDEPENDENT of each other&#x27;s results (not the case in Level 2, but
+// common when composing data from more than two services), running them
+// CONCURRENTLY avoids needlessly serializing their latencies -- a real
+// composition optimization.
+import java.util.concurrent.*;
+
+public class ConcurrentCompositionWithIndependentCalls {
+    record Order(int orderId, String sku, int quantity) {}
+    record CustomerProfile(String customerId, String name) {}
+    record ShippingEstimate(String estimatedDays) {}
+    record OrderSummaryView(int orderId, String customerName, int quantity, String estimatedDays) {}
+
+    static class OrderServiceClient {
+        Order getOrder(int orderId) { sleep(100); return new Order(orderId, &quot;sku-1&quot;, 2); }
+    }
+    static class CustomerServiceClient {
+        CustomerProfile getCustomer(String customerId) { sleep(150); return new CustomerProfile(customerId, &quot;Alice&quot;); }
+    }
+    static class ShippingServiceClient {
+        ShippingEstimate getEstimate(String sku) { sleep(120); return new ShippingEstimate(&quot;3-5 days&quot;); }
+    }
+    static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException ignored) {} }
+
+    public static void main(String[] args) throws Exception {
+        OrderServiceClient orderClient = new OrderServiceClient();
+        CustomerServiceClient customerClient = new CustomerServiceClient();
+        ShippingServiceClient shippingClient = new ShippingServiceClient();
+
+        long start = System.currentTimeMillis();
+
+        // Order must be fetched first (we need its sku for shipping); customer
+        // and shipping estimate are INDEPENDENT of each other once we have
+        // the order -- so run THOSE two concurrently instead of sequentially.
+        Order order = orderClient.getOrder(1); // 100ms
+
+        CompletableFuture&lt;CustomerProfile&gt; customerFuture =
+                CompletableFuture.supplyAsync(() -&gt; customerClient.getCustomer(&quot;cust-1&quot;)); // 150ms, CONCURRENT
+        CompletableFuture&lt;ShippingEstimate&gt; shippingFuture =
+                CompletableFuture.supplyAsync(() -&gt; shippingClient.getEstimate(order.sku())); // 120ms, CONCURRENT
+
+        CustomerProfile customer = customerFuture.get();
+        ShippingEstimate shipping = shippingFuture.get();
+
+        OrderSummaryView view = new OrderSummaryView(order.orderId(), customer.name(), order.quantity(), shipping.estimatedDays());
+        long elapsed = System.currentTimeMillis() - start;
+        System.out.println(view);
+        System.out.println(&quot;Total time: &quot; + elapsed + &quot;ms (order[100ms] + max(customer[150ms], shipping[120ms]) &quot;
+                + &quot;= ~250ms, NOT 100+150+120=370ms if run sequentially)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ConcurrentCompositionWithIndependentCalls.java</code></p>
+<p><code>getOrder</code> runs first (needed to get the <code>sku</code> for the shipping call), taking 100ms. Once it completes, <code>getCustomer</code> (150ms) and <code>getEstimate</code> (120ms) are independent of each other and are dispatched concurrently via <code>CompletableFuture.supplyAsync</code>, so their latencies overlap rather than stack. The total elapsed time comes out close to <code>100 + max(150, 120) = 250ms</code>, not the <code>100 + 150 + 120 = 370ms</code> a naive fully-sequential composition would take — a meaningful latency saving that becomes more significant as more services are composed into a single view.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>ConcurrentCompositionWithIndependentCalls.main</code> in order. <strong>First</strong>, <code>start</code> captures the current time, and <code>orderClient.getOrder(1)</code> is called synchronously — the calling thread blocks for its full 100ms <code>sleep</code>, then returns an <code>Order</code> with <code>sku=&quot;sku-1&quot;</code>.</p>
+<p><strong>Next</strong>, two <code>CompletableFuture.supplyAsync</code> calls are made in immediate succession. Each schedules its respective lambda (<code>customerClient.getCustomer(...)</code> and <code>shippingClient.getEstimate(order.sku())</code>) to run on a thread from the common <code>ForkJoinPool</code>, and both return immediately with a <code>CompletableFuture</code> handle — the calling thread does *not* block on either of these lines; it has simply dispatched two units of work to run in the background, concurrently with each other.</p>
+<p><strong>Both background tasks begin executing at approximately the same wall-clock moment</strong> (immediately after being scheduled): the <code>customerClient.getCustomer</code> task sleeps for 150ms, and the <code>shippingClient.getEstimate</code> task sleeps for 120ms, on two different threads, in parallel.</p>
+<p><strong><code>customerFuture.get()</code> is called</strong>, which blocks the main thread until the customer task completes — this takes up to 150ms from when the task was scheduled. <strong><code>shippingFuture.get()</code> is called immediately after</strong> — but since the shipping task was scheduled at essentially the same time as the customer task and only takes 120ms, it has very likely *already completed* by the time <code>shippingFuture.get()</code> is reached (which itself happens after waiting the full 150ms for the customer future) — so this second <code>.get()</code> call returns near-instantly rather than adding its own 120ms on top.</p>
+<p><strong>The <code>OrderSummaryView</code> is assembled</strong> from the three independently-fetched pieces (<code>order</code>, <code>customer</code>, <code>shipping</code>), and <code>elapsed</code> is computed as the total wall-clock time from <code>start</code> to this point — approximately <code>100ms (order) + 150ms (the longer of the two concurrent calls) = 250ms</code>, confirming that the two independent calls&#x27; latencies overlapped rather than adding together.</p>
+<pre><code>t=0ms:    getOrder() starts (blocking)
+t=100ms:  getOrder() returns -- sku now known
+t=100ms:  getCustomer() and getEstimate() BOTH start concurrently (different threads)
+t=220ms:  getEstimate() finishes (100+120)
+t=250ms:  getCustomer() finishes (100+150) -- this is the LONGER of the two, so it determines total time
+t=250ms:  view assembled, both results already available</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Composing calls sequentially by default, purely because it&#x27;s the simplest code to write, silently pays a latency cost proportional to the *sum* of every independent call&#x27;s duration — as more services get composed into a single view, this sum grows linearly, while a concurrent composition&#x27;s latency grows only with the *slowest single call*, a substantial and increasingly important difference as composition depth grows.</blockquote>
+<ul><li>No SQL join can span services&#x27; separate private databases — composition (fetching from each service&#x27;s API and combining the results in application code) is the structural replacement.</li><li>Identify which of the calls in a composition genuinely depend on each other&#x27;s results (must run sequentially) versus which are independent (can run concurrently), and dispatch the independent ones concurrently to bound total latency by the slowest call rather than the sum of all calls.</li><li>Every call in a composition is now a separate potential point of failure — apply the resilience patterns from earlier in this section (timeouts, circuit breakers, fallbacks) to each individual call, since the composed view&#x27;s overall availability depends on all of its constituent calls succeeding (or gracefully degrading).</li><li>See <a href="0312-api-composition-pattern.md">API composition pattern</a> for the fuller treatment of this as a formal architectural pattern, including where the composition logic itself should live (API gateway, backend-for-frontend, or a dedicated aggregating service).</li></ul>
+  <div class="nav"><a class="prv" href="0308-data-duplication-denormalization-across-services.html"><span class="mini">← Previous</span>Data duplication & denormalization across services</a><a class="nxt" href="0310-referential-integrity-across-services.html"><span class="mini">Next →</span>Referential integrity across services</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t309";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
