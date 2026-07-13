@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Dynamic / runtime configuration refresh" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 8. Configuration Management</div>
+  <div class="htitle">
+    <h1>"Dynamic / runtime configuration refresh"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Dynamic configuration refresh is the ability for a running application to pick up a changed configuration value without being restarted — the new value takes effect in the live process, as opposed to static configuration that&#x27;s read once at startup and stays fixed for the process&#x27;s entire lifetime.</p>
+<h2>2. Why &amp; when</h2>
+<p>Configuration read once at startup means any change to it requires restarting every instance of the affected service to take effect — acceptable for values that rarely change, but a real operational cost for values that need to change often or urgently (a timeout that needs tuning under live load, an emergency <a href="0225-feature-flags-feature-toggles.md">feature flag</a> that needs flipping off *right now*, without waiting for a full redeploy cycle across every instance). Dynamic refresh closes this gap by having the application re-read (or be pushed) an updated value while it continues running, applying the new value to subsequent operations without a restart.</p>
+<p>Use dynamic refresh for values that genuinely benefit from being changed without a restart — tunable thresholds, feature flags, log levels during an incident. Values that are safe to change only alongside a full redeploy (a database schema-affecting setting, for instance) should stay static and not be made dynamically refreshable, since applying them mid-flight could leave the running process in an inconsistent state.</p>
+<h2>3. Core concept</h2>
+<p>Dynamic refresh works by having configuration live behind an indirection — a holder object, a supplier, a scoped bean — that application code reads from on each use, rather than capturing the value once into a plain field at startup; updating the holder&#x27;s contents is then immediately visible to every subsequent read, with no restart needed.</p>
+<pre><code class="lang-java">// STATIC -- value captured ONCE at startup; changing it later has NO effect on the running process
+int timeoutMs = loadConfig().get(&quot;timeout.ms&quot;); // frozen at startup
+
+// DYNAMIC -- reads happen THROUGH a holder, on every use; updating the holder takes effect IMMEDIATELY
+class ConfigHolder { volatile int timeoutMs = 3000; }
+ConfigHolder config = new ConfigHolder();
+// ... elsewhere, at any later point, WITHOUT a restart:
+config.timeoutMs = 5000; // the NEXT read anywhere in the running process sees this new value</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A static configuration read captures a value once at startup and never changes; a dynamic configuration read goes through a live holder, so an external update to that holder is reflected on the very next read, without restarting the process" >
+  <rect x="20" y="20" width="270" height="55" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="155" y="42" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Static: read ONCE at startup</text>
+  <text x="155" y="60" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">later changes have NO effect</text>
+
+  <rect x="20" y="100" width="270" height="60" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="155" y="122" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Dynamic: read through a live holder</text>
+  <text x="155" y="138" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">update reflected on NEXT read</text>
+  <text x="155" y="150" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">no restart needed</text>
+
+  <rect x="380" y="100" width="230" height="60" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="495" y="125" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">External update event</text>
+  <text x="495" y="142" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">config server push / poll</text>
+
+  <line x1="378" y1="130" x2="292" y2="130" stroke="#8b949e" marker-end="url(#arr223)"/>
+
+  <defs>
+    <marker id="arr223" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>An external update reaches a live holder that every subsequent read consults, bypassing the need for a restart.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a request-handling loop that starts reading a static, startup-frozen timeout value (immune to any later change), refactors to read from a live, updatable holder (an external update takes effect on the next request), and finally adds a background poller that periodically checks a simulated config source and applies changes automatically, mirroring how real dynamic-refresh mechanisms detect and apply updates without any manual trigger.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: StaticFrozenConfig.java -- the timeout is captured ONCE, at
+// startup; changing the &quot;source&quot; afterward has NO effect on requests
+// already using the frozen local value.
+public class StaticFrozenConfig {
+    static int loadTimeoutFromSource() { return 3000; } // simulates reading config ONCE
+
+    public static void main(String[] args) {
+        int timeoutMs = loadTimeoutFromSource(); // FROZEN at this point, forever, for this process
+        System.out.println(&quot;Request 1 uses timeout: &quot; + timeoutMs);
+
+        // imagine the &quot;source&quot; changes here (e.g. an ops engineer updates a config file) --
+        // but `timeoutMs` was already captured, so it CANNOT see that change
+        System.out.println(&quot;Request 2 uses timeout: &quot; + timeoutMs); // STILL 3000, even if the source changed
+        System.out.println(&quot;A restart would be required to pick up any change to the source.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac StaticFrozenConfig.java &amp;&amp; java StaticFrozenConfig</code> (JDK 17+).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: LiveHolderConfig.java -- requests now read THROUGH a live holder;
+// an external update to the holder is visible on the VERY NEXT read,
+// with NO restart involved.
+public class LiveHolderConfig {
+    static class ConfigHolder { volatile int timeoutMs = 3000; } // &quot;volatile&quot; so updates are visible across reads
+
+    static ConfigHolder config = new ConfigHolder();
+
+    static void handleRequest(int requestNumber) {
+        System.out.println(&quot;Request &quot; + requestNumber + &quot; uses timeout: &quot; + config.timeoutMs); // reads LIVE, every time
+    }
+
+    public static void main(String[] args) {
+        handleRequest(1);
+        config.timeoutMs = 5000; // an EXTERNAL update -- e.g. triggered by a config server push -- NO restart
+        handleRequest(2); // sees the NEW value immediately
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac LiveHolderConfig.java &amp;&amp; java LiveHolderConfig</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Request 1 uses timeout: 3000
+Request 2 uses timeout: 5000</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: BackgroundPollingRefresh.java -- a background poller periodically
+// checks a simulated external config source and applies changes to the
+// live holder AUTOMATICALLY, mirroring a real dynamic-refresh mechanism.
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class BackgroundPollingRefresh {
+    static class ConfigHolder { volatile int timeoutMs = 3000; }
+    static ConfigHolder config = new ConfigHolder();
+    static AtomicInteger simulatedExternalSource = new AtomicInteger(3000); // the &quot;config server&#x27;s&quot; current value
+
+    static void handleRequest(String label) {
+        System.out.println(label + &quot; uses timeout: &quot; + config.timeoutMs);
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        ScheduledExecutorService poller = Executors.newSingleThreadScheduledExecutor();
+        // POLL the external source every 50ms and apply any change to the live holder -- fully automatic
+        poller.scheduleAtFixedRate(() -&gt; {
+            int latest = simulatedExternalSource.get();
+            if (config.timeoutMs != latest) {
+                System.out.println(&quot;  [poller] detected change: &quot; + config.timeoutMs + &quot; -&gt; &quot; + latest + &quot; -- applying&quot;);
+                config.timeoutMs = latest;
+            }
+        }, 0, 50, TimeUnit.MILLISECONDS);
+
+        handleRequest(&quot;Request A&quot;);
+        Thread.sleep(20);
+
+        simulatedExternalSource.set(5000); // an OPS ENGINEER updates the external config source
+        Thread.sleep(80); // give the poller time to detect and apply it
+
+        handleRequest(&quot;Request B&quot;); // picks up the change AUTOMATICALLY, with no manual trigger
+        poller.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BackgroundPollingRefresh.java &amp;&amp; java BackgroundPollingRefresh</code> (JDK 17+).</p>
+<p>Expected output (timing-dependent, but the sequence is deterministic):</p>
+<pre><code>Request A uses timeout: 3000
+  [poller] detected change: 3000 -&gt; 5000 -- applying
+Request B uses timeout: 5000</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, capturing once</strong> — <code>loadTimeoutFromSource()</code> is called exactly once, and its return value is stored in a plain local variable <code>timeoutMs</code>; nothing in this program re-reads the source afterward, so a hypothetical later change to that source is completely invisible to this running process — the comment marks precisely where a real change would occur and be missed.</li><li><strong>Level 2, reading through a holder</strong> — <code>ConfigHolder.timeoutMs</code> is a field on a shared, mutable object, and <code>handleRequest</code> reads <code>config.timeoutMs</code> fresh on every call rather than from a locally captured copy; the <code>volatile</code> modifier ensures a write from one thread (like an update triggered externally) is visible to reads happening on other threads.</li><li><strong>Level 2, the update taking effect</strong> — <code>config.timeoutMs = 5000</code> is a direct mutation of the shared holder, standing in for what a real dynamic-refresh mechanism (a config server push, a <code>@RefreshScope</code> bean refresh) would trigger; the second <code>handleRequest</code> call immediately reflects this new value, with no restart of <code>main</code> or any part of the program.</li><li><strong>Level 3, the automated detection loop</strong> — <code>poller</code>, a <code>ScheduledExecutorService</code>, runs a check every 50 milliseconds comparing <code>config.timeoutMs</code> against <code>simulatedExternalSource.get()</code>; when they differ, it logs the detected change and applies it to <code>config.timeoutMs</code> — this loop runs entirely independently of and concurrently with the request-handling code.</li><li><strong>Level 3, the external change and its automatic propagation</strong> — <code>simulatedExternalSource.set(5000)</code> stands in for an operator changing a value at its source (a config server, a config file); no code anywhere calls <code>config.timeoutMs = 5000</code> directly this time — the poller running in the background is solely responsible for detecting the discrepancy and applying it.</li><li><strong>Level 3, request B sees the change with no manual intervention</strong> — by the time <code>handleRequest(&quot;Request B&quot;)</code> runs (after a <code>Thread.sleep(80)</code> giving the poller at least one full 50ms cycle to run), the poller has already detected and applied the external change, so <code>config.timeoutMs</code> reads <code>5000</code> without <code>main</code> ever explicitly updating it — this mirrors how a real dynamic-refresh setup (like <a href="0234-refreshscope-for-runtime-refresh.md"><code>@RefreshScope</code></a>, covered later in this section) detects and applies configuration server changes automatically, in the background, without requiring the application&#x27;s business logic to poll for updates itself.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> not every value is safe to change dynamically — a setting that other in-flight logic assumes is stable for the duration of an operation (for example, a value baked into a connection pool&#x27;s initial sizing) can cause subtle bugs if changed mid-flight; reserve dynamic refresh for values that are genuinely safe to change at any moment, and leave structurally significant settings static, requiring a deliberate restart to change.</blockquote>
+<ul><li>Dynamic configuration refresh lets a running process pick up changed values without a restart, by reading configuration through a live, updatable holder rather than a value captured once at startup.</li><li>It matters most for values needing frequent or urgent changes — tunable thresholds, feature flags, incident-response settings — where waiting for a full redeploy cycle is a real operational cost.</li><li>The mechanism requires application code to read configuration on each use (or through a mechanism that re-injects updated values), not to capture it once into a plain field.</li><li>A background poller (or a push-based notification) is what typically drives the detection of external changes and their application to the live holder, entirely independent of the application&#x27;s normal request-handling logic.</li><li>Not every setting is safe to make dynamically refreshable — values that other logic assumes are stable for an operation&#x27;s duration should stay static, requiring an explicit restart to change.</li></ul>
+  <div class="nav"><a class="prv" href="0222-secrets-management-encryption.html"><span class="mini">← Previous</span>Secrets management & encryption</a><a class="nxt" href="0224-configuration-versioning-audit.html"><span class="mini">Next →</span>Configuration versioning & audit</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t223";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
