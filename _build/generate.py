@@ -14,7 +14,7 @@ import md as mdmod
 import tutorial as tut
 import tutorial_shell
 import manifest as manifestmod
-import data_java, data_microservices, data_genai, data_webdev, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps
+import data_java, data_microservices, data_genai, data_webdev, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps, data_cs
 
 OUT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -22,7 +22,7 @@ OUT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # data_java is the Language Foundation card (hand-maintained java.html; here only to drive tutorials).
 # data_microservices, data_genai & data_webdev are knowledge areas (not spring.io projects).
 PROJECTS = []
-for mod in (data_java, data_microservices, data_genai, data_webdev, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps):
+for mod in (data_java, data_microservices, data_genai, data_webdev, data_cs, data_core, data_data_cloud, data_security, data_messaging, data_web, data_apps):
     PROJECTS.extend(mod.PROJECTS)
 
 
