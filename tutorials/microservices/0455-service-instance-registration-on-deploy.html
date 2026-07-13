@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Service instance registration on deploy" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 14. Deployment, Containers & Orchestration</div>
+  <div class="htitle">
+    <h1>"Service instance registration on deploy"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Service instance registration</strong> is the moment a running instance becomes visible to whatever mechanism routes traffic to it — a service registry, a load balancer&#x27;s endpoint list, or a Kubernetes Service&#x27;s endpoint set. Registration on deploy is specifically about *when* that visibility should happen relative to an instance starting up, and its counterpart, <strong>deregistration</strong>, is about *when* visibility should be withdrawn relative to an instance shutting down. Getting either transition wrong sends traffic to an instance that either isn&#x27;t ready yet or is already gone.</p>
+<h2>2. Why &amp; when</h2>
+<p>You need to think carefully about registration timing whenever instances start up and shut down as part of normal deployment — which, under any orchestrator, is constantly:</p>
+<ul><li><strong>Registering too early routes traffic to an instance that can&#x27;t serve it yet.</strong> If an instance is added to the routable pool the instant its process starts, but before its database connections are open or its caches are warm, early requests fail against a technically-running-but-not-ready process.</li><li><strong>Deregistering too late (or not at all) routes traffic to an instance that&#x27;s already gone</strong>, or about to be — a shutting-down instance still receiving requests either drops them or, worse, if it&#x27;s already stopped, causes outright connection failures.</li><li><strong>Deregistration is not instant from the caller&#x27;s point of view.</strong> Routers, load balancers, and other services often cache the registry&#x27;s state and only refresh it periodically — deregistering doesn&#x27;t mean traffic stops arriving immediately, it means traffic *starts to stop* arriving, over some propagation delay.</li><li><strong>This matters on every single deploy</strong>, not just at initial launch: a <a href="0450-rolling-deployment.md">rolling deployment</a> constantly creates and retires instances, and each individual creation and retirement needs correct registration timing or the rollout itself becomes a source of dropped requests.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a restaurant host who seats guests only at tables the kitchen has actually confirmed are bussed and ready — not the moment a table is physically empty, and not the moment a server calls out &quot;clearing table 5&quot; before it&#x27;s actually cleared. Registration is the host adding a table to the &quot;ready to seat&quot; list; deregistration is removing it. Do either at the wrong moment — adding a table before it&#x27;s really ready, or removing it and immediately seating no one there while other hosts are still working from an outdated list — and guests get sat somewhere that can&#x27;t actually serve them.</p>
+<p>Concretely, the mechanics are:</p>
+<ol><li><strong>Registration should be gated on readiness, not on process start.</strong> An instance should only enter the routable pool once it can actually correctly serve a request — exactly the distinction covered in <a href="0445-health-checks-for-orchestrators.md">health checks for orchestrators</a>, where a readiness probe answers &quot;can I serve traffic right now?&quot;</li><li><strong>Deregistration should happen before the instance actually stops serving</strong>, not simultaneously with it. Announcing &quot;I&#x27;m leaving&quot; and then immediately leaving gives no time for that announcement to reach anyone.</li><li><strong>Propagation delay is real and must be planned for.</strong> Whatever routes traffic to an instance — a service registry, a load balancer, DNS, another service&#x27;s cached endpoint list — takes some nonzero time to notice a deregistration and stop sending new requests. An instance that stops serving *before* that delay has elapsed will drop requests that were sent based on stale information.</li><li><strong>A grace period between deregistration and actually stopping</strong> absorbs that propagation delay: deregister first, keep serving for a bit longer, *then* stop — this is the same discipline as graceful shutdown draining in-flight requests, extended to also cover requests still arriving from stale caller state (see <a href="0444-graceful-startup-shutdown.md">graceful startup &amp; shutdown</a>).</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An instance registers only after passing readiness, and on shutdown deregisters first, then keeps serving through a grace period covering caller propagation delay before actually stopping">
+  <text x="320" y="20" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif">instance lifecycle timeline</text>
+
+  <rect x="20" y="40" width="120" height="40" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="80" y="64" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">starting, not ready</text>
+
+  <rect x="160" y="40" width="120" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="220" y="64" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">ready -&gt; REGISTER</text>
+
+  <rect x="300" y="40" width="140" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="370" y="64" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">serving traffic</text>
+
+  <rect x="460" y="40" width="150" height="40" rx="6" fill="#1c2430" stroke="#f0883e" stroke-width="2"/>
+  <text x="535" y="58" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">DEREGISTER, then</text>
+  <text x="535" y="72" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">grace period still serving</text>
+
+  <line x1="140" y1="60" x2="160" y2="60" stroke="#8b949e" marker-end="url(#a1)"/>
+  <line x1="280" y1="60" x2="300" y2="60" stroke="#6db33f" marker-end="url(#a1)"/>
+  <line x1="440" y1="60" x2="460" y2="60" stroke="#f0883e" marker-end="url(#a1)"/>
+
+  <text x="535" y="130" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">only AFTER the grace period elapses does the process actually stop</text>
+  <text x="535" y="150" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">covering callers whose view of the registry is still stale</text>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Registration waits for readiness; deregistration happens before the instance stops serving, with a grace period absorbing however long callers take to notice.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an <code>order-service</code> instance&#x27;s full lifecycle from startup to shutdown. We start with the bare register/deregister mechanism, gate registration on a readiness signal so the instance never receives traffic before it can serve it, then handle the hard case: deregistration propagation delay causing dropped requests when an instance stops serving too early, fixed by keeping the instance serving through a grace period after deregistering.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: RegistrationBasic.java -- models the CORE idea: an instance only
+// becomes eligible for traffic AFTER it registers itself with a service
+// registry, and it must deregister when shutting down, or traffic keeps
+// getting routed to an instance that&#x27;s no longer there.
+import java.util.*;
+
+public class RegistrationBasic {
+    static class ServiceRegistry {
+        final Set&lt;String&gt; registeredInstances = new LinkedHashSet&lt;&gt;();
+        void register(String instanceId) {
+            registeredInstances.add(instanceId);
+            System.out.println(&quot;registry: &quot; + instanceId + &quot; REGISTERED -- now eligible for traffic&quot;);
+        }
+        void deregister(String instanceId) {
+            registeredInstances.remove(instanceId);
+            System.out.println(&quot;registry: &quot; + instanceId + &quot; DEREGISTERED -- no longer eligible for traffic&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        ServiceRegistry registry = new ServiceRegistry();
+
+        System.out.println(&quot;instance starting up...&quot;);
+        // startup work would happen here (loading config, opening connections)
+        registry.register(&quot;order-service-i1&quot;);
+        System.out.println(&quot;registered instances: &quot; + registry.registeredInstances);
+
+        System.out.println(&quot;instance shutting down...&quot;);
+        registry.deregister(&quot;order-service-i1&quot;);
+        System.out.println(&quot;registered instances: &quot; + registry.registeredInstances);
+    }
+}</code></pre>
+<p>How to run: <code>java RegistrationBasic.java</code></p>
+<p><code>ServiceRegistry</code> is a minimal stand-in for something like a Kubernetes Service&#x27;s endpoint list or a Eureka/Consul registry entry: an instance is either in <code>registeredInstances</code> (eligible for traffic) or not. Registration and deregistration are the only two operations that change membership — the bare mechanism, with no timing safeguards yet.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: RegistrationGatedByReadiness.java -- the SAME register/deregister
+// idea, now GATED by readiness: the instance must NOT register itself the
+// moment the process starts -- it must wait until it&#x27;s actually ready to
+// serve (dependencies connected, warm-up complete), or callers will be
+// routed to an instance that can&#x27;t yet handle their request.
+import java.util.*;
+
+public class RegistrationGatedByReadiness {
+    static class Instance {
+        final String id;
+        boolean readinessProbePasses = false;
+        Instance(String id) { this.id = id; }
+    }
+
+    static class ServiceRegistry {
+        final Set&lt;String&gt; registeredInstances = new LinkedHashSet&lt;&gt;();
+        void register(String instanceId) { registeredInstances.add(instanceId); System.out.println(&quot;registry: &quot; + instanceId + &quot; REGISTERED&quot;); }
+    }
+
+    static void attemptRegistration(Instance instance, ServiceRegistry registry) {
+        if (!instance.readinessProbePasses) {
+            System.out.println(instance.id + &quot;: readiness probe NOT yet passing -- registration withheld&quot;);
+            return;
+        }
+        registry.register(instance.id);
+    }
+
+    public static void main(String[] args) {
+        Instance instance = new Instance(&quot;order-service-i1&quot;);
+        ServiceRegistry registry = new ServiceRegistry();
+
+        System.out.println(&quot;Process started -- attempting registration immediately (too early):&quot;);
+        attemptRegistration(instance, registry);
+        System.out.println(&quot;registered instances: &quot; + registry.registeredInstances);
+
+        System.out.println(&quot;Dependencies connect, warm-up completes -- readiness probe now passes:&quot;);
+        instance.readinessProbePasses = true;
+        attemptRegistration(instance, registry);
+        System.out.println(&quot;registered instances: &quot; + registry.registeredInstances);
+    }
+}</code></pre>
+<p>How to run: <code>java RegistrationGatedByReadiness.java</code></p>
+<p><code>attemptRegistration</code> checks <code>readinessProbePasses</code> before doing anything else — the first call, made right after the process &quot;starts,&quot; is correctly withheld, since the instance can&#x27;t yet serve a request. Only once <code>readinessProbePasses</code> flips to <code>true</code> (mirroring <a href="0445-health-checks-for-orchestrators.md">health checks for orchestrators</a>&#x27;s readiness probe passing) does registration actually happen — the registry never contains an instance that isn&#x27;t genuinely ready.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: DeregistrationRaceAdvanced.java -- the SAME readiness-gated
+// registration, now handling a PRODUCTION-FLAVORED hard case at SHUTDOWN:
+// deregistering from the registry does NOT instantly stop traffic --
+// callers (load balancers, other services&#x27; caches) take a few ticks to
+// notice the deregistration and stop sending new requests. An instance
+// that stops serving the MOMENT it deregisters drops every request that
+// arrives during that propagation window; the correct sequence is
+// deregister, then keep serving through a grace period, THEN stop.
+import java.util.*;
+
+public class DeregistrationRaceAdvanced {
+    static final int PROPAGATION_DELAY_TICKS = 3; // how long callers take to notice deregistration
+
+    static class Instance {
+        final String id;
+        boolean deregistered = false;
+        boolean stillServing = true;
+        Instance(String id) { this.id = id; }
+    }
+
+    // Simulates a request arriving at tick `t`. Callers may still route here
+    // for PROPAGATION_DELAY_TICKS ticks after deregistration, because their
+    // view of the registry is slightly stale.
+    static boolean requestArrives(Instance instance, int tick, int deregisteredAtTick) {
+        boolean callerStillThinksWeAreUp = deregisteredAtTick &lt; 0 || (tick - deregisteredAtTick) &lt; PROPAGATION_DELAY_TICKS;
+        return callerStillThinksWeAreUp;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;--- naive: stop serving THE MOMENT deregistration happens ---&quot;);
+        runScenario(false);
+
+        System.out.println();
+        System.out.println(&quot;--- correct: deregister, then keep serving through the propagation grace period ---&quot;);
+        runScenario(true);
+    }
+
+    static void runScenario(boolean useGracePeriod) {
+        Instance instance = new Instance(&quot;order-service-i1&quot;);
+        int deregisteredAtTick = -1;
+        int dropped = 0, served = 0;
+
+        for (int tick = 0; tick &lt; 6; tick++) {
+            if (tick == 2) {
+                instance.deregistered = true;
+                deregisteredAtTick = tick;
+                System.out.println(&quot;tick &quot; + tick + &quot;: deregistered from registry&quot;);
+                if (!useGracePeriod) {
+                    instance.stillServing = false;
+                    System.out.println(&quot;tick &quot; + tick + &quot;: stopped serving immediately (naive)&quot;);
+                }
+            }
+            if (useGracePeriod &amp;&amp; instance.deregistered &amp;&amp; (tick - deregisteredAtTick) &gt;= PROPAGATION_DELAY_TICKS) {
+                instance.stillServing = false;
+            }
+
+            boolean calledHere = requestArrives(instance, tick, deregisteredAtTick);
+            if (calledHere) {
+                if (instance.stillServing) {
+                    served++;
+                    System.out.println(&quot;tick &quot; + tick + &quot;: request arrived -- SERVED&quot;);
+                } else {
+                    dropped++;
+                    System.out.println(&quot;tick &quot; + tick + &quot;: request arrived -- DROPPED (instance already stopped serving)&quot;);
+                }
+            }
+        }
+
+        System.out.println(&quot;Result: served=&quot; + served + &quot;, dropped=&quot; + dropped);
+    }
+}</code></pre>
+<p>How to run: <code>java DeregistrationRaceAdvanced.java</code></p>
+<p><code>requestArrives</code> models the propagation delay directly: for <code>PROPAGATION_DELAY_TICKS</code> ticks after deregistration, callers still route requests here because their cached view of the registry hasn&#x27;t caught up yet. The naive scenario sets <code>stillServing = false</code> in the very same tick as deregistration, so every request that arrives during the propagation window is dropped. The grace-period scenario keeps <code>stillServing = true</code> until the propagation window has fully elapsed, so those same requests are served successfully.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace the naive scenario in <code>DeregistrationRaceAdvanced.runScenario(false)</code> first. <strong>First</strong>, ticks 0 and 1 run with <code>deregisteredAtTick = -1</code>, so <code>requestArrives</code> returns <code>true</code> unconditionally (<code>deregisteredAtTick &lt; 0</code> short-circuits the check), and <code>instance.stillServing</code> is <code>true</code> — both requests are <code>SERVED</code>.</p>
+<p><strong>Next</strong>, at tick 2, <code>instance.deregistered</code> becomes <code>true</code>, <code>deregisteredAtTick</code> is set to <code>2</code>, and — because <code>useGracePeriod</code> is <code>false</code> — <code>instance.stillServing</code> is immediately set to <code>false</code> in the same tick. <code>requestArrives</code> is then called for tick 2 itself: <code>(tick - deregisteredAtTick) = 0</code>, which is <code>&lt; PROPAGATION_DELAY_TICKS (3)</code>, so it still returns <code>true</code> — a caller sends a request based on stale information. But <code>instance.stillServing</code> is already <code>false</code>, so this request is <code>DROPPED</code>.</p>
+<p><strong>Then</strong>, ticks 3 and 4 repeat the same pattern: <code>requestArrives</code> keeps returning <code>true</code> because <code>(tick - 2)</code> is <code>1</code> and <code>2</code>, both still under <code>3</code>, but <code>stillServing</code> is permanently <code>false</code> — two more requests are <code>DROPPED</code>. By tick 5, <code>(5-2)=3</code> is no longer <code>&lt; 3</code>, so <code>requestArrives</code> returns <code>false</code> and no request even attempts to reach the instance.</p>
+<p><strong>Finally</strong>, in the grace-period run, the same propagation pattern occurs, but <code>instance.stillServing</code> only flips to <code>false</code> once <code>(tick - deregisteredAtTick) &gt;= PROPAGATION_DELAY_TICKS</code> — meaning it stays <code>true</code> through ticks 2, 3, and 4, exactly the window during which <code>requestArrives</code> still returns <code>true</code>. Every request that a stale caller sends during that window is therefore <code>SERVED</code>, and the two scenarios&#x27; final tallies — <code>2 served / 3 dropped</code> versus <code>5 served / 0 dropped</code> — make the cost of skipping the grace period concrete.</p>
+<pre><code>--- naive: stop serving THE MOMENT deregistration happens ---
+tick 0: request arrived -- SERVED
+tick 1: request arrived -- SERVED
+tick 2: deregistered from registry
+tick 2: stopped serving immediately (naive)
+tick 2: request arrived -- DROPPED (instance already stopped serving)
+tick 3: request arrived -- DROPPED (instance already stopped serving)
+tick 4: request arrived -- DROPPED (instance already stopped serving)
+Result: served=2, dropped=3
+
+--- correct: deregister, then keep serving through the propagation grace period ---
+tick 0: request arrived -- SERVED
+tick 1: request arrived -- SERVED
+tick 2: deregistered from registry
+tick 2: request arrived -- SERVED
+tick 3: request arrived -- SERVED
+tick 4: request arrived -- SERVED
+Result: served=5, dropped=0</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Deregistering from the registry and terminating the process are two different events, and treating them as one — deregister, then immediately <code>SIGKILL</code> — is one of the most common causes of a brief spike in dropped requests during otherwise-routine deploys. The fix costs nothing but a short, deliberate delay between the two.</blockquote>
+<ul><li>Gate registration on actual readiness, never on process start — an instance that&#x27;s technically running but can&#x27;t yet serve correctly should be invisible to routing until it can, tying directly into <a href="0445-health-checks-for-orchestrators.md">health checks for orchestrators</a>.</li><li>Deregister first, then keep serving through a grace period sized to your slowest caller&#x27;s propagation delay, and only then stop accepting new work — this is the shutdown-side analog of the startup discipline in <a href="0444-graceful-startup-shutdown.md">graceful startup &amp; shutdown</a>.</li><li>Every instance created or retired during a <a href="0450-rolling-deployment.md">rolling deployment</a> goes through this exact registration and deregistration sequence — get it right once, here, and every rollout benefits automatically.</li><li>Orchestrators like Kubernetes handle much of this automatically via readiness probes and a configurable <code>terminationGracePeriodSeconds</code>, but the underlying timing discipline is the same regardless of who enforces it — understanding it helps you configure those settings correctly rather than treating them as opaque defaults.</li><li>A <a href="0456-sidecar-pattern.md">sidecar pattern</a> container is sometimes used specifically to handle registration and deregistration outside the main application process, decoupling that lifecycle concern from the business logic entirely.</li></ul>
+  <div class="nav"><a class="prv" href="0454-feature-toggles-for-deployment-decoupling.html"><span class="mini">← Previous</span>Feature toggles for deployment decoupling</a><a class="nxt" href="0456-sidecar-pattern.html"><span class="mini">Next →</span>Sidecar pattern</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t455";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

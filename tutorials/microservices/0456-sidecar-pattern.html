@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Sidecar pattern" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 14. Deployment, Containers & Orchestration</div>
+  <div class="htitle">
+    <h1>"Sidecar pattern"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>sidecar pattern</strong> deploys a helper process alongside a main application process — typically as a second container inside the same <a href="0447-pods-deployments-services-ingress.md">Pod</a> — to handle a cross-cutting concern on the main application&#x27;s behalf: logging, metrics collection, mTLS termination, configuration reloading, or proxying. The main application delegates that concern to its sidecar instead of implementing it itself, and the two are deployed, scaled, and (usually) share a network namespace together, but remain separate processes with a clear responsibility boundary between them.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for a sidecar when a concern is genuinely cross-cutting — needed by many services, largely identical in every service, and awkward to keep reimplementing or upgrading inside each one:</p>
+<ul><li><strong>Cross-cutting concerns don&#x27;t belong in business logic.</strong> TLS termination, log shipping, and metrics export are the same problem in every service; implementing each one natively inside every service&#x27;s codebase means N different implementations to test, secure, and upgrade instead of one.</li><li><strong>A sidecar can be upgraded independently of the application it serves.</strong> If the mTLS library needs a security patch, or the logging format needs to change, updating the sidecar image doesn&#x27;t require touching, rebuilding, or redeploying application code at all.</li><li><strong>It works uniformly across languages and frameworks.</strong> A sidecar written once (often as part of a service mesh, like Envoy) provides the same TLS or observability behavior to a Java service, a Python service, and a Go service without each needing its own language-specific library for the concern.</li><li><strong>You reach for this pattern for genuinely cross-cutting, infrastructure-level concerns</strong> — not for business logic, which belongs in the main application, and not for concerns only one service needs, where the deployment overhead of a second container isn&#x27;t worth it.</li></ul>
+<h2>3. Core concept</h2>
+<p>A useful analogy is a motorcycle sidecar itself: it travels everywhere the motorcycle goes, shares its journey and its fate, but carries a separate kind of cargo and could — in principle — be swapped out for a different sidecar without touching the motorcycle&#x27;s engine at all. The main application is the motorcycle, focused entirely on its own job; the sidecar rides alongside, handling something else, coupled in deployment but decoupled in implementation.</p>
+<p>Concretely, the mechanics are:</p>
+<ol><li><strong>The sidecar runs as a separate process</strong> — in Kubernetes, a second container in the same Pod, sharing the Pod&#x27;s network namespace so the two can communicate over <code>localhost</code>.</li><li><strong>The main application delegates a specific concern</strong> to the sidecar rather than implementing it: it makes a plain local call, and the sidecar does the harder work (wrapping it in mTLS, batching and shipping it to a log aggregator, exposing it as metrics).</li><li><strong>The two are deployed and scaled together</strong> — when the Pod scales, both containers scale with it; when the Pod is replaced, both are replaced together. This is what distinguishes a sidecar from a wholly separate service.</li><li><strong>Failure handling must be deliberate, and differs by concern.</strong> If the sidecar handling a *non-essential* concern (like logging) crashes, the main application should keep working without it (fail open). If the sidecar handling a *security-critical* concern (like mTLS termination) crashes, the main application must refuse to proceed insecurely rather than silently degrade (fail closed) — the two failure policies are opposite, and choosing the wrong one for a given concern is a real production risk.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A main application container delegates cross-cutting concerns to sidecar containers in the same pod over localhost, with different failure policies for non-critical versus security-critical sidecars">
+  <rect x="20" y="30" width="600" height="150" rx="12" fill="#1c2430" stroke="#8b949e" stroke-dasharray="4,3"/>
+  <text x="320" y="20" fill="#8b949e" font-size="11" text-anchor="middle" font-family="sans-serif">one Pod</text>
+
+  <rect x="60" y="70" width="180" height="70" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="2"/>
+  <text x="150" y="100" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif">order-service</text>
+  <text x="150" y="118" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">main application</text>
+
+  <rect x="290" y="50" width="140" height="50" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="360" y="72" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">logging sidecar</text>
+  <text x="360" y="88" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">fail OPEN if down</text>
+
+  <rect x="290" y="115" width="140" height="50" rx="8" fill="#1c2430" stroke="#f85149" stroke-width="2"/>
+  <text x="360" y="137" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">mTLS sidecar</text>
+  <text x="360" y="153" fill="#f85149" font-size="8" text-anchor="middle" font-family="sans-serif">fail CLOSED if down</text>
+
+  <line x1="240" y1="90" x2="290" y2="75" stroke="#6db33f" marker-end="url(#a1)"/>
+  <line x1="240" y1="105" x2="290" y2="140" stroke="#f85149" marker-end="url(#a2)"/>
+  <text x="255" y="65" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">localhost</text>
+
+  <rect x="470" y="80" width="120" height="40" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="530" y="105" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">external services</text>
+  <line x1="430" y1="140" x2="470" y2="105" stroke="#f85149" stroke-dasharray="3,2"/>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6db33f"/></marker>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f85149"/></marker>
+  </defs>
+</svg>
+<p>Both sidecars share the Pod with the main application and are reached over localhost, but they require opposite failure policies: the logging sidecar can fail open, while the mTLS sidecar must fail closed.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an <code>order-service</code> main application delegating two concerns to sidecars. We start with a logging sidecar handling log shipping, add an mTLS sidecar handling secure transport for outbound calls, then handle the hard case: both sidecars crashing, requiring the application to apply two deliberately opposite failure policies — fail open for logging, fail closed for mTLS.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: SidecarLoggingBasic.java -- models the CORE idea: the main
+// application container does ONLY its business logic; a separate,
+// companion &quot;sidecar&quot; process/object handles a CROSS-CUTTING concern
+// (here, structured logging) on the main container&#x27;s behalf.
+public class SidecarLoggingBasic {
+    // The sidecar: a separate component, deployed alongside the main app,
+    // responsible ONLY for the cross-cutting concern of log shipping.
+    static class LoggingSidecar {
+        void ship(String appName, String message) {
+            System.out.println(&quot;[logging-sidecar] shipping to central log store: {app=&quot; + appName + &quot;, msg=\&quot;&quot; + message + &quot;\&quot;}&quot;);
+        }
+    }
+
+    // The main application: knows NOTHING about how logs are transported,
+    // stored, or formatted for the central system -- it just emits events.
+    static class OrderServiceApp {
+        final LoggingSidecar sidecar;
+        OrderServiceApp(LoggingSidecar sidecar) { this.sidecar = sidecar; }
+
+        void handleOrder(String orderId) {
+            System.out.println(&quot;[order-service] processing &quot; + orderId);
+            sidecar.ship(&quot;order-service&quot;, &quot;processed &quot; + orderId);
+        }
+    }
+
+    public static void main(String[] args) {
+        LoggingSidecar sidecar = new LoggingSidecar();
+        OrderServiceApp app = new OrderServiceApp(sidecar);
+
+        app.handleOrder(&quot;order-1&quot;);
+        app.handleOrder(&quot;order-2&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java SidecarLoggingBasic.java</code></p>
+<p><code>OrderServiceApp</code> holds a reference to <code>LoggingSidecar</code> and delegates the &quot;ship this to the central log store&quot; concern entirely — it has no idea how logs are formatted, batched, or transported once they leave <code>ship()</code>. This is the core sidecar shape: the main application focuses purely on its own logic (<code>handleOrder</code>) and hands the cross-cutting concern off completely.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SidecarMtlsProxy.java -- the SAME sidecar idea, now handling a
+// DIFFERENT cross-cutting concern: mTLS termination. The main app speaks
+// plain, unencrypted &quot;localhost&quot; calls to its sidecar; the sidecar is the
+// only thing that actually establishes and terminates mutual TLS with the
+// outside world. The app never touches certificates at all.
+public class SidecarMtlsProxy {
+    static class MtlsSidecar {
+        final String serviceCert = &quot;order-service-cert.pem&quot;; // the sidecar owns cert material, not the app
+
+        String sendOverMtls(String plainRequest, String destination) {
+            System.out.println(&quot;[mtls-sidecar] wrapping request in mTLS using &quot; + serviceCert + &quot;, sending to &quot; + destination);
+            return &quot;mtls-response-for(&quot; + plainRequest + &quot;)&quot;;
+        }
+    }
+
+    static class OrderServiceApp {
+        final MtlsSidecar sidecar;
+        OrderServiceApp(MtlsSidecar sidecar) { this.sidecar = sidecar; }
+
+        String callPaymentService(String orderId) {
+            // The app makes a PLAIN call to its own sidecar over localhost --
+            // it has no idea mTLS is even involved.
+            System.out.println(&quot;[order-service] calling payment-service for &quot; + orderId + &quot; (plain call to localhost sidecar)&quot;);
+            return sidecar.sendOverMtls(&quot;charge(&quot; + orderId + &quot;)&quot;, &quot;payment-service&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        OrderServiceApp app = new OrderServiceApp(new MtlsSidecar());
+        String response = app.callPaymentService(&quot;order-1&quot;);
+        System.out.println(&quot;[order-service] received: &quot; + response);
+    }
+}</code></pre>
+<p>How to run: <code>java SidecarMtlsProxy.java</code></p>
+<p><code>OrderServiceApp.callPaymentService</code> makes what looks like a completely ordinary local call to <code>sidecar.sendOverMtls</code>, with no certificates, no TLS handshake code, no knowledge of <code>payment-service</code>&#x27;s network location beyond a logical name. <code>MtlsSidecar</code> owns all of that complexity (<code>serviceCert</code> and everything a real mTLS handshake requires) — the same delegation shape as Level 1, applied to a security concern instead of an observability one, echoing the mutual TLS discipline from <a href="0407-spring-security-mtls-x-509-authentication.md">Spring Security mTLS (X.509 authentication)</a>.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: SidecarFailureHandlingAdvanced.java -- the SAME two sidecars
+// (logging and mTLS), now handling a PRODUCTION-FLAVORED hard case: the
+// sidecar process CRASHES. The correct reaction is DIFFERENT for each
+// sidecar: a logging sidecar should FAIL OPEN (the app keeps working,
+// just without shipped logs -- losing logs is bad, but not as bad as
+// refusing to serve). An mTLS sidecar should FAIL CLOSED (the app must
+// REFUSE to send the request, because sending it without mTLS would leak
+// data or allow an unauthenticated call -- a security regression is worse
+// than a dropped request).
+public class SidecarFailureHandlingAdvanced {
+    static class LoggingSidecar {
+        boolean healthy = true;
+        void ship(String appName, String message) {
+            if (!healthy) throw new IllegalStateException(&quot;logging sidecar unreachable&quot;);
+            System.out.println(&quot;[logging-sidecar] shipped: &quot; + message);
+        }
+    }
+
+    static class MtlsSidecar {
+        boolean healthy = true;
+        String sendOverMtls(String plainRequest, String destination) {
+            if (!healthy) throw new IllegalStateException(&quot;mtls sidecar unreachable&quot;);
+            System.out.println(&quot;[mtls-sidecar] sent &quot; + plainRequest + &quot; to &quot; + destination + &quot; over mTLS&quot;);
+            return &quot;mtls-response-for(&quot; + plainRequest + &quot;)&quot;;
+        }
+    }
+
+    static class OrderServiceApp {
+        final LoggingSidecar loggingSidecar;
+        final MtlsSidecar mtlsSidecar;
+        OrderServiceApp(LoggingSidecar loggingSidecar, MtlsSidecar mtlsSidecar) {
+            this.loggingSidecar = loggingSidecar; this.mtlsSidecar = mtlsSidecar;
+        }
+
+        void handleOrder(String orderId) {
+            System.out.println(&quot;[order-service] processing &quot; + orderId);
+
+            // FAIL OPEN: a logging failure must never block the business operation.
+            try {
+                loggingSidecar.ship(&quot;order-service&quot;, &quot;processed &quot; + orderId);
+            } catch (IllegalStateException e) {
+                System.out.println(&quot;[order-service] logging sidecar down (&quot; + e.getMessage() + &quot;) -- continuing WITHOUT logs (fail open)&quot;);
+            }
+
+            // FAIL CLOSED: an mTLS failure must block the call, not silently send it insecurely.
+            try {
+                String response = mtlsSidecar.sendOverMtls(&quot;charge(&quot; + orderId + &quot;)&quot;, &quot;payment-service&quot;);
+                System.out.println(&quot;[order-service] payment response: &quot; + response);
+            } catch (IllegalStateException e) {
+                System.out.println(&quot;[order-service] mTLS sidecar down (&quot; + e.getMessage() + &quot;) -- REFUSING to send unencrypted (fail closed), order &quot; + orderId + &quot; FAILS&quot;);
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        LoggingSidecar loggingSidecar = new LoggingSidecar();
+        MtlsSidecar mtlsSidecar = new MtlsSidecar();
+        OrderServiceApp app = new OrderServiceApp(loggingSidecar, mtlsSidecar);
+
+        System.out.println(&quot;--- both sidecars healthy ---&quot;);
+        app.handleOrder(&quot;order-1&quot;);
+
+        System.out.println();
+        System.out.println(&quot;--- logging sidecar crashes ---&quot;);
+        loggingSidecar.healthy = false;
+        app.handleOrder(&quot;order-2&quot;);
+
+        System.out.println();
+        System.out.println(&quot;--- mTLS sidecar ALSO crashes ---&quot;);
+        mtlsSidecar.healthy = false;
+        app.handleOrder(&quot;order-3&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java SidecarFailureHandlingAdvanced.java</code></p>
+<p><code>handleOrder</code> wraps each sidecar call in its own <code>try</code>/<code>catch</code>, but the two <code>catch</code> blocks do opposite things: the logging failure is caught, logged as a warning, and execution continues to the payment call regardless. The mTLS failure is caught, but the method explicitly reports the *order itself* as failed rather than falling through to any insecure alternative — there is no code path in this method that could accidentally send <code>charge(...)</code> without going through <code>mtlsSidecar</code>.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>SidecarFailureHandlingAdvanced.main</code> in order. <strong>First</strong>, <code>app.handleOrder(&quot;order-1&quot;)</code> runs with both sidecars healthy: <code>loggingSidecar.ship</code> succeeds and prints confirmation, then <code>mtlsSidecar.sendOverMtls</code> succeeds and returns a response, which is printed — the fully healthy path.</p>
+<p><strong>Next</strong>, <code>loggingSidecar.healthy</code> is set to <code>false</code>, and <code>app.handleOrder(&quot;order-2&quot;)</code> runs. Inside, <code>loggingSidecar.ship(...)</code> now throws <code>IllegalStateException</code>, which the <code>catch</code> block in the logging section handles by printing the &quot;continuing WITHOUT logs (fail open)&quot; message — execution then falls through to the mTLS section entirely normally, since <code>mtlsSidecar.healthy</code> is still <code>true</code>. <code>order-2</code>&#x27;s payment call succeeds exactly as before; only its logs are missing.</p>
+<p><strong>Then</strong>, <code>mtlsSidecar.healthy</code> is also set to <code>false</code>, and <code>app.handleOrder(&quot;order-3&quot;)</code> runs. The logging section behaves identically to the previous call (still down, still fails open). But now the mTLS section&#x27;s <code>try</code> block also throws — <code>mtlsSidecar.sendOverMtls</code> sees <code>healthy == false</code> and throws its own <code>IllegalStateException</code>. This time the <code>catch</code> block does *not* attempt any fallback; it prints that the order fails outright, because there&#x27;s no code path left that could deliver <code>charge(&quot;order-3&quot;)</code> to <code>payment-service</code> without going through the (now-down) mTLS sidecar.</p>
+<p><strong>Finally</strong>, comparing <code>order-2</code>&#x27;s outcome (succeeded, but unlogged) against <code>order-3</code>&#x27;s outcome (refused entirely) makes the two failure policies concrete: losing observability is tolerated, but losing the security guarantee is not — the code enforces that distinction structurally, not just as a comment.</p>
+<pre><code>--- both sidecars healthy ---
+[order-service] processing order-1
+[logging-sidecar] shipped: processed order-1
+[mtls-sidecar] sent charge(order-1) to payment-service over mTLS
+[order-service] payment response: mtls-response-for(charge(order-1))
+
+--- logging sidecar crashes ---
+[order-service] processing order-2
+[order-service] logging sidecar down (logging sidecar unreachable) -- continuing WITHOUT logs (fail open)
+[mtls-sidecar] sent charge(order-2) to payment-service over mTLS
+[order-service] payment response: mtls-response-for(charge(order-2))
+
+--- mTLS sidecar ALSO crashes ---
+[order-service] processing order-3
+[order-service] logging sidecar down (logging sidecar unreachable) -- continuing WITHOUT logs (fail open)
+[order-service] mTLS sidecar down (mtls sidecar unreachable) -- REFUSING to send unencrypted (fail closed), order order-3 FAILS</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Applying the same failure policy to every sidecar, regardless of what it does, is a common and dangerous shortcut. Failing open on a security-critical sidecar (silently sending requests unencrypted when the mTLS sidecar is down) trades an outage for a much worse, quieter security regression; failing closed on a purely observational sidecar (refusing to serve because logging is briefly unavailable) trades a minor loss of visibility for an unnecessary outage. Choose deliberately, per sidecar, not by default.</blockquote>
+<ul><li>A sidecar shares the main application&#x27;s Pod lifecycle — it scales, deploys, and (usually) restarts with the application, which is what distinguishes it from a fully independent service the application merely calls over the network.</li><li>Cross-cutting infrastructure concerns (TLS, logging, metrics, config sync) are good sidecar candidates; business logic never is — a sidecar handling business rules just fragments the application&#x27;s logic across two processes for no benefit.</li><li>Service mesh implementations (like Envoy-based meshes) are essentially a standardized sidecar deployed automatically alongside every service in the cluster, providing mTLS, retries, and observability uniformly without each service implementing any of it.</li><li>Sidecar communication over <code>localhost</code> is fast and simple, but it&#x27;s still a separate process — network-style failure modes (the sidecar being down, slow, or partially initialized) are real and must be handled explicitly, as Level 3 demonstrates.</li><li>A related but distinct pattern — a companion proxying *outbound* calls to remote services on the main application&#x27;s behalf, rather than handling an internal cross-cutting concern — is covered in <a href="0457-ambassador-pattern.md">ambassador pattern</a>.</li></ul>
+  <div class="nav"><a class="prv" href="0455-service-instance-registration-on-deploy.html"><span class="mini">← Previous</span>Service instance registration on deploy</a><a class="nxt" href="0457-ambassador-pattern.html"><span class="mini">Next →</span>Ambassador pattern</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t456";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
