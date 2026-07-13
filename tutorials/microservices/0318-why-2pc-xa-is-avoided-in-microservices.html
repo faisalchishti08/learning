@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Why 2PC/XA is avoided in microservices" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Why 2PC/XA is avoided in microservices"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>2PC</strong> (two-phase commit) and its standardized implementation <strong>XA</strong> are protocols for making a single transaction span multiple databases atomically — either all participants commit, or all roll back. In a monolith with one database, this need rarely arises. In microservices, where every service owns its own private database, the temptation is to reach for 2PC/XA to keep multi-service updates consistent the way a single-database transaction would be. This topic explains why that temptation is almost always resisted, and a different tool (<a href="0320-saga-pattern.md">the saga pattern</a>) is used instead.</p>
+<h2>2. Why &amp; when</h2>
+<p>2PC requires a coordinator to hold locks on every participating database&#x27;s affected rows for the entire duration of the transaction — from &quot;prepare&quot; until every participant confirms &quot;committed.&quot; In a distributed, multi-service system this is disastrous for availability: if any one service is slow, crashed, or network-partitioned during that window, every other participant sits there holding locks, unable to serve any other request touching those rows, for however long it takes to resolve. A single slow or dead participant can stall the entire distributed transaction and, transitively, every other request that needs those locked rows.</p>
+<p>It gets worse because 2PC assumes all participants are reachable via a compatible protocol (XA) and that the coordinator itself never permanently dies mid-protocol (a coordinator crash after &quot;prepare&quot; but before broadcasting the final decision leaves participants blocked indefinitely, uncertain whether to commit or roll back). Most microservices deliberately use different, often non-relational, technologies per service (that&#x27;s <a href="0307-polyglot-persistence.md">polyglot persistence</a>) — many of which (a message queue, most NoSQL stores) don&#x27;t even support XA. And most microservice teams explicitly prioritize availability and service independence over cross-service atomicity, which is precisely what 2PC sacrifices.</p>
+<p>Use 2PC/XA only in the rare case where you control every participant, they all speak XA, low latency doesn&#x27;t matter, and a brief system-wide lock is genuinely acceptable — situations that essentially don&#x27;t exist in an independently-deployed, internet-scale microservices architecture. Otherwise, use the <a href="0320-saga-pattern.md">saga pattern</a>, which achieves eventual consistency without holding cross-service locks.</p>
+<h2>3. Core concept</h2>
+<p>2PC has two phases: <strong>prepare</strong> (the coordinator asks every participant &quot;can you commit?&quot; and each locks its affected rows and replies yes/no) and <strong>commit</strong> (if all said yes, the coordinator tells everyone to actually commit; if any said no, everyone rolls back). The locks held from &quot;prepare&quot; through &quot;commit&quot; are the core problem — their duration is bounded by the slowest participant and by network round trips, not by any single service&#x27;s own performance.</p>
+<pre><code class="lang-java">// Sketch of the blocking window -- NOT something you&#x27;d actually write against
+// real XA, just illustrating the shape of the protocol&#x27;s risk.
+interface Participant {
+    boolean prepare();   // locks rows, votes yes/no -- LOCKS HELD FROM HERE
+    void commit();       // -- UNTIL HERE
+    void rollback();
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A coordinator sends prepare to two services which lock rows and reply; the coordinator waits for both before sending commit; if one service is slow, both stay locked the whole time">
+  <rect x="250" y="10" width="140" height="34" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="320" y="32" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Coordinator</text>
+
+  <rect x="40" y="90" width="150" height="40" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="115" y="114" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Order Service (locked)</text>
+
+  <rect x="450" y="90" width="150" height="40" rx="6" fill="#1c2430" stroke="#f85149"/>
+  <text x="525" y="110" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Payment Service</text>
+  <text x="525" y="123" fill="#f85149" font-size="8.5" text-anchor="middle" font-family="sans-serif">SLOW / locked longer</text>
+
+  <line x1="280" y1="44" x2="150" y2="90" stroke="#8b949e" marker-end="url(#a318)"/>
+  <line x1="360" y1="44" x2="500" y2="90" stroke="#8b949e" marker-end="url(#a318)"/>
+  <text x="320" y="65" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">1. prepare (both LOCK rows)</text>
+
+  <text x="320" y="160" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">Coordinator WAITS for both -- order-service stays locked the entire time</text>
+
+  <defs><marker id="a318" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Every participant locks its rows at &quot;prepare&quot; and cannot release them until the coordinator&#x27;s final decision arrives — the slowest participant sets the lock duration for everyone.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a simulated two-phase commit across an &quot;order&quot; and &quot;payment&quot; participant, first shown as a straightforward happy path, then extended to show one slow participant blocking the other&#x27;s lock release, and finally rebuilt as a saga-style approach that avoids holding cross-service locks at all.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: TwoPhaseCommitHappyPath.java -- simulates the two phases of 2PC
+// when both participants are fast and healthy.
+public class TwoPhaseCommitHappyPath {
+    static boolean orderLocked = false, paymentLocked = false;
+
+    static boolean prepareOrder() { orderLocked = true; System.out.println(&quot;order: LOCKED, voting yes&quot;); return true; }
+    static boolean preparePayment() { paymentLocked = true; System.out.println(&quot;payment: LOCKED, voting yes&quot;); return true; }
+    static void commitOrder() { orderLocked = false; System.out.println(&quot;order: COMMITTED, lock released&quot;); }
+    static void commitPayment() { paymentLocked = false; System.out.println(&quot;payment: COMMITTED, lock released&quot;); }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Phase 1: PREPARE&quot;);
+        boolean allYes = prepareOrder() &amp;&amp; preparePayment();
+
+        System.out.println(&quot;Phase 2: &quot; + (allYes ? &quot;COMMIT&quot; : &quot;ROLLBACK&quot;));
+        if (allYes) { commitOrder(); commitPayment(); }
+    }
+}</code></pre>
+<p>How to run: <code>java TwoPhaseCommitHappyPath.java</code></p>
+<p>Both participants prepare instantly, both vote yes, and both commit and release their locks right away. In this idealized case, the total lock-held time is negligible — but this Level assumes every participant responds instantly, which the next Level shows is not a safe assumption.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: TwoPhaseCommitSlowParticipant.java -- one participant is SLOW to
+// prepare; the OTHER participant&#x27;s lock stays held the whole time it waits.
+public class TwoPhaseCommitSlowParticipant {
+    static boolean orderLocked = false, paymentLocked = false;
+
+    static boolean prepareOrder() {
+        orderLocked = true;
+        System.out.println(&quot;order: LOCKED at t=0ms, voting yes&quot;);
+        return true;
+    }
+
+    static boolean preparePaymentSlowly() throws InterruptedException {
+        System.out.println(&quot;payment: starting prepare (simulated SLOW dependency, e.g. a flaky bank API)...&quot;);
+        Thread.sleep(300); // simulates a slow external call the payment service depends on
+        paymentLocked = true;
+        System.out.println(&quot;payment: LOCKED at t=300ms, voting yes&quot;);
+        return true;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        long start = System.currentTimeMillis();
+        boolean orderVote = prepareOrder(); // order&#x27;s rows are ALREADY locked here
+        boolean paymentVote = preparePaymentSlowly(); // order STAYS locked this whole time
+
+        long blockedMs = System.currentTimeMillis() - start;
+        System.out.println(&quot;order-service rows were locked for ~&quot; + blockedMs
+                + &quot;ms, ENTIRELY because payment-service was slow -- any OTHER request &quot;
+                + &quot;needing those order rows had to wait too.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java TwoPhaseCommitSlowParticipant.java</code></p>
+<p><code>prepareOrder</code> locks the order rows immediately (<code>t=0ms</code>). The coordinator then must also wait for <code>preparePaymentSlowly</code>, which sleeps 300ms to simulate a slow dependency. During that entire 300ms, <code>orderLocked</code> stays <code>true</code> — the order service&#x27;s rows remain locked purely because of a slowdown in a completely different service. Any other request needing those same order rows would be forced to wait, even though the order service itself was ready to proceed instantly.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: SagaInsteadOf2PC.java -- the SAME order+payment scenario, but using
+// a saga: each step commits its OWN local transaction immediately (no
+// cross-service lock is ever held), and a failure triggers a COMPENSATING
+// action instead of a coordinated rollback.
+public class SagaInsteadOf2PC {
+    static boolean orderPlaced = false, paymentCharged = false;
+
+    static void placeOrder() {
+        orderPlaced = true; // commits IMMEDIATELY, locally -- no lock held for anyone else
+        System.out.println(&quot;order: placed and COMMITTED locally (no cross-service lock held)&quot;);
+    }
+
+    static boolean chargePayment(boolean simulateFailure) {
+        if (simulateFailure) {
+            System.out.println(&quot;payment: charge FAILED (e.g. card declined)&quot;);
+            return false;
+        }
+        paymentCharged = true;
+        System.out.println(&quot;payment: charged and COMMITTED locally&quot;);
+        return true;
+    }
+
+    static void cancelOrder() { // the COMPENSATING action, run only if payment fails
+        orderPlaced = false;
+        System.out.println(&quot;order: payment failed downstream -- running COMPENSATION: order CANCELLED&quot;);
+    }
+
+    public static void main(String[] args) {
+        placeOrder(); // step 1 commits and releases immediately, no waiting on payment
+        boolean paymentOk = chargePayment(true); // simulate a declined card
+
+        if (!paymentOk) cancelOrder(); // compensate instead of rolling back a held lock
+
+        System.out.println(&quot;Final state: orderPlaced=&quot; + orderPlaced + &quot;, paymentCharged=&quot; + paymentCharged);
+    }
+}</code></pre>
+<p>How to run: <code>java SagaInsteadOf2PC.java</code></p>
+<p><code>placeOrder</code> commits its own local change and returns immediately — no lock is held waiting for the payment step. <code>chargePayment</code> is then attempted and, in this run, fails (simulating a declined card). Because the order was already committed, there is nothing to &quot;roll back&quot; in the 2PC sense; instead, <code>cancelOrder</code> runs as an explicit <strong>compensating transaction</strong> that undoes the order&#x27;s effect. The final state correctly shows <code>orderPlaced=false, paymentCharged=false</code> — consistency was restored through compensation, not through holding locks across both services while waiting for the outcome.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>SagaInsteadOf2PC.main</code> in order. <strong>First</strong>, <code>placeOrder()</code> runs and immediately sets <code>orderPlaced = true</code> and returns — this is a normal, local, single-service transaction commit; nothing outside the order service is involved or blocked.</p>
+<p><strong>Next</strong>, <code>chargePayment(true)</code> runs, passing <code>true</code> to simulate a declined card. Inside, the <code>if (simulateFailure)</code> branch executes, prints the failure message, and returns <code>false</code> without ever setting <code>paymentCharged</code>.</p>
+<p><strong>Back in <code>main</code></strong>, <code>paymentOk</code> is <code>false</code>, so the <code>if (!paymentOk)</code> branch runs <code>cancelOrder()</code>, which sets <code>orderPlaced</code> back to <code>false</code> and prints that a compensating cancellation occurred.</p>
+<p><strong>Finally</strong>, <code>main</code> prints the final state: <code>orderPlaced=false, paymentCharged=false</code> — both services ended up consistent with each other, but this was achieved by each service committing its own transaction immediately and a later step *compensating* for an earlier one&#x27;s effect, rather than by any cross-service lock ever being held while everyone waited for a single global decision.</p>
+<pre><code>2PC:   [prepare BOTH (locks held)] -----wait-----&gt; [commit/rollback BOTH]   &lt;- blocking window
+Saga:  [commit order] -&gt; [attempt payment: FAILS] -&gt; [compensate: cancel order]  &lt;- no cross-service lock, ever</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>If a 2PC coordinator crashes after some participants have prepared (locked) but before it broadcasts the final commit/rollback decision, those participants are left &quot;in doubt&quot; — locked indefinitely until the coordinator recovers or an operator intervenes manually. This single failure mode is a major reason distributed-systems teams avoid 2PC across service boundaries.</blockquote>
+<ul><li>2PC/XA requires holding locks across every participant for the duration of the slowest one — directly opposed to the availability and independence goals of microservices.</li><li>Most microservices deliberately use different data technologies per service (<a href="0307-polyglot-persistence.md">polyglot persistence</a>); many of those technologies don&#x27;t support XA at all.</li><li>The alternative is the <a href="0320-saga-pattern.md">saga pattern</a>: each step commits locally and immediately, and failures are undone with explicit compensating actions rather than a coordinated rollback.</li><li>This tradeoff is fundamentally about accepting eventual consistency (see <a href="0327-base-vs-acid.md">BASE vs ACID</a>) in exchange for availability and service independence.</li></ul>
+  <div class="nav"><a class="prv" href="0317-data-lake-data-warehouse-integration.html"><span class="mini">← Previous</span>Data lake / data warehouse integration</a><a class="nxt" href="0319-two-phase-commit-2pc-overview-drawbacks.html"><span class="mini">Next →</span>Two-phase commit (2PC) overview & drawbacks</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t318";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Compensating transactions" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Compensating transactions"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>compensating transaction</strong> is an action that semantically undoes the effect of an earlier, already-committed local transaction in a <a href="0320-saga-pattern.md">saga</a>. It is not a database rollback — the original transaction really did commit and may have already been observed by other parts of the system — it is a separate, deliberate business operation (cancel the order, refund the payment, release the reserved stock) designed specifically to bring the system back to a consistent state after a later step in the saga fails.</p>
+<h2>2. Why &amp; when</h2>
+<p>Because sagas replace a single cross-service ACID transaction with a chain of independent local commits (see <a href="0318-why-2pc-xa-is-avoided-in-microservices.md">why 2PC/XA is avoided in microservices</a>), there is no database engine that can automatically roll back a step in another service once it has committed. If step 3 of 4 fails, steps 1 and 2 already happened for real — the only way to restore consistency is to explicitly run an operation that reverses each of their effects.</p>
+<p>You need a compensating transaction for every saga step whose effect could still need undoing after a later step fails. Some steps don&#x27;t need one — pure reads, or idempotent no-op-if-repeated calculations — but any step with a real side effect (a database write, a charge, a stock decrement) needs a carefully designed compensation, decided at the same time the forward step is designed, not improvised after the fact.</p>
+<h2>3. Core concept</h2>
+<p>A compensation is defined as the semantic inverse of its forward step, not a literal undo: &quot;place order&quot; is compensated by &quot;cancel order&quot; (which might, depending on the domain, mark the order cancelled rather than delete the row, preserving an audit trail); &quot;charge payment&quot; is compensated by &quot;refund payment&quot; (a new, separate transaction, not an erasure of the charge); &quot;reserve stock&quot; is compensated by &quot;release stock.&quot; Compensations must be idempotent (safe to retry) and, ideally, commutative with concurrent operations, since real-world timing means a compensation might race with something else touching the same data.</p>
+<pre><code class="lang-java">record SagaStep(String name, Runnable forward, Runnable compensation) {}
+// cancelOrder does NOT delete the order row -- it marks it CANCELLED,
+// preserving history rather than pretending the order never existed.</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Forward step charge payment commits a real charge; its compensating transaction is a separate refund transaction, not an erasure of the original charge -- both are visible in the transaction history">
+  <rect x="40" y="30" width="220" height="50" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="150" y="55" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Forward: charge $50</text>
+  <text x="150" y="70" fill="#8b949e" font-size="8.5" text-anchor="middle" font-family="sans-serif">committed, real, VISIBLE</text>
+
+  <rect x="380" y="30" width="220" height="50" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="490" y="55" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">Compensation: refund $50</text>
+  <text x="490" y="70" fill="#8b949e" font-size="8.5" text-anchor="middle" font-family="sans-serif">a SEPARATE new transaction</text>
+
+  <line x1="260" y1="55" x2="375" y2="55" stroke="#8b949e" marker-end="url(#a323)"/>
+  <text x="320" y="45" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">later step fails</text>
+
+  <text x="320" y="130" fill="#8b949e" font-size="9.5" text-anchor="middle" font-family="sans-serif">Both the charge AND the refund remain in the transaction history --</text>
+  <text x="320" y="147" fill="#8b949e" font-size="9.5" text-anchor="middle" font-family="sans-serif">this is compensation, not a rollback that erases the original event.</text>
+
+  <defs><marker id="a323" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>A compensation is a new, separate transaction that semantically reverses an earlier one — the original is never erased, only counteracted.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a payment step that is compensated with a naive &quot;delete the charge&quot; approach that destroys the audit trail, then fixed to issue a proper separate refund transaction, then extended to make the refund idempotent against being triggered twice for the same failed saga.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NaiveDeleteCompensation.java -- WRONG approach: &quot;compensating&quot; by
+// DELETING the original charge record, destroying the audit trail.
+import java.util.*;
+
+public class NaiveDeleteCompensation {
+    static Map&lt;String, Double&gt; charges = new HashMap&lt;&gt;();
+
+    static void chargePayment(String orderId, double amount) {
+        charges.put(orderId, amount);
+        System.out.println(&quot;payment: charged $&quot; + amount + &quot; for &quot; + orderId);
+    }
+
+    static void naiveCompensate(String orderId) {
+        charges.remove(orderId); // WRONG: erases the fact that a charge ever happened
+        System.out.println(&quot;payment: DELETED charge record for &quot; + orderId + &quot; -- no trace it ever happened!&quot;);
+    }
+
+    public static void main(String[] args) {
+        chargePayment(&quot;order-1&quot;, 50.0);
+        naiveCompensate(&quot;order-1&quot;);
+        System.out.println(&quot;charges map now: &quot; + charges + &quot; -- an auditor has NO WAY to see the original charge occurred.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NaiveDeleteCompensation.java</code></p>
+<p><code>naiveCompensate</code> simply removes the charge from the map. The final state shows an empty <code>charges</code> map — functionally &quot;balanced&quot; in this toy example, but in a real payment system this would mean deleting a financial record, which is both usually illegal (financial transactions must be auditable) and dangerous (it hides that money was ever actually moved, which matters if the bank&#x27;s side of the charge did go through).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ProperRefundCompensation.java -- the compensation is a SEPARATE,
+// NEW refund transaction; the original charge record is preserved.
+import java.util.*;
+
+public class ProperRefundCompensation {
+    record Transaction(String orderId, String type, double amount) {}
+    static List&lt;Transaction&gt; transactionLog = new ArrayList&lt;&gt;(); // append-only, nothing ever deleted
+
+    static void chargePayment(String orderId, double amount) {
+        transactionLog.add(new Transaction(orderId, &quot;CHARGE&quot;, amount));
+        System.out.println(&quot;payment: charged $&quot; + amount + &quot; for &quot; + orderId);
+    }
+
+    static void refundPayment(String orderId, double amount) { // the COMPENSATION -- a NEW transaction
+        transactionLog.add(new Transaction(orderId, &quot;REFUND&quot;, amount));
+        System.out.println(&quot;payment: refunded $&quot; + amount + &quot; for &quot; + orderId + &quot; (separate transaction)&quot;);
+    }
+
+    public static void main(String[] args) {
+        chargePayment(&quot;order-1&quot;, 50.0);
+        refundPayment(&quot;order-1&quot;, 50.0); // compensating for a later saga step that failed
+
+        System.out.println(&quot;Full transaction log (nothing erased): &quot; + transactionLog);
+        double netForOrder = transactionLog.stream()
+                .filter(t -&gt; t.orderId().equals(&quot;order-1&quot;))
+                .mapToDouble(t -&gt; t.type().equals(&quot;CHARGE&quot;) ? t.amount() : -t.amount())
+                .sum();
+        System.out.println(&quot;Net amount for order-1: $&quot; + netForOrder + &quot; (correct, and fully auditable)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ProperRefundCompensation.java</code></p>
+<p>Both the charge and the refund are appended to <code>transactionLog</code> as separate, permanent entries — nothing is ever deleted. The net financial effect (<code>$0.0</code>) is correct, computed by summing charges and subtracting refunds, but the *history* still shows exactly what happened: a charge, then a refund, both real, both auditable. This is what makes it a compensation rather than a rollback.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: IdempotentRefundCompensation.java -- the saga&#x27;s failure handler is
+// invoked TWICE for the same failed saga instance (e.g. a retried failure
+// message); the refund must run EXACTLY ONCE, not twice, or the customer
+// is over-refunded.
+import java.util.*;
+
+public class IdempotentRefundCompensation {
+    record Transaction(String orderId, String type, double amount, String compensationId) {}
+    static List&lt;Transaction&gt; transactionLog = new ArrayList&lt;&gt;();
+    static Set&lt;String&gt; appliedCompensationIds = new HashSet&lt;&gt;(); // dedupe key, one per saga-failure instance
+
+    static void chargePayment(String orderId, double amount) {
+        transactionLog.add(new Transaction(orderId, &quot;CHARGE&quot;, amount, null));
+        System.out.println(&quot;payment: charged $&quot; + amount + &quot; for &quot; + orderId);
+    }
+
+    static void refundPayment(String orderId, double amount, String compensationId) {
+        if (!appliedCompensationIds.add(compensationId)) { // add() is false if ALREADY present -- duplicate trigger
+            System.out.println(&quot;payment: compensation &quot; + compensationId + &quot; already applied -- SKIPPING duplicate refund&quot;);
+            return;
+        }
+        transactionLog.add(new Transaction(orderId, &quot;REFUND&quot;, amount, compensationId));
+        System.out.println(&quot;payment: refunded $&quot; + amount + &quot; for &quot; + orderId + &quot; (compensationId=&quot; + compensationId + &quot;)&quot;);
+    }
+
+    public static void main(String[] args) {
+        chargePayment(&quot;order-1&quot;, 50.0);
+
+        // Simulate the saga&#x27;s failure-handling logic being triggered TWICE for the same saga instance.
+        refundPayment(&quot;order-1&quot;, 50.0, &quot;saga-failure-42&quot;);
+        refundPayment(&quot;order-1&quot;, 50.0, &quot;saga-failure-42&quot;); // duplicate trigger, SAME compensationId
+
+        double netForOrder = transactionLog.stream()
+                .filter(t -&gt; t.orderId().equals(&quot;order-1&quot;))
+                .mapToDouble(t -&gt; t.type().equals(&quot;CHARGE&quot;) ? t.amount() : -t.amount())
+                .sum();
+        System.out.println(&quot;Net amount for order-1: $&quot; + netForOrder + &quot; -- correct, refunded exactly ONCE despite two triggers.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java IdempotentRefundCompensation.java</code></p>
+<p><code>refundPayment</code> is called twice with the identical <code>compensationId=&quot;saga-failure-42&quot;</code>, simulating the saga&#x27;s failure-handling path being triggered more than once for the same logical failure (a realistic scenario with at-least-once message delivery). The first call&#x27;s <code>appliedCompensationIds.add(...)</code> returns <code>true</code> and the refund is recorded; the second call&#x27;s <code>add(...)</code> returns <code>false</code> because the ID is already present, so the handler skips it and prints a &quot;SKIPPING duplicate&quot; message. The net amount correctly settles at <code>$0.0</code>, refunded exactly once — without the idempotency check, the customer would have been refunded <code>$100</code> against a <code>$50</code> charge.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>IdempotentRefundCompensation.main</code> in order. <strong>First</strong>, <code>chargePayment(&quot;order-1&quot;, 50.0)</code> runs, appending a <code>CHARGE</code> transaction for <code>$50.0</code> to <code>transactionLog</code>.</p>
+<p><strong>Next</strong>, <code>refundPayment(&quot;order-1&quot;, 50.0, &quot;saga-failure-42&quot;)</code> is called for the first time. Inside, <code>appliedCompensationIds.add(&quot;saga-failure-42&quot;)</code> inserts the ID (it wasn&#x27;t present) and returns <code>true</code>, so the <code>if</code> guard is skipped; a <code>REFUND</code> transaction for <code>$50.0</code>, tagged with that <code>compensationId</code>, is appended to <code>transactionLog</code>.</p>
+<p><strong>Then</strong>, <code>refundPayment</code> is called again with the exact same <code>compensationId</code>. This time <code>appliedCompensationIds.add(&quot;saga-failure-42&quot;)</code> returns <code>false</code>, since that ID is already in the set — the <code>if</code> branch fires, prints the &quot;SKIPPING duplicate&quot; message, and returns immediately without touching <code>transactionLog</code>.</p>
+<p><strong>Finally</strong>, <code>main</code> computes the net amount by summing <code>+amount</code> for every <code>CHARGE</code> and <code>-amount</code> for every <code>REFUND</code> in <code>transactionLog</code>. Since the log contains exactly one <code>CHARGE</code> of <code>$50.0</code> and exactly one <code>REFUND</code> of <code>$50.0</code> (the duplicate never got appended), the net correctly comes out to <code>$0.0</code>.</p>
+<pre><code>chargePayment($50)                          -&gt; log: [CHARGE $50]
+refundPayment(compId=saga-failure-42) #1    -&gt; add() true  -&gt; log: [CHARGE $50, REFUND $50]
+refundPayment(compId=saga-failure-42) #2    -&gt; add() false -&gt; SKIPPED, log unchanged
+net = +50 (charge) - 50 (refund) = 0  -- correct</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Never compensate by deleting or overwriting the original transaction record. A compensation is a new, separate transaction that reverses an effect — the original event stays in the historical record, both for auditability and because the real-world side effect (money actually left an account) may already be irreversible in a literal sense.</blockquote>
+<ul><li>A compensating transaction is the semantic inverse of a forward step, not a database-level rollback — it runs as its own new transaction.</li><li>Compensations must be idempotent: the same failure can trigger the compensation logic more than once, and running it twice must not double-undo the effect.</li><li>Decide each step&#x27;s compensation at design time, alongside the forward step — not improvised after a failure has already happened in production.</li><li>See <a href="0325-saga-isolation-anomalies-dirty-reads-lost-updates.md">saga isolation anomalies</a> for what can go wrong when other operations read data *between* a forward step and its eventual compensation.</li></ul>
+  <div class="nav"><a class="prv" href="0322-orchestration-based-saga.html"><span class="mini">← Previous</span>Orchestration-based saga</a><a class="nxt" href="0324-semantic-locks-countermeasures.html"><span class="mini">Next →</span>Semantic locks & countermeasures</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t323";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
