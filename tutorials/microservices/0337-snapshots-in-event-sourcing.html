@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Snapshots in event sourcing" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Snapshots in event sourcing"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>snapshot</strong> in <a href="0335-event-sourcing.md">event sourcing</a> is a periodically saved copy of an entity&#x27;s fully-folded state at a specific event version, stored alongside the <a href="0336-event-store.md">event store</a> so that reconstructing current state doesn&#x27;t require replaying every event from the very beginning every time — instead, you load the nearest snapshot and fold only the (usually much smaller number of) events that happened after it.</p>
+<h2>2. Why &amp; when</h2>
+<p>Folding an entity&#x27;s events from scratch is cheap when there are a handful of events, but an entity with a long history (a years-old bank account with tens of thousands of transactions, a long-lived order with many revisions) becomes slow to reconstruct if every read has to replay its entire history from event one. Snapshots solve this the same way a video game&#x27;s &quot;save point&quot; does: instead of replaying the whole game from the start, you load the save and continue from there.</p>
+<p>Take a snapshot once an entity&#x27;s event count crosses a threshold where full replay measurably affects read latency — commonly every N events (every 100, every 1000, tuned to the domain), not on every single event, since a snapshot after every event would cost as much as just storing current state directly and would defeat the point of event sourcing. Snapshots are purely a performance optimization; the event stream, never the snapshot, remains the actual source of truth — a lost or corrupted snapshot can always be regenerated by refolding from the beginning.</p>
+<h2>3. Core concept</h2>
+<p>A snapshot stores the folded state plus the event version it was taken at. Reconstructing current state becomes: load the latest snapshot at-or-before the requested point (or the entity&#x27;s genesis if none exists yet), then fold only the events with a version greater than the snapshot&#x27;s version, starting from the snapshot&#x27;s state rather than an empty one.</p>
+<pre><code class="lang-java">record Snapshot&lt;T&gt;(int atVersion, T state) {}
+// currentState = fold(events.filter(v -&gt; v.version() &gt; snapshot.atVersion()), startingFrom: snapshot.state())</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An event stream with 1000 events; a snapshot was taken at event 900; reconstructing current state loads the snapshot and folds only the 100 events after it, instead of all 1000">
+  <rect x="20" y="60" width="560" height="30" rx="4" fill="#1c2430" stroke="#6db33f"/>
+  <text x="300" y="80" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">events 1 - 1000</text>
+
+  <line x1="480" y1="60" x2="480" y2="30" stroke="#79c0ff" stroke-width="2"/>
+  <rect x="410" y="0" width="140" height="30" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="480" y="20" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Snapshot @ event 900</text>
+
+  <rect x="480" y="60" width="100" height="30" rx="4" fill="#1c2430" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="530" y="80" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">100 to fold</text>
+
+  <text x="300" y="130" fill="#8b949e" font-size="9.5" text-anchor="middle" font-family="sans-serif">Load snapshot @900, fold only events 901-1000 -- NOT all 1000 from scratch.</text>
+
+  <defs><marker id="a337" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Reconstructing state loads the nearest snapshot and folds only the events that occurred after it, not the entire history.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an event-sourced account balance that first reconstructs state by always folding from the very beginning (slow as history grows), then adds a snapshot to skip most of that work, and finally adds automatic periodic snapshotting so the optimization applies without manual intervention.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: FullReplayEveryTime.java -- reconstructs current state by
+// folding EVERY event from the beginning, every single time.
+import java.util.*;
+
+public class FullReplayEveryTime {
+    record Deposited(int version, double amount) {}
+    static List&lt;Deposited&gt; events = new ArrayList&lt;&gt;();
+
+    static double currentBalance() { // folds ALL events, from version 1, every call
+        double balance = 0;
+        for (Deposited e : events) balance += e.amount(); // O(n) in the FULL history, every time
+        return balance;
+    }
+
+    public static void main(String[] args) {
+        for (int i = 1; i &lt;= 1000; i++) events.add(new Deposited(i, 1.0)); // 1000 historical deposits
+
+        long start = System.nanoTime();
+        double balance = currentBalance(); // must replay ALL 1000 events
+        long elapsedNanos = System.nanoTime() - start;
+
+        System.out.println(&quot;Balance: &quot; + balance + &quot;, computed by folding &quot; + events.size()
+                + &quot; events (elapsed ~&quot; + elapsedNanos + &quot;ns) -- this cost GROWS with the full history.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java FullReplayEveryTime.java</code></p>
+<p><code>currentBalance</code> has no shortcut: every single call folds the entire <code>events</code> list from the start, regardless of how many times the balance has already been computed before. As <code>events</code> grows into the tens or hundreds of thousands, this cost grows right along with it.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SnapshotSkipsMostReplay.java -- a snapshot taken at version 900
+// lets us fold only the 100 events AFTER it, instead of all 1000.
+import java.util.*;
+
+public class SnapshotSkipsMostReplay {
+    record Deposited(int version, double amount) {}
+    record Snapshot(int atVersion, double balanceAtThatVersion) {}
+    static List&lt;Deposited&gt; events = new ArrayList&lt;&gt;();
+    static Snapshot latestSnapshot = null;
+
+    static double currentBalanceUsingSnapshot() {
+        double startingBalance = (latestSnapshot != null) ? latestSnapshot.balanceAtThatVersion() : 0;
+        int startVersion = (latestSnapshot != null) ? latestSnapshot.atVersion() : 0;
+
+        double balance = startingBalance;
+        int foldedCount = 0;
+        for (Deposited e : events) {
+            if (e.version() &lt;= startVersion) continue; // SKIP everything already captured in the snapshot
+            balance += e.amount();
+            foldedCount++;
+        }
+        System.out.println(&quot;folded only &quot; + foldedCount + &quot; events (skipped &quot; + startVersion + &quot; via snapshot)&quot;);
+        return balance;
+    }
+
+    public static void main(String[] args) {
+        for (int i = 1; i &lt;= 1000; i++) events.add(new Deposited(i, 1.0));
+        latestSnapshot = new Snapshot(900, 900.0); // pretend a snapshot was taken earlier, at version 900
+
+        double balance = currentBalanceUsingSnapshot();
+        System.out.println(&quot;Balance: &quot; + balance + &quot; -- CORRECT, but only 100 events were actually folded, not 1000.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java SnapshotSkipsMostReplay.java</code></p>
+<p><code>currentBalanceUsingSnapshot</code> starts from <code>latestSnapshot.balanceAtThatVersion()</code> (<code>900.0</code>) rather than <code>0</code>, and the loop&#x27;s <code>if (e.version() &lt;= startVersion) continue;</code> skips every one of the first 900 events. Only the 100 events with <code>version &gt; 900</code> are actually folded and added, producing the same correct total of <code>1000.0</code> while doing roughly a tenth of the work Level 1 did.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: AutomaticPeriodicSnapshotting.java -- a snapshot is taken
+// AUTOMATICALLY every 100 events, so the optimization applies without
+// anyone remembering to trigger it manually.
+import java.util.*;
+
+public class AutomaticPeriodicSnapshotting {
+    record Deposited(int version, double amount) {}
+    record Snapshot(int atVersion, double balanceAtThatVersion) {}
+    static List&lt;Deposited&gt; events = new ArrayList&lt;&gt;();
+    static Snapshot latestSnapshot = null;
+    static final int SNAPSHOT_INTERVAL = 100;
+
+    static double foldFromSnapshot() {
+        double startingBalance = (latestSnapshot != null) ? latestSnapshot.balanceAtThatVersion() : 0;
+        int startVersion = (latestSnapshot != null) ? latestSnapshot.atVersion() : 0;
+        double balance = startingBalance;
+        for (Deposited e : events) {
+            if (e.version() &lt;= startVersion) continue;
+            balance += e.amount();
+        }
+        return balance;
+    }
+
+    static void appendDeposit(double amount) {
+        int nextVersion = events.size() + 1;
+        events.add(new Deposited(nextVersion, amount));
+
+        if (nextVersion % SNAPSHOT_INTERVAL == 0) { // AUTOMATIC -- no manual trigger needed
+            double balanceNow = foldFromSnapshot();
+            latestSnapshot = new Snapshot(nextVersion, balanceNow);
+            System.out.println(&quot;  auto-snapshot taken at version &quot; + nextVersion + &quot;, balance=&quot; + balanceNow);
+        }
+    }
+
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 250; i++) appendDeposit(1.0); // crosses 100 and 200 automatically along the way
+
+        System.out.println(&quot;Latest snapshot: version=&quot; + latestSnapshot.atVersion() + &quot;, balance=&quot; + latestSnapshot.balanceAtThatVersion());
+        double finalBalance = foldFromSnapshot();
+        System.out.println(&quot;Final balance (folded from latest snapshot): &quot; + finalBalance
+                + &quot; -- only the events after version &quot; + latestSnapshot.atVersion() + &quot; needed folding.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java AutomaticPeriodicSnapshotting.java</code></p>
+<p><code>appendDeposit</code> checks, after every append, whether the new version is an exact multiple of <code>SNAPSHOT_INTERVAL</code> (<code>100</code>); if so, it computes the current balance (using whatever snapshot already exists, so this stays cheap even as snapshots accumulate) and stores a new snapshot at that version. Across 250 appends, this fires automatically at versions <code>100</code> and <code>200</code>, so by the end, <code>latestSnapshot</code> is at version <code>200</code>, and only the 50 events from <code>201</code> to <code>250</code> would need folding to get the final balance — with nobody having manually decided when to snapshot.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>AutomaticPeriodicSnapshotting.main</code> in order. <strong>First</strong>, the loop calls <code>appendDeposit(1.0)</code> 250 times. Each call appends one <code>Deposited</code> event with an incrementing version and checks <code>nextVersion % 100 == 0</code>.</p>
+<p><strong>At the 100th call</strong>, <code>nextVersion</code> is <code>100</code>, so <code>100 % 100 == 0</code> is true: <code>foldFromSnapshot()</code> runs (at this point <code>latestSnapshot</code> is still <code>null</code>, so it folds all 100 events from scratch, getting <code>100.0</code>), and <code>latestSnapshot</code> is set to <code>Snapshot(atVersion=100, balanceAtThatVersion=100.0)</code>.</p>
+<p><strong>Calls 101 through 199</strong> each append an event but <code>nextVersion % 100 != 0</code>, so no new snapshot is taken during this stretch.</p>
+<p><strong>At the 200th call</strong>, <code>nextVersion</code> is <code>200</code>, triggering another snapshot: <code>foldFromSnapshot()</code> now starts from the *existing* snapshot at version <code>100</code> (balance <code>100.0</code>) and folds only events <code>101</code> through <code>200</code> (100 events, each adding <code>1.0</code>), arriving at <code>200.0</code> — cheaper than a full replay would have been, since even taking a snapshot itself benefits from the previous one. <code>latestSnapshot</code> updates to <code>Snapshot(atVersion=200, balanceAtThatVersion=200.0)</code>.</p>
+<p><strong>Calls 201 through 250</strong> append more events with no further snapshot (250 is not a multiple of 100 within this run&#x27;s range... note 250 % 100 = 50, so no trigger).</p>
+<p><strong>Finally</strong>, <code>main</code> prints the latest snapshot (<code>atVersion=200, balance=200.0</code>) and calls <code>foldFromSnapshot()</code> one more time: it starts from that snapshot&#x27;s balance and folds only the 50 events from version <code>201</code> to <code>250</code>, arriving at the correct final balance of <code>250.0</code> — having folded far fewer than the full 250 events to get there.</p>
+<pre><code>appendDeposit x100 -&gt; auto-snapshot @ v100, balance=100.0 (first snapshot: folded from scratch)
+appendDeposit x100 -&gt; auto-snapshot @ v200, balance=200.0 (folded only v101-200, using prior snapshot)
+appendDeposit x50  -&gt; no snapshot triggered (250 not a multiple of 100)
+foldFromSnapshot()  -&gt; starts @ v200/200.0 -&gt; folds v201-250 (50 events) -&gt; 250.0</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A snapshot is purely a cache of a computed fold — it must never be treated as more authoritative than the event stream itself. If a bug in the folding logic produced a bad snapshot, the fix is to correct the logic and regenerate snapshots by refolding from the real events, never to hand-edit a snapshot directly.</blockquote>
+<ul><li>Snapshots exist purely to bound the cost of reconstructing state as an entity&#x27;s event history grows long; the event stream remains the actual source of truth.</li><li>Take snapshots periodically (every N events), not after every single event — snapshotting too often defeats the purpose and approaches the cost of just storing current state directly.</li><li>Reconstructing state becomes: load the nearest snapshot, then fold only the events after it, starting the fold from the snapshot&#x27;s state instead of an empty one.</li><li>A lost or corrupted snapshot is always recoverable by refolding from the beginning of the <a href="0336-event-store.md">event store</a> — this safety property is why snapshots can be treated as a pure optimization, never a risk to correctness.</li></ul>
+  <div class="nav"><a class="prv" href="0336-event-store.html"><span class="mini">← Previous</span>Event store</a><a class="nxt" href="0338-dual-write-problem.html"><span class="mini">Next →</span>Dual-write problem</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t337";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

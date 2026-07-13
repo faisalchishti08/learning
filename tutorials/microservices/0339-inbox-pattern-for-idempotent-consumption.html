@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Inbox pattern for idempotent consumption" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Inbox pattern for idempotent consumption"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>inbox pattern</strong> is the consuming-side counterpart to the <a href="0331-transactional-outbox-pattern.md">transactional outbox pattern</a>: a consumer records the ID of every message it processes into an <strong>inbox table</strong>, in the *same local transaction* as the business change that message triggers. Before processing a message, the consumer checks whether its ID is already in the inbox; if so, it&#x27;s a duplicate delivery (from at-least-once messaging, or from a retried <a href="0331-transactional-outbox-pattern.md">outbox relay</a>) and is skipped, rather than being processed — and its side effect applied — a second time.</p>
+<h2>2. Why &amp; when</h2>
+<p>Every discussion so far of <a href="0330-idempotency-in-saga-steps.md">idempotency in saga steps</a> has assumed &quot;the handler checks a set of processed IDs&quot; — the inbox pattern is the durable, transactionally-safe way to actually implement that set, instead of an in-memory <code>HashSet</code> that would be lost on a crash and restart (silently allowing a message to be reprocessed) or that isn&#x27;t atomically tied to the business change it guards.</p>
+<p>Use the inbox pattern for any consumer whose message processing has a real side effect (a database write, a call to another system) and where processing the same message twice would cause a problem — which, given at-least-once delivery is the norm, is essentially every consumer of an event or command in a microservices system.</p>
+<h2>3. Core concept</h2>
+<p>Within one local transaction: check whether the incoming message&#x27;s ID exists in the inbox table; if it does, skip and return without further action; if it doesn&#x27;t, perform the business change and insert the message&#x27;s ID into the inbox — both in the same transaction, so a crash between &quot;processed&quot; and &quot;recorded&quot; is impossible: either both happened, or neither did, exactly mirroring the outbox pattern&#x27;s guarantee on the publishing side.</p>
+<pre><code class="lang-java">@Transactional
+void handle(OrderPlacedEvent event) {
+    if (inboxRepository.existsById(event.eventId())) return; // duplicate, SKIP
+    reserveStock(event);                                       // the real side effect
+    inboxRepository.save(new InboxEntry(event.eventId()));      // recorded in the SAME transaction
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A message is delivered twice; the first delivery checks the inbox table, finds no entry, performs the side effect and records the message ID atomically; the second delivery checks the inbox, finds the ID already there, and skips">
+  <rect x="20" y="20" width="180" height="34" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="110" y="42" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Delivery 1: msg-id=42</text>
+  <rect x="20" y="100" width="180" height="34" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="110" y="122" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Delivery 2: msg-id=42</text>
+
+  <line x1="200" y1="37" x2="290" y2="37" stroke="#3fb950" marker-end="url(#a339)"/>
+  <rect x="300" y="10" width="200" height="60" rx="6" fill="#1c2430" stroke="#3fb950"/>
+  <text x="400" y="32" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">inbox has no msg-id=42</text>
+  <text x="400" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">-&gt; apply effect + record ID</text>
+
+  <line x1="200" y1="117" x2="290" y2="117" stroke="#79c0ff" marker-end="url(#a339b)"/>
+  <rect x="300" y="100" width="200" height="34" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="400" y="122" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">inbox HAS msg-id=42 -&gt; SKIP</text>
+
+  <defs>
+    <marker id="a339" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#3fb950"/></marker>
+    <marker id="a339b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#79c0ff"/></marker>
+  </defs>
+</svg>
+<p>The side effect and the inbox record are written together atomically, so a redelivered message is reliably recognized and skipped.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a stock-reservation consumer that first double-reserves on redelivery due to an in-memory-only check, then fixed with a durable inbox recorded atomically with the reservation, and finally extended to show why the atomicity specifically matters — surviving a simulated crash between the side effect and the record.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: InMemoryOnlyCheckIsUnsafe.java -- uses an in-memory Set to guard
+// against duplicates; a process restart LOSES that set, so a redelivered
+// message after a restart is processed AGAIN.
+import java.util.*;
+
+public class InMemoryOnlyCheckIsUnsafe {
+    static Map&lt;String, Integer&gt; stockReserved = new HashMap&lt;&gt;();
+    static Set&lt;String&gt; processedInMemory = new HashSet&lt;&gt;(); // LOST on restart!
+
+    static void reserveStock(String orderId, int qty, String eventId) {
+        if (!processedInMemory.add(eventId)) { System.out.println(&quot;SKIPPED duplicate (in-memory check): &quot; + eventId); return; }
+        stockReserved.merge(orderId, qty, Integer::sum);
+        System.out.println(&quot;reserved &quot; + qty + &quot; for &quot; + orderId + &quot; (event &quot; + eventId + &quot;)&quot;);
+    }
+
+    public static void main(String[] args) {
+        reserveStock(&quot;order-1&quot;, 5, &quot;evt-1&quot;);
+
+        System.out.println(&quot;--- process RESTARTS here -- processedInMemory is now EMPTY again ---&quot;);
+        processedInMemory = new HashSet&lt;&gt;(); // simulates the in-memory set being lost on restart
+
+        reserveStock(&quot;order-1&quot;, 5, &quot;evt-1&quot;); // SAME event, redelivered after restart -- but looks &quot;new&quot; to the empty set!
+
+        System.out.println(&quot;Total reserved: &quot; + stockReserved.get(&quot;order-1&quot;) + &quot; -- should be 5, but DOUBLE-RESERVED after the restart!&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java InMemoryOnlyCheckIsUnsafe.java</code></p>
+<p><code>processedInMemory</code> correctly prevents a duplicate *within* the same process run, but the simulated restart resets it to empty — the second call for the exact same <code>eventId=&quot;evt-1&quot;</code> looks brand new to the now-empty set, so it reserves stock a second time. The final total incorrectly shows <code>10</code> instead of <code>5</code>, purely because the &quot;already processed&quot; memory didn&#x27;t survive the restart.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: DurableInboxSurvivesRestart.java -- the &quot;processed&quot; record is
+// stored in a DURABLE inbox (simulated as a structure that survives the
+// restart, unlike the in-memory Set), so a redelivered message after a
+// restart is correctly recognized as a duplicate.
+import java.util.*;
+
+public class DurableInboxSurvivesRestart {
+    static Map&lt;String, Integer&gt; stockReserved = new HashMap&lt;&gt;();
+    static Set&lt;String&gt; durableInbox = new HashSet&lt;&gt;(); // simulates a table backed by real, durable storage
+
+    static void reserveStock(String orderId, int qty, String eventId) {
+        if (!durableInbox.add(eventId)) { System.out.println(&quot;SKIPPED duplicate (durable inbox check): &quot; + eventId); return; }
+        stockReserved.merge(orderId, qty, Integer::sum);
+        System.out.println(&quot;reserved &quot; + qty + &quot; for &quot; + orderId + &quot; (event &quot; + eventId + &quot;)&quot;);
+    }
+
+    public static void main(String[] args) {
+        reserveStock(&quot;order-1&quot;, 5, &quot;evt-1&quot;);
+
+        System.out.println(&quot;--- process RESTARTS here -- but durableInbox is BACKED BY DURABLE STORAGE, so it SURVIVES ---&quot;);
+        // durableInbox is deliberately NOT reset here, unlike processedInMemory in Level 1
+
+        reserveStock(&quot;order-1&quot;, 5, &quot;evt-1&quot;); // SAME event, redelivered after restart -- correctly recognized this time
+
+        System.out.println(&quot;Total reserved: &quot; + stockReserved.get(&quot;order-1&quot;) + &quot; -- CORRECT, restart didn&#x27;t cause a double-reservation.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java DurableInboxSurvivesRestart.java</code></p>
+<p>The only structural difference from Level 1 is that <code>durableInbox</code> is never reset to simulate the restart — standing in for the fact that a real inbox table lives in the database, which genuinely survives a process crash and restart, unlike an in-memory <code>HashSet</code>. The redelivered <code>&quot;evt-1&quot;</code> is correctly recognized as already processed, and the total stays at the correct <code>5</code>.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: AtomicInboxAndSideEffect.java -- demonstrates WHY the inbox
+// record and the side effect must be written in the SAME transaction: a
+// crash BETWEEN performing the reservation and recording the inbox entry
+// would otherwise let a retry reserve stock a SECOND time, even with a
+// durable inbox, if the two writes aren&#x27;t atomic together.
+import java.util.*;
+
+public class AtomicInboxAndSideEffect {
+    static Map&lt;String, Integer&gt; stockReserved = new HashMap&lt;&gt;();
+    static Set&lt;String&gt; durableInbox = new HashSet&lt;&gt;();
+
+    // NON-atomic version: two SEPARATE steps -- a crash between them is unsafe.
+    static void reserveStockNonAtomic(String orderId, int qty, String eventId, boolean simulateCrashBeforeInboxWrite) {
+        if (durableInbox.contains(eventId)) { System.out.println(&quot;SKIPPED (non-atomic): &quot; + eventId); return; }
+        stockReserved.merge(orderId, qty, Integer::sum); // side effect happens FIRST
+        System.out.println(&quot;non-atomic: reserved &quot; + qty + &quot; for &quot; + orderId);
+        if (simulateCrashBeforeInboxWrite) {
+            System.out.println(&quot;  ** CRASH ** before the inbox entry was ever written -- inbox still doesn&#x27;t have &quot; + eventId + &quot;!&quot;);
+            return; // durableInbox.add(eventId) NEVER RUNS
+        }
+        durableInbox.add(eventId);
+    }
+
+    // ATOMIC version: both writes happen together, or the whole thing is retried from scratch (simulated).
+    static void reserveStockAtomic(String orderId, int qty, String eventId) {
+        if (durableInbox.contains(eventId)) { System.out.println(&quot;SKIPPED (atomic check): &quot; + eventId); return; }
+        stockReserved.merge(orderId, qty, Integer::sum);
+        durableInbox.add(eventId); // both writes modeled as ONE atomic transaction -- no crash window between them
+        System.out.println(&quot;atomic: reserved &quot; + qty + &quot; for &quot; + orderId + &quot; and recorded inbox entry TOGETHER&quot;);
+    }
+
+    public static void main(String[] args) {
+        reserveStockNonAtomic(&quot;order-1&quot;, 5, &quot;evt-1&quot;, true); // crashes AFTER reserving, BEFORE recording
+        reserveStockNonAtomic(&quot;order-1&quot;, 5, &quot;evt-1&quot;, false); // retry -- inbox STILL doesn&#x27;t have evt-1, so it reserves AGAIN
+        System.out.println(&quot;Non-atomic total: &quot; + stockReserved.get(&quot;order-1&quot;) + &quot; -- WRONG, double-reserved due to the crash window.&quot;);
+
+        reserveStockAtomic(&quot;order-2&quot;, 5, &quot;evt-2&quot;);
+        reserveStockAtomic(&quot;order-2&quot;, 5, &quot;evt-2&quot;); // retry of the SAME event -- correctly skipped, since the atomic write already recorded it
+        System.out.println(&quot;Atomic total: &quot; + stockReserved.get(&quot;order-2&quot;) + &quot; -- CORRECT, exactly once.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java AtomicInboxAndSideEffect.java</code></p>
+<p><code>reserveStockNonAtomic</code>&#x27;s first call performs the reservation (<code>stockReserved</code> becomes <code>5</code>) but is told to simulate a crash *before* <code>durableInbox.add(eventId)</code> runs — so the inbox never learns <code>&quot;evt-1&quot;</code> was processed. When the same event is retried, <code>durableInbox.contains(&quot;evt-1&quot;)</code> is still <code>false</code>, so the reservation happens *again*, bringing the total to <code>10</code> — a double-reservation caused entirely by the gap between the side effect and the inbox record. <code>reserveStockAtomic</code>, by contrast, performs both writes together with no such gap; its second call for the identical <code>&quot;evt-2&quot;</code> correctly finds the inbox entry already present and skips, leaving the total correctly at <code>5</code>.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>AtomicInboxAndSideEffect.main</code> in order. <strong>First</strong>, <code>reserveStockNonAtomic(&quot;order-1&quot;, 5, &quot;evt-1&quot;, true)</code> runs: <code>durableInbox.contains(&quot;evt-1&quot;)</code> is <code>false</code>, so it proceeds; <code>stockReserved.merge(...)</code> runs, setting the total to <code>5</code>; then, because <code>simulateCrashBeforeInboxWrite</code> is <code>true</code>, the method prints the crash message and returns *before* reaching <code>durableInbox.add(eventId)</code> — the inbox is left without any record of <code>&quot;evt-1&quot;</code>.</p>
+<p><strong>Next</strong>, <code>reserveStockNonAtomic(&quot;order-1&quot;, 5, &quot;evt-1&quot;, false)</code> runs, representing a retry of the same event after the &quot;crash.&quot; <code>durableInbox.contains(&quot;evt-1&quot;)</code> is still <code>false</code> (it was never written), so the method proceeds *again*: <code>stockReserved.merge(...)</code> adds another <code>5</code>, bringing the total to <code>10</code>. This time <code>simulateCrashBeforeInboxWrite</code> is <code>false</code>, so <code>durableInbox.add(&quot;evt-1&quot;)</code> finally runs — too late to prevent the double-reservation that already happened.</p>
+<p><strong>Then</strong>, <code>reserveStockAtomic(&quot;order-2&quot;, 5, &quot;evt-2&quot;)</code> runs for the first time: <code>durableInbox.contains(&quot;evt-2&quot;)</code> is <code>false</code>, so it reserves (total becomes <code>5</code>) and immediately adds <code>&quot;evt-2&quot;</code> to <code>durableInbox</code> in the same method call, modeling one atomic transaction with no gap for a crash to exploit.</p>
+<p><strong>Finally</strong>, <code>reserveStockAtomic(&quot;order-2&quot;, 5, &quot;evt-2&quot;)</code> runs a second time, representing a retry or redelivery of the same event. <code>durableInbox.contains(&quot;evt-2&quot;)</code> is now <code>true</code>, so the method skips immediately, leaving the total correctly at <code>5</code>.</p>
+<pre><code>Non-atomic: reserve(evt-1) -&gt; total=5 -&gt; CRASH before inbox write -&gt; retry: inbox still missing evt-1 -&gt; reserve AGAIN -&gt; total=10 (WRONG)
+Atomic:     reserve(evt-2) -&gt; total=5, inbox records evt-2 TOGETHER -&gt; retry: inbox HAS evt-2 -&gt; SKIPPED -&gt; total=5 (CORRECT)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Writing the business side effect and the inbox record as two separate statements — even both against durable storage — reopens the exact crash-window vulnerability the inbox pattern exists to close. Both writes must be part of the same local transaction, exactly mirroring the outbox pattern&#x27;s requirement on the publishing side.</blockquote>
+<ul><li>The inbox pattern durably records which message IDs have already been processed, checked and updated in the same local transaction as the message&#x27;s actual side effect.</li><li>An in-memory-only &quot;already processed&quot; set is unsafe because it&#x27;s lost on a crash or restart, silently allowing reprocessing of messages that were, from the consumer&#x27;s true history, already handled.</li><li>The side effect and the inbox record must be atomic together — writing them as two separate steps reintroduces a crash window where a retry can double-apply the effect.</li><li>This is the consuming-side mirror of the <a href="0331-transactional-outbox-pattern.md">transactional outbox pattern</a>, and together they give an end-to-end at-least-once-delivery-safe pipeline: outbox guarantees the event is eventually published, inbox guarantees it&#x27;s processed effectively-once.</li></ul>
+  <div class="nav"><a class="prv" href="0338-dual-write-problem.html"><span class="mini">← Previous</span>Dual-write problem</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t339";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

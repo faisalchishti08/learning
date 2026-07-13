@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Polling publisher pattern" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Polling publisher pattern"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>polling publisher pattern</strong> is the simplest way to implement the relay side of the <a href="0331-transactional-outbox-pattern.md">transactional outbox pattern</a>: a process periodically queries the outbox table for unsent rows (<code>SELECT * FROM outbox WHERE sent = false ORDER BY id</code>), publishes each one to the message broker, and marks it sent — all on a fixed schedule, using nothing more exotic than an ordinary database query and a scheduler.</p>
+<h2>2. Why &amp; when</h2>
+<p>Compared to <a href="0332-transaction-log-tailing.md">transaction log tailing</a> / <a href="0333-change-data-capture-cdc.md">CDC</a>, polling trades some latency and database load for dramatically less operational complexity — it needs no database-specific log-reading tool, no replication-client setup, nothing beyond code your team already knows how to write and operate: a query, a loop, a scheduler. For services with moderate event volume and no strict requirement for sub-second propagation, this simplicity usually outweighs the cost.</p>
+<p>Use polling as the default choice for implementing an outbox relay, especially early on or for lower-throughput services, and reach for log tailing/CDC only once polling&#x27;s latency (bounded by the poll interval) or its added query load on the database becomes a measured, real problem — not preemptively.</p>
+<h2>3. Core concept</h2>
+<p>On a fixed interval, the poller queries for unsent outbox rows in a stable order (usually by an auto-incrementing ID or timestamp, so nothing is skipped or reordered), publishes each to the broker, and marks it sent — typically in the same transaction as the publish confirmation, or immediately after, so a crash between publish and mark-sent results in, at worst, a harmless duplicate delivery (which idempotent consumers already tolerate).</p>
+<pre><code class="lang-java">// Runs every N seconds:
+List&lt;OutboxRow&gt; unsent = outboxRepository.findBySentFalseOrderById();
+for (OutboxRow row : unsent) { broker.publish(row.payload()); outboxRepository.markSent(row.id()); }</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A scheduler triggers a poll every fixed interval; each poll queries the outbox table for unsent rows, publishes them, and marks them sent">
+  <rect x="20" y="60" width="130" height="34" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="85" y="82" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Scheduler (every 2s)</text>
+
+  <line x1="150" y1="77" x2="220" y2="77" stroke="#8b949e" marker-end="url(#a334)"/>
+  <rect x="230" y="60" width="150" height="34" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="305" y="82" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Query unsent outbox rows</text>
+
+  <line x1="380" y1="77" x2="450" y2="77" stroke="#8b949e" marker-end="url(#a334)"/>
+  <rect x="460" y="60" width="160" height="34" rx="6" fill="#1c2430" stroke="#3fb950"/>
+  <text x="540" y="82" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Publish + mark sent</text>
+
+  <text x="320" y="140" fill="#8b949e" font-size="9.5" text-anchor="middle" font-family="sans-serif">Simple, but every cycle costs a query, and nothing is noticed BETWEEN polls.</text>
+
+  <defs><marker id="a334" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>A fixed-interval loop queries, publishes, and marks each outbox row sent — simple, at the cost of a bounded but real delay.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an outbox poller that starts out naively re-querying and republishing every row on each cycle, then fixed to track the last-seen ID so it only processes new rows, and finally extended to back off its polling interval when the outbox is empty, saving query load during quiet periods.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NaivePollerReprocesses.java -- BUG: queries and republishes the
+// WHOLE outbox table every cycle, not just new rows.
+import java.util.*;
+
+public class NaivePollerReprocesses {
+    static List&lt;String&gt; outboxTable = new ArrayList&lt;&gt;();
+
+    static void pollAndPublish() { // WRONG: no memory of what was already published
+        System.out.println(&quot;poll: querying ENTIRE outbox table...&quot;);
+        for (String row : outboxTable) System.out.println(&quot;  publishing (again!): &quot; + row);
+    }
+
+    public static void main(String[] args) {
+        outboxTable.add(&quot;OrderPlaced:order-1&quot;);
+        pollAndPublish(); // publishes order-1
+
+        outboxTable.add(&quot;OrderPlaced:order-2&quot;);
+        pollAndPublish(); // publishes order-1 AGAIN, plus order-2 -- order-1 is now a DUPLICATE publish
+    }
+}</code></pre>
+<p>How to run: <code>java NaivePollerReprocesses.java</code></p>
+<p><code>pollAndPublish</code> has no memory of which rows were already published, so every cycle republishes the entire table from scratch — <code>order-1</code> gets published twice purely because the poller ran twice, which is unnecessary broker load even if downstream idempotency happens to absorb the duplicate.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: PollerTracksLastSeen.java -- FIXED: tracks the last processed
+// row&#x27;s ID and only queries/publishes rows AFTER it each cycle.
+import java.util.*;
+
+public class PollerTracksLastSeen {
+    record OutboxRow(int id, String payload) {}
+    static List&lt;OutboxRow&gt; outboxTable = new ArrayList&lt;&gt;();
+    static int lastPublishedId = -1; // persisted in a real system, alongside the marking-sent step
+
+    static void pollAndPublish() {
+        System.out.println(&quot;poll: querying rows with id &gt; &quot; + lastPublishedId + &quot;...&quot;);
+        for (OutboxRow row : outboxTable) {
+            if (row.id() &lt;= lastPublishedId) continue; // already published, SKIP
+            System.out.println(&quot;  publishing: &quot; + row.payload());
+            lastPublishedId = row.id();
+        }
+    }
+
+    public static void main(String[] args) {
+        outboxTable.add(new OutboxRow(1, &quot;OrderPlaced:order-1&quot;));
+        pollAndPublish();
+
+        outboxTable.add(new OutboxRow(2, &quot;OrderPlaced:order-2&quot;));
+        pollAndPublish(); // only order-2 is published this time -- order-1 correctly skipped
+    }
+}</code></pre>
+<p>How to run: <code>java PollerTracksLastSeen.java</code></p>
+<p><code>lastPublishedId</code> remembers the highest ID processed so far. The second <code>pollAndPublish</code> call skips row <code>1</code> (already published) and publishes only row <code>2</code> — the fix is simply querying and tracking &quot;what&#x27;s new since last time&quot; instead of reprocessing everything on every cycle.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: PollerWithBackoff.java -- extends the tracked-position poller
+// with ADAPTIVE polling: the interval grows when the outbox is empty
+// (saving query load during quiet periods) and resets to the fast
+// interval the moment new rows are found.
+import java.util.*;
+
+public class PollerWithBackoff {
+    record OutboxRow(int id, String payload) {}
+    static List&lt;OutboxRow&gt; outboxTable = new ArrayList&lt;&gt;();
+    static int lastPublishedId = -1;
+    static int currentIntervalMs = 100; // fast baseline
+    static final int MAX_INTERVAL_MS = 800;
+
+    static boolean pollAndPublish() { // returns true if anything new was found
+        boolean foundNew = false;
+        for (OutboxRow row : outboxTable) {
+            if (row.id() &lt;= lastPublishedId) continue;
+            System.out.println(&quot;  publishing: &quot; + row.payload());
+            lastPublishedId = row.id();
+            foundNew = true;
+        }
+        return foundNew;
+    }
+
+    static void runCycle() {
+        System.out.println(&quot;poll cycle (interval=&quot; + currentIntervalMs + &quot;ms)...&quot;);
+        boolean foundNew = pollAndPublish();
+        if (foundNew) {
+            currentIntervalMs = 100; // reset to fast polling -- activity means more might be coming soon
+            System.out.println(&quot;  found new rows -- interval reset to &quot; + currentIntervalMs + &quot;ms&quot;);
+        } else {
+            currentIntervalMs = Math.min(currentIntervalMs * 2, MAX_INTERVAL_MS); // back off -- quiet outbox, poll less often
+            System.out.println(&quot;  outbox empty -- backing off to &quot; + currentIntervalMs + &quot;ms&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        outboxTable.add(new OutboxRow(1, &quot;OrderPlaced:order-1&quot;));
+        runCycle(); // finds order-1, stays fast
+
+        runCycle(); // nothing new -- backs off
+        runCycle(); // still nothing -- backs off further
+
+        outboxTable.add(new OutboxRow(2, &quot;OrderPlaced:order-2&quot;));
+        runCycle(); // finds order-2 -- resets back to fast
+    }
+}</code></pre>
+<p>How to run: <code>java PollerWithBackoff.java</code></p>
+<p>The first <code>runCycle</code> finds <code>order-1</code> (<code>foundNew=true</code>), so <code>currentIntervalMs</code> stays reset at <code>100</code>. The next two cycles find nothing new (<code>foundNew=false</code> each time), so <code>currentIntervalMs</code> doubles each time: <code>100 -&gt; 200 -&gt; 400</code>. When <code>order-2</code> is then added and a fourth cycle runs, it finds new work again and resets <code>currentIntervalMs</code> straight back to <code>100</code> — during busy periods the poller stays responsive (short interval), and during quiet periods it backs off automatically, reducing needless queries against an empty outbox.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>PollerWithBackoff.main</code> in order. <strong>First</strong>, <code>outboxTable</code> gets one row (<code>id=1</code>), and <code>runCycle()</code> runs: <code>pollAndPublish</code> finds <code>row.id()=1 &gt; lastPublishedId=-1</code>, publishes it, updates <code>lastPublishedId</code> to <code>1</code>, and returns <code>true</code>. Back in <code>runCycle</code>, <code>foundNew</code> is <code>true</code>, so <code>currentIntervalMs</code> is reset to <code>100</code>.</p>
+<p><strong>Next</strong>, <code>runCycle()</code> runs again with no new rows added. <code>pollAndPublish</code> iterates <code>outboxTable</code>, finds only <code>row.id()=1</code>, which is not greater than <code>lastPublishedId=1</code>, so it&#x27;s skipped — the method returns <code>false</code>. Back in <code>runCycle</code>, the <code>else</code> branch doubles <code>currentIntervalMs</code> from <code>100</code> to <code>200</code>.</p>
+<p><strong>Then</strong>, <code>runCycle()</code> runs a third time, again with no new rows. The same skip happens, <code>foundNew</code> is <code>false</code> again, and <code>currentIntervalMs</code> doubles again, from <code>200</code> to <code>400</code>.</p>
+<p><strong>Finally</strong>, a new row (<code>id=2</code>) is added, and <code>runCycle()</code> runs a fourth time. This time <code>pollAndPublish</code> finds <code>row.id()=2 &gt; lastPublishedId=1</code>, publishes it, updates <code>lastPublishedId</code> to <code>2</code>, and returns <code>true</code> — <code>runCycle</code> resets <code>currentIntervalMs</code> straight back down to <code>100</code>, ready to respond quickly if more activity follows.</p>
+<pre><code>runCycle #1: order-1 found       -&gt; interval reset to 100ms
+runCycle #2: nothing found       -&gt; interval backs off to 200ms
+runCycle #3: nothing found       -&gt; interval backs off to 400ms
+runCycle #4: order-2 found       -&gt; interval reset to 100ms</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A poller that queries <code>SELECT * FROM outbox WHERE sent = false</code> without an index on <code>sent</code> (or on the ID/timestamp used for ordering) will do a full table scan every cycle as the outbox grows — index the column the poller filters and orders by, just as you would for any frequently-run query.</blockquote>
+<ul><li>Polling is the simplest way to implement an outbox relay: a scheduled query, publish, and mark-sent loop, needing no database-specific tooling.</li><li>Track the last-processed position (an ID or timestamp) so each poll only queries and republishes genuinely new rows.</li><li>An adaptive polling interval (fast when busy, backing off when idle) reduces needless database load during quiet periods without sacrificing responsiveness during busy ones.</li><li>Reach for <a href="0332-transaction-log-tailing.md">transaction log tailing</a> / <a href="0333-change-data-capture-cdc.md">CDC</a> only once polling&#x27;s latency or query load becomes a measured problem — it is not the default starting point.</li></ul>
+  <div class="nav"><a class="prv" href="0333-change-data-capture-cdc.html"><span class="mini">← Previous</span>Change Data Capture (CDC)</a><a class="nxt" href="0335-event-sourcing.html"><span class="mini">Next →</span>Event sourcing</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t334";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
