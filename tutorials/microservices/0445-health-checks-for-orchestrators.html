@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Health checks for orchestrators" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 14. Deployment, Containers & Orchestration</div>
+  <div class="htitle">
+    <h1>"Health checks for orchestrators"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Health checks for orchestrators</strong> are HTTP (or TCP/exec) endpoints an orchestrator like Kubernetes probes periodically to decide two separate questions about a running instance: is it *alive* (should the orchestrator restart it because it&#x27;s stuck or crashed), and is it *ready* (should the load balancer send it traffic right now)? These correspond to Kubernetes&#x27;s <strong>liveness probe</strong> and <strong>readiness probe</strong> — two conceptually different checks that are easy to conflate but answer different questions and drive different orchestrator actions. Spring Boot Actuator exposes both out of the box via its health groups: <code>/actuator/health/liveness</code> and <code>/actuator/health/readiness</code>.</p>
+<h2>2. Why &amp; when</h2>
+<p>Getting this distinction right matters because using the wrong probe for the wrong purpose causes exactly the failure modes health checks exist to prevent:</p>
+<ul><li><strong>Liveness answers &quot;should this instance be restarted?&quot;</strong> If a service&#x27;s internals get into an unrecoverable state — a deadlock, a corrupted internal cache, a thread pool exhausted beyond recovery — no amount of retrying from outside will fix it; only killing and restarting the process will. A failing liveness probe tells the orchestrator to do exactly that.</li><li><strong>Readiness answers &quot;should traffic be sent here right now?&quot;</strong> A service can be perfectly alive (not deadlocked, not crashed) while genuinely unable to serve requests correctly at this moment — its database connection pool temporarily exhausted, a downstream dependency it needs is unreachable, or it&#x27;s still warming up (see <a href="0444-graceful-startup-shutdown.md">graceful startup &amp; shutdown</a>). A failing readiness probe pulls the instance out of load-balancer rotation *without* restarting it — exactly the right response, since restarting wouldn&#x27;t fix a downstream outage and would only add unnecessary churn.</li><li><strong>Conflating the two causes real outages.</strong> If a temporary downstream dependency failure is (incorrectly) wired only into the liveness probe, the orchestrator restarts every instance in the fleet simultaneously the moment that dependency has a blip — turning a transient, recoverable issue into a full-fleet restart storm, often making the original problem worse.</li><li><strong>Startup probes handle a third, related case</strong>: a service whose normal startup is slow enough that it would otherwise fail its liveness probe before it&#x27;s even finished starting — a startup probe gives it a longer initial grace period before liveness checks begin being enforced.</li></ul>
+<p>You configure both liveness and readiness probes on every service deployed under an orchestrator — an instance with no health checks configured is, from the orchestrator&#x27;s perspective, always assumed healthy and ready, which means it keeps receiving traffic and never gets automatically restarted even while it&#x27;s silently broken.</p>
+<h2>3. Core concept</h2>
+<p>Think of the difference between a person&#x27;s pulse and their readiness to work a shift. A pulse check (liveness) answers &quot;is this person alive at all?&quot; — if there&#x27;s no pulse, nothing short of drastic intervention (a restart) helps. Whether they&#x27;re ready to work a shift (readiness) is a completely different, more situational question — someone can have a perfectly strong pulse while being unable to work right now because they&#x27;re still getting dressed, waiting on a ride that hasn&#x27;t arrived, or momentarily stepped away — none of which calls for drastic intervention, just &quot;don&#x27;t schedule this person for a task right now,&quot; which is exactly what pulling an instance out of load-balancer rotation does.</p>
+<p>Concretely, the mechanics are:</p>
+<ol><li><strong>Liveness probe</strong> — checked periodically; on repeated failure, the orchestrator kills and restarts the container. Should only check things a *restart* would actually fix: the process&#x27;s own internal health, not external dependency availability.</li><li><strong>Readiness probe</strong> — checked periodically; on failure, the orchestrator removes the instance from service endpoints (stops routing traffic to it) without restarting it, and adds it back once the probe passes again. Should check things that determine &quot;can I correctly serve a request right now&quot;: database connectivity, critical downstream dependency availability, whether startup warm-up has completed.</li><li><strong>Startup probe</strong> (where supported) — checked only during the initial startup window; while it&#x27;s failing, liveness checks are suppressed, giving a slow-starting service room to finish initializing without being killed mid-startup for not yet being &quot;alive&quot; by the liveness definition.</li><li><strong>Probe failure thresholds and intervals matter.</strong> A probe that fails once shouldn&#x27;t necessarily trigger action immediately — orchestrators typically require a configurable number of consecutive failures before acting, to avoid overreacting to a single transient blip.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A liveness probe failure causes the orchestrator to restart the container; a readiness probe failure causes the orchestrator to remove the instance from load balancer routing without restarting it, and re-add it once the probe passes again" >
+  <rect x="30" y="30" width="230" height="180" rx="8" fill="#1c2430" stroke="#f85149" stroke-width="2"/>
+  <text x="145" y="20" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif">Liveness probe fails</text>
+  <text x="145" y="55" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">"is the process alive/unstuck?"</text>
+  <rect x="55" y="75" width="180" height="40" rx="6" fill="#1c2430" stroke="#f85149"/>
+  <text x="145" y="99" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">deadlocked / stuck instance</text>
+  <line x1="145" y1="115" x2="145" y2="140" stroke="#f85149"/>
+  <rect x="55" y="140" width="180" height="40" rx="6" fill="#1c2430" stroke="#f85149" stroke-width="2"/>
+  <text x="145" y="164" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">orchestrator KILLS &amp; RESTARTS</text>
+
+  <rect x="380" y="30" width="230" height="180" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="2"/>
+  <text x="495" y="20" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif">Readiness probe fails</text>
+  <text x="495" y="55" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">"can it serve traffic right now?"</text>
+  <rect x="405" y="75" width="180" height="40" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="495" y="93" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">DB pool exhausted / warming up</text>
+  <line x1="495" y1="115" x2="495" y2="140" stroke="#f0883e"/>
+  <rect x="405" y="140" width="180" height="40" rx="6" fill="#1c2430" stroke="#f0883e" stroke-width="2"/>
+  <text x="495" y="158" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">REMOVED from routing only</text>
+  <text x="495" y="172" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">re-added once healthy again</text>
+
+  <text x="320" y="235" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">wiring a downstream dependency into liveness turns a transient blip into a fleet-wide restart storm</text>
+</svg>
+<p>Liveness failures trigger a restart because the process itself is broken; readiness failures only pause traffic because the process is fine but temporarily can&#x27;t serve requests.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an <code>order-service</code> instance exposing both probe types. We model liveness and readiness as independent booleans first, then wire realistic conditions (a stuck internal loop for liveness, a downstream dependency check for readiness) into each, then handle a production-flavored case: correctly distinguishing a transient downstream outage (readiness-only impact) from a genuinely stuck instance (liveness impact), so a fleet doesn&#x27;t restart-storm over a recoverable blip.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ProbesBasic.java -- models the CORE distinction: liveness and
+// readiness are SEPARATE signals, checked and acted on differently.
+public class ProbesBasic {
+    static class OrderServiceInstance {
+        boolean alive = true;   // liveness: is the process itself healthy?
+        boolean ready = false;  // readiness: can it serve a request right now?
+
+        String livenessProbe() { return alive ? &quot;200 OK&quot; : &quot;500 FAIL -- orchestrator will RESTART this instance&quot;; }
+        String readinessProbe() { return ready ? &quot;200 OK&quot; : &quot;503 FAIL -- orchestrator will STOP ROUTING traffic here, no restart&quot;; }
+    }
+
+    public static void main(String[] args) {
+        OrderServiceInstance instance = new OrderServiceInstance();
+
+        System.out.println(&quot;During startup (alive, not yet ready):&quot;);
+        System.out.println(&quot;  liveness:  &quot; + instance.livenessProbe());
+        System.out.println(&quot;  readiness: &quot; + instance.readinessProbe());
+
+        instance.ready = true;
+        System.out.println(&quot;After startup completes:&quot;);
+        System.out.println(&quot;  liveness:  &quot; + instance.livenessProbe());
+        System.out.println(&quot;  readiness: &quot; + instance.readinessProbe());
+    }
+}</code></pre>
+<p>How to run: <code>java ProbesBasic.java</code></p>
+<p><code>alive</code> and <code>ready</code> are tracked as two entirely independent flags, and <code>livenessProbe</code>/<code>readinessProbe</code> react to only their own flag. During startup, the instance is genuinely <code>alive</code> (the process is running fine) but not yet <code>ready</code> — liveness correctly reports healthy while readiness correctly reports not-yet-serving, exactly matching the real state of a service that&#x27;s still warming up.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ProbesWithRealConditionsIntermediate.java -- the SAME two probes,
+// now driven by REALISTIC conditions: liveness checks an internal
+// stuck-thread signal; readiness checks a downstream dependency.
+public class ProbesWithRealConditionsIntermediate {
+    static class OrderServiceInstance {
+        boolean internalWatchdogHealthy = true; // flips false if internal processing loop is stuck
+        boolean databaseReachable = true;
+        boolean startupComplete = true;
+
+        String livenessProbe() {
+            // Liveness should ONLY reflect things a restart would actually fix.
+            return internalWatchdogHealthy ? &quot;200 OK&quot; : &quot;500 FAIL -- process is stuck, restart needed&quot;;
+        }
+
+        String readinessProbe() {
+            // Readiness reflects whether THIS request, right now, could succeed.
+            if (!startupComplete) return &quot;503 FAIL -- still starting up&quot;;
+            if (!databaseReachable) return &quot;503 FAIL -- database unreachable, but process itself is fine&quot;;
+            return &quot;200 OK&quot;;
+        }
+    }
+
+    public static void main(String[] args) {
+        OrderServiceInstance instance = new OrderServiceInstance();
+        System.out.println(&quot;Steady state:  liveness=&quot; + instance.livenessProbe() + &quot; readiness=&quot; + instance.readinessProbe());
+
+        // A downstream database has a temporary outage. The PROCESS is fine.
+        instance.databaseReachable = false;
+        System.out.println(&quot;DB outage:     liveness=&quot; + instance.livenessProbe() + &quot; readiness=&quot; + instance.readinessProbe());
+        System.out.println(&quot;  -- correct outcome: instance pulled from routing, NOT restarted (a restart wouldn&#x27;t fix the DB anyway).&quot;);
+
+        instance.databaseReachable = true;
+        // Now the internal processing loop genuinely deadlocks.
+        instance.internalWatchdogHealthy = false;
+        System.out.println(&quot;Deadlock:      liveness=&quot; + instance.livenessProbe() + &quot; readiness=&quot; + instance.readinessProbe());
+        System.out.println(&quot;  -- correct outcome: orchestrator restarts this instance; only a fresh process recovers from a deadlock.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ProbesWithRealConditionsIntermediate.java</code></p>
+<p><code>livenessProbe</code> deliberately checks only <code>internalWatchdogHealthy</code> — a signal that only a restart could fix. <code>readinessProbe</code> checks <code>startupComplete</code> and <code>databaseReachable</code> — conditions where pulling traffic, not restarting, is the correct response. A database outage flips only readiness to failing, leaving liveness healthy — the instance stops receiving traffic but isn&#x27;t killed. A genuine internal deadlock flips only liveness to failing — correctly triggering a restart, since the database being reachable again wouldn&#x27;t matter if the process itself can no longer make progress.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: FleetRestartStormAdvanced.java -- the SAME probe model, now handling
+// a PRODUCTION-FLAVORED hard case: proving that wiring a downstream
+// dependency into LIVENESS (a common misconfiguration) turns one transient
+// outage into a fleet-wide restart storm, versus the correct wiring (into
+// readiness only) which absorbs the same outage with zero restarts.
+import java.util.*;
+
+public class FleetRestartStormAdvanced {
+    static class OrderServiceInstance {
+        final String id;
+        boolean internalWatchdogHealthy = true;
+        boolean databaseReachable = true;
+        boolean misconfiguredLivenessChecksDatabase; // simulates the common misconfiguration
+
+        OrderServiceInstance(String id, boolean misconfigured) { this.id = id; this.misconfiguredLivenessChecksDatabase = misconfigured; }
+
+        boolean livenessPasses() {
+            if (misconfiguredLivenessChecksDatabase) {
+                return internalWatchdogHealthy &amp;&amp; databaseReachable; // WRONG: couples liveness to an external dependency
+            }
+            return internalWatchdogHealthy; // CORRECT: liveness reflects only the process&#x27;s own health
+        }
+
+        boolean readinessPasses() {
+            return internalWatchdogHealthy &amp;&amp; databaseReachable;
+        }
+    }
+
+    public static void main(String[] args) {
+        List&lt;OrderServiceInstance&gt; misconfiguredFleet = new ArrayList&lt;&gt;();
+        List&lt;OrderServiceInstance&gt; correctFleet = new ArrayList&lt;&gt;();
+        for (int i = 1; i &lt;= 5; i++) {
+            misconfiguredFleet.add(new OrderServiceInstance(&quot;m-&quot; + i, true));
+            correctFleet.add(new OrderServiceInstance(&quot;c-&quot; + i, false));
+        }
+
+        System.out.println(&quot;--- database has a transient outage across the WHOLE fleet ---&quot;);
+        for (OrderServiceInstance inst : misconfiguredFleet) inst.databaseReachable = false;
+        for (OrderServiceInstance inst : correctFleet) inst.databaseReachable = false;
+
+        long misconfiguredRestarts = misconfiguredFleet.stream().filter(inst -&gt; !inst.livenessPasses()).count();
+        long correctRestarts = correctFleet.stream().filter(inst -&gt; !inst.livenessPasses()).count();
+        long misconfiguredOutOfRotation = misconfiguredFleet.stream().filter(inst -&gt; !inst.readinessPasses()).count();
+        long correctOutOfRotation = correctFleet.stream().filter(inst -&gt; !inst.readinessPasses()).count();
+
+        System.out.println(&quot;Misconfigured fleet (liveness checks DB): &quot; + misconfiguredRestarts + &quot;/5 instances RESTARTED, &quot;
+                + misconfiguredOutOfRotation + &quot;/5 pulled from routing.&quot;);
+        System.out.println(&quot;Correct fleet (liveness checks process only): &quot; + correctRestarts + &quot;/5 instances RESTARTED, &quot;
+                + correctOutOfRotation + &quot;/5 pulled from routing.&quot;);
+        System.out.println();
+        System.out.println(&quot;Both fleets correctly stop serving traffic during the outage. &quot;
+                + &quot;Only the misconfigured fleet ALSO restarts every instance simultaneously -- &quot;
+                + &quot;a self-inflicted restart storm on top of an outage that a restart can&#x27;t even fix.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java FleetRestartStormAdvanced.java</code></p>
+<p>The hard case is the exact misconfiguration warned about in section 2: <code>misconfiguredLivenessChecksDatabase</code> models wiring an external dependency check into the liveness probe. When the shared database has a transient outage, both fleets correctly drop to zero readiness (<code>5/5</code> pulled from routing) — the right response, since neither fleet can serve requests correctly right now. But the misconfigured fleet&#x27;s liveness probe *also* fails for all five instances, triggering <code>5/5</code> simultaneous restarts — pure wasted churn, since restarting a process does nothing to fix an unreachable database, and the correctly configured fleet demonstrates the same outage handled with zero unnecessary restarts.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>FleetRestartStormAdvanced.main</code> in order. <strong>First</strong>, <code>misconfiguredFleet</code> and <code>correctFleet</code> are each populated with five instances; the misconfigured ones are constructed with <code>misconfigured = true</code>, meaning their <code>livenessPasses()</code> will incorrectly also check <code>databaseReachable</code>.</p>
+<p><strong>Next</strong>, the simulated outage sets <code>databaseReachable = false</code> on every instance in both fleets — modeling a shared database dependency having a transient, fleet-wide blip that affects all ten instances identically.</p>
+<p><strong>Then</strong>, <code>misconfiguredRestarts</code> filters <code>misconfiguredFleet</code> for instances where <code>livenessPasses()</code> returns <code>false</code>. For each misconfigured instance, <code>livenessPasses()</code> evaluates <code>internalWatchdogHealthy &amp;&amp; databaseReachable</code>, which is <code>true &amp;&amp; false = false</code> — so all five fail liveness and would be restarted. <code>correctRestarts</code> performs the same filter on <code>correctFleet</code>, but <code>livenessPasses()</code> there evaluates only <code>internalWatchdogHealthy</code>, which remains <code>true</code> for all five instances — zero fail liveness, zero would be restarted.</p>
+<p><strong>Finally</strong>, <code>misconfiguredOutOfRotation</code> and <code>correctOutOfRotation</code> both filter on <code>readinessPasses()</code>, which checks <code>internalWatchdogHealthy &amp;&amp; databaseReachable</code> in *both* fleets identically — correctly, all ten instances across both fleets fail readiness and get pulled from routing, since neither fleet can actually serve requests while the database is down. The final printed comparison makes the actual difference concrete: identical, correct readiness behavior in both fleets, but only the misconfigured fleet adds five unnecessary, simultaneous restarts on top of an outage that no restart could have fixed.</p>
+<pre><code>--- database has a transient outage across the WHOLE fleet ---
+Misconfigured fleet (liveness checks DB): 5/5 instances RESTARTED, 5/5 pulled from routing.
+Correct fleet (liveness checks process only): 0/5 instances RESTARTED, 5/5 pulled from routing.
+
+Both fleets correctly stop serving traffic during the outage. Only the misconfigured fleet ALSO restarts every instance simultaneously -- a self-inflicted restart storm on top of an outage that a restart can&#x27;t even fix.</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A liveness probe that transitively depends on a shared external resource (a database, a downstream service) is one of the most common and most damaging health-check misconfigurations in production Kubernetes deployments — it converts any outage of that shared resource into a synchronized restart of every instance depending on it, adding restart churn and cold-start latency exactly when the system is already degraded and least able to absorb it.</blockquote>
+<ul><li>Liveness should check only what a restart could plausibly fix — internal deadlocks, unrecoverable internal state — never the availability of an external dependency.</li><li>Readiness should check everything relevant to &quot;can I correctly serve a request right now,&quot; including external dependency availability and startup completion — failing readiness pulls traffic without restarting, which is exactly the right response to a transient or external problem.</li><li>Startup probes (where the orchestrator supports them) give a slow-starting service a longer initial grace period before liveness checks begin being enforced, avoiding a false restart during legitimately slow initialization — see <a href="0444-graceful-startup-shutdown.md">graceful startup &amp; shutdown</a> for the startup-side discipline these probes gate.</li><li>Spring Boot Actuator&#x27;s <code>/actuator/health/liveness</code> and <code>/actuator/health/readiness</code> health groups implement this separation directly and are the standard way to wire Kubernetes probes for a Spring Boot service — prefer them over hand-rolled probe endpoints.</li><li>Tune probe failure thresholds and check intervals deliberately: too sensitive (few consecutive failures required) overreacts to transient blips; too lax (many failures required, or long intervals) delays detecting a genuinely broken instance.</li></ul>
+  <div class="nav"><a class="prv" href="0444-graceful-startup-shutdown.html"><span class="mini">← Previous</span>Graceful startup & shutdown</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t445";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
