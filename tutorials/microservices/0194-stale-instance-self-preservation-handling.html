@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Stale instance / self-preservation handling" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 6. Service Discovery & Registration</div>
+  <div class="htitle">
+    <h1>"Stale instance / self-preservation handling"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Self-preservation is a defensive mode some registries (Eureka being the canonical example) enter when the rate of instance expirations crosses an unusually high threshold — instead of trusting that many instances genuinely failed at once, the registry assumes it&#x27;s more likely experiencing a network partition or connectivity problem of its own, and stops expiring instances entirely for a while, deliberately keeping possibly-stale entries around rather than aggressively deregistering what might actually be healthy instances the registry has simply lost contact with.</p>
+<h2>2. Why &amp; when</h2>
+<p>A registry&#x27;s normal timeout-based deregistration assumes that &quot;an instance stopped sending heartbeats&quot; reliably means &quot;that instance is actually down&quot; — but this assumption breaks during a network partition, where the registry itself loses connectivity to a large swath of otherwise-perfectly-healthy instances simultaneously. Without self-preservation, a network blip affecting the registry&#x27;s own connectivity could cause it to mass-deregister a huge fraction of genuinely healthy instances all at once, which is actively worse than the alternative of temporarily keeping stale entries: routing some traffic to instances that might be down is a partial, recoverable problem, while suddenly having no registered instances at all for a service is a total, cascading one.</p>
+<p>Self-preservation mode activates automatically based on a threshold (Eureka&#x27;s default: expiring more than roughly 15% of registered instances within a renewal window), trading correctness (some genuinely-dead instances might stay registered longer than they should) for stability (avoiding a catastrophic mass-deregistration event). Understand this behavior specifically so that a sudden, unexplained spike in &quot;stale-looking&quot; registered instances during a network event isn&#x27;t mistaken for a registry bug — it&#x27;s a deliberate, protective trade-off.</p>
+<h2>3. Core concept</h2>
+<p>The registry tracks the rate of heartbeat renewals relative to the total number of registered instances; if that renewal rate drops below an expected threshold (suggesting many instances have simultaneously stopped renewing, which is far more consistent with a registry-side connectivity issue than a genuine simultaneous mass-failure), the registry suspends its normal expiration logic until renewals recover.</p>
+<pre><code class="lang-java">double expectedRenewalsPerMinute = totalRegisteredInstances * expectedRenewsPerInstancePerMinute;
+double actualRenewalsPerMinute = countRecentRenewals();
+
+if (actualRenewalsPerMinute &lt; expectedRenewalsPerMinute * selfPreservationThreshold) {
+    selfPreservationModeActive = true; // STOP expiring instances -- likely a registry-side network issue, not mass failure
+}
+// while self-preservation is active: normal timeout-based expiration is SUSPENDED</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Normal operation: renewal rate tracks expected levels, and instances that stop renewing are expired promptly. During a network partition: renewal rate drops sharply below the self-preservation threshold, and the registry suspends expiration entirely rather than mass-deregistering instances" >
+  <text x="150" y="20" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Normal operation</text>
+  <rect x="30" y="40" width="240" height="30" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="150" y="60" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">renewal rate near 100% -- expire normally</text>
+
+  <text x="480" y="20" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Network partition</text>
+  <rect x="360" y="40" width="240" height="30" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,2"/>
+  <text x="480" y="60" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">renewal rate crashes -- SELF-PRESERVATION</text>
+
+  <text x="150" y="100" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">stale instances expired promptly</text>
+  <text x="480" y="100" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">expiration SUSPENDED, entries kept</text>
+
+  <defs>
+    <marker id="arr75" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>A sharp drop in renewal rate signals a likely registry-side problem, not mass instance failure — expiration pauses accordingly.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order-service registry that starts with naive timeout-based expiration mass-deregistering during a simulated network partition (showing the catastrophic outcome), adds self-preservation detection so the registry recognizes the anomalous renewal-rate drop and suspends expiration, and finally demonstrates the registry automatically resuming normal expiration once the renewal rate recovers, confirming the partition has genuinely ended.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NaiveTimeoutExpiration.java -- a NETWORK PARTITION drops MOST renewals;
+// naive timeout logic mass-deregisters nearly EVERYTHING, even though the
+// instances are almost certainly still healthy.
+import java.util.*;
+
+public class NaiveTimeoutExpiration {
+    public static void main(String[] args) {
+        int totalInstances = 20;
+        Set&lt;Integer&gt; registered = new HashSet&lt;&gt;();
+        for (int i = 0; i &lt; totalInstances; i++) registered.add(i);
+
+        // NETWORK PARTITION: only 2 of 20 instances&#x27; heartbeats reach the registry this cycle
+        Set&lt;Integer&gt; renewalsReceived = Set.of(0, 1);
+
+        // NAIVE logic: expire anything that DIDN&#x27;T renew, no matter how many that is
+        registered.removeIf(id -&gt; !renewalsReceived.contains(id));
+
+        System.out.println(&quot;Instances remaining after naive expiration: &quot; + registered.size() + &quot; / &quot; + totalInstances);
+        System.out.println(&quot;18 of 20 PERFECTLY HEALTHY instances were just mass-deregistered because of a REGISTRY-SIDE network issue, not because they actually failed.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac NaiveTimeoutExpiration.java &amp;&amp; java NaiveTimeoutExpiration</code> (JDK 17+).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SelfPreservationDetection.java -- the registry NOTICES the anomalous
+// renewal-rate DROP and SUSPENDS expiration rather than trusting it blindly.
+import java.util.*;
+
+public class SelfPreservationDetection {
+    static class Registry {
+        Set&lt;Integer&gt; registered = new HashSet&lt;&gt;();
+        double selfPreservationThreshold = 0.85; // expect at LEAST 85% of expected renewals
+
+        boolean expirationCycle(Set&lt;Integer&gt; renewalsReceived) {
+            double expectedRenewals = registered.size();
+            double actualRenewals = renewalsReceived.size();
+            double renewalRate = actualRenewals / expectedRenewals;
+
+            if (renewalRate &lt; selfPreservationThreshold) {
+                System.out.println(&quot;  renewal rate &quot; + String.format(&quot;%.0f%%&quot;, renewalRate * 100) + &quot; is BELOW threshold -- SELF-PRESERVATION activated, expiration SUSPENDED&quot;);
+                return true; // self-preservation active -- do NOT expire anything
+            }
+            registered.removeIf(id -&gt; !renewalsReceived.contains(id)); // safe to expire -- renewal rate looks normal
+            System.out.println(&quot;  renewal rate &quot; + String.format(&quot;%.0f%%&quot;, renewalRate * 100) + &quot; is normal -- expiring non-renewing instances as usual&quot;);
+            return false;
+        }
+    }
+
+    public static void main(String[] args) {
+        Registry registry = new Registry();
+        for (int i = 0; i &lt; 20; i++) registry.registered.add(i);
+
+        System.out.println(&quot;Network partition -- only 2 of 20 instances&#x27; heartbeats reach the registry:&quot;);
+        registry.expirationCycle(Set.of(0, 1));
+
+        System.out.println(&quot;Instances remaining: &quot; + registry.registered.size() + &quot; / 20&quot;);
+        System.out.println(&quot;ALL 20 instances are STILL registered -- the registry correctly recognized this as ITS OWN connectivity issue, not mass failure.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac SelfPreservationDetection.java &amp;&amp; java SelfPreservationDetection</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Network partition -- only 2 of 20 instances&#x27; heartbeats reach the registry:
+  renewal rate 10% is BELOW threshold -- SELF-PRESERVATION activated, expiration SUSPENDED
+Instances remaining: 20 / 20
+ALL 20 instances are STILL registered -- the registry correctly recognized this as ITS OWN connectivity issue, not mass failure.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: AutomaticRecoveryFromSelfPreservation.java -- ONCE the renewal rate
+// RECOVERS (the partition heals), the registry AUTOMATICALLY resumes normal
+// expiration -- confirming the anomaly has genuinely passed.
+import java.util.*;
+
+public class AutomaticRecoveryFromSelfPreservation {
+    static class Registry {
+        Set&lt;Integer&gt; registered = new HashSet&lt;&gt;();
+        double selfPreservationThreshold = 0.85;
+        boolean selfPreservationActive = false;
+
+        void expirationCycle(int cycleNumber, Set&lt;Integer&gt; renewalsReceived) {
+            double renewalRate = (double) renewalsReceived.size() / registered.size();
+            boolean shouldSelfPreserve = renewalRate &lt; selfPreservationThreshold;
+
+            if (shouldSelfPreserve) {
+                selfPreservationActive = true;
+                System.out.println(&quot;Cycle &quot; + cycleNumber + &quot;: renewal rate &quot; + String.format(&quot;%.0f%%&quot;, renewalRate * 100) + &quot; -- SELF-PRESERVATION active, no expiration&quot;);
+            } else {
+                if (selfPreservationActive) {
+                    System.out.println(&quot;Cycle &quot; + cycleNumber + &quot;: renewal rate &quot; + String.format(&quot;%.0f%%&quot;, renewalRate * 100) + &quot; -- RECOVERED, self-preservation DEACTIVATED, resuming normal expiration&quot;);
+                    selfPreservationActive = false;
+                } else {
+                    System.out.println(&quot;Cycle &quot; + cycleNumber + &quot;: renewal rate &quot; + String.format(&quot;%.0f%%&quot;, renewalRate * 100) + &quot; -- normal operation&quot;);
+                }
+                registered.removeIf(id -&gt; !renewalsReceived.contains(id)); // NOW safe to expire non-renewing instances
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        Registry registry = new Registry();
+        for (int i = 0; i &lt; 20; i++) registry.registered.add(i);
+
+        // cycle 1: everything normal
+        registry.expirationCycle(1, new HashSet&lt;&gt;(registry.registered));
+
+        // cycle 2: NETWORK PARTITION begins -- renewal rate crashes
+        registry.expirationCycle(2, Set.of(0, 1));
+        System.out.println(&quot;  Instances remaining: &quot; + registry.registered.size());
+
+        // cycle 3: partition CONTINUES -- self-preservation stays active
+        registry.expirationCycle(3, Set.of(0, 1, 2));
+        System.out.println(&quot;  Instances remaining: &quot; + registry.registered.size());
+
+        // cycle 4: partition HEALS -- renewal rate recovers, self-preservation deactivates AUTOMATICALLY
+        Set&lt;Integer&gt; fullRecovery = new HashSet&lt;&gt;(registry.registered);
+        registry.expirationCycle(4, fullRecovery);
+        System.out.println(&quot;  Instances remaining: &quot; + registry.registered.size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac AutomaticRecoveryFromSelfPreservation.java &amp;&amp; java AutomaticRecoveryFromSelfPreservation</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Cycle 1: renewal rate 100% -- normal operation
+Cycle 2: renewal rate 10% -- SELF-PRESERVATION active, no expiration
+  Instances remaining: 20
+Cycle 3: renewal rate 15% -- SELF-PRESERVATION active, no expiration
+  Instances remaining: 20
+Cycle 4: renewal rate 100% -- RECOVERED, self-preservation DEACTIVATED, resuming normal expiration
+  Instances remaining: 20</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>renewalsReceived</code> contains only 2 of the 20 registered instance IDs, and <code>registered.removeIf(id -&gt; !renewalsReceived.contains(id))</code> blindly removes every instance not in that set, regardless of how implausible it is that 18 of 20 instances genuinely failed simultaneously; the printed result confirms only 2 instances survive this naive logic.</li><li><strong>Level 2, computing the renewal rate</strong> — <code>Registry.expirationCycle</code> computes <code>actualRenewals / expectedRenewals</code>, comparing how many instances actually renewed against how many were expected to (based on the total registered count).</li><li><strong>Level 2, the threshold check</strong> — when <code>renewalRate</code> (0.10, or 10%) falls below <code>selfPreservationThreshold</code> (0.85), the method prints a self-preservation activation message and returns <code>true</code> *without* calling <code>registered.removeIf(...)</code> at all — the expiration logic never runs.</li><li><strong>Level 2, the preserved outcome</strong> — after the identical partition scenario from Level 1 (only 2 of 20 instances renewing), <code>registry.registered.size()</code> remains at 20, directly contrasting with Level 1&#x27;s catastrophic drop to 2, because self-preservation correctly suspended expiration entirely.</li><li><strong>Level 3, tracking state across multiple cycles</strong> — <code>selfPreservationActive</code> is now a persistent field on <code>Registry</code>, tracked across successive calls to <code>expirationCycle</code>, modeling how a real registry&#x27;s self-preservation mode is an ongoing state, not a one-time decision made independently each cycle.</li><li><strong>Level 3, the partition persisting across cycles 2 and 3</strong> — both cycles show a renewal rate well below the threshold (10% and 15% respectively), and both correctly keep <code>selfPreservationActive</code> set to <code>true</code>, with <code>registered.size()</code> remaining at 20 throughout — the registry doesn&#x27;t need the partition to resolve in exactly one cycle; it continues protecting the registration data for as long as the anomalous condition persists.</li><li><strong>Level 3, the automatic recovery</strong> — cycle 4 passes <code>fullRecovery</code>, a copy of the *entire* current <code>registered</code> set as renewals, simulating every instance&#x27;s heartbeat successfully reaching the registry again (the partition has healed); <code>renewalRate</code> computes to 100%, crossing back above the threshold, and because <code>selfPreservationActive</code> was <code>true</code> entering this check, the code takes the &quot;RECOVERED&quot; branch, printing the deactivation message and setting <code>selfPreservationActive = false</code> — critically, normal expiration logic (<code>registered.removeIf(...)</code>) resumes immediately in this same cycle, demonstrating that the registry requires no separate manual intervention to exit self-preservation mode; a genuinely recovered renewal rate is itself sufficient evidence that normal operation, including normal expiration, can safely resume.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> self-preservation mode is specifically designed for development and testing environments to be a source of confusion — a small, low-traffic test Eureka instance with only a handful of registered services can trip the self-preservation threshold far more easily than a large production cluster (since a single instance&#x27;s restart represents a much larger percentage of a small total), leading developers to see stale entries lingering in a test registry and mistakenly assume something is broken, when it&#x27;s actually the self-preservation mechanism working exactly as intended for the (misleadingly small) scale it&#x27;s observing.</blockquote>
+<ul><li>Self-preservation mode suspends a registry&#x27;s normal timeout-based expiration when the renewal rate drops anomalously, on the assumption that a mass, simultaneous renewal failure is more likely a registry-side connectivity issue than genuine mass instance failure.</li><li>This trades correctness (stale, possibly-dead instances staying registered longer than ideal) for stability (avoiding a catastrophic mass-deregistration event during a network partition affecting the registry itself).</li><li>The threshold-based detection compares actual renewal rate against expected renewal rate, activating protection automatically when the gap becomes too large to be plausible as genuine instance failure.</li><li>Recovery is automatic: once the renewal rate returns to normal levels, self-preservation deactivates and normal expiration resumes, with no manual intervention required.</li><li>Self-preservation can be misleadingly easy to trigger in small-scale development and testing environments, where a single instance&#x27;s restart represents a disproportionately large percentage of the total registered count — worth understanding explicitly to avoid mistaking it for a bug.</li></ul>
+  <div class="nav"><a class="prv" href="0193-service-registry-high-availability-replication.html"><span class="mini">← Previous</span>Service registry high availability & replication</a><a class="nxt" href="0195-spring-cloud-netflix-eureka-server.html"><span class="mini">Next →</span>Spring Cloud Netflix Eureka server</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t194";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
