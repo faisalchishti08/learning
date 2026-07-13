@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Token relay filter in gateway / WebClient" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 12. Security</div>
+  <div class="htitle">
+    <h1>"Token relay filter in gateway / WebClient"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>token relay filter</strong> is the concrete Spring mechanism that forwards a caller&#x27;s access token from the gateway (or any Spring service acting as an OAuth2 client) onward to downstream services, so those services can validate the *original* caller&#x27;s identity rather than treating every gateway-forwarded request as coming from the gateway itself. In <a href="0405-spring-cloud-gateway-spring-security-at-the-edge.md">Spring Cloud Gateway</a>, this is the <code>TokenRelay=</code> route filter; in a general Spring service making outbound calls with <code>WebClient</code>, it&#x27;s an <code>ExchangeFilterFunction</code> (<code>ServletBearerExchangeFilterFunction</code> or its reactive equivalent) that attaches the stored access token automatically to every outgoing request.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for token relay specifically to avoid two bad alternatives: forcing every downstream service to re-authenticate the user from scratch (impossible for a machine-to-machine hop with no login UI), or having the gateway silently act as an anonymous, unauthenticated proxy once past the edge (losing all caller-identity information downstream services need for authorization decisions):</p>
+<ul><li><strong>Downstream authorization needs the original caller&#x27;s identity and scopes</strong>, not just &quot;a request arrived from the trusted gateway&quot; — <a href="0404-method-security-preauthorize-postauthorize.md"><code>@PreAuthorize</code></a>-style ownership checks and <a href="0395-scopes-roles-fine-grained-authorization.md">scoped authorization</a> both depend on knowing *who* is actually asking.</li><li><strong>It avoids re-implementing authentication at every hop.</strong> The gateway (or an upstream client) already did the work of validating who the caller is via <a href="0402-spring-security-oauth2-client-login-token-relay.md">OAuth2 login</a>; relaying that proof forward means downstream services can validate the same token as a plain <a href="0401-spring-security-oauth2-resource-server-jwt-opaque.md">OAuth2 Resource Server</a> call, no special-casing required.</li><li><strong>It preserves audit trails.</strong> Logs and traces downstream can attribute an action to the actual end user, not an anonymized &quot;the gateway did it,&quot; which matters for compliance and incident investigation.</li><li><strong>You need this any time a request crosses a service boundary and the receiving service needs to make its own authorization decision</strong> based on who originally made the call — this connects directly to <a href="0389-token-relay-propagation-between-services.md">token relay / propagation</a>, the conceptual version of this exact mechanism.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of the token relay filter as a relay race baton handoff: the gateway (first runner) already proved it&#x27;s in the race by presenting its own credentials to start, but the baton it&#x27;s carrying — the caller&#x27;s access token — is what actually gets checked at each subsequent leg. The gateway doesn&#x27;t run the whole race pretending to *be* the original caller; it hands off the exact same baton, unmodified, so every downstream checkpoint sees precisely who started the race.</p>
+<p>The essential pieces:</p>
+<ol><li><strong><code>TokenRelay=</code> gateway filter</strong> — a built-in Spring Cloud Gateway <code>GatewayFilter</code> that reads the current request&#x27;s access token (obtained via <code>oauth2Login</code> or already present as a bearer token) and attaches it as the <code>Authorization</code> header on the outbound, routed request.</li></ol>
+<pre><code class="lang-yaml">spring:
+  cloud:
+    gateway:
+      routes:
+        - id: orders-route
+          uri: lb://order-service
+          predicates:
+            - Path=/orders/**
+          filters:
+            - TokenRelay=</code></pre>
+<pre><code class="lang-java">// Programmatic equivalent, via a RouteLocator bean:
+@Bean
+public RouteLocator routes(RouteLocatorBuilder builder) {
+    return builder.routes()
+        .route(&quot;orders&quot;, r -&gt; r.path(&quot;/orders/**&quot;)
+            .filters(f -&gt; f.tokenRelay())
+            .uri(&quot;lb://order-service&quot;))
+        .build();
+}</code></pre>
+<ol><li><strong><code>ServletOAuth2AuthorizedClientExchangeFilterFunction</code></strong> — the servlet-side equivalent for a plain Spring service (not a gateway) making outbound <code>WebClient</code> calls; it retrieves the caller&#x27;s stored access token from the <code>OAuth2AuthorizedClientRepository</code> (see <a href="0402-spring-security-oauth2-client-login-token-relay.md">Spring Security OAuth2 Client</a>) and attaches it automatically.</li></ol>
+<pre><code class="lang-java">@Bean
+public WebClient webClient(OAuth2AuthorizedClientManager manager) {
+    ServletOAuth2AuthorizedClientExchangeFilterFunction oauth2 =
+            new ServletOAuth2AuthorizedClientExchangeFilterFunction(manager);
+    return WebClient.builder().apply(oauth2.oauth2Configuration()).build();
+}</code></pre>
+<ol><li><strong>Token relay is transparent to calling code.</strong> Once configured, a controller or service method calling <code>webClient.get().uri(&quot;http://inventory-service/items&quot;).retrieve()</code> doesn&#x27;t manually attach any header — the filter function intercepts the outbound exchange and adds <code>Authorization: Bearer &lt;token&gt;</code> automatically.</li><li><strong>Relay is not the same as re-issuing a new, narrower token.</strong> A raw token relay forwards the *exact* token the caller presented, scopes and all — which is simple but means every downstream hop implicitly trusts the same broad token. More advanced setups use token exchange to mint a narrower, service-specific token per hop, but that&#x27;s a deliberate extra step beyond plain relay.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A caller presents a bearer token to the gateway; the gateway's TokenRelay filter reattaches the same token unmodified to the outbound request to order-service, which then relays it again via WebClient to inventory-service, so every hop sees the same original caller identity" font-family="sans-serif">
+  <rect x="10" y="80" width="90" height="50" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="55" y="100" fill="#e6edf3" font-size="9" text-anchor="middle">Caller</text>
+  <text x="55" y="115" fill="#8b949e" font-size="8" text-anchor="middle">Bearer tok-A</text>
+
+  <rect x="150" y="80" width="120" height="50" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="210" y="100" fill="#e6edf3" font-size="9" text-anchor="middle">Gateway</text>
+  <text x="210" y="115" fill="#8b949e" font-size="8" text-anchor="middle">TokenRelay=</text>
+
+  <rect x="320" y="80" width="120" height="50" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="380" y="100" fill="#e6edf3" font-size="9" text-anchor="middle">order-service</text>
+  <text x="380" y="115" fill="#8b949e" font-size="8" text-anchor="middle">WebClient relay</text>
+
+  <rect x="490" y="80" width="140" height="50" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="560" y="100" fill="#e6edf3" font-size="9" text-anchor="middle">inventory-service</text>
+  <text x="560" y="115" fill="#8b949e" font-size="8" text-anchor="middle">validates tok-A directly</text>
+
+  <line x1="100" y1="105" x2="150" y2="105" stroke="#8b949e" marker-end="url(#tr)"/>
+  <line x1="270" y1="105" x2="320" y2="105" stroke="#6db33f" marker-end="url(#tr)"/>
+  <line x1="440" y1="105" x2="490" y2="105" stroke="#6db33f" marker-end="url(#tr)"/>
+  <text x="380" y="60" fill="#6db33f" font-size="9" text-anchor="middle">same Bearer tok-A relayed unmodified at every hop</text>
+
+  <defs>
+    <marker id="tr" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+</svg>
+<p>Plain token relay forwards the same bearer token unchanged at every hop, so every downstream service sees the same original caller identity without re-authentication.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a gateway relaying a caller&#x27;s token through <code>order-service</code> to <code>inventory-service</code>. We model manual, ad hoc header forwarding first (showing what&#x27;s easy to get wrong), then a proper token-relay filter abstraction, then a chain of relays across two hops with a check that catches a token accidentally being dropped mid-chain.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ManualHeaderForwarding.java -- forwarding the token by hand, ad hoc,
+// with no dedicated abstraction -- easy to forget on any new outbound call.
+import java.util.*;
+
+public class ManualHeaderForwarding {
+    static Map&lt;String, String&gt; callDownstream(String path, Map&lt;String, String&gt; incomingHeaders) {
+        Map&lt;String, String&gt; outgoingHeaders = new HashMap&lt;&gt;();
+        // Someone has to REMEMBER to copy this header on every single outbound call.
+        if (incomingHeaders.containsKey(&quot;Authorization&quot;)) {
+            outgoingHeaders.put(&quot;Authorization&quot;, incomingHeaders.get(&quot;Authorization&quot;));
+        }
+        System.out.println(&quot;Calling &quot; + path + &quot; with headers: &quot; + outgoingHeaders);
+        return outgoingHeaders;
+    }
+
+    public static void main(String[] args) {
+        Map&lt;String, String&gt; incoming = Map.of(&quot;Authorization&quot;, &quot;Bearer tok-A&quot;);
+        callDownstream(&quot;http://order-service/orders&quot;, incoming);
+
+        // A DIFFERENT call site, written by someone else, FORGOT to forward the header:
+        Map&lt;String, String&gt; forgotten = new HashMap&lt;&gt;();
+        System.out.println(&quot;Second call (bug): &quot; + callDownstream(&quot;http://inventory-service/items&quot;, forgotten));
+    }
+}</code></pre>
+<p>How to run: <code>java ManualHeaderForwarding.java</code></p>
+<p><code>callDownstream</code> only forwards <code>Authorization</code> because this particular implementation remembered to copy it — but the second, independent call site never received the header at all, silently making an unauthenticated (or effectively anonymous) call. This is exactly the class of bug a dedicated <code>TokenRelay=</code> filter or <code>ExchangeFilterFunction</code> exists to eliminate: relay becomes automatic infrastructure instead of something every developer must remember at every call site.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: TokenRelayFilterAbstraction.java -- a dedicated, REUSABLE relay
+// filter function, applied automatically to every outbound call -- mirroring
+// how ServletOAuth2AuthorizedClientExchangeFilterFunction or Spring Cloud
+// Gateway&#x27;s TokenRelay= filter attach the header without per-call-site code.
+import java.util.*;
+import java.util.function.*;
+
+public class TokenRelayFilterAbstraction {
+    interface OutboundCall { Map&lt;String, String&gt; apply(String path, Map&lt;String, String&gt; headers); }
+
+    // The relay filter: wraps ANY outbound call and guarantees the token is attached.
+    static OutboundCall withTokenRelay(OutboundCall inner, Supplier&lt;String&gt; currentCallerToken) {
+        return (path, baseHeaders) -&gt; {
+            Map&lt;String, String&gt; headers = new HashMap&lt;&gt;(baseHeaders);
+            String token = currentCallerToken.get();
+            if (token != null) {
+                headers.put(&quot;Authorization&quot;, &quot;Bearer &quot; + token);
+            }
+            return inner.apply(path, headers);
+        };
+    }
+
+    static Map&lt;String, String&gt; rawCall(String path, Map&lt;String, String&gt; headers) {
+        System.out.println(&quot;Calling &quot; + path + &quot; with headers: &quot; + headers);
+        return headers;
+    }
+
+    public static void main(String[] args) {
+        String requestScopedToken = &quot;tok-A&quot;; // stands in for the ThreadLocal / reactive context holding the current request&#x27;s token
+        OutboundCall call = withTokenRelay(TokenRelayFilterAbstraction::rawCall, () -&gt; requestScopedToken);
+
+        // EVERY call site automatically gets the token relayed -- no per-call-site code needed.
+        call.apply(&quot;http://order-service/orders&quot;, Map.of());
+        call.apply(&quot;http://inventory-service/items&quot;, Map.of());
+    }
+}</code></pre>
+<p>How to run: <code>java TokenRelayFilterAbstraction.java</code></p>
+<p><code>withTokenRelay</code> wraps any <code>OutboundCall</code> and injects the current request&#x27;s token via <code>currentCallerToken</code>, a stand-in for how real Spring Security stores the current request&#x27;s authentication in a thread-local (servlet) or reactive context (WebFlux) that the filter function reads automatically. Both <code>call.apply(...)</code> invocations now carry <code>Authorization: Bearer tok-A</code> without either call site writing any header-copying code — exactly the guarantee <code>TokenRelay=</code> and <code>ServletOAuth2AuthorizedClientExchangeFilterFunction</code> provide in a real Spring application: relay is infrastructure, not per-developer discipline.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ChainedRelayWithDropDetection.java -- relays the SAME token across
+// TWO hops (gateway -&gt; order-service -&gt; inventory-service), and adds
+// verification that the token survives the whole chain intact -- catching
+// the real production bug of an intermediate service accidentally
+// stripping or replacing the Authorization header (e.g. its own outbound
+// WebClient config overwrote it instead of relaying).
+import java.util.*;
+import java.util.function.*;
+
+public class ChainedRelayWithDropDetection {
+    record Hop(String serviceName, Map&lt;String, String&gt; receivedHeaders) {}
+
+    static final List&lt;Hop&gt; TRACE = new ArrayList&lt;&gt;();
+
+    interface OutboundCall { Map&lt;String, String&gt; apply(String serviceName, Map&lt;String, String&gt; headers); }
+
+    static OutboundCall withTokenRelay(OutboundCall inner) {
+        return (serviceName, incomingHeaders) -&gt; {
+            Map&lt;String, String&gt; outgoing = new HashMap&lt;&gt;(incomingHeaders); // relay EXACTLY what arrived
+            return inner.apply(serviceName, outgoing);
+        };
+    }
+
+    // A BUGGY hop that builds a fresh header map instead of relaying -- simulates a
+    // misconfigured WebClient bean that doesn&#x27;t apply the relay filter function.
+    static OutboundCall brokenHop(OutboundCall inner) {
+        return (serviceName, incomingHeaders) -&gt; inner.apply(serviceName, new HashMap&lt;&gt;()); // drops everything!
+    }
+
+    static Map&lt;String, String&gt; receive(String serviceName, Map&lt;String, String&gt; headers) {
+        TRACE.add(new Hop(serviceName, headers));
+        System.out.println(&quot;[&quot; + serviceName + &quot;] received headers: &quot; + headers);
+        return headers;
+    }
+
+    static void verifyChainIntegrity(String expectedToken) {
+        for (Hop hop : TRACE) {
+            String header = hop.receivedHeaders().get(&quot;Authorization&quot;);
+            boolean intact = (&quot;Bearer &quot; + expectedToken).equals(header);
+            System.out.println(&quot;  &quot; + hop.serviceName() + &quot;: token intact = &quot; + intact
+                    + (intact ? &quot;&quot; : &quot; &lt;-- RELAY BROKEN HERE&quot;));
+        }
+    }
+
+    public static void main(String[] args) {
+        Map&lt;String, String&gt; callerHeaders = Map.of(&quot;Authorization&quot;, &quot;Bearer tok-A&quot;);
+
+        // Healthy chain: gateway -&gt; order-service, relay works correctly.
+        OutboundCall gatewayToOrders = withTokenRelay(h -&gt; receive(&quot;order-service&quot;, h));
+        Map&lt;String, String&gt; atOrderService = gatewayToOrders.apply(&quot;order-service&quot;, callerHeaders);
+
+        // Broken chain: order-service -&gt; inventory-service, relay filter misconfigured.
+        OutboundCall ordersToInventoryBroken = brokenHop(h -&gt; receive(&quot;inventory-service&quot;, h));
+        ordersToInventoryBroken.apply(&quot;inventory-service&quot;, atOrderService);
+
+        System.out.println(&quot;Verifying chain integrity:&quot;);
+        verifyChainIntegrity(&quot;tok-A&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ChainedRelayWithDropDetection.java</code></p>
+<p><code>gatewayToOrders</code> uses the correct <code>withTokenRelay</code> wrapper, so <code>order-service</code> receives the full <code>Authorization</code> header intact — recorded as a <code>Hop</code> in <code>TRACE</code>. <code>ordersToInventoryBroken</code> uses <code>brokenHop</code>, which deliberately builds a fresh, empty header map instead of relaying the incoming one, simulating a real bug: a <code>WebClient</code> bean at <code>order-service</code> that wasn&#x27;t configured with the token-relay <code>ExchangeFilterFunction</code>, so it silently makes an unauthenticated call to <code>inventory-service</code>. <code>verifyChainIntegrity</code> walks the recorded <code>TRACE</code> and checks, hop by hop, whether the expected token survived — flagging exactly where the chain broke, which is the kind of check worth building into contract or integration tests for a multi-hop relay chain.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>ChainedRelayWithDropDetection.main</code>. <strong>First</strong>, <code>callerHeaders</code> is set up with <code>Authorization: Bearer tok-A</code>, representing what the original caller presented to the gateway. <code>gatewayToOrders.apply(&quot;order-service&quot;, callerHeaders)</code> runs: inside <code>withTokenRelay</code>&#x27;s lambda, <code>outgoing</code> is built as a copy of <code>incomingHeaders</code> — still containing <code>Authorization: Bearer tok-A</code> — and passed to <code>inner.apply(...)</code>, which is <code>receive(&quot;order-service&quot;, h)</code>. <code>receive</code> records a <code>Hop(&quot;order-service&quot;, {Authorization: Bearer tok-A})</code> in <code>TRACE</code> and prints it. The return value, <code>atOrderService</code>, still carries the token.</p>
+<p><strong>Next</strong>, <code>ordersToInventoryBroken.apply(&quot;inventory-service&quot;, atOrderService)</code> runs. Inside <code>brokenHop</code>&#x27;s lambda, <code>incomingHeaders</code> (which is <code>atOrderService</code>, carrying the token) is <strong>ignored</strong> — a fresh, empty <code>HashMap</code> is passed to <code>inner.apply(...)</code> instead. <code>receive(&quot;inventory-service&quot;, {})</code> records a <code>Hop(&quot;inventory-service&quot;, {})</code> with no <code>Authorization</code> header at all, and prints an empty header map.</p>
+<p><strong>Then</strong>, <code>main</code> prints &quot;Verifying chain integrity:&quot; and calls <code>verifyChainIntegrity(&quot;tok-A&quot;)</code>, which iterates <code>TRACE</code>. For the <code>&quot;order-service&quot;</code> hop, <code>hop.receivedHeaders().get(&quot;Authorization&quot;)</code> is <code>&quot;Bearer tok-A&quot;</code>, matching <code>&quot;Bearer &quot; + &quot;tok-A&quot;</code> exactly — <code>intact</code> is <code>true</code>.</p>
+<p><strong>Finally</strong>, for the <code>&quot;inventory-service&quot;</code> hop, <code>hop.receivedHeaders().get(&quot;Authorization&quot;)</code> is <code>null</code> (the map was empty), which does not equal <code>&quot;Bearer tok-A&quot;</code> — <code>intact</code> is <code>false</code>, and the output flags <code>&quot;&lt;-- RELAY BROKEN HERE&quot;</code>, pinpointing exactly which hop in the chain dropped the token.</p>
+<pre><code>[order-service] received headers: {Authorization=Bearer tok-A}
+[inventory-service] received headers: {}
+Verifying chain integrity:
+  order-service: token intact = true
+  inventory-service: token intact = false &lt;-- RELAY BROKEN HERE</code></pre>
+<p>Sample HTTP shapes across the healthy vs. broken hop:</p>
+<pre><code>GET /orders/42 HTTP/1.1
+Authorization: Bearer tok-A          &lt;- gateway relayed this to order-service correctly
+
+GET /items/7 HTTP/1.1
+(no Authorization header at all)     &lt;- order-service&#x27;s broken WebClient dropped it before calling inventory-service
+
+HTTP/1.1 401 Unauthorized             &lt;- inventory-service correctly rejects the now-anonymous call</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><code>TokenRelay=</code> and <code>ServletOAuth2AuthorizedClientExchangeFilterFunction</code> only work automatically when the outbound call actually goes through the configured <code>WebClient</code>/<code>RouteLocator</code> — a service that builds its own raw <code>HttpClient</code> or a second, unconfigured <code>WebClient</code> bean for &quot;just this one call&quot; silently bypasses relay entirely, producing exactly the broken-chain scenario in Level 3, often discovered only when a downstream service starts logging unexpected <code>401</code>s.</blockquote>
+<ul><li>Token relay forwards the *same* bearer token unmodified at every hop — simple and effective, but every downstream service that receives it implicitly trusts the same scopes the original caller had, which is worth reviewing for services that shouldn&#x27;t see the caller&#x27;s full privilege set.</li><li>Centralizing relay in a filter function (<code>TokenRelay=</code>, <code>ExchangeFilterFunction</code>) removes the &quot;did every developer remember to forward the header&quot; risk that plain manual forwarding carries.</li><li>A dropped or overwritten <code>Authorization</code> header mid-chain is a real, common production bug — usually caused by a misconfigured or bypassed <code>WebClient</code> bean — and is worth explicit integration-test coverage, not just assumed to work because it worked once.</li><li>This mechanism is the concrete implementation of <a href="0389-token-relay-propagation-between-services.md">token relay / propagation</a>, building on the login/token-acquisition side covered in <a href="0402-spring-security-oauth2-client-login-token-relay.md">Spring Security OAuth2 Client</a> and the edge routing covered in <a href="0405-spring-cloud-gateway-spring-security-at-the-edge.md">Spring Cloud Gateway + Spring Security at the edge</a>.</li><li>Downstream services still validate the relayed token independently as resource servers (see <a href="0401-spring-security-oauth2-resource-server-jwt-opaque.md">OAuth2 Resource Server</a>) — relay forwards the credential, it does not itself grant trust; the receiving service&#x27;s own signature/audience checks are still what matters.</li></ul>
+  <div class="nav"><a class="prv" href="0405-spring-cloud-gateway-spring-security-at-the-edge.html"><span class="mini">← Previous</span>Spring Cloud Gateway + Spring Security at the edge</a><a class="nxt" href="0407-spring-security-mtls-x-509-authentication.html"><span class="mini">Next →</span>Spring Security mTLS / X.509 authentication</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t406";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
