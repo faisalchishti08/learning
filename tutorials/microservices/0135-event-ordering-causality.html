@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Event ordering & causality" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 4. Asynchronous & Event-Driven Communication</div>
+  <div class="htitle">
+    <h1>"Event ordering & causality"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Causality is the relationship between two events where one genuinely happened *because of*, or *before and related to*, the other — <code>PaymentAuthorized</code> must be caused by (and therefore ordered after) <code>OrderPlaced</code> for the same order. Event ordering &amp; causality is the practice of preserving that true cause-and-effect relationship as events flow through a distributed system, which is a stronger and subtler requirement than <a href="0119-message-ordering-guarantees.md">message ordering guarantees</a>&#x27;s per-partition FIFO delivery alone.</p>
+<h2>2. Why &amp; when</h2>
+<p>Per-partition ordering guarantees that messages sharing a partition key arrive in send order, but causally related events don&#x27;t always share a single, obvious key, and a system with multiple producers, multiple topics, or multiple services publishing related events can easily end up delivering an *effect* before its *cause* was ever observed — a <code>PaymentAuthorized</code> event processed before the <code>OrderPlaced</code> event it logically depends on, simply because they traveled through different channels or partitions with different latencies. This produces consumers that briefly (or permanently, if unhandled) operate on an impossible state: authorizing payment for an order that, as far as the payment consumer&#x27;s local view is concerned, doesn&#x27;t exist yet.</p>
+<p>Design explicitly for causality whenever events span multiple channels, multiple partitions, or multiple producing services and a consumer&#x27;s correctness depends on seeing them in their true cause-and-effect order — not just in the FIFO order any single channel happens to provide. This is common in choreographed, multi-step business processes; see also <a href="0132-choreography-vs-orchestration.md">choreography vs orchestration</a> for a related coordination concern.</p>
+<h2>3. Core concept</h2>
+<p>A causally-aware consumer either enforces same-partition delivery for the entire causal chain (the simplest fix, when possible) or tracks a causal reference — an explicit &quot;this event was caused by event X&quot; pointer — and defers processing an event until its declared cause has already been observed.</p>
+<pre><code class="lang-java">record OrderPlaced(String orderId) {}
+record PaymentAuthorized(String orderId, String causedByEventId) {} // explicit causal pointer
+
+// a causally-aware consumer defers processing until the cause is confirmed observed
+if (!observedEventIds.contains(event.causedByEventId())) {
+    pendingUntilCauseArrives.add(event); // hold it, don&#x27;t process yet -- its cause hasn&#x27;t been seen
+} else {
+    process(event);
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="OrderPlaced and PaymentAuthorized travel on two different channels with different latencies; PaymentAuthorized, despite being caused by OrderPlaced, can arrive at the consumer FIRST unless causality is explicitly tracked and enforced">
+  <text x="160" y="20" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Without causal tracking (broken)</text>
+  <rect x="20" y="40" width="120" height="30" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="80" y="60" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">PaymentAuthorized</text>
+  <rect x="180" y="40" width="120" height="30" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,2"/><text x="240" y="60" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">OrderPlaced</text>
+  <text x="160" y="90" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">effect arrives BEFORE cause -- nonsensical state</text>
+
+  <text x="480" y="20" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">With causal tracking (correct)</text>
+  <rect x="360" y="40" width="120" height="30" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/><text x="420" y="60" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">OrderPlaced</text>
+  <rect x="500" y="40" width="120" height="30" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/><text x="560" y="60" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">PaymentAuthorized</text>
+  <text x="480" y="90" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">PaymentAuthorized deferred until OrderPlaced confirmed seen</text>
+</svg>
+<p>Tracking the causal pointer explicitly lets a consumer defer an effect until its cause has genuinely been observed, regardless of channel-level arrival order.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a payment-authorization consumer that starts naively processing events in arrival order (demonstrating the causality violation when channels race), adds explicit causal-pointer tracking to defer out-of-order effects, and finally handles a chain of three causally-linked events arriving in a fully scrambled order, correctly reordering them by their causal dependencies before processing any of them.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NaiveArrivalOrder.java -- processes events in WHATEVER order they arrive,
+// which can violate true causality when events travel on different channels.
+import java.util.*;
+
+public class NaiveArrivalOrder {
+    record OrderPlaced(String eventId, String orderId) {}
+    record PaymentAuthorized(String eventId, String orderId, String causedByEventId) {}
+
+    public static void main(String[] args) {
+        Set&lt;String&gt; knownOrders = new HashSet&lt;&gt;();
+
+        // simulates PaymentAuthorized arriving FIRST -- a real possibility if it
+        // traveled a faster channel/partition than OrderPlaced did
+        PaymentAuthorized payment = new PaymentAuthorized(&quot;evt-2&quot;, &quot;order-42&quot;, &quot;evt-1&quot;);
+        OrderPlaced orderPlaced = new OrderPlaced(&quot;evt-1&quot;, &quot;order-42&quot;);
+
+        // naive processing: just handle whatever arrived, in arrival order
+        System.out.println(&quot;Processing PaymentAuthorized for &quot; + payment.orderId() + &quot;...&quot;);
+        if (!knownOrders.contains(payment.orderId())) {
+            System.out.println(&quot;  BUG: authorizing payment for an order that, AS FAR AS THIS CONSUMER KNOWS, doesn&#x27;t exist yet!&quot;);
+        }
+
+        knownOrders.add(orderPlaced.orderId());
+        System.out.println(&quot;Processing OrderPlaced for &quot; + orderPlaced.orderId() + &quot; (arrived SECOND, too late to help)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac NaiveArrivalOrder.java &amp;&amp; java NaiveArrivalOrder</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Processing PaymentAuthorized for order-42...
+  BUG: authorizing payment for an order that, AS FAR AS THIS CONSUMER KNOWS, doesn&#x27;t exist yet!
+Processing OrderPlaced for order-42 (arrived SECOND, too late to help)</code></pre>
+<p>Nothing enforces that the cause is seen before the effect; the consumer simply reacts to whatever it receives, in receipt order, producing an impossible intermediate state.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: CausalDeferral.java -- an explicit causal pointer lets the consumer DEFER
+// processing an effect until its declared cause has genuinely been observed.
+import java.util.*;
+
+public class CausalDeferral {
+    record OrderPlaced(String eventId, String orderId) {}
+    record PaymentAuthorized(String eventId, String orderId, String causedByEventId) {}
+
+    public static void main(String[] args) {
+        Set&lt;String&gt; observedEventIds = new HashSet&lt;&gt;();
+        List&lt;PaymentAuthorized&gt; pendingUntilCauseArrives = new ArrayList&lt;&gt;();
+
+        PaymentAuthorized payment = new PaymentAuthorized(&quot;evt-2&quot;, &quot;order-42&quot;, &quot;evt-1&quot;);
+        OrderPlaced orderPlaced = new OrderPlaced(&quot;evt-1&quot;, &quot;order-42&quot;);
+
+        // PaymentAuthorized arrives first, as before
+        if (!observedEventIds.contains(payment.causedByEventId())) {
+            pendingUntilCauseArrives.add(payment); // defer -- its cause (&quot;evt-1&quot;) hasn&#x27;t been seen yet
+            System.out.println(&quot;PaymentAuthorized arrived but its cause (evt-1) hasn&#x27;t been observed -- DEFERRED, not processed.&quot;);
+        }
+
+        // OrderPlaced arrives second
+        observedEventIds.add(orderPlaced.eventId());
+        System.out.println(&quot;OrderPlaced (evt-1) observed -- checking deferred events for anything now unblocked...&quot;);
+
+        pendingUntilCauseArrives.removeIf(deferred -&gt; {
+            if (observedEventIds.contains(deferred.causedByEventId())) {
+                System.out.println(&quot;  now processing deferred PaymentAuthorized for &quot; + deferred.orderId() + &quot; -- its cause has been confirmed.&quot;);
+                return true; // remove from pending, it&#x27;s been processed
+            }
+            return false;
+        });
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac CausalDeferral.java &amp;&amp; java CausalDeferral</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>PaymentAuthorized arrived but its cause (evt-1) hasn&#x27;t been observed -- DEFERRED, not processed.
+OrderPlaced (evt-1) observed -- checking deferred events for anything now unblocked...
+  now processing deferred PaymentAuthorized for order-42 -- its cause has been confirmed.</code></pre>
+<p>The same out-of-order arrival from Level 1 no longer produces an impossible state — <code>PaymentAuthorized</code> is correctly held back until <code>OrderPlaced</code> is genuinely confirmed observed.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ThreeEventCausalChain.java -- three causally-linked events arrive in a
+// FULLY scrambled order; the consumer correctly reorders and processes them by causal dependency.
+import java.util.*;
+
+public class ThreeEventCausalChain {
+    record CausalEvent(String eventId, String description, String causedByEventId) {} // null cause = root event
+
+    public static void main(String[] args) {
+        // the TRUE causal chain: OrderPlaced -&gt; PaymentAuthorized -&gt; ShipmentScheduled
+        // but they ARRIVE scrambled: ShipmentScheduled, OrderPlaced, PaymentAuthorized
+        List&lt;CausalEvent&gt; arrivalOrder = List.of(
+            new CausalEvent(&quot;evt-3&quot;, &quot;ShipmentScheduled&quot;, &quot;evt-2&quot;),
+            new CausalEvent(&quot;evt-1&quot;, &quot;OrderPlaced&quot;, null),
+            new CausalEvent(&quot;evt-2&quot;, &quot;PaymentAuthorized&quot;, &quot;evt-1&quot;)
+        );
+
+        Set&lt;String&gt; observedEventIds = new HashSet&lt;&gt;();
+        List&lt;CausalEvent&gt; pending = new ArrayList&lt;&gt;();
+        List&lt;String&gt; processedInOrder = new ArrayList&lt;&gt;();
+
+        for (CausalEvent event : arrivalOrder) {
+            pending.add(event);
+            System.out.println(&quot;Arrived: &quot; + event.description() + &quot; (id=&quot; + event.eventId() + &quot;, cause=&quot; + event.causedByEventId() + &quot;)&quot;);
+
+            // repeatedly sweep pending for anything now unblocked, since resolving ONE
+            // event&#x27;s cause can unblock a CHAIN of subsequent events in the same pass
+            boolean progressed = true;
+            while (progressed) {
+                progressed = false;
+                Iterator&lt;CausalEvent&gt; it = pending.iterator();
+                while (it.hasNext()) {
+                    CausalEvent candidate = it.next();
+                    boolean causeSatisfied = candidate.causedByEventId() == null || observedEventIds.contains(candidate.causedByEventId());
+                    if (causeSatisfied) {
+                        observedEventIds.add(candidate.eventId());
+                        processedInOrder.add(candidate.description());
+                        System.out.println(&quot;  processed: &quot; + candidate.description());
+                        it.remove();
+                        progressed = true;
+                    }
+                }
+            }
+        }
+
+        System.out.println(&quot;Final processing order (CAUSALLY correct, despite scrambled arrival): &quot; + processedInOrder);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ThreeEventCausalChain.java &amp;&amp; java ThreeEventCausalChain</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Arrived: ShipmentScheduled (id=evt-3, cause=evt-2)
+Arrived: OrderPlaced (id=evt-1, cause=null)
+  processed: OrderPlaced
+Arrived: PaymentAuthorized (id=evt-2, cause=evt-1)
+  processed: PaymentAuthorized
+  processed: ShipmentScheduled
+Final processing order (CAUSALLY correct, despite scrambled arrival): [OrderPlaced, PaymentAuthorized, ShipmentScheduled]</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — the code processes <code>payment</code> before <code>orderPlaced</code> purely because that&#x27;s the order they were handled in <code>main</code>, with no check of whether <code>order-42</code> is even known yet; the printed &quot;BUG&quot; line is the direct, observable symptom of ignoring causality.</li><li><strong>Level 2, deferral instead of immediate processing</strong> — when <code>payment</code> arrives, the code checks <code>observedEventIds.contains(payment.causedByEventId())</code>; since <code>&quot;evt-1&quot;</code> hasn&#x27;t been added yet, <code>payment</code> is placed into <code>pendingUntilCauseArrives</code> instead of being acted on.</li><li><strong>Level 2, unblocking on the cause&#x27;s arrival</strong> — once <code>orderPlaced</code> is processed and <code>&quot;evt-1&quot;</code> is added to <code>observedEventIds</code>, the <code>removeIf</code> sweep re-checks every deferred event&#x27;s <code>causedByEventId</code> against the now-updated set, finds <code>payment</code>&#x27;s cause satisfied, and processes it at that point instead.</li><li><strong>Level 3, a three-link chain arriving scrambled</strong> — <code>arrivalOrder</code> deliberately lists <code>ShipmentScheduled</code> (which depends on <code>PaymentAuthorized</code>, which depends on <code>OrderPlaced</code>) *first*, testing whether the consumer can correctly hold back not just one deferred event but a whole dependent chain.</li><li><strong>Level 3, the repeated sweep</strong> — after each new arrival, the <code>while (progressed)</code> loop keeps scanning <code>pending</code> and processing any event whose <code>causedByEventId</code> is now satisfied, and it repeats this scan until a full pass makes no further progress — this is what allows resolving <code>OrderPlaced</code> to immediately cascade into also resolving <code>PaymentAuthorized</code> and then <code>ShipmentScheduled</code> in the same pass, once all three have genuinely arrived.</li><li><strong>Level 3, tracing the three arrivals</strong> — <code>ShipmentScheduled</code> arrives first but its cause (<code>evt-2</code>) is unsatisfied, so it stays in <code>pending</code>; <code>OrderPlaced</code> arrives second with no cause requirement (<code>null</code>), so it&#x27;s processed immediately; <code>PaymentAuthorized</code> arrives third, its cause (<code>evt-1</code>) is now satisfied, so it processes immediately, which *in the same sweep* also satisfies <code>ShipmentScheduled</code>&#x27;s cause (<code>evt-2</code>), letting it process right after, all triggered by that single third arrival.</li><li><strong>Level 3, the final proof</strong> — <code>processedInOrder</code> ends as <code>[OrderPlaced, PaymentAuthorized, ShipmentScheduled]</code> — the true causal order — despite <code>arrivalOrder</code> having delivered them in the sequence <code>[ShipmentScheduled, OrderPlaced, PaymentAuthorized]</code>, demonstrating that causal-order processing was recovered entirely from the explicit <code>causedByEventId</code> pointers, independent of actual arrival order.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a causal dependency that never arrives (the &quot;cause&quot; event was lost, or belongs to a producer that crashed before publishing it) leaves the dependent event stuck in the pending set forever — a production implementation of this pattern needs a bounded wait with a fallback (alerting, a <a href="0123-dead-letter-queue-dlq.md">dead letter queue</a>, or a timeout-based escalation), not an indefinitely-growing pending list.</blockquote>
+<ul><li>Causality is a stronger property than per-channel ordering: it&#x27;s about true cause-and-effect relationships between events, which can be violated even when each individual channel delivers in perfect FIFO order.</li><li>Explicit causal pointers (an event carrying a reference to the event that caused it) let a consumer detect and defer out-of-order effects rather than acting on an impossible intermediate state.</li><li>A repeated sweep over pending events after each arrival correctly cascades the resolution of an entire causal chain, not just a single deferred event.</li><li>This concern is distinct from, and layered on top of, <a href="0119-message-ordering-guarantees.md">message ordering guarantees</a> — partition-key ordering solves same-channel ordering, causal tracking solves cross-channel, cross-producer ordering.</li><li>A production causal-deferral mechanism needs a bounded wait and fallback path for causes that never arrive, to avoid an unbounded, silently-growing backlog of stuck events.</li></ul>
+  <div class="nav"><a class="prv" href="0134-event-schema-versioning.html"><span class="mini">← Previous</span>Event schema & versioning</a><a class="nxt" href="0136-replayability-of-event-streams.html"><span class="mini">Next →</span>Replayability of event streams</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t135";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

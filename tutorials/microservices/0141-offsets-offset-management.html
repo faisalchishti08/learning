@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Offsets & offset management" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 4. Asynchronous & Event-Driven Communication</div>
+  <div class="htitle">
+    <h1>"Offsets & offset management"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>An offset is a consumer&#x27;s own bookmark into a <a href="0140-partitioning-partition-keys.md">partition</a> of a <a href="0139-log-based-brokers-kafka-vs-queue-brokers.md">log-based broker</a> — a simple, monotonically increasing number recording &quot;the next position I haven&#x27;t read yet.&quot; Offset management is deciding when and how that bookmark gets saved (committed) so that if a consumer crashes and restarts, it knows where to resume, without either reprocessing everything from the start or skipping messages it never actually finished handling.</p>
+<h2>2. Why &amp; when</h2>
+<p>Unlike a queue broker, where the broker itself tracks per-message delivery state, a log-based broker leaves position-tracking entirely to the consumer — which means *when* a consumer commits its offset relative to *when* it actually finishes processing a message is a real design decision with real consequences: commit too early (before processing completes) and a crash mid-processing loses that message&#x27;s work silently on restart; commit too late or too infrequently and a crash forces reprocessing of everything since the last commit, which is only safe if that reprocessing is idempotent.</p>
+<p>This decision matters for any consumer of a log-based broker, and the right choice depends on what the consumer can tolerate: at-most-once processing (commit before processing, risk losing work on crash), at-least-once processing (commit after processing, risk reprocessing on crash — the safer, more common default, provided handlers are <a href="0127-idempotent-consumers.md">idempotent</a>), or manually managed offsets for cases needing tighter control than either default provides.</p>
+<h2>3. Core concept</h2>
+<p>The offset commit can happen automatically on a timer (simple, but imprecise about exactly which messages were actually processed) or manually, exactly after a consumer confirms it has finished handling a specific batch — manual commit gives control over the precise at-most-once versus at-least-once trade-off at the cost of needing to manage it explicitly.</p>
+<pre><code class="lang-java">long offset = 0;
+while (true) {
+    List&lt;Event&gt; batch = log.readFrom(partition, offset);
+    for (Event e : batch) {
+        process(e);       // do the work FIRST
+        offset++;          // advance the LOCAL position
+    }
+    commitOffset(partition, offset); // THEN persist the bookmark -- after processing, not before
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A consumer reads and processes events 0 through 4, then commits offset 5; if it crashes after processing but before committing, it will reprocess from the last committed offset on restart -- an at-least-once outcome" >
+  <rect x="20" y="60" width="580" height="40" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="70" y="84" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">e0</text>
+  <text x="180" y="84" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">e1</text>
+  <text x="290" y="84" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">e2</text>
+  <text x="400" y="84" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">e3</text>
+  <text x="510" y="84" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">e4</text>
+
+  <text x="290" y="30" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">processed, but crash BEFORE commit</text>
+  <line x1="290" y1="35" x2="290" y2="58" stroke="#8b949e" stroke-dasharray="2,2"/>
+
+  <text x="100" y="140" fill="#8b949e" font-size="8" font-family="sans-serif">last COMMITTED offset: 0</text>
+  <line x1="100" y1="120" x2="100" y2="58" stroke="#79c0ff" marker-end="url(#arr23)"/>
+  <text x="290" y="140" fill="#8b949e" font-size="8" font-family="sans-serif">on restart: reprocess from HERE (offset 0), NOT from where it crashed</text>
+
+  <defs>
+    <marker id="arr23" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#79c0ff"/></marker>
+  </defs>
+</svg>
+<p>Only the last committed offset survives a crash; anything processed but not yet committed will be reprocessed on restart.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order-processing consumer that starts committing offsets automatically on a fixed schedule (showing the imprecision that creates), switches to manual commit-after-processing to make the at-least-once guarantee deliberate and precise, and finally simulates a crash mid-batch to show exactly what gets reprocessed on restart and why that is the correct, expected behavior for a manually-committed, idempotent consumer.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: AutoCommitImprecision.java -- auto-commit on a timer, DECOUPLED from actual
+// processing progress: it can commit an offset for work not yet even attempted.
+import java.util.*;
+
+public class AutoCommitImprecision {
+    public static void main(String[] args) throws InterruptedException {
+        List&lt;String&gt; events = List.of(&quot;order:1&quot;, &quot;order:2&quot;, &quot;order:3&quot;, &quot;order:4&quot;, &quot;order:5&quot;);
+        long offset = 0;
+        long lastAutoCommitTime = System.currentTimeMillis();
+        long autoCommitIntervalMs = 50;
+        long committedOffset = 0;
+
+        for (String event : events) {
+            System.out.println(&quot;Processing &quot; + event + &quot; at offset &quot; + offset);
+            Thread.sleep(20); // simulated processing time
+            offset++;
+
+            // auto-commit fires on a TIMER, independent of which specific event just finished
+            if (System.currentTimeMillis() - lastAutoCommitTime &gt;= autoCommitIntervalMs) {
+                committedOffset = offset;
+                lastAutoCommitTime = System.currentTimeMillis();
+                System.out.println(&quot;  [auto-commit fired] committedOffset now &quot; + committedOffset);
+            }
+        }
+        System.out.println(&quot;Final committedOffset: &quot; + committedOffset + &quot; vs. actual processed offset: &quot; + offset + &quot; (may LAG behind what was truly processed)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac AutoCommitImprecision.java &amp;&amp; java AutoCommitImprecision</code> (JDK 17+).</p>
+<p>The commit happens whenever the timer fires, not tied to any specific event boundary — <code>committedOffset</code> can meaningfully lag behind <code>offset</code>, meaning a crash right after the loop ends but before one final auto-commit would silently lose track of the last few processed events&#x27; progress.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ManualCommitAfterProcessing.java -- commit explicitly, immediately after
+// each event finishes -- a precise, deliberate at-least-once guarantee.
+import java.util.*;
+
+public class ManualCommitAfterProcessing {
+    public static void main(String[] args) {
+        List&lt;String&gt; events = List.of(&quot;order:1&quot;, &quot;order:2&quot;, &quot;order:3&quot;, &quot;order:4&quot;, &quot;order:5&quot;);
+        long offset = 0;
+        long committedOffset = 0;
+
+        for (String event : events) {
+            System.out.println(&quot;Processing &quot; + event + &quot; at offset &quot; + offset);
+            processOrder(event); // do the work FIRST
+            offset++;
+            committedOffset = offset; // THEN commit, immediately, tied exactly to this event&#x27;s completion
+            System.out.println(&quot;  committed offset &quot; + committedOffset + &quot; (exactly matches work done)&quot;);
+        }
+        System.out.println(&quot;Final committedOffset: &quot; + committedOffset + &quot; -- ALWAYS exactly matches processed offset, never lags.&quot;);
+    }
+
+    static void processOrder(String event) { /* actual business logic would go here */ }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ManualCommitAfterProcessing.java &amp;&amp; java ManualCommitAfterProcessing</code> (JDK 17+).</p>
+<p>Expected output shows <code>committedOffset</code> advancing in lockstep with every single processed event, with no possibility of the gap Level 1 could produce — each commit is tied precisely to the completion of the specific event that triggered it.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: CrashRecoverySimulation.java -- simulates a crash mid-batch and shows EXACTLY
+// what gets reprocessed on restart, and why idempotent processing makes that safe.
+import java.util.*;
+
+public class CrashRecoverySimulation {
+    static Set&lt;String&gt; processedOrderIds = new HashSet&lt;&gt;(); // idempotency guard, see idempotent consumers
+
+    public static void main(String[] args) {
+        List&lt;String&gt; events = List.of(&quot;order:1&quot;, &quot;order:2&quot;, &quot;order:3&quot;, &quot;order:4&quot;, &quot;order:5&quot;);
+
+        // === &quot;run 1&quot;: crashes partway through, AFTER processing order:3 but BEFORE committing offset 3 ===
+        long offset = 0;
+        long committedOffset = 0; // persisted externally in a real system (e.g. Kafka&#x27;s __consumer_offsets)
+        for (int i = 0; i &lt; events.size(); i++) {
+            String event = events.get(i);
+            processIdempotently(event);
+            offset++;
+            if (i == 2) { // crash simulated RIGHT after processing order:3, before this iteration&#x27;s commit
+                System.out.println(&quot;*** CRASH after processing &quot; + event + &quot;, BEFORE committing offset &quot; + offset + &quot; ***&quot;);
+                break;
+            }
+            committedOffset = offset;
+        }
+        System.out.println(&quot;Run 1 ended. Last COMMITTED offset (persisted, survives crash): &quot; + committedOffset);
+        System.out.println(&quot;But &#x27;order:3&#x27; WAS processed in-memory -- that work&#x27;s completion was never durably recorded.&quot;);
+
+        // === &quot;run 2&quot;: restart, resume from the last COMMITTED offset, not from where it crashed ===
+        System.out.println(&quot;\n--- Consumer restarts ---&quot;);
+        offset = committedOffset; // resume from offset 2 (order:1, order:2 were committed; order:3 was NOT)
+        for (long i = offset; i &lt; events.size(); i++) {
+            String event = events.get((int) i);
+            processIdempotently(event); // order:3 gets processed AGAIN -- this is expected, at-least-once behavior
+            committedOffset = i + 1;
+        }
+        System.out.println(&quot;Run 2 finished. Final committedOffset: &quot; + committedOffset);
+        System.out.println(&quot;processedOrderIds ended up correct regardless, because processIdempotently guards against the reprocessed &#x27;order:3&#x27;.&quot;);
+    }
+
+    static void processIdempotently(String orderId) {
+        if (!processedOrderIds.add(orderId)) { // Set.add returns false if already present
+            System.out.println(&quot;  [idempotent guard] &quot; + orderId + &quot; already processed -- no-op on reprocess&quot;);
+            return;
+        }
+        System.out.println(&quot;  processed: &quot; + orderId);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac CrashRecoverySimulation.java &amp;&amp; java CrashRecoverySimulation</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>  processed: order:1
+  processed: order:2
+  processed: order:3
+*** CRASH after processing order:3, BEFORE committing offset 3 ***
+Run 1 ended. Last COMMITTED offset (persisted, survives crash): 2
+But &#x27;order:3&#x27; WAS processed in-memory -- that work&#x27;s completion was never durably recorded.
+
+--- Consumer restarts ---
+  [idempotent guard] order:3 already processed -- no-op on reprocess
+  processed: order:4
+  processed: order:5
+Run 2 finished. Final committedOffset: 5
+processedOrderIds ended up correct regardless, because processIdempotently guards against the reprocessed &#x27;order:3&#x27;.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>committedOffset</code> is only updated when <code>System.currentTimeMillis() - lastAutoCommitTime &gt;= autoCommitIntervalMs</code> evaluates true, a condition entirely about elapsed wall-clock time, with no relationship to which specific event index just finished processing; the final printed comparison highlights that <code>committedOffset</code> and <code>offset</code> can genuinely diverge.</li><li><strong>Level 2, tying commit to completion</strong> — <code>committedOffset = offset</code> executes immediately after <code>processOrder(event)</code> returns and <code>offset</code> is incremented, on every single loop iteration, so there is no window where processing has outpaced what&#x27;s committed.</li><li><strong>Level 2, the guarantee this produces</strong> — because every commit is precisely tied to the event that just completed, a crash at any point would leave <code>committedOffset</code> exactly equal to the count of events genuinely finished — the imprecision Level 1 could exhibit is structurally impossible here.</li><li><strong>Level 3, simulating the crash point</strong> — the <code>if (i == 2)</code> check deliberately breaks out of the loop *after* <code>processIdempotently(event)</code> and <code>offset++</code> have run for <code>&quot;order:3&quot;</code>, but *before* <code>committedOffset = offset</code> executes for that same iteration — modeling a crash landing in the narrow window between finishing work and persisting the bookmark for it.</li><li><strong>Level 3, what survives the crash</strong> — <code>committedOffset</code> is left at <code>2</code> (reflecting only <code>order:1</code> and <code>order:2</code>), even though <code>order:3</code> was genuinely processed and added to <code>processedOrderIds</code> during &quot;run 1&quot; — this in-memory fact about <code>order:3</code> is lost the instant the simulated crash happens, since only <code>committedOffset</code> is treated as durably persisted.</li><li><strong>Level 3, restarting from the last commit</strong> — &quot;run 2&quot; sets <code>offset = committedOffset</code> (which is <code>2</code>), meaning it deliberately starts by reprocessing <code>&quot;order:3&quot;</code> — the event that was actually finished in run 1 but never had that fact durably recorded — exactly the expected at-least-once behavior of manual, post-processing commits.</li><li><strong>Level 3, why this is safe</strong> — <code>processIdempotently</code> checks <code>processedOrderIds.add(orderId)</code> before doing any real work, and since <code>order:3</code> is already in that set from run 1&#x27;s execution (both runs share the same <code>processedOrderIds</code> static field in this simulation, standing in for state that would live in a real, durable data store), the reprocessing attempt in run 2 is correctly recognized and skipped as a no-op — the offset-management strategy (commit after processing, accept possible reprocessing) is only safe *because* it&#x27;s paired with <a href="0127-idempotent-consumers.md">idempotent consumer</a> logic; without that pairing, <code>order:3</code> would have been double-processed.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> committing an offset *before* processing completes (the opposite ordering from what Level 2 and 3 demonstrate) trades at-least-once for at-most-once — a crash after that early commit but before processing finishes means the message is now considered &quot;done&quot; by the broker&#x27;s bookkeeping even though it never actually was, silently losing that work; the ordering of &quot;process, then commit&quot; versus &quot;commit, then process&quot; is the entire difference between these two guarantees.</blockquote>
+<ul><li>An offset is the consumer&#x27;s own bookmark into a partition; unlike a queue broker&#x27;s per-message tracking, a log-based broker leaves this entirely up to the consumer to manage.</li><li>Auto-commit on a timer is simple but imprecise, since the commit is decoupled from exactly which event finished processing, creating windows where committed and actually-processed progress diverge.</li><li>Manual commit, executed immediately after processing completes, ties the bookmark precisely to real progress and produces a clean, understandable at-least-once guarantee.</li><li>A crash between finishing work and committing its offset causes that work to be reprocessed on restart — expected, correct at-least-once behavior, not a bug.</li><li>This reprocessing is only safe when paired with <a href="0127-idempotent-consumers.md">idempotent consumer</a> logic; offset management alone does not prevent duplicate processing, it only determines when duplicates can occur.</li></ul>
+  <div class="nav"><a class="prv" href="0140-partitioning-partition-keys.html"><span class="mini">← Previous</span>Partitioning & partition keys</a><a class="nxt" href="0142-stream-table-duality.html"><span class="mini">Next →</span>Stream-table duality</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t141";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
