@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Circuit breaker metrics & events" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Circuit breaker metrics & events"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Circuit breaker metrics and events are the observable signals a circuit breaker emits about its own internal state and decisions — state transitions (closed to open, open to half-open), individual call outcomes, and aggregate statistics (current failure rate, current slow-call rate) — exposed so that monitoring, alerting, and dashboards can track the breaker&#x27;s behavior, rather than the breaker&#x27;s protective logic operating as an invisible black box.</p>
+<h2>2. Why &amp; when</h2>
+<p>A circuit breaker that silently trips and silently recovers, with nothing observing or recording that either event happened, turns a genuinely important signal — &quot;a dependency just failed badly enough to warrant protection&quot; — into something no one notices until a downstream symptom (missing data on a page, a support ticket) eventually surfaces it, likely much later and with much less context than the breaker itself had in the moment. Emitting metrics and events for every state transition and, more granularly, every individual call decision, lets operators build alerts (&quot;page someone the moment any breaker trips&quot;), dashboards (breaker state across every protected dependency, at a glance), and post-incident timelines (exactly when a dependency started failing, when the breaker reacted, and when it recovered) directly from the breaker&#x27;s own authoritative record of what happened.</p>
+<p>Wire circuit breaker events into monitoring and alerting for any breaker protecting a meaningfully important dependency — a tripped breaker is exactly the kind of event that should be visible immediately, not discovered indirectly through its downstream effects. This is standard practice with production libraries like Resilience4j, which expose a rich event stream specifically for this purpose.</p>
+<h2>3. Core concept</h2>
+<p>The breaker publishes an event (or updates a metric) at each meaningful moment in its lifecycle — a state transition, a recorded success, a recorded failure, a rejected call — and external listeners (a metrics registry, a logging statement, an alerting rule) subscribe to these events without needing to poll the breaker&#x27;s state directly.</p>
+<pre><code class="lang-java">CircuitBreaker breaker = CircuitBreaker.of(&quot;inventory-service&quot;, config);
+
+breaker.getEventPublisher()
+    .onStateTransition(event -&gt; log.warn(&quot;Breaker {} transitioned {} -&gt; {}&quot;,
+        event.getCircuitBreakerName(), event.getStateTransition().getFromState(), event.getStateTransition().getToState()))
+    .onFailureRateExceeded(event -&gt; alertingService.page(&quot;Circuit breaker &quot; + event.getCircuitBreakerName() + &quot; exceeded failure rate threshold&quot;))
+    .onCallNotPermitted(event -&gt; metrics.increment(&quot;circuit_breaker.rejected&quot;, &quot;name&quot;, event.getCircuitBreakerName()));
+// EVERY transition and decision is now OBSERVABLE, not a silent internal detail</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A circuit breaker's internal state transitions and call decisions each publish an event to subscribed listeners -- a logging system, a metrics registry, and an alerting service -- turning what would otherwise be invisible internal behavior into observable, actionable signals" >
+  <rect x="20" y="65" width="150" height="45" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="95" y="92" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Circuit breaker</text>
+
+  <rect x="260" y="20" width="130" height="35" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="325" y="42" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Logging</text>
+
+  <rect x="260" y="80" width="130" height="35" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="325" y="102" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Metrics registry</text>
+
+  <rect x="260" y="130" width="130" height="35" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="325" y="152" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Alerting service</text>
+
+  <line x1="170" y1="80" x2="258" y2="38" stroke="#8b949e" marker-end="url(#arr258)"/>
+  <line x1="170" y1="88" x2="258" y2="97" stroke="#8b949e" marker-end="url(#arr258)"/>
+  <line x1="170" y1="95" x2="258" y2="147" stroke="#8b949e" marker-end="url(#arr258)"/>
+
+  <defs>
+    <marker id="arr258" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>One internal event fans out to multiple independent observers, each using it for a different purpose.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a circuit breaker whose state transitions happen with no observability at all (invisible from the outside), refactored to publish events on every transition to registered listeners, and finally demonstrating multiple independent listeners (a log, a counter, an alert trigger) all reacting to the same underlying events without needing to modify the breaker&#x27;s core logic to add each one.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: SilentBreaker.java -- the breaker trips and recovers with
+// ABSOLUTELY NO observable signal -- invisible from the outside.
+public class SilentBreaker {
+    enum State { CLOSED, OPEN }
+    static State state = State.CLOSED;
+    static int consecutiveFailures = 0;
+
+    static void recordFailure() {
+        if (++consecutiveFailures &gt;= 3) state = State.OPEN; // trips SILENTLY -- nothing observes this
+    }
+
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 3; i++) recordFailure();
+        System.out.println(&quot;Breaker state: &quot; + state);
+        System.out.println(&quot;This transition happened with ZERO observable signal -- no log, no metric, no alert.&quot;);
+        System.out.println(&quot;An operator would have NO WAY to know this happened without manually checking `state`.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac SilentBreaker.java &amp;&amp; java SilentBreaker</code> (JDK 17+).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: EventPublishingBreaker.java -- publishes an EVENT on every state
+// transition; a REGISTERED listener reacts to it -- now OBSERVABLE.
+import java.util.*;
+import java.util.function.*;
+
+public class EventPublishingBreaker {
+    enum State { CLOSED, OPEN }
+    record StateTransitionEvent(String breakerName, State from, State to) {}
+
+    static State state = State.CLOSED;
+    static int consecutiveFailures = 0;
+    static List&lt;Consumer&lt;StateTransitionEvent&gt;&gt; listeners = new ArrayList&lt;&gt;();
+
+    static void onStateTransition(Consumer&lt;StateTransitionEvent&gt; listener) { listeners.add(listener); }
+
+    static void transitionTo(State newState) {
+        State oldState = state;
+        state = newState;
+        StateTransitionEvent event = new StateTransitionEvent(&quot;inventory-service&quot;, oldState, newState);
+        for (Consumer&lt;StateTransitionEvent&gt; listener : listeners) listener.accept(event); // PUBLISH to all listeners
+    }
+
+    static void recordFailure() {
+        if (++consecutiveFailures &gt;= 3) transitionTo(State.OPEN); // now goes through the PUBLISHING path
+    }
+
+    public static void main(String[] args) {
+        onStateTransition(event -&gt; System.out.println(&quot;  [LOG] &quot; + event.breakerName() + &quot; transitioned &quot; + event.from() + &quot; -&gt; &quot; + event.to()));
+
+        for (int i = 0; i &lt; 3; i++) recordFailure();
+        System.out.println(&quot;Final state: &quot; + state + &quot; -- and the transition was OBSERVED via the registered listener.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac EventPublishingBreaker.java &amp;&amp; java EventPublishingBreaker</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>  [LOG] inventory-service transitioned CLOSED -&gt; OPEN
+Final state: OPEN -- and the transition was OBSERVED via the registered listener.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: MultipleIndependentListeners.java -- THREE independent listeners
+// (log, metrics counter, alert trigger) all react to the SAME events,
+// with NO changes needed to the breaker&#x27;s core logic to add each one.
+import java.util.*;
+import java.util.function.*;
+
+public class MultipleIndependentListeners {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    record StateTransitionEvent(String breakerName, State from, State to) {}
+
+    static State state = State.CLOSED;
+    static int consecutiveFailures = 0;
+    static List&lt;Consumer&lt;StateTransitionEvent&gt;&gt; listeners = new ArrayList&lt;&gt;();
+    static Map&lt;String, Integer&gt; metricsCounters = new HashMap&lt;&gt;(); // simulates a METRICS REGISTRY
+    static List&lt;String&gt; alertsFired = new ArrayList&lt;&gt;(); // simulates an ALERTING SERVICE
+
+    static void onStateTransition(Consumer&lt;StateTransitionEvent&gt; listener) { listeners.add(listener); }
+
+    static void transitionTo(State newState) {
+        State oldState = state;
+        state = newState;
+        StateTransitionEvent event = new StateTransitionEvent(&quot;inventory-service&quot;, oldState, newState);
+        for (Consumer&lt;StateTransitionEvent&gt; listener : listeners) listener.accept(event);
+    }
+
+    static void recordFailure() { if (++consecutiveFailures &gt;= 3) transitionTo(State.OPEN); }
+
+    public static void main(String[] args) {
+        // THREE SEPARATE listeners, each added INDEPENDENTLY, each serving a DIFFERENT purpose
+        onStateTransition(event -&gt; System.out.println(&quot;  [LOG] &quot; + event.from() + &quot; -&gt; &quot; + event.to())); // logging
+        onStateTransition(event -&gt; metricsCounters.merge(&quot;breaker.transitions.&quot; + event.to(), 1, Integer::sum)); // metrics
+        onStateTransition(event -&gt; { if (event.to() == State.OPEN) alertsFired.add(&quot;PAGE: &quot; + event.breakerName() + &quot; tripped open!&quot;); }); // alerting
+
+        for (int i = 0; i &lt; 3; i++) recordFailure();
+
+        System.out.println(&quot;\nMetrics recorded: &quot; + metricsCounters);
+        System.out.println(&quot;Alerts fired: &quot; + alertsFired);
+        System.out.println(&quot;\nALL THREE listeners reacted to the SAME single event -- none needed to modify the breaker&#x27;s core trip logic.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac MultipleIndependentListeners.java &amp;&amp; java MultipleIndependentListeners</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>  [LOG] CLOSED -&gt; OPEN
+
+Metrics recorded: {breaker.transitions.OPEN=1}
+Alerts fired: [PAGE: inventory-service tripped open!]
+
+ALL THREE listeners reacted to the SAME single event -- none needed to modify the breaker&#x27;s core trip logic.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, complete invisibility</strong> — <code>recordFailure</code> mutates <code>state</code> directly with no external notification of any kind; the only way to observe the transition happened is to directly inspect the <code>state</code> field afterward, which is exactly what <code>main</code> does here for demonstration purposes — a real operator monitoring a running system has no equivalent direct access to inspect internal state on demand.</li><li><strong>Level 2, introducing a publish-subscribe mechanism</strong> — <code>listeners</code> holds a list of callback functions, <code>onStateTransition</code> registers new ones, and <code>transitionTo</code> (now the single place that actually changes <code>state</code>) constructs a <code>StateTransitionEvent</code> and passes it to every registered listener immediately after the change.</li><li><strong>Level 2, the observable outcome</strong> — the single registered listener prints a log line the moment the transition occurs, meaning an external observer (a real logging system, in production) now has a direct, immediate record of exactly when and how the state changed, without needing to poll or directly inspect the breaker&#x27;s internals.</li><li><strong>Level 3, three genuinely independent purposes</strong> — the logging listener, the metrics-counting listener, and the alerting listener are each registered via separate, independent <code>onStateTransition</code> calls; none of them know about or depend on the others, and none of them required any modification to <code>transitionTo</code> or <code>recordFailure</code> to be added.</li><li><strong>Level 3, each listener extracting different information from the identical event</strong> — the metrics listener increments a counter keyed by the *destination* state (<code>breaker.transitions.OPEN</code>), useful for tracking transition frequency over time, while the alerting listener specifically checks <code>event.to() == State.OPEN</code> to decide whether this particular transition warrants paging someone — two very different consumers deriving two very different actions from the same underlying <code>StateTransitionEvent</code>.</li><li><strong>Level 3, why this extensibility matters</strong> — adding a fourth, fifth, or tenth listener (a dashboard update, a distributed trace annotation, a Slack notification) would follow the exact same pattern: one more call to <code>onStateTransition</code>, with zero changes required to <code>transitionTo</code> or <code>recordFailure</code> themselves — this is precisely the value of an event-based observability model over ad-hoc, hard-coded notification logic scattered directly inside the breaker&#x27;s core state-management code.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> listeners that perform slow or blocking work (a synchronous network call to an alerting service, for instance) directly inside an event callback can slow down or even block the circuit breaker&#x27;s own call-handling path, since the event is typically published synchronously as part of processing the triggering call; production event handlers for anything non-trivial (like actually paging someone) should generally hand off to an asynchronous queue or a separate thread rather than performing the slow work inline within the listener callback itself.</blockquote>
+<ul><li>Circuit breaker metrics and events expose state transitions, call outcomes, and aggregate statistics as observable signals, rather than leaving the breaker&#x27;s protective logic as an invisible internal detail.</li><li>A tripped breaker with no observability wired to it means the protection is working, but no one knows it triggered until a downstream symptom eventually surfaces the underlying problem, likely much later.</li><li>An event-publishing design lets multiple independent consumers (logging, metrics, alerting) react to the same underlying events without any of them needing to modify the breaker&#x27;s core state-management logic.</li><li>Each listener can extract different, purpose-specific information from the same event — a metrics listener counting by destination state, an alerting listener filtering specifically for transitions to open.</li><li>Slow or blocking work inside an event listener can affect the breaker&#x27;s own call-handling performance, since events are typically published synchronously; genuinely slow listener work should be handed off asynchronously rather than performed inline.</li></ul>
+  <div class="nav"><a class="prv" href="0257-recording-vs-ignoring-specific-exceptions.html"><span class="mini">← Previous</span>Recording vs ignoring specific exceptions</a><a class="nxt" href="0259-retry-pattern.html"><span class="mini">Next →</span>Retry pattern</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t258";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

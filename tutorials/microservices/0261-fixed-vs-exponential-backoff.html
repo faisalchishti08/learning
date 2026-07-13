@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Fixed vs exponential backoff" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Fixed vs exponential backoff"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Backoff is the wait time inserted between retry attempts; fixed backoff waits the same duration before every retry, while exponential backoff multiplies the wait duration by a growing factor after each successive failure — the difference determines how quickly retry attempts arrive during a sustained problem, and how much load a struggling dependency receives while it&#x27;s trying to recover.</p>
+<h2>2. Why &amp; when</h2>
+<p>Retrying with no delay at all (attempting again immediately after a failure) can actually make a struggling dependency&#x27;s situation worse — a burst of immediate retries arriving right on top of the original request adds load to a system that&#x27;s already showing signs of difficulty, precisely when it can least afford it. Fixed backoff introduces a consistent pause between attempts, which helps somewhat, but under a sustained outage affecting many concurrent callers, a fixed delay means every caller retries on the same, predictable cadence, potentially synchronizing into repeated waves of simultaneous load. Exponential backoff addresses both concerns: the delay grows with each successive failure (1s, 2s, 4s, 8s...), giving a struggling dependency progressively more breathing room the longer a problem persists, naturally easing off exactly when a sustained issue is indicated rather than continuing to hammer it at a constant rate.</p>
+<p>Use fixed backoff for simple cases where the retry window is short and the dependency&#x27;s failure is expected to be brief and isolated. Use exponential backoff for anything where a sustained outage is plausible and where reducing load on a struggling dependency over time genuinely matters — which is the more common, more defensible default for production systems calling external dependencies.</p>
+<h2>3. Core concept</h2>
+<p>Fixed backoff waits <code>delay</code> before every retry, regardless of how many attempts have already failed; exponential backoff computes the wait as <code>baseDelay * multiplier^(attemptNumber - 1)</code>, so each successive failure produces a longer wait than the one before it, typically capped at some maximum to avoid the delay growing without bound.</p>
+<pre><code class="lang-java">// FIXED backoff -- the SAME wait, every single time
+long fixedDelay(int attemptNumber) { return 1000; } // always 1 second
+
+// EXPONENTIAL backoff -- GROWS with each successive failure
+long exponentialDelay(int attemptNumber, long baseDelayMillis, double multiplier, long maxDelayMillis) {
+    long delay = (long) (baseDelayMillis * Math.pow(multiplier, attemptNumber - 1));
+    return Math.min(delay, maxDelayMillis); // CAPPED -- doesn&#x27;t grow forever
+}
+// attempt 1: 1000ms, attempt 2: 2000ms, attempt 3: 4000ms, attempt 4: 8000ms... (multiplier=2, capped at some max)</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fixed backoff produces the identical delay before every retry attempt, forming a flat line; exponential backoff produces a delay that roughly doubles with each successive attempt, forming a rapidly climbing curve that gives a struggling dependency progressively more relief" >
+  <line x1="40" y1="140" x2="40" y2="20" stroke="#8b949e"/>
+  <line x1="40" y1="140" x2="600" y2="140" stroke="#8b949e"/>
+  <text x="20" y="30" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">delay</text>
+  <text x="580" y="155" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">attempt #</text>
+
+  <line x1="60" y1="120" x2="580" y2="120" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="500" y="112" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">fixed -- SAME every time</text>
+
+  <path d="M 60 130 L 160 110 L 260 75 L 360 40 L 460 25" stroke="#6db33f" fill="none" stroke-width="2"/>
+  <text x="500" y="35" fill="#6db33f" font-size="7" text-anchor="middle" font-family="sans-serif">exponential -- grows each attempt</text>
+</svg>
+<p>Exponential backoff&#x27;s growing delay gives a struggling dependency progressively more relief as failures continue.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a fixed-backoff retry that keeps hammering a struggling dependency at a constant rate regardless of how long the problem persists, refactored to exponential backoff that eases off progressively as failures continue, and finally demonstrating a capped exponential backoff, showing the delay growth being bounded to a reasonable maximum rather than growing without limit for a very long-running failure.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: FixedBackoff.java -- the SAME delay before EVERY retry,
+// regardless of how many attempts have already failed.
+public class FixedBackoff {
+    static final long FIXED_DELAY_MILLIS = 1000;
+
+    static long delayForAttempt(int attemptNumber) { return FIXED_DELAY_MILLIS; } // ALWAYS the same
+
+    public static void main(String[] args) {
+        for (int attempt = 1; attempt &lt;= 5; attempt++) {
+            System.out.println(&quot;Before attempt &quot; + attempt + &quot;: wait &quot; + delayForAttempt(attempt) + &quot;ms&quot;);
+        }
+        long totalWait = 0;
+        for (int attempt = 1; attempt &lt;= 5; attempt++) totalWait += delayForAttempt(attempt);
+        System.out.println(&quot;Total wait across 5 attempts: &quot; + totalWait + &quot;ms -- the load is EVENLY spread, never easing off.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac FixedBackoff.java &amp;&amp; java FixedBackoff</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Before attempt 1: wait 1000ms
+Before attempt 2: wait 1000ms
+Before attempt 3: wait 1000ms
+Before attempt 4: wait 1000ms
+Before attempt 5: wait 1000ms
+Total wait across 5 attempts: 5000ms -- the load is EVENLY spread, never easing off.</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ExponentialBackoff.java -- the delay GROWS with each successive
+// attempt, easing off load on a STRUGGLING dependency over time.
+public class ExponentialBackoff {
+    static final long BASE_DELAY_MILLIS = 1000;
+    static final double MULTIPLIER = 2.0;
+
+    static long delayForAttempt(int attemptNumber) {
+        return (long) (BASE_DELAY_MILLIS * Math.pow(MULTIPLIER, attemptNumber - 1)); // GROWS each time
+    }
+
+    public static void main(String[] args) {
+        for (int attempt = 1; attempt &lt;= 5; attempt++) {
+            System.out.println(&quot;Before attempt &quot; + attempt + &quot;: wait &quot; + delayForAttempt(attempt) + &quot;ms&quot;);
+        }
+        long totalWait = 0;
+        for (int attempt = 1; attempt &lt;= 5; attempt++) totalWait += delayForAttempt(attempt);
+        System.out.println(&quot;Total wait across 5 attempts: &quot; + totalWait + &quot;ms -- the LATER attempts arrive MUCH more sparsely, easing pressure.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ExponentialBackoff.java &amp;&amp; java ExponentialBackoff</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Before attempt 1: wait 1000ms
+Before attempt 2: wait 2000ms
+Before attempt 3: wait 4000ms
+Before attempt 4: wait 8000ms
+Before attempt 5: wait 16000ms
+Total wait across 5 attempts: 31000ms -- the LATER attempts arrive MUCH more sparsely, easing pressure.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: CappedExponentialBackoff.java -- adds a MAXIMUM delay CAP --
+// the delay grows exponentially at FIRST, but STOPS growing once it
+// hits a sensible ceiling, for a LONG-running failure scenario.
+public class CappedExponentialBackoff {
+    static final long BASE_DELAY_MILLIS = 1000;
+    static final double MULTIPLIER = 2.0;
+    static final long MAX_DELAY_MILLIS = 10_000; // a REASONABLE ceiling -- never wait longer than this between attempts
+
+    static long delayForAttempt(int attemptNumber) {
+        long uncappedDelay = (long) (BASE_DELAY_MILLIS * Math.pow(MULTIPLIER, attemptNumber - 1));
+        return Math.min(uncappedDelay, MAX_DELAY_MILLIS); // CAPPED -- never exceeds MAX_DELAY_MILLIS
+    }
+
+    public static void main(String[] args) {
+        for (int attempt = 1; attempt &lt;= 8; attempt++) {
+            long uncapped = (long) (BASE_DELAY_MILLIS * Math.pow(MULTIPLIER, attempt - 1));
+            long capped = delayForAttempt(attempt);
+            String note = uncapped &gt; MAX_DELAY_MILLIS ? &quot; (would be &quot; + uncapped + &quot;ms uncapped -- CAPPED at &quot; + MAX_DELAY_MILLIS + &quot;ms)&quot; : &quot;&quot;;
+            System.out.println(&quot;Attempt &quot; + attempt + &quot;: wait &quot; + capped + &quot;ms&quot; + note);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac CappedExponentialBackoff.java &amp;&amp; java CappedExponentialBackoff</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Attempt 1: wait 1000ms
+Attempt 2: wait 2000ms
+Attempt 3: wait 4000ms
+Attempt 4: wait 8000ms
+Attempt 5: wait 10000ms (would be 16000ms uncapped -- CAPPED at 10000ms)
+Attempt 6: wait 10000ms (would be 32000ms uncapped -- CAPPED at 10000ms)
+Attempt 7: wait 10000ms (would be 64000ms uncapped -- CAPPED at 10000ms)
+Attempt 8: wait 10000ms (would be 128000ms uncapped -- CAPPED at 10000ms)</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the constant cadence</strong> — <code>delayForAttempt</code> returns <code>FIXED_DELAY_MILLIS</code> (1000) unconditionally, regardless of <code>attemptNumber</code>; printing the delay for five successive attempts shows the identical value every time, and the total wait across those five attempts is simply <code>5 × 1000 = 5000</code>ms, evenly distributed with no change in pacing as failures continue.</li><li><strong>Level 2, the growing delay</strong> — <code>delayForAttempt</code> computes <code>BASE_DELAY_MILLIS * MULTIPLIER^(attemptNumber - 1)</code>, meaning attempt 1 waits 1000ms (<code>2^0 = 1</code>), attempt 2 waits 2000ms (<code>2^1 = 2</code>), attempt 3 waits 4000ms (<code>2^2 = 4</code>), and so on, doubling with each successive attempt.</li><li><strong>Level 2, the practical effect on dependency load</strong> — the total wait across the same five attempts grows to 31000ms, dramatically more than Level 1&#x27;s 5000ms, but critically, this extra time is concentrated in the *later* attempts (attempt 5 alone waits 16000ms) — meaning a dependency experiencing a sustained problem receives progressively sparser retry traffic the longer the problem persists, exactly the easing-off behavior a struggling system benefits from.</li><li><strong>Level 3, the same exponential growth, now bounded</strong> — <code>delayForAttempt</code> computes the identical uncapped exponential value as Level 2, but wraps it in <code>Math.min(uncappedDelay, MAX_DELAY_MILLIS)</code>, ensuring the returned delay never exceeds 10000ms regardless of how large the exponential formula alone would produce.</li><li><strong>Level 3, where the cap starts mattering</strong> — the printed output shows attempts 1 through 4 growing normally (1000, 2000, 4000, 8000ms, all under the 10000ms cap), but attempt 5&#x27;s uncapped value of 16000ms gets capped down to exactly 10000ms, and every subsequent attempt (6, 7, 8) would grow to values like 32000ms, 64000ms, and 128000ms uncapped, but all are capped at the same 10000ms ceiling.</li><li><strong>Level 3, why the cap matters for a long-running failure</strong> — without this cap, a sufficiently long sequence of retry attempts against a very persistent failure would eventually wait absurdly long between attempts (minutes, then hours, as the exponential formula continues compounding) — the cap ensures the backoff strategy still provides *some* regular chance to detect recovery within a reasonable, bounded time frame, rather than the exponential growth eventually making retries so infrequent they&#x27;re effectively useless for timely recovery detection.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> exponential backoff alone, applied identically across many concurrent callers all failing at roughly the same moment (a shared dependency going down for everyone simultaneously), can cause all of them to retry in synchronized waves at the same computed delays — this &quot;thundering herd&quot; problem is exactly what <a href="0262-jitter-randomized-backoff.md">jitter</a>, covered next, is designed to solve by adding randomness to break up this synchronization.</blockquote>
+<ul><li>Fixed backoff waits the identical duration before every retry attempt; exponential backoff grows the wait duration with each successive failure, typically by doubling.</li><li>Exponential backoff eases off load on a struggling dependency progressively as a problem persists, rather than continuing to apply constant pressure at the same rate throughout an outage.</li><li>A maximum delay cap on exponential backoff prevents the growing delay from eventually becoming unreasonably long during a very persistent failure, keeping recovery-detection opportunities reasonably frequent even over an extended outage.</li><li>Fixed backoff is simpler and reasonable for short, isolated retry windows; exponential backoff is the more defensible default for production calls to external dependencies where sustained outages are plausible.</li><li>Exponential backoff alone doesn&#x27;t prevent many concurrent callers from retrying in synchronized waves at the same computed delays — addressing that specific problem requires adding jitter, covered as the next topic.</li></ul>
+  <div class="nav"><a class="prv" href="0260-max-retry-attempts.html"><span class="mini">← Previous</span>Max retry attempts</a><a class="nxt" href="0262-jitter-randomized-backoff.html"><span class="mini">Next →</span>Jitter / randomized backoff</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t261";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

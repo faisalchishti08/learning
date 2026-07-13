@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Permitted calls in half-open state" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Permitted calls in half-open state"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The permitted number of calls in half-open state is the configured limit on how many trial calls a circuit breaker allows through while probing a dependency&#x27;s recovery, before deciding whether to fully close (if enough of them succeeded) or return to open (if they didn&#x27;t) — rather than a single trial call, most real breakers allow a small batch, evaluating the resulting mini failure rate against the same threshold logic used in closed state.</p>
+<h2>2. Why &amp; when</h2>
+<p>A single trial call, as a simplified mental model of half-open might suggest, is a fragile signal — it could succeed purely by luck even while the dependency is still mostly unhealthy, or fail purely by bad luck even though the dependency has genuinely recovered, either way leading to an incorrect transition decision based on a sample size of one. Allowing a small batch of trial calls (typically single digits, not the full traffic volume) and evaluating their aggregate success rate provides a much more statistically reliable signal, while still keeping the probe&#x27;s load on the recovering dependency deliberately small — the same trade-off that motivates a <a href="0253-minimum-number-of-calls.md">minimum number of calls</a> guard in closed state, applied specifically to the recovery-testing phase.</p>
+<p>Configure a permitted-calls count large enough to give a reasonably trustworthy signal about recovery, but small enough that a still-struggling dependency isn&#x27;t hit with a meaningful fraction of full production traffic during the probe — a handful of calls (Resilience4j&#x27;s default is 10) is typically the right order of magnitude, not hundreds and not exactly one.</p>
+<h2>3. Core concept</h2>
+<p>While in half-open state, the breaker allows up to <code>permittedNumberOfCallsInHalfOpenState</code> calls through as trials, tracking their outcomes exactly like a closed-state window; once that many trial calls have completed, the breaker evaluates their aggregate failure rate against its normal threshold to decide whether to close (recovered) or reopen (still failing) — calls beyond that permitted count, while still in half-open, are rejected just like in open state.</p>
+<pre><code class="lang-java">CircuitBreakerConfig config = CircuitBreakerConfig.custom()
+    .permittedNumberOfCallsInHalfOpenState(5) // allow 5 TRIAL calls through during recovery testing
+    .failureRateThreshold(50) // the SAME threshold logic applies to these 5 trial calls
+    .build();
+
+// during HALF_OPEN:
+// calls 1-5: allowed through as TRIALS, outcomes tracked
+// call 6+ (while still evaluating): REJECTED, same as OPEN state, until the 5 trials are evaluated
+// once all 5 complete: failure rate of THOSE 5 decides CLOSED (recovered) vs OPEN (still failing) again</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="During half-open state, a fixed small number of calls are allowed through as trials while their outcomes are tracked; once that many trials complete, their aggregate failure rate decides whether the breaker closes or returns to open, and any further calls during the evaluation are rejected" >
+  <rect x="20" y="65" width="150" height="45" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="95" y="92" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">HALF_OPEN</text>
+
+  <rect x="230" y="20" width="180" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="320" y="47" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Calls 1-5: TRIALS allowed</text>
+
+  <rect x="230" y="110" width="180" height="45" rx="5" fill="#1c2430" stroke="#8b949e"/>
+  <text x="320" y="137" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">Call 6+: REJECTED (evaluating)</text>
+
+  <rect x="470" y="65" width="150" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="545" y="92" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">CLOSED or OPEN</text>
+
+  <line x1="170" y1="85" x2="228" y2="42" stroke="#8b949e" marker-end="url(#arr255)"/>
+  <line x1="170" y1="90" x2="228" y2="128" stroke="#8b949e" marker-end="url(#arr255)"/>
+  <line x1="410" y1="42" x2="468" y2="80" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr255g)"/>
+
+  <defs>
+    <marker id="arr255" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="arr255g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>Only a fixed, small batch of trials is evaluated for the decision; everything else during that window is rejected.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a half-open state modeled first with a single trial call (fragile, easily misled by one lucky or unlucky outcome), refactored to require a small batch of trials evaluated together for a more reliable decision, and finally demonstrating the batch correctly rejecting extra calls beyond the permitted count while trials are still being evaluated, matching real breaker behavior under concurrent traffic during a recovery probe.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: SingleTrialFragility.java -- ONE trial call decides everything --
+// a SINGLE lucky or unlucky outcome can produce the WRONG decision.
+public class SingleTrialFragility {
+    // simulates a dependency that&#x27;s MOSTLY still unhealthy, but happens to succeed on THIS particular call
+    static boolean simulateCall() { return true; } // got LUCKY -- but the dependency is actually still 80% failing
+
+    public static void main(String[] args) {
+        boolean trialSucceeded = simulateCall();
+        String decision = trialSucceeded ? &quot;CLOSED (fully recovered!)&quot; : &quot;OPEN (still failing)&quot;;
+        System.out.println(&quot;Single trial result: &quot; + trialSucceeded + &quot; -&gt; decision: &quot; + decision);
+        System.out.println(&quot;Based on ONE lucky call, the breaker just declared a MOSTLY-STILL-BROKEN dependency fully healthy.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac SingleTrialFragility.java &amp;&amp; java SingleTrialFragility</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Single trial result: true -&gt; decision: CLOSED (fully recovered!)
+Based on ONE lucky call, the breaker just declared a MOSTLY-STILL-BROKEN dependency fully healthy.</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: BatchOfTrials.java -- requires a BATCH of trial calls, evaluating
+// their AGGREGATE rate -- the SAME &quot;mostly still broken&quot; dependency is
+// now correctly identified, since ONE lucky call can&#x27;t dominate the sample.
+import java.util.*;
+
+public class BatchOfTrials {
+    static final int PERMITTED_CALLS = 5;
+    static Random simulatedDependency = new Random(42); // reproducible &quot;mostly broken&quot; behavior
+
+    static boolean simulateCall() { return simulatedDependency.nextDouble() &gt; 0.8; } // ~20% chance of success -- MOSTLY still failing
+
+    public static void main(String[] args) {
+        List&lt;Boolean&gt; trialResults = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; PERMITTED_CALLS; i++) trialResults.add(simulateCall());
+
+        long successes = trialResults.stream().filter(r -&gt; r).count();
+        double successRate = (double) successes / PERMITTED_CALLS;
+        String decision = successRate &gt;= 0.5 ? &quot;CLOSED (recovered)&quot; : &quot;OPEN (still failing)&quot;;
+
+        System.out.println(&quot;Trial results: &quot; + trialResults);
+        System.out.println(&quot;Success rate: &quot; + (int)(successRate * 100) + &quot;% -&gt; decision: &quot; + decision);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BatchOfTrials.java &amp;&amp; java BatchOfTrials</code> (JDK 17+).</p>
+<p>Expected output (deterministic due to fixed seed):</p>
+<pre><code>Trial results: [false, false, false, true, false]
+Success rate: 20% -&gt; decision: OPEN (still failing)</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ExtraCallsRejectedDuringEvaluation.java -- MORE calls arrive than
+// the permitted trial count WHILE trials are still being evaluated --
+// the EXTRA calls are REJECTED, exactly like open state, until the
+// batch decision is made.
+import java.util.*;
+
+public class ExtraCallsRejectedDuringEvaluation {
+    enum State { HALF_OPEN, CLOSED, OPEN }
+    static State state = State.HALF_OPEN;
+    static final int PERMITTED_CALLS = 3;
+    static List&lt;Boolean&gt; trialResults = new ArrayList&lt;&gt;();
+
+    static boolean simulateCall(int callIndex) { return callIndex != 1; } // ONE of the trials fails, the rest succeed
+
+    static String handleCall(int callIndex) {
+        if (state != State.HALF_OPEN) return &quot;final state reached, no longer accepting trials&quot;;
+        if (trialResults.size() &gt;= PERMITTED_CALLS) {
+            return &quot;REJECTED (already have &quot; + PERMITTED_CALLS + &quot; trials, still evaluating)&quot;; // EXTRA calls rejected
+        }
+
+        boolean result = simulateCall(callIndex);
+        trialResults.add(result);
+
+        if (trialResults.size() == PERMITTED_CALLS) { // the BATCH is complete -- decide NOW
+            long successes = trialResults.stream().filter(r -&gt; r).count();
+            state = (successes &gt;= 2) ? State.CLOSED : State.OPEN; // majority-success rule for THIS example
+            return &quot;trial &quot; + trialResults.size() + &quot; (&quot; + result + &quot;) -- BATCH COMPLETE, decision: &quot; + state;
+        }
+        return &quot;trial &quot; + trialResults.size() + &quot; (&quot; + result + &quot;) -- awaiting more trials&quot;;
+    }
+
+    public static void main(String[] args) {
+        // FIVE calls arrive &quot;concurrently&quot; while only 3 are permitted as trials
+        for (int i = 0; i &lt; 5; i++) {
+            System.out.println(&quot;Call &quot; + (i + 1) + &quot;: &quot; + handleCall(i));
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ExtraCallsRejectedDuringEvaluation.java &amp;&amp; java ExtraCallsRejectedDuringEvaluation</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Call 1: trial 1 (true) -- awaiting more trials
+Call 2: trial 2 (false) -- awaiting more trials
+Call 3: trial 3 (true) -- BATCH COMPLETE, decision: CLOSED
+Call 4: final state reached, no longer accepting trials
+Call 5: final state reached, no longer accepting trials</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the fragile single-trial decision</strong> — <code>simulateCall</code> returns <code>true</code> (success) exactly once, and that single outcome directly determines the printed decision (<code>CLOSED</code>); the comment makes explicit that this &quot;success&quot; happened despite the underlying dependency actually still being mostly broken — a single data point simply cannot distinguish &quot;genuinely recovered&quot; from &quot;got lucky once.&quot;</li><li><strong>Level 2, requiring a batch before deciding</strong> — <code>BatchOfTrials</code> collects <code>PERMITTED_CALLS</code> (5) outcomes into <code>trialResults</code> before computing any decision at all, using a <code>Random</code> seeded deterministically to simulate a dependency that succeeds only about 20% of the time (still mostly broken).</li><li><strong>Level 2, the batch correctly identifying continued failure</strong> — across the five simulated trial calls, only one happens to succeed (consistent with the ~20% success rate), producing an aggregate success rate of 20%, well under the 50% needed to close — the batch approach correctly avoids being misled by whichever individual calls happened to succeed or fail, unlike Level 1&#x27;s single-sample decision.</li><li><strong>Level 3, tracking trials up to the permitted limit</strong> — <code>handleCall</code> only appends a new outcome to <code>trialResults</code> while <code>trialResults.size() &lt; PERMITTED_CALLS</code> (3); the moment that count is reached, the very next call attempt hits the <code>trialResults.size() &gt;= PERMITTED_CALLS</code> check and is rejected instead of being treated as a fourth trial.</li><li><strong>Level 3, the batch completing and deciding</strong> — the third call (index 2) brings <code>trialResults</code> to exactly <code>PERMITTED_CALLS</code>, triggering the decision logic immediately within that same call&#x27;s handling; with 2 successes out of 3 trials meeting the majority-success rule used in this example, <code>state</code> transitions to <code>CLOSED</code>.</li><li><strong>Level 3, calls arriving after the decision</strong> — calls 4 and 5, arriving after <code>state</code> has already become <code>CLOSED</code>, hit the <code>if (state != State.HALF_OPEN)</code> check at the very top of <code>handleCall</code> and are handled as &quot;final state reached&quot; rather than being evaluated as trials at all — demonstrating that once the permitted-calls batch has produced its decision, the breaker has already moved on to a new, definitive state, and any calls that arrive concurrently during or immediately after the brief evaluation window are handled according to that resolved state, not treated as additional, unplanned trials.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> under genuinely concurrent traffic (multiple requests arriving at nearly the same instant while the breaker is half-open), more calls than the permitted count can attempt to become trials simultaneously — real circuit breaker implementations need to handle this race condition carefully (typically via an atomic counter reserving trial &quot;slots&quot;), since a naive, non-atomic size check like this example&#x27;s simplified version could let more than the intended number of trials through under true concurrency.</blockquote>
+<ul><li>The permitted number of calls in half-open state defines how many trial calls a circuit breaker allows through while probing recovery, evaluating their aggregate outcome rather than relying on a single call.</li><li>A batch of trials provides a far more statistically reliable recovery signal than a single trial call, which can easily be misled by one lucky or unlucky outcome.</li><li>Calls arriving beyond the permitted trial count while still in half-open state are rejected, just as they would be in fully open state, until the batch&#x27;s outcome determines the breaker&#x27;s next definitive state.</li><li>The permitted count should be small enough to limit load on a still-recovering dependency, but large enough to give a genuinely trustworthy statistical signal — a handful of calls is the typical right order of magnitude.</li><li>Correctly handling concurrent calls competing for a limited number of trial &quot;slots&quot; during half-open state is a real implementation subtlety that production circuit breaker libraries handle with atomic counters, not naive sequential checks.</li></ul>
+  <div class="nav"><a class="prv" href="0254-wait-duration-in-open-state.html"><span class="mini">← Previous</span>Wait duration in open state</a><a class="nxt" href="0256-automatic-transition-from-open-to-half-open.html"><span class="mini">Next →</span>Automatic transition from open to half-open</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t255";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
