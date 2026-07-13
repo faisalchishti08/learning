@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Timeout pattern (TimeLimiter)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Timeout pattern (TimeLimiter)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The timeout pattern bounds how long a caller will wait for a remote call to complete before giving up and treating it as a failure, instead of waiting indefinitely. Resilience4j&#x27;s <code>TimeLimiter</code> is a dedicated module implementing this for asynchronous calls: it wraps a <code>CompletableFuture</code> (or similar) and cancels/fails it with a <code>TimeoutException</code> if it hasn&#x27;t completed within a configured duration, regardless of whether the underlying call is still silently running.</p>
+<h2>2. Why &amp; when</h2>
+<p>Without a timeout, a caller waiting on a slow or hung downstream dependency ties up its own resources (a thread, a connection, memory for the pending request) for as long as that dependency takes — which, for a truly hung dependency, can be forever. Under load, many such indefinitely-waiting calls exhaust the caller&#x27;s own thread pool or connection pool, so the caller itself becomes unresponsive even though the actual bug is entirely in the downstream dependency. This is a classic way partial failure in a distributed system cascades into total failure of an otherwise-healthy caller.</p>
+<p>A timeout converts &quot;waiting forever&quot; into &quot;waiting a bounded, known amount of time, then failing predictably.&quot; That predictable failure can then be handled — retried, sent to a fallback, or surfaced as an error — using the other resilience patterns like <a href="0259-retry-pattern.md">retry</a>, <a href="0250-circuit-breaker-pattern.md">circuit breaker</a>, or <a href="0282-fallback-methods-default-responses.md">fallback methods</a>. Use a timeout on every outbound network call in a distributed system without exception; the only question is what duration is appropriate for that specific call.</p>
+<h2>3. Core concept</h2>
+<p>A <code>TimeLimiter</code> races the actual call against a timer: whichever finishes first determines the outcome. If the call finishes first, its result (success or failure) is returned normally. If the timer fires first, the caller receives a <code>TimeoutException</code> and, ideally, the underlying call is cancelled so it stops consuming resources.</p>
+<pre><code class="lang-java">import io.github.resilience4j.timelimiter.TimeLimiter;
+import io.github.resilience4j.timelimiter.TimeLimiterConfig;
+import java.time.Duration;
+import java.util.concurrent.*;
+
+TimeLimiterConfig config = TimeLimiterConfig.custom()
+    .timeoutDuration(Duration.ofSeconds(2)) // MAXIMUM wait before giving up
+    .cancelRunningFuture(true)               // attempt to CANCEL the underlying work on timeout
+    .build();
+TimeLimiter timeLimiter = TimeLimiter.of(config);
+
+ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+Callable&lt;CompletionStage&lt;String&gt;&gt; supplier = () -&gt; callDownstreamAsync(); // returns a CompletableFuture
+Callable&lt;String&gt; decorated = TimeLimiter.decorateFutureSupplier(timeLimiter, supplier);</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A timer and the actual downstream call race against each other; if the call completes first its result is returned, but if the timer fires first the caller receives a timeout exception and the underlying call is cancelled rather than left running">
+  <rect x="30" y="30" width="180" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="120" y="54" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">downstream call (unknown duration)</text>
+
+  <rect x="30" y="100" width="180" height="40" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="120" y="124" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">timer (fixed 2s)</text>
+
+  <text x="260" y="55" fill="#8b949e" font-size="8" font-family="sans-serif">race</text>
+  <line x1="212" y1="50" x2="320" y2="80" stroke="#8b949e" marker-end="url(#arr280)"/>
+  <line x1="212" y1="120" x2="320" y2="90" stroke="#8b949e" marker-end="url(#arr280)"/>
+
+  <rect x="330" y="70" width="160" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="410" y="94" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">whichever finishes FIRST wins</text>
+
+  <text x="410" y="140" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">call wins &#8594; real result | timer wins &#8594; TimeoutException + cancel</text>
+</svg>
+<p>The call and the timer race; the timer winning produces a bounded, predictable TimeoutException instead of an unbounded wait.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a plain synchronous call with no timeout that can block indefinitely, extended with <code>Future.get(timeout)</code> to bound the wait, and finally using Resilience4j&#x27;s <code>TimeLimiter</code> with cancellation and combined with a fallback, matching production usage.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoTimeoutBlocksForever.java -- calling a slow/hung dependency
+// with NO timeout ties up the caller&#x27;s thread for as long as it takes.
+import java.util.concurrent.*;
+
+public class NoTimeoutBlocksForever {
+    static String slowDownstreamCall() throws InterruptedException {
+        Thread.sleep(5000); // simulates a hung/slow dependency
+        return &quot;result&quot;;
+    }
+
+    public static void main(String[] args) throws Exception {
+        long start = System.currentTimeMillis();
+        System.out.println(&quot;Calling downstream with NO timeout...&quot;);
+        String result = slowDownstreamCall(); // blocks for the FULL 5 seconds, no matter what
+        System.out.println(&quot;Got result: &quot; + result + &quot; after &quot; + (System.currentTimeMillis() - start) + &quot;ms&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NoTimeoutBlocksForever.java</code></p>
+<p>The caller invokes <code>slowDownstreamCall()</code> directly and simply waits — the call takes 5 seconds and the caller&#x27;s thread is blocked for the entire duration, no matter how long that turns out to be. If the downstream dependency were actually hung indefinitely rather than just slow, this call would never return, and the calling thread would be lost forever.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: FutureWithTimeout.java -- run the same slow call on a separate
+// thread via a Future, and bound the wait using Future.get(timeout),
+// giving up with a TimeoutException instead of blocking indefinitely.
+import java.util.concurrent.*;
+
+public class FutureWithTimeout {
+    static String slowDownstreamCall() throws InterruptedException {
+        Thread.sleep(5000);
+        return &quot;result&quot;;
+    }
+
+    public static void main(String[] args) throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future&lt;String&gt; future = executor.submit(FutureWithTimeout::slowDownstreamCall);
+
+        long start = System.currentTimeMillis();
+        try {
+            String result = future.get(2, TimeUnit.SECONDS); // BOUNDED wait, 2s max
+            System.out.println(&quot;Got result: &quot; + result);
+        } catch (TimeoutException e) {
+            System.out.println(&quot;TIMED OUT after &quot; + (System.currentTimeMillis() - start)
+                    + &quot;ms -- gave up waiting instead of blocking for the full 5s&quot;);
+            future.cancel(true); // attempt to interrupt the still-running call
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java FutureWithTimeout.java</code></p>
+<p>The same 5-second slow call now runs on a background thread via <code>ExecutorService.submit</code>, returning a <code>Future</code>. The main thread calls <code>future.get(2, TimeUnit.SECONDS)</code>, which bounds the wait to 2 seconds. Because the call takes 5 seconds, <code>get</code> throws a <code>TimeoutException</code> after 2 seconds — the caller gives up on a fixed, predictable schedule instead of waiting the full 5, and calls <code>future.cancel(true)</code> to attempt to interrupt the still-running background task.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: TimeLimiterWithFallback.java -- Resilience4j&#x27;s TimeLimiter over
+// an async call, decorated with automatic cancellation on timeout and
+// combined with a fallback so the caller gets a usable degraded result
+// instead of a raw exception. (Needs resilience4j-timelimiter on the classpath.)
+import io.github.resilience4j.timelimiter.TimeLimiter;
+import io.github.resilience4j.timelimiter.TimeLimiterConfig;
+import java.time.Duration;
+import java.util.concurrent.*;
+
+public class TimeLimiterWithFallback {
+    static CompletableFuture&lt;String&gt; slowDownstreamCallAsync(ScheduledExecutorService scheduler) {
+        CompletableFuture&lt;String&gt; future = new CompletableFuture&lt;&gt;();
+        scheduler.schedule(() -&gt; future.complete(&quot;real result&quot;), 5, TimeUnit.SECONDS); // simulates a slow dependency
+        return future;
+    }
+
+    static String withFallback(Callable&lt;String&gt; decorated) {
+        try {
+            return decorated.call();
+        } catch (TimeoutException e) {
+            return &quot;DEGRADED: showing cached/default data because downstream timed out&quot;;
+        } catch (Exception e) {
+            return &quot;DEGRADED: unexpected error, falling back&quot;;
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        TimeLimiterConfig config = TimeLimiterConfig.custom()
+                .timeoutDuration(Duration.ofSeconds(2))
+                .cancelRunningFuture(true)
+                .build();
+        TimeLimiter timeLimiter = TimeLimiter.of(config);
+        ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+
+        Callable&lt;CompletionStage&lt;String&gt;&gt; supplier = () -&gt; slowDownstreamCallAsync(scheduler);
+        Callable&lt;String&gt; decorated = TimeLimiter.decorateFutureSupplier(timeLimiter, supplier);
+
+        long start = System.currentTimeMillis();
+        String result = withFallback(decorated);
+        System.out.println(&quot;Result: &quot; + result + &quot; (after &quot; + (System.currentTimeMillis() - start) + &quot;ms)&quot;);
+        scheduler.shutdown();
+    }
+}</code></pre>
+<p>How to run: <code>java -cp .:resilience4j-timelimiter-2.2.0.jar:resilience4j-core-2.2.0.jar TimeLimiterWithFallback.java</code> (with the Resilience4j TimeLimiter jars on the classpath; in a Spring Boot project this is normally pulled in via <code>spring-cloud-starter-circuitbreaker-resilience4j</code> and configured declaratively).</p>
+<p>The downstream call is scheduled to complete after 5 seconds, but the <code>TimeLimiter</code> is configured with a 2-second <code>timeoutDuration</code> and <code>cancelRunningFuture(true)</code>. Calling <code>decorated.call()</code> starts the async call and races it against the 2-second timer; since the call takes longer, the <code>TimeLimiter</code> throws a <code>TimeoutException</code> at the 2-second mark and, because <code>cancelRunningFuture</code> is enabled, attempts to cancel the underlying <code>CompletableFuture</code> so the &quot;wasted&quot; work is abandoned rather than silently completing later and being ignored. The <code>withFallback</code> wrapper catches that <code>TimeoutException</code> and returns a degraded-but-usable result instead of propagating a raw exception to the end user — this is the production pattern: timeout bounds the wait, and a fallback turns the resulting failure into a graceful degradation.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>TimeLimiterWithFallback.main</code> in order. <strong>First</strong>, a <code>TimeLimiterConfig</code> is built with a 2-second timeout and cancellation enabled, and a <code>TimeLimiter</code> is constructed from it.</p>
+<p><strong>Next</strong>, <code>supplier</code> is defined as a <code>Callable</code> that, when invoked, calls <code>slowDownstreamCallAsync(scheduler)</code> — this schedules a task to complete the future 5 seconds later and returns the (not-yet-complete) <code>CompletableFuture</code> immediately. <code>TimeLimiter.decorateFutureSupplier</code> wraps this into <code>decorated</code>, a synchronous <code>Callable&lt;String&gt;</code> that internally manages the race between the future and the timer.</p>
+<p><strong><code>withFallback(decorated)</code> is called</strong>, which calls <code>decorated.call()</code> inside a try block. This is where the race actually happens: internally, the <code>TimeLimiter</code> invokes <code>supplier.call()</code> to kick off the async call (starting the 5-second scheduled completion), then waits up to 2 seconds for that future to complete.</p>
+<p><strong>At the 2-second mark</strong>, the future still has not completed (it needs 5 seconds total), so the <code>TimeLimiter</code> throws a <code>TimeoutException</code> from <code>decorated.call()</code>. Because <code>cancelRunningFuture(true)</code> was set, it also calls <code>cancel()</code> on the underlying future — if the downstream call supported real cancellation (e.g., an HTTP client that aborts the socket), this would stop the wasted work; here it just marks the future as cancelled so its eventual completion 3 seconds later is a no-op.</p>
+<p><strong>Back in <code>withFallback</code></strong>, the <code>catch (TimeoutException e)</code> block catches this and returns the degraded string <code>&quot;DEGRADED: showing cached/default data...&quot;</code> instead of letting the exception propagate further up.</p>
+<p><strong>Finally</strong>, <code>main</code> prints the result and the elapsed time, which comes out around 2000ms — bounded by the configured timeout, not the call&#x27;s actual 5-second duration.</p>
+<pre><code>supplier.call() starts async work (needs 5s)
+        |
+        |&lt;---- race ----&gt;|
+        |                |
+   [future completes]  [2s timer fires FIRST]
+        |                |
+     (never reached    TimeoutException -&gt; cancel() -&gt; withFallback() -&gt; &quot;DEGRADED: ...&quot; returned to caller
+      in this run)</code></pre>
+<p>Conceptually, this is a &quot;request/response&quot; even though it&#x27;s in-process: the &quot;request&quot; is the call to <code>withFallback(decorated)</code>, and the &quot;response&quot; — after roughly 2000ms instead of 5000ms — is the string <code>&quot;DEGRADED: showing cached/default data because downstream timed out&quot;</code>.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A timeout without cancellation just stops *waiting* — the underlying call may keep running in the background, consuming resources (a thread, a connection, CPU) that never get freed until it eventually finishes on its own. Always pair a timeout with cancellation of the underlying work wherever the client library supports it.</blockquote>
+<ul><li>Every outbound network call needs a timeout; the timeout should be tuned per call based on the callee&#x27;s expected latency (a fast cache lookup and a slow batch report generator need very different timeouts).</li><li><code>TimeLimiter</code> in Resilience4j is designed for asynchronous calls (<code>CompletableFuture</code>); pair it with <code>cancelRunningFuture(true)</code> so timed-out work is actually abandoned, not left running.</li><li>A timeout produces a predictable failure — pair it with a <a href="0282-fallback-methods-default-responses.md">fallback</a> or <a href="0259-retry-pattern.md">retry</a> so that predictable failure turns into a good user experience rather than just a faster error.</li><li>Setting a timeout too aggressively causes false-positive failures under normal, brief load spikes; setting it too loosely defeats the purpose — base the value on measured p99 latency of the actual dependency, not a guess.</li></ul>
+  <div class="nav"><a class="prv" href="0279-throttling-load-shedding.html"><span class="mini">← Previous</span>Throttling & load shedding</a><a class="nxt" href="0281-connect-vs-read-timeouts.html"><span class="mini">Next →</span>Connect vs read timeouts</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t280";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

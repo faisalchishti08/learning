@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Result caching for resiliency" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Result caching for resiliency"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Result caching for resiliency is the broader practice of caching the *results* of calls to a dependency — not only to use as a fallback during failures (see <a href="0284-cache-as-fallback-stale-data.md">cache as fallback</a>), but proactively, on the normal success path, so that most requests never need to reach the fragile dependency at all. Fewer calls reaching a downstream dependency means fewer opportunities for that dependency&#x27;s slowness or instability to affect the caller, and it means the dependency itself experiences less load, which can prevent it from becoming overloaded and failing in the first place.</p>
+<h2>2. Why &amp; when</h2>
+<p>Every resilience pattern discussed so far — <a href="0250-circuit-breaker-pattern.md">circuit breaker</a>, <a href="0259-retry-pattern.md">retry</a>, <a href="0267-bulkhead-pattern.md">bulkhead</a>, <a href="0273-rate-limiter-pattern.md">rate limiter</a>, <a href="0280-timeout-pattern-timelimiter.md">timeout</a> — reacts to a call that has already been made. Caching is different: it reduces how often the call needs to be made in the first place, attacking the problem upstream of all those other patterns. A request that&#x27;s served entirely from cache cannot time out, cannot trip a circuit breaker, and cannot be rate-limited by the dependency, because it never touches the dependency at all.</p>
+<p>This has a second, less obvious resiliency benefit beyond serving individual requests faster: it reduces aggregate load on the dependency, which directly helps that dependency stay healthy under traffic spikes — a caching layer in front of a database or downstream service effectively multiplies that dependency&#x27;s practical capacity. Use result caching wherever data is read far more often than it changes (a very common pattern — product catalogs, configuration, reference data, computed aggregates) and a short period of staleness on reads is acceptable.</p>
+<h2>3. Core concept</h2>
+<p>A read-through cache checks the cache first; on a miss, it calls the underlying dependency, stores the result with a time-to-live (TTL), and returns it — subsequent reads within the TTL are served entirely from cache.</p>
+<pre><code class="lang-java">class ReadThroughCache&lt;K, V&gt; {
+    record Entry&lt;V&gt;(V value, long expiresAtMillis) {}
+    final java.util.Map&lt;K, Entry&lt;V&gt;&gt; store = new java.util.concurrent.ConcurrentHashMap&lt;&gt;();
+    final long ttlMillis;
+
+    ReadThroughCache(long ttlMillis) { this.ttlMillis = ttlMillis; }
+
+    V get(K key, java.util.function.Function&lt;K, V&gt; loader) {
+        Entry&lt;V&gt; entry = store.get(key);
+        if (entry != null &amp;&amp; System.currentTimeMillis() &lt; entry.expiresAtMillis()) {
+            return entry.value(); // CACHE HIT -- dependency never called
+        }
+        V loaded = loader.apply(key); // CACHE MISS -- dependency called ONCE, result stored
+        store.put(key, new Entry&lt;&gt;(loaded, System.currentTimeMillis() + ttlMillis));
+        return loaded;
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Most requests hit the cache and are served without ever reaching the downstream dependency; only cache misses reach the dependency, which sees dramatically reduced load and is correspondingly less likely to become overloaded or unstable">
+  <rect x="30" y="60" width="120" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="90" y="84" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">many requests</text>
+
+  <line x1="150" y1="80" x2="260" y2="50" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr285)"/>
+  <text x="220" y="35" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">cache HIT (most)</text>
+  <rect x="260" y="20" width="130" height="40" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="325" y="44" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">served from cache</text>
+
+  <line x1="150" y1="85" x2="260" y2="120" stroke="#8b949e" marker-end="url(#arr285)"/>
+  <text x="220" y="140" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">cache MISS (few)</text>
+  <rect x="260" y="100" width="130" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="325" y="124" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">dependency call</text>
+
+  <text x="500" y="124" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">dependency sees far less load overall</text>
+
+  <defs><marker id="arr285" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Most traffic is absorbed by the cache; only a small fraction of requests ever put load on the actual dependency.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: repeated identical calls hitting a slow dependency directly on every request, extended to add a read-through cache with a TTL that dramatically cuts the number of dependency calls, and finally adding request coalescing so that concurrent cache misses for the same key trigger only one dependency call instead of one per concurrent caller — a common production refinement called the &quot;thundering herd&quot; fix.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoCachingHitsDependencyEveryTime.java -- every request calls
+// the (simulated slow) dependency directly, even for the exact same key
+// requested repeatedly within a short window.
+public class NoCachingHitsDependencyEveryTime {
+    static int callCount = 0;
+    static String fetchProductName(String productId) {
+        callCount++;
+        return &quot;Product-&quot; + productId; // pretend this is an expensive/slow DB call
+    }
+
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 5; i++) {
+            System.out.println(&quot;Request &quot; + (i + 1) + &quot;: &quot; + fetchProductName(&quot;sku-123&quot;));
+        }
+        System.out.println(&quot;Total dependency calls: &quot; + callCount + &quot; (for 5 identical requests)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NoCachingHitsDependencyEveryTime.java</code></p>
+<p>Five requests for the exact same product ID each call <code>fetchProductName</code> directly, so the dependency is hit five times for data that never changed between calls. Under real load — thousands of requests per second for popular, mostly-static data — this pattern needlessly multiplies load on the dependency by the request volume.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ReadThroughCacheReducesLoad.java -- the same five requests now
+// go through a read-through cache with a TTL; only the FIRST request for
+// a given key reaches the dependency, the rest are served from cache.
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+
+public class ReadThroughCacheReducesLoad {
+    static int callCount = 0;
+    static String fetchProductName(String productId) {
+        callCount++;
+        return &quot;Product-&quot; + productId;
+    }
+
+    record Entry(String value, long expiresAtMillis) {}
+    static final Map&lt;String, Entry&gt; cache = new ConcurrentHashMap&lt;&gt;();
+    static final long ttlMillis = 5000;
+
+    static String getWithCache(String productId) {
+        Entry entry = cache.get(productId);
+        if (entry != null &amp;&amp; System.currentTimeMillis() &lt; entry.expiresAtMillis()) {
+            return entry.value(); // HIT
+        }
+        String loaded = fetchProductName(productId); // MISS
+        cache.put(productId, new Entry(loaded, System.currentTimeMillis() + ttlMillis));
+        return loaded;
+    }
+
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 5; i++) {
+            System.out.println(&quot;Request &quot; + (i + 1) + &quot;: &quot; + getWithCache(&quot;sku-123&quot;));
+        }
+        System.out.println(&quot;Total dependency calls: &quot; + callCount + &quot; (for 5 identical requests, TTL=&quot; + ttlMillis + &quot;ms)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ReadThroughCacheReducesLoad.java</code></p>
+<p>The first request for <code>&quot;sku-123&quot;</code> misses the cache, calls <code>fetchProductName</code> (call count becomes 1), and stores the result with a 5-second expiry. The remaining four requests, arriving well within that 5-second window, find a valid cache entry and are served without ever calling <code>fetchProductName</code> again. The dependency call count stays at 1 instead of 5 — an 80% reduction in load for this small example, which scales proportionally with request volume in a real system.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: CoalescingCacheAvoidsThunderingHerd.java -- CONCURRENT requests
+// for the same uncached key would each independently see a cache miss
+// and all call the dependency simultaneously (a &quot;thundering herd&quot;).
+// This version coalesces concurrent misses for the same key into a
+// single in-flight dependency call that all callers share.
+import java.util.Map;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class CoalescingCacheAvoidsThunderingHerd {
+    static AtomicInteger callCount = new AtomicInteger(0);
+    static String fetchProductName(String productId) throws InterruptedException {
+        callCount.incrementAndGet();
+        Thread.sleep(200); // simulate a slow dependency call
+        return &quot;Product-&quot; + productId;
+    }
+
+    static final Map&lt;String, CompletableFuture&lt;String&gt;&gt; inFlight = new ConcurrentHashMap&lt;&gt;();
+
+    static CompletableFuture&lt;String&gt; getCoalesced(String productId) {
+        // computeIfAbsent is atomic: only the FIRST concurrent caller for a
+        // given key actually starts the dependency call; everyone else gets
+        // the SAME in-flight future and simply awaits its result.
+        return inFlight.computeIfAbsent(productId, key -&gt; CompletableFuture.supplyAsync(() -&gt; {
+            try { return fetchProductName(key); }
+            catch (InterruptedException e) { throw new RuntimeException(e); }
+        }).whenComplete((result, ex) -&gt; inFlight.remove(productId))); // clear once done, so future requests refetch
+    }
+
+    public static void main(String[] args) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(10);
+        CountDownLatch done = new CountDownLatch(10);
+        // 10 CONCURRENT requests for the SAME key, simulating a burst against a cold cache.
+        for (int i = 0; i &lt; 10; i++) {
+            pool.submit(() -&gt; {
+                try { getCoalesced(&quot;sku-123&quot;).get(); } catch (Exception ignored) {}
+                done.countDown();
+            });
+        }
+        done.await();
+        pool.shutdown();
+        System.out.println(&quot;Total dependency calls for 10 CONCURRENT identical requests: &quot; + callCount.get());
+    }
+}</code></pre>
+<p>How to run: <code>java CoalescingCacheAvoidsThunderingHerd.java</code></p>
+<p>Ten threads simultaneously request the same product ID against a cold cache. Without coalescing, all ten would see a miss at roughly the same instant and all ten would call the slow dependency concurrently — a thundering herd that can itself overload the dependency, especially right after a cache-wide expiry or a cold start affecting a popular key. Here, <code>inFlight.computeIfAbsent</code> is atomic: only the very first caller to reach it actually creates and starts the <code>CompletableFuture</code> that calls <code>fetchProductName</code>; the other nine callers, arriving while that future is still in flight, get the *same* future object back and simply wait on it via <code>.get()</code>. The final printed call count is 1, not 10 — the dependency was protected from the burst entirely, and all ten callers still got the correct result.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>CoalescingCacheAvoidsThunderingHerd.main</code> in execution order. <strong>First</strong>, a 10-thread pool is created and 10 tasks are submitted almost simultaneously, each calling <code>getCoalesced(&quot;sku-123&quot;)</code> and blocking on <code>.get()</code>.</p>
+<p><strong>The first task to actually execute <code>inFlight.computeIfAbsent(&quot;sku-123&quot;, ...)</code></strong> finds no existing entry for that key, so it runs the supplied lambda: it creates a <code>CompletableFuture</code> via <code>CompletableFuture.supplyAsync</code>, which schedules <code>fetchProductName(&quot;sku-123&quot;)</code> to run asynchronously (incrementing <code>callCount</code> to 1 and sleeping 200ms to simulate real work), and stores this future in the <code>inFlight</code> map under <code>&quot;sku-123&quot;</code>.</p>
+<p><strong>The remaining nine tasks</strong>, executing <code>computeIfAbsent</code> for the same key while that entry already exists (even though the underlying call hasn&#x27;t finished yet — the map holds the *future*, not the result), simply receive the same already-present <code>CompletableFuture</code> object. <code>computeIfAbsent</code> guarantees this atomically: no two threads can both observe &quot;key absent&quot; and both proceed to create a new future for the same key.</p>
+<p><strong>All ten tasks then call <code>.get()</code></strong> on what is, for nine of them, someone else&#x27;s already-in-flight future. <code>.get()</code> blocks each calling thread until that future completes — since it&#x27;s the same future object for all ten, they all unblock together once the single underlying <code>fetchProductName</code> call finishes after its 200ms sleep.</p>
+<p><strong>Once the future completes</strong>, its <code>whenComplete</code> callback removes the entry from <code>inFlight</code> — this is important: it means a *future* burst of requests for <code>&quot;sku-123&quot;</code> (after this one has resolved) will again see the key absent and trigger exactly one new dependency call, rather than the coalescing entry lingering forever and never refreshing.</p>
+<p><strong>Final state</strong>: <code>callCount</code> is 1, all ten tasks received the correct, identical result, and the dependency experienced exactly one 200ms call instead of ten concurrent ones — precisely the load-shielding this pattern is designed to provide.</p>
+<pre><code>10 threads call getCoalesced(&quot;sku-123&quot;) near-simultaneously
+        |
+        v
+inFlight.computeIfAbsent(&quot;sku-123&quot;, ...)   &lt;- ATOMIC: only ONE thread actually creates the future
+        |
+   thread #1 creates future -&gt; calls fetchProductName() ONCE
+   threads #2-10 -&gt; receive the SAME future, just await it
+        |
+        v
+future completes -&gt; all 10 threads unblock with the SAME result -&gt; entry removed from inFlight</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Caching without coalescing does not fully protect a dependency during a burst — a cold cache (startup, expiry, or eviction) hit by many concurrent requests for the same key can still produce a thundering herd of simultaneous dependency calls even though every individual request &quot;correctly&quot; checked the cache first.</blockquote>
+<ul><li>Result caching is the only resilience pattern here that *reduces* load on a dependency rather than just reacting to failures of it — it&#x27;s often the highest-leverage change for both latency and stability.</li><li>Set the TTL based on how tolerable staleness is for that specific data and how much load reduction is needed — there is a direct tradeoff between freshness and dependency load.</li><li>Request coalescing (sharing one in-flight call across many concurrent callers for the same key) specifically prevents cache-miss bursts from becoming dependency-overload events, which is especially important right after a deploy, a cache flush, or a TTL expiring on a very popular key.</li><li>Combine result caching with <a href="0284-cache-as-fallback-stale-data.md">cache as fallback</a>: the same cache infrastructure that reduces normal-path load can also serve as the emergency fallback during an actual outage, by relaxing (or ignoring) the TTL check specifically on the failure path.</li></ul>
+  <div class="nav"><a class="prv" href="0284-cache-as-fallback-stale-data.html"><span class="mini">← Previous</span>Cache as fallback (stale data)</a><a class="nxt" href="0286-fail-fast-pattern.html"><span class="mini">Next →</span>Fail fast pattern</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t285";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

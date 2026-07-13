@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Distributed rate limiting (Redis-backed)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Distributed rate limiting (Redis-backed)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Distributed rate limiting is the practice of enforcing a rate limit across *multiple* instances of a service — for example, five replicas of the same API behind a load balancer — by storing the counter state in a shared, external store like Redis instead of in each instance&#x27;s local memory. Every instance reads and updates the same shared counter, so the limit applies to the caller&#x27;s total traffic across the whole fleet, not just the traffic that happened to land on one instance.</p>
+<h2>2. Why &amp; when</h2>
+<p>An in-memory limiter like the ones built in <a href="0274-token-bucket-algorithm.md">token bucket</a> or <a href="0276-fixed-window-sliding-window-counters.md">fixed/sliding window counters</a> works correctly only when there is exactly one instance enforcing it. The moment a service scales horizontally to N instances behind a load balancer, each instance holds its *own* independent counter — a client sending requests that get spread round-robin across five instances, each with a local limit of 100/minute, can actually push up to 500/minute through the fleet as a whole, five times the intended limit.</p>
+<p>Redis (or a similar fast, shared, atomic store) fixes this by centralizing the counter: every instance increments and checks the *same* key, so the limit is enforced against the caller&#x27;s true aggregate traffic regardless of which instance handles any given request. Use distributed rate limiting whenever the service that needs the limit runs more than one instance, which is the normal case for any production microservice behind a load balancer.</p>
+<h2>3. Core concept</h2>
+<p>Each check-and-increment must be atomic to avoid a race where two instances both read the counter as &quot;under limit&quot; at the same moment and both increment, overshooting. Redis provides this atomicity via a single command (<code>INCR</code> with <code>EXPIRE</code>) or, for more complex logic like token bucket, a small Lua script executed atomically on the Redis server itself.</p>
+<pre><code class="lang-java">// Conceptual Redis-backed fixed-window limiter (pseudocode over a Redis client).
+class RedisRateLimiter {
+    boolean allow(String clientId, int limit, long windowSeconds) {
+        String key = &quot;ratelimit:&quot; + clientId + &quot;:&quot; + (System.currentTimeMillis() / (windowSeconds * 1000));
+        long count = redis.incr(key);          // ATOMIC increment on the SHARED store
+        if (count == 1) redis.expire(key, windowSeconds); // set TTL only on the FIRST hit
+        return count &lt;= limit;                 // decision based on the FLEET-WIDE total
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Multiple service instances each check and increment the same shared counter key in Redis, so the rate limit applies to the caller's total traffic across the whole fleet rather than to each instance independently">
+  <rect x="30" y="20" width="90" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="75" y="44" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Instance A</text>
+  <rect x="30" y="80" width="90" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="75" y="104" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Instance B</text>
+  <rect x="30" y="140" width="90" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="75" y="164" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Instance C</text>
+
+  <line x1="120" y1="40" x2="280" y2="95" stroke="#8b949e" marker-end="url(#arr278)"/>
+  <line x1="120" y1="100" x2="280" y2="100" stroke="#8b949e" marker-end="url(#arr278)"/>
+  <line x1="120" y1="160" x2="280" y2="105" stroke="#8b949e" marker-end="url(#arr278)"/>
+
+  <rect x="290" y="70" width="140" height="60" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="360" y="95" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Redis</text>
+  <text x="360" y="112" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">shared counter (atomic INCR)</text>
+
+  <text x="360" y="20" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">one true, fleet-wide count</text>
+</svg>
+<p>All instances check and increment the same shared Redis key, so the limit reflects the caller&#x27;s fleet-wide total.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: simulating multiple app instances with independent local counters that overshoot a fleet-wide limit, extended to route them through a shared in-memory stand-in for Redis to enforce the true limit, and finally handling the atomicity concern with a race-safe increment plus a TTL for automatic window expiry, mirroring what a real Redis <code>INCR</code>+<code>EXPIRE</code> (or Lua script) does.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: IndependentLocalLimitersOvershoot.java -- three &quot;instances&quot; each
+// enforce the SAME limit independently, in local memory, and together
+// overshoot the intended fleet-wide total.
+public class IndependentLocalLimitersOvershoot {
+    static class LocalLimiter {
+        int count = 0;
+        final int limit = 10;
+        boolean allow() { if (count &lt; limit) { count++; return true; } return false; }
+    }
+
+    public static void main(String[] args) {
+        LocalLimiter instanceA = new LocalLimiter();
+        LocalLimiter instanceB = new LocalLimiter();
+        LocalLimiter instanceC = new LocalLimiter();
+        LocalLimiter[] instances = { instanceA, instanceB, instanceC };
+
+        int totalAllowed = 0;
+        // 30 requests round-robin across 3 instances, each with its own limit of 10.
+        for (int i = 0; i &lt; 30; i++) {
+            LocalLimiter chosen = instances[i % 3];
+            if (chosen.allow()) totalAllowed++;
+        }
+        System.out.println(&quot;Intended fleet-wide limit: 10&quot;);
+        System.out.println(&quot;Actual total allowed across all instances: &quot; + totalAllowed);
+    }
+}</code></pre>
+<p>How to run: <code>java IndependentLocalLimitersOvershoot.java</code></p>
+<p>Thirty requests round-robin across three instances, each independently allowing up to 10. Since the requests are evenly distributed, all 30 get allowed (10 per instance) — three times the intended limit of 10 for the caller. This is the core problem: no shared state means no true fleet-wide enforcement.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SharedCounterAcrossInstances.java -- a stand-in &quot;Redis&quot; object
+// (a plain shared map here) is checked and incremented by every
+// instance, correctly enforcing ONE fleet-wide limit of 10.
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class SharedCounterAcrossInstances {
+    // Stands in for Redis: one shared store all instances talk to.
+    static class FakeRedis {
+        private final ConcurrentHashMap&lt;String, AtomicInteger&gt; counters = new ConcurrentHashMap&lt;&gt;();
+        int incr(String key) {
+            return counters.computeIfAbsent(key, k -&gt; new AtomicInteger(0)).incrementAndGet();
+        }
+    }
+
+    static class RedisBackedLimiter {
+        final FakeRedis redis; final String clientId; final int limit;
+        RedisBackedLimiter(FakeRedis redis, String clientId, int limit) {
+            this.redis = redis; this.clientId = clientId; this.limit = limit;
+        }
+        boolean allow() {
+            int count = redis.incr(&quot;ratelimit:&quot; + clientId);
+            return count &lt;= limit;
+        }
+    }
+
+    public static void main(String[] args) {
+        FakeRedis redis = new FakeRedis();
+        RedisBackedLimiter instanceA = new RedisBackedLimiter(redis, &quot;client-42&quot;, 10);
+        RedisBackedLimiter instanceB = new RedisBackedLimiter(redis, &quot;client-42&quot;, 10);
+        RedisBackedLimiter instanceC = new RedisBackedLimiter(redis, &quot;client-42&quot;, 10);
+        RedisBackedLimiter[] instances = { instanceA, instanceB, instanceC };
+
+        int totalAllowed = 0;
+        for (int i = 0; i &lt; 30; i++) {
+            if (instances[i % 3].allow()) totalAllowed++;
+        }
+        System.out.println(&quot;Intended fleet-wide limit: 10&quot;);
+        System.out.println(&quot;Actual total allowed across all instances: &quot; + totalAllowed);
+    }
+}</code></pre>
+<p>How to run: <code>java SharedCounterAcrossInstances.java</code></p>
+<p>Same 30 requests, same round-robin distribution across three logical instances, but now every instance shares one <code>FakeRedis</code> store and increments the *same* key (<code>&quot;ratelimit:client-42&quot;</code>). Only the first 10 of the 30 requests (across all instances combined) get <code>count &lt;= limit</code>; the rest are correctly rejected. The total allowed now matches the intended limit of 10, regardless of how traffic is distributed across instances.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: RaceSafeWindowedLimiter.java -- adds what a real Redis-backed
+// limiter needs in production: an atomic check-and-increment under
+// concurrent access from multiple threads (simulating multiple instances
+// hitting Redis at once), plus a time-windowed key so old counters expire.
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.*;
+
+public class RaceSafeWindowedLimiter {
+    static class FakeRedis {
+        private final ConcurrentHashMap&lt;String, AtomicLong&gt; counters = new ConcurrentHashMap&lt;&gt;();
+        // Mirrors Redis&#x27;s atomic INCR: safe even under concurrent callers.
+        long incr(String key) {
+            return counters.computeIfAbsent(key, k -&gt; new AtomicLong(0)).incrementAndGet();
+        }
+    }
+
+    static class WindowedRedisLimiter {
+        final FakeRedis redis; final String clientId; final int limit; final long windowSeconds;
+        WindowedRedisLimiter(FakeRedis redis, String clientId, int limit, long windowSeconds) {
+            this.redis = redis; this.clientId = clientId; this.limit = limit; this.windowSeconds = windowSeconds;
+        }
+        boolean allow() {
+            long windowBucket = System.currentTimeMillis() / (windowSeconds * 1000);
+            String key = &quot;ratelimit:&quot; + clientId + &quot;:&quot; + windowBucket; // TTL-equivalent: key changes per window
+            long count = redis.incr(key); // ATOMIC -- no lost updates even under a race
+            return count &lt;= limit;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        FakeRedis redis = new FakeRedis();
+        WindowedRedisLimiter[] instances = new WindowedRedisLimiter[5];
+        for (int i = 0; i &lt; 5; i++) instances[i] = new WindowedRedisLimiter(redis, &quot;client-42&quot;, 20, 1);
+
+        ExecutorService pool = Executors.newFixedThreadPool(5);
+        java.util.concurrent.atomic.AtomicInteger totalAllowed = new java.util.concurrent.atomic.AtomicInteger(0);
+        CountDownLatch done = new CountDownLatch(100);
+
+        // 100 requests fired CONCURRENTLY across 5 simulated instances --
+        // the exact race condition a naive check-then-increment would lose.
+        for (int i = 0; i &lt; 100; i++) {
+            WindowedRedisLimiter chosen = instances[i % 5];
+            pool.submit(() -&gt; {
+                if (chosen.allow()) totalAllowed.incrementAndGet();
+                done.countDown();
+            });
+        }
+        done.await();
+        pool.shutdown();
+        System.out.println(&quot;Intended fleet-wide limit: 20 (per 1s window)&quot;);
+        System.out.println(&quot;Actual total allowed under concurrent load: &quot; + totalAllowed.get());
+    }
+}</code></pre>
+<p>How to run: <code>java RaceSafeWindowedLimiter.java</code></p>
+<p>One hundred requests fire concurrently (via a thread pool, simulating five real service instances each fielding traffic in parallel) against a shared limiter with a fleet-wide limit of 20 per 1-second window. Because <code>FakeRedis.incr</code> uses <code>AtomicLong.incrementAndGet</code>, which is a single atomic hardware-level operation, no two concurrent callers can both read the same &quot;current count&quot; and both proceed — exactly matching what Redis&#x27;s real <code>INCR</code> command guarantees (Redis processes commands single-threaded internally, so <code>INCR</code> is inherently atomic even under massive concurrent client load). The result prints an allowed total of exactly 20, no more, no less, even though 100 requests arrived simultaneously across 5 concurrent &quot;instances.&quot; The window-bucketed key (<code>windowBucket = now / windowSeconds</code>) also means old counters are naturally abandoned once the bucket changes — the real Redis equivalent uses <code>EXPIRE</code> to physically delete the key after the window passes, freeing memory.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>RaceSafeWindowedLimiter.main</code> in order. <strong>First</strong>, a shared <code>FakeRedis</code> store is created along with five <code>WindowedRedisLimiter</code> instances, all configured with the same <code>clientId</code>, <code>limit=20</code>, and <code>windowSeconds=1</code> — modeling five service replicas that all talk to the same Redis.</p>
+<p><strong>Next</strong>, 100 tasks are submitted to a 5-thread pool. Each task picks one of the five limiter &quot;instances&quot; (round-robin) and calls <code>allow()</code> concurrently with the other 99.</p>
+<p><strong>Inside <code>allow()</code></strong>, each call first computes <code>windowBucket</code> from the current time — this groups all calls within the same second into the same Redis key, e.g. <code>&quot;ratelimit:client-42:29384701&quot;</code>. It then calls <code>redis.incr(key)</code>.</p>
+<p><strong>Inside <code>FakeRedis.incr</code></strong>, <code>computeIfAbsent</code> retrieves (or lazily creates) the <code>AtomicLong</code> for that key, and <code>incrementAndGet()</code> atomically bumps it and returns the new value — this is the critical step: even with 100 threads calling this concurrently, the JVM&#x27;s atomic compare-and-swap under the hood guarantees every increment is counted exactly once and no two threads ever see the same &quot;before&quot; value. This mirrors Redis&#x27;s real behavior, where all commands against a single key execute one at a time on the Redis server.</p>
+<p><strong>Back in <code>allow()</code></strong>, the returned count is compared against <code>limit</code> — the first 20 calls (across *all* threads and *all* five &quot;instances&quot; combined) that reach this point return <code>true</code>; the remaining 80 see a count already above 20 and return <code>false</code>.</p>
+<p><strong>State transformation across layers</strong>: a raw concurrent burst of 100 requests enters the thread pool (dispatch layer) → each is routed to one of five limiter objects standing in for service instances (routing layer) → each limiter delegates the actual accounting to the single shared <code>FakeRedis</code> (data layer) → the atomic increment there produces one true, fleet-wide sequence number per request → that number flows back up through the limiter (business-logic layer, compares against limit) → and finally back to the caller as a boolean allow/deny decision.</p>
+<pre><code>100 concurrent requests
+   |
+   v
+[5 limiter &quot;instances&quot;] --all incr()--&gt; [ONE shared FakeRedis counter, atomic]
+   |
+   v
+first 20 (fleet-wide, order-independent) -&gt; allowed
+remaining 80 -&gt; denied</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A naive &quot;read count, compare, then write count+1&quot; sequence against a shared store is NOT safe under concurrency — two callers can both read the same stale count before either writes, both proceeding when only one should. The store operation itself must be atomic (Redis&#x27;s <code>INCR</code>, or a Lua script for anything more complex than a plain counter).</blockquote>
+<ul><li>Local, per-instance limiters silently multiply the effective limit by the number of instances — always use a shared store once a service scales beyond one instance.</li><li>Redis is the standard choice for this because <code>INCR</code> is atomic by construction and Redis operations are extremely low-latency, keeping the added round trip cheap.</li><li>For algorithms more complex than a plain counter (e.g., a real token bucket with fractional refill), use a Redis Lua script (<code>EVAL</code>) so the entire read-modify-write sequence executes atomically on the Redis server in one round trip, rather than as several separate commands from the client that could race.</li><li>Use a TTL (or a window-bucketed key, as shown) so old counters are automatically cleaned up — an ever-growing set of stale keys is a memory leak in the rate limiter&#x27;s backing store.</li></ul>
+  <div class="nav"><a class="prv" href="0277-client-side-vs-server-side-rate-limiting.html"><span class="mini">← Previous</span>Client-side vs server-side rate limiting</a><a class="nxt" href="0279-throttling-load-shedding.html"><span class="mini">Next →</span>Throttling & load shedding</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t278";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

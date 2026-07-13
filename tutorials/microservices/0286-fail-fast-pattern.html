@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Fail fast pattern" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Fail fast pattern"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The fail-fast pattern, in a resiliency context, means rejecting a request or aborting an operation at the *earliest possible point* once it&#x27;s known to be doomed or invalid — before spending any real resources (threads, connections, downstream calls) on work that cannot succeed. This is distinct from the general fail-fast-vs-fail-silent <a href="0283-fail-fast-vs-fail-silent.md">philosophy</a> about whether to surface errors loudly; this pattern is specifically about *when* in the request&#x27;s lifecycle the rejection happens: as close to the entry point as possible, rather than deep inside a call chain after resources have already been committed.</p>
+<h2>2. Why &amp; when</h2>
+<p>Every step a request takes before failing — acquiring a connection, entering a thread pool, calling a downstream service, waiting on a lock — costs resources that are then wasted if the request was always going to fail anyway. Under load, this waste compounds: if 30% of incoming requests are invalid or targeting a known-unhealthy dependency, letting all of them proceed partway through expensive processing before failing means the system is spending real capacity on work with zero chance of succeeding, capacity that could have served the other 70% of legitimate requests instead.</p>
+<p>Fail-fast checks belong at the boundary of a component, checked *before* any expensive work begins: input validation, authentication/authorization, a already-open <a href="0250-circuit-breaker-pattern.md">circuit breaker</a> for a known-unhealthy dependency, or a <a href="0267-bulkhead-pattern.md">bulkhead</a>/<a href="0273-rate-limiter-pattern.md">rate limiter</a> that&#x27;s already at capacity. Use it anywhere a cheap, early check can definitively rule out success, so that capacity is reserved for requests that actually have a chance.</p>
+<h2>3. Core concept</h2>
+<p>Order matters: cheap, definitive checks run first and reject immediately; expensive work only starts once every cheap check has passed.</p>
+<pre><code class="lang-java">Response handle(Request request) {
+    if (!isValid(request)) return reject(400, &quot;invalid request&quot;);        // CHEAPEST check first
+    if (!isAuthorized(request)) return reject(403, &quot;not authorized&quot;);    // still cheap, no I/O
+    if (circuitBreaker.getState() == State.OPEN) return reject(503, &quot;dependency known unhealthy&quot;); // no network call attempted
+    if (!bulkhead.tryAcquire()) return reject(503, &quot;at capacity&quot;);        // no thread/connection consumed
+    // ONLY NOW, after every cheap check passed, do the expensive work:
+    return callExpensiveDownstreamService(request);
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A chain of cheap checks runs first, each able to reject the request immediately and cheaply; only once every cheap check passes does the expensive downstream work begin, so resources are never wasted on requests that were always going to fail">
+  <rect x="20" y="60" width="90" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="65" y="84" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">validate</text>
+
+  <rect x="130" y="60" width="90" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="175" y="84" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">authorize</text>
+
+  <rect x="240" y="60" width="110" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="295" y="84" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">circuit open?</text>
+
+  <rect x="370" y="60" width="90" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="415" y="84" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">capacity?</text>
+
+  <rect x="480" y="60" width="130" height="40" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="545" y="84" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">expensive call</text>
+
+  <line x1="110" y1="80" x2="130" y2="80" stroke="#8b949e" marker-end="url(#arr286)"/>
+  <line x1="220" y1="80" x2="240" y2="80" stroke="#8b949e" marker-end="url(#arr286)"/>
+  <line x1="350" y1="80" x2="370" y2="80" stroke="#8b949e" marker-end="url(#arr286)"/>
+  <line x1="460" y1="80" x2="480" y2="80" stroke="#8b949e" marker-end="url(#arr286)"/>
+
+  <text x="65" y="120" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">reject: cheapest</text>
+  <text x="545" y="120" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">only reached once ALL checks pass</text>
+  <defs><marker id="arr286" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Cheap checks run first and can reject immediately; the expensive work only ever runs once every cheap check has passed.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a request handler that validates input only after already having made an expensive downstream call, extended to reorder checks so cheap validation happens first, and finally adding a full ordered chain — validation, authorization, a circuit-breaker check, and a capacity check — all before the expensive call, measuring how much wasted work is avoided under a realistic mixed workload.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: LateValidationWastesWork.java -- the expensive downstream call
+// happens BEFORE the cheap input validation, so invalid requests still
+// pay the full cost of the expensive call before being rejected.
+public class LateValidationWastesWork {
+    static int expensiveCallCount = 0;
+    static String callExpensiveDownstream(String payload) {
+        expensiveCallCount++;
+        try { Thread.sleep(50); } catch (InterruptedException ignored) {} // simulate real work
+        return &quot;processed:&quot; + payload;
+    }
+
+    static boolean isValid(String payload) { return payload != null &amp;&amp; !payload.isBlank(); }
+
+    static String handle(String payload) {
+        String result = callExpensiveDownstream(payload); // WASTEFUL: runs even for invalid input
+        if (!isValid(payload)) return &quot;400 Bad Request&quot;;
+        return &quot;200 OK: &quot; + result;
+    }
+
+    public static void main(String[] args) {
+        String[] requests = { &quot;valid-1&quot;, &quot;&quot;, null, &quot;valid-2&quot;, &quot;  &quot; };
+        for (String req : requests) System.out.println(&quot;Request &#x27;&quot; + req + &quot;&#x27; -&gt; &quot; + handle(req));
+        System.out.println(&quot;Expensive calls made: &quot; + expensiveCallCount + &quot; (for &quot; + requests.length + &quot; requests, 3 of which were invalid)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java LateValidationWastesWork.java</code></p>
+<p>Five requests come in, three of them invalid (empty, null, blank). But <code>handle</code> calls the expensive downstream operation *before* checking validity, so all five requests — including the three that were always going to be rejected — pay the full 50ms cost of the expensive call. The expensive-call counter reads 5, even though only 2 requests could ever have succeeded.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: EarlyValidationSavesWork.java -- the SAME requests, but
+// validation now runs FIRST; invalid requests are rejected immediately
+// and never reach the expensive call.
+public class EarlyValidationSavesWork {
+    static int expensiveCallCount = 0;
+    static String callExpensiveDownstream(String payload) {
+        expensiveCallCount++;
+        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+        return &quot;processed:&quot; + payload;
+    }
+
+    static boolean isValid(String payload) { return payload != null &amp;&amp; !payload.isBlank(); }
+
+    static String handle(String payload) {
+        if (!isValid(payload)) return &quot;400 Bad Request&quot;; // FAIL FAST: cheapest check, first
+        String result = callExpensiveDownstream(payload); // only reached for VALID input
+        return &quot;200 OK: &quot; + result;
+    }
+
+    public static void main(String[] args) {
+        String[] requests = { &quot;valid-1&quot;, &quot;&quot;, null, &quot;valid-2&quot;, &quot;  &quot; };
+        for (String req : requests) System.out.println(&quot;Request &#x27;&quot; + req + &quot;&#x27; -&gt; &quot; + handle(req));
+        System.out.println(&quot;Expensive calls made: &quot; + expensiveCallCount + &quot; (for &quot; + requests.length + &quot; requests, 3 of which were invalid)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java EarlyValidationSavesWork.java</code></p>
+<p>Same five requests, same three invalid ones, but <code>handle</code> now checks <code>isValid</code> before anything else. The three invalid requests are rejected in microseconds without ever touching <code>callExpensiveDownstream</code>. The expensive-call counter reads 2 instead of 5 — exactly matching the two genuinely valid requests, eliminating 100% of the wasted work the previous version incurred.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: FullFailFastChain.java -- a complete ordered chain: validation,
+// authorization, a circuit-breaker check, and a capacity check, ALL
+// before the expensive call, run over a realistic mixed batch of
+// requests to show the cumulative savings.
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class FullFailFastChain {
+    enum CircuitState { CLOSED, OPEN }
+    static CircuitState circuitState = CircuitState.CLOSED;
+    static final int capacity = 3;
+    static AtomicInteger inFlight = new AtomicInteger(0);
+    static AtomicInteger expensiveCallCount = new AtomicInteger(0);
+
+    record Request(String payload, boolean authorized) {}
+
+    static boolean isValid(Request r) { return r.payload() != null &amp;&amp; !r.payload().isBlank(); }
+
+    static String callExpensiveDownstream(String payload) {
+        expensiveCallCount.incrementAndGet();
+        return &quot;processed:&quot; + payload;
+    }
+
+    static String handle(Request request) {
+        if (!isValid(request)) return &quot;400 Bad Request&quot;;                          // cheapest: no I/O, no locks
+        if (!request.authorized()) return &quot;403 Forbidden&quot;;                        // still cheap
+        if (circuitState == CircuitState.OPEN) return &quot;503 Dependency Unhealthy&quot;; // no network attempted
+        if (inFlight.get() &gt;= capacity) return &quot;503 At Capacity&quot;;                 // no thread/connection consumed
+        inFlight.incrementAndGet();
+        try {
+            return &quot;200 OK: &quot; + callExpensiveDownstream(request.payload());       // ONLY reached after all checks pass
+        } finally {
+            inFlight.decrementAndGet();
+        }
+    }
+
+    public static void main(String[] args) {
+        circuitState = CircuitState.OPEN; // simulate: downstream dependency is currently known-unhealthy
+        Request[] requests = {
+                new Request(&quot;&quot;, true),               // fails validation
+                new Request(&quot;payload-1&quot;, false),      // fails authorization
+                new Request(&quot;payload-2&quot;, true),       // would pass both, but circuit is OPEN
+                new Request(null, true),               // fails validation
+        };
+        for (Request r : requests) System.out.println(&quot;Request &quot; + r + &quot; -&gt; &quot; + handle(r));
+        System.out.println(&quot;Expensive calls made: &quot; + expensiveCallCount.get()
+                + &quot; (zero, because the circuit was OPEN -- the dependency was fully protected)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java FullFailFastChain.java</code></p>
+<p>Four requests are sent while <code>circuitState</code> is deliberately set to <code>OPEN</code>, simulating a known-unhealthy downstream dependency. The first request fails at the validation check (empty payload). The second fails at the authorization check. The third would have passed both of those, but is caught by the circuit-breaker check before any network attempt is made. The fourth fails validation again (null payload). Every single request is rejected by a cheap, in-memory check — the expensive-call counter stays at 0 for the entire batch, meaning the already-struggling downstream dependency received zero additional load from this batch, exactly the outcome fail-fast ordering is meant to produce.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>FullFailFastChain.main</code> in order for the third request, <code>new Request(&quot;payload-2&quot;, true)</code> — the interesting case, since it is valid and authorized and would otherwise proceed. <strong>First</strong>, <code>handle</code> checks <code>isValid(request)</code>: <code>payload()</code> is <code>&quot;payload-2&quot;</code>, non-null and non-blank, so this check passes and execution continues.</p>
+<p><strong>Next</strong>, <code>handle</code> checks <code>request.authorized()</code>: <code>true</code>, so this check also passes.</p>
+<p><strong>Next</strong>, <code>handle</code> checks <code>circuitState == CircuitState.OPEN</code>. Because <code>main</code> set <code>circuitState = CircuitState.OPEN</code> before sending any requests (modeling a dependency already known to be unhealthy from a prior <a href="0250-circuit-breaker-pattern.md">circuit breaker</a> trip), this check evaluates to <code>true</code>, and <code>handle</code> immediately returns <code>&quot;503 Dependency Unhealthy&quot;</code> — without ever incrementing <code>inFlight</code>, without ever calling <code>callExpensiveDownstream</code>, and without making any network attempt at all.</p>
+<p><strong>Contrast with what would happen without this ordering</strong>: if the circuit-breaker check were placed *after* the expensive call (or omitted), this exact same request would have proceeded to call the already-struggling dependency, adding load to a system that is already failing — precisely the kind of pile-on that turns one dependency&#x27;s partial failure into a fleet-wide cascading failure.</p>
+<p><strong>For the fourth request</strong>, <code>new Request(null, true)</code>, execution never even reaches the authorization or circuit-breaker checks: <code>isValid</code> immediately returns <code>false</code> because <code>payload()</code> is <code>null</code>, and <code>handle</code> returns <code>&quot;400 Bad Request&quot;</code> on the very first line of meaningful logic.</p>
+<p><strong>Final state</strong>: across all four requests, <code>expensiveCallCount</code> remains at 0 — every single one was rejected by a cheap, purely in-memory check before reaching the point where it would have consumed a connection slot or added load to the unhealthy dependency.</p>
+<pre><code>request -&gt; isValid()? --no--&gt; 400 (cheapest, returns here)
+              |yes
+           authorized()? --no--&gt; 403
+              |yes
+           circuit OPEN? --yes--&gt; 503 (no network attempted)
+              |no (closed)
+           capacity available? --no--&gt; 503
+              |yes
+           [ONLY NOW] expensive downstream call -&gt; 200 OK</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Ordering the checks matters as much as having them — a validation check placed after an expensive call provides zero resource protection, even though the request is still eventually rejected &quot;correctly.&quot; Fail-fast is about *when* the rejection happens, not just *that* it happens.</blockquote>
+<ul><li>Order checks from cheapest/most-certain to most-expensive: input validation and authorization (pure CPU, no I/O) before circuit-breaker and capacity checks (still cheap, in-memory) before the actual expensive call.</li><li>A fail-fast check that references a circuit breaker&#x27;s current state, rather than attempting the call and catching the resulting failure, avoids even the overhead of a doomed network attempt — this is the specific mechanism by which an open circuit breaker protects both the caller and the struggling dependency.</li><li>Fail-fast checks compound: in a request that fans out to several dependencies, failing fast on the first known-bad one avoids wasting time and resources on the others that would have run in parallel or in sequence after it.</li><li>This pattern is complementary to, not a replacement for, <a href="0282-fallback-methods-default-responses.md">fallback methods</a> — a fail-fast rejection can itself be followed by a fallback (e.g., cached data) rather than a bare error, combining both patterns for the best outcome.</li></ul>
+  <div class="nav"><a class="prv" href="0285-result-caching-for-resiliency.html"><span class="mini">← Previous</span>Result caching for resiliency</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t286";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

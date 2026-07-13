@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Client-side vs server-side rate limiting" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Client-side vs server-side rate limiting"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Rate limiting can be enforced on either side of a call: client-side rate limiting has the *caller* voluntarily throttle its own outgoing request rate (e.g., a client-side <a href="0274-token-bucket-algorithm.md">token bucket</a> wrapping an HTTP client), while server-side rate limiting has the *callee* enforce a limit on incoming requests and reject or delay anything over it, regardless of what the caller intended. They solve related but distinct problems and are commonly used together, not as substitutes for each other.</p>
+<h2>2. Why &amp; when</h2>
+<p>Server-side rate limiting is the authoritative, security-relevant control: it is the only place a service can truly *guarantee* protection, because it doesn&#x27;t depend on every caller behaving well — a malicious, buggy, or simply uncooperative client cannot bypass it. But server-side limiting alone means every rejected request has already consumed network round-trip time and server-side connection resources before being turned away, and the caller only finds out it was over budget after the fact (typically via a 429 response).</p>
+<p>Client-side rate limiting is a courtesy and an efficiency optimization: a well-behaved client that knows it is about to exceed a downstream service&#x27;s published limit can throttle itself *before* sending, avoiding wasted round trips, avoiding contributing to the 429 flood, and often spacing out its own retries more gracefully. It requires no coordination and takes effect immediately, but it only works if the caller actually implements it — it provides no protection against callers who don&#x27;t.</p>
+<p>Use both together in a well-designed microservices system: server-side limiting as the non-negotiable backstop that protects the service under all circumstances, and client-side limiting in your own service&#x27;s outbound HTTP clients as a courtesy to downstream dependencies and to reduce wasted calls that would just get rejected anyway.</p>
+<h2>3. Core concept</h2>
+<p>Server-side: a limiter sits in front of (or inside) the service handling incoming requests — a filter, interceptor, or API gateway — and rejects requests exceeding the configured limit for that caller/route.</p>
+<p>Client-side: a limiter wraps the outgoing call in the calling code itself, blocking or rejecting the call locally *before* it ever leaves the process.</p>
+<pre><code class="lang-java">// SERVER-SIDE: enforced regardless of caller intent, inside the callee.
+class ServerSideLimiterFilter {
+    boolean allowIncoming(String clientId) { /* checked on EVERY inbound request */ return true; }
+}
+
+// CLIENT-SIDE: caller voluntarily self-throttles BEFORE the call leaves.
+class ClientSideLimitingHttpClient {
+    boolean allowOutgoing() { /* checked BEFORE sending, avoids a wasted round trip */ return true; }
+    Object call() {
+        if (!allowOutgoing()) throw new IllegalStateException(&quot;self-throttled, not sent&quot;);
+        return null; // would actually perform the HTTP call
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Client-side limiting happens inside the caller before the network call leaves; server-side limiting happens inside the callee after the request has already traveled across the network, rejecting it there instead">
+  <rect x="30" y="30" width="150" height="60" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="105" y="55" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Client</text>
+  <text x="105" y="72" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">self-throttle BEFORE send</text>
+
+  <line x1="180" y1="60" x2="300" y2="60" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr277)"/>
+  <text x="240" y="50" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">network</text>
+
+  <rect x="300" y="30" width="150" height="60" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="375" y="55" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Server</text>
+  <text x="375" y="72" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">enforce limit AFTER arrival</text>
+
+  <text x="240" y="120" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">Client-side: cheap, voluntary, saves a wasted round trip</text>
+  <text x="240" y="140" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">Server-side: authoritative, mandatory, the real backstop</text>
+</svg>
+<p>Client-side throttling avoids the round trip; server-side enforcement is the guarantee that actually holds.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a client that calls a rate-limited server with no client-side throttling (wasting round trips on rejections), extended with client-side self-throttling to avoid those wasted calls, and finally combining both with the client backing off based on the server&#x27;s rejection hints for a realistic, resilient interaction.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ServerOnlyLimiting.java -- server enforces a limit; client sends
+// blindly with no self-throttling, wasting calls on rejections.
+public class ServerOnlyLimiting {
+    static class Server {
+        int callsThisWindow = 0;
+        final int limit = 3;
+        String handle(int requestId) {
+            if (callsThisWindow &lt; limit) { callsThisWindow++; return &quot;200 OK (request &quot; + requestId + &quot;)&quot;; }
+            return &quot;429 Too Many Requests (request &quot; + requestId + &quot;)&quot;;
+        }
+    }
+
+    public static void main(String[] args) {
+        Server server = new Server();
+        for (int i = 1; i &lt;= 6; i++) {
+            System.out.println(&quot;Client sends request &quot; + i + &quot; blindly -&gt; &quot; + server.handle(i));
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java ServerOnlyLimiting.java</code></p>
+<p>The client fires six requests with no awareness of the server&#x27;s limit of 3 per window. The first three succeed; the last three each make a full round trip only to be rejected with a 429. Every rejected call still cost the client a network round trip and cost the server a connection accept and rejection response — pure waste that client-side throttling could have avoided.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ClientSideThrottling.java -- client tracks its own budget and
+// stops sending once it estimates it would be rejected, avoiding wasted
+// round trips to the same server-side limiter.
+public class ClientSideThrottling {
+    static class Server {
+        int callsThisWindow = 0;
+        final int limit = 3;
+        String handle(int requestId) {
+            if (callsThisWindow &lt; limit) { callsThisWindow++; return &quot;200 OK (request &quot; + requestId + &quot;)&quot;; }
+            return &quot;429 Too Many Requests (request &quot; + requestId + &quot;)&quot;;
+        }
+    }
+
+    static class SelfThrottlingClient {
+        int sentThisWindow = 0;
+        final int knownServerLimit = 3; // published/discovered limit
+        boolean shouldSend() { return sentThisWindow &lt; knownServerLimit; }
+        void recordSent() { sentThisWindow++; }
+    }
+
+    public static void main(String[] args) {
+        Server server = new Server();
+        SelfThrottlingClient client = new SelfThrottlingClient();
+        for (int i = 1; i &lt;= 6; i++) {
+            if (client.shouldSend()) {
+                client.recordSent();
+                System.out.println(&quot;Client sends request &quot; + i + &quot; -&gt; &quot; + server.handle(i));
+            } else {
+                System.out.println(&quot;Client SKIPS request &quot; + i + &quot; locally (self-throttled, no round trip made)&quot;);
+            }
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java ClientSideThrottling.java</code></p>
+<p>Same server and same six attempted requests, but now the client tracks <code>sentThisWindow</code> against the server&#x27;s known limit of 3 and stops sending once it would exceed it. Requests 4-6 are skipped entirely on the client — no network call is made, no server-side rejection is generated. This is strictly more efficient: the client learns it is over budget without paying for a round trip, and the server never has to process and reject those calls.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: CombinedLimitingWithBackoff.java -- client self-throttles using
+// its own estimate, AND still handles the case where the server rejects
+// anyway (its estimate was stale or wrong), backing off using the
+// server&#x27;s Retry-After hint -- the realistic, resilient combination.
+public class CombinedLimitingWithBackoff {
+    static class Server {
+        int callsThisWindow = 0;
+        final int limit = 3;
+        final long retryAfterMillis = 1000;
+        record Response(int status, String body, Long retryAfterMillis) {}
+        Response handle(int requestId) {
+            if (callsThisWindow &lt; limit) {
+                callsThisWindow++;
+                return new Response(200, &quot;ok(&quot; + requestId + &quot;)&quot;, null);
+            }
+            return new Response(429, &quot;rejected(&quot; + requestId + &quot;)&quot;, retryAfterMillis);
+        }
+    }
+
+    static class SelfThrottlingClient {
+        int sentThisWindow = 0;
+        int estimatedServerLimit = 3; // client&#x27;s OWN estimate -- may be stale
+        boolean shouldSend() { return sentThisWindow &lt; estimatedServerLimit; }
+        void recordSent() { sentThisWindow++; }
+        void onRejected(long retryAfterMillis) {
+            // Server disagreed with our estimate -- correct it and back off.
+            estimatedServerLimit = sentThisWindow - 1;
+            System.out.println(&quot;  Client corrects its estimate to &quot; + estimatedServerLimit
+                    + &quot; and will wait &quot; + retryAfterMillis + &quot;ms before trying again&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        Server server = new Server();
+        // Client&#x27;s estimate starts stale/optimistic at 5, though server&#x27;s true limit is 3.
+        SelfThrottlingClient client = new SelfThrottlingClient();
+        client.estimatedServerLimit = 5;
+
+        for (int i = 1; i &lt;= 6; i++) {
+            if (!client.shouldSend()) {
+                System.out.println(&quot;Request &quot; + i + &quot;: SKIPPED locally (self-throttled)&quot;);
+                continue;
+            }
+            client.recordSent();
+            Server.Response r = server.handle(i);
+            if (r.status() == 200) {
+                System.out.println(&quot;Request &quot; + i + &quot;: sent -&gt; 200 &quot; + r.body());
+            } else {
+                System.out.println(&quot;Request &quot; + i + &quot;: sent -&gt; 429 &quot; + r.body());
+                client.onRejected(r.retryAfterMillis());
+            }
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java CombinedLimitingWithBackoff.java</code></p>
+<p>The client starts with a stale, overly optimistic estimate of the server&#x27;s limit (5, when the true limit is 3). Requests 1-3 succeed and consume the server&#x27;s real budget. Request 4 is sent (client&#x27;s stale estimate still allows it) but the server rejects it with a 429 and a <code>retryAfterMillis</code> hint; the client&#x27;s <code>onRejected</code> callback corrects its internal estimate down to match reality and logs the backoff wait. Request 5 is then skipped locally because the corrected estimate now matches the exhausted budget. This models the realistic production pattern: client-side throttling reduces load optimistically, but the client still must handle and learn from server-side rejections, since its own estimate can be wrong or stale (e.g., the server&#x27;s limit changed, or the window reset differently than the client assumed).</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>CombinedLimitingWithBackoff.main</code> in order. <strong>First</strong>, <code>server</code> is created with <code>limit=3</code>, and <code>client</code> is created with a deliberately wrong <code>estimatedServerLimit=5</code>.</p>
+<p><strong>For requests 1-3</strong>, <code>client.shouldSend()</code> returns <code>true</code> (sentThisWindow 0,1,2 all under 5), so each is sent. On the server, <code>handle</code> checks <code>callsThisWindow &lt; limit</code> (3) — true for all three — so each increments <code>callsThisWindow</code> and returns a <code>Response(200, ...)</code>. The data at this stage: request enters the client layer, passes the client&#x27;s local check, crosses to the server layer as a plain call, the server&#x27;s counter state mutates from 0→1→2→3, and a 200 response returns to the client layer.</p>
+<p><strong>At request 4</strong>, the client&#x27;s local check still passes (<code>sentThisWindow=3 &lt; estimatedServerLimit=5</code>), so it is sent. On the server, <code>callsThisWindow</code> is now 3, which is not less than <code>limit=3</code>, so <code>handle</code> returns <code>Response(429, &quot;rejected(4)&quot;, 1000)</code> instead. This response crosses back to the client layer, where the <code>if (r.status() == 200)</code> branch fails and the <code>else</code> branch fires, printing the rejection and calling <code>client.onRejected(1000)</code>.</p>
+<p><strong>Inside <code>onRejected</code></strong>, the client corrects <code>estimatedServerLimit</code> to <code>sentThisWindow - 1</code>, i.e., <code>4 - 1 = 3</code> — now matching the server&#x27;s true limit — and logs that it will wait before retrying.</p>
+<p><strong>At request 5</strong>, <code>client.shouldSend()</code> now evaluates <code>sentThisWindow(4) &lt; estimatedServerLimit(3)</code>, which is false, so the request is skipped locally with no network call at all — the client has learned from the one rejection and stopped wasting round trips for the rest of the window.</p>
+<p><strong>Request/response shape</strong> for the rejected call, expressed as an HTTP-style exchange:</p>
+<pre><code>POST /work HTTP/1.1
+X-Request-Id: 4
+
+HTTP/1.1 429 Too Many Requests
+Retry-After: 1000
+
+{&quot;body&quot;:&quot;rejected(4)&quot;}</code></pre>
+<pre><code>client.shouldSend()? --yes--&gt; server.handle() --429+Retry-After--&gt; client.onRejected() corrects estimate --&gt; next request re-checks locally</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Client-side rate limiting is never a substitute for server-side enforcement — a client you don&#x27;t control (or one with a bug) can always ignore its own throttle, so the server must still be the authoritative backstop.</blockquote>
+<ul><li>Server-side limiting is mandatory for protection; client-side limiting is an optimization that reduces wasted round trips and courtesy load on downstream services.</li><li>A client&#x27;s estimate of the server&#x27;s limit can go stale (limits change, windows don&#x27;t align) — always handle actual server rejections gracefully rather than trusting the local estimate blindly.</li><li>Use the server&#x27;s <code>Retry-After</code> (or equivalent) hint to correct the client&#x27;s estimate and pace retries, rather than hammering immediately after a rejection.</li><li>In a microservices system, apply client-side throttling in your own outbound HTTP clients toward every downstream dependency you call, and rely on server-side limiting (often at an API gateway) to protect every service you expose.</li></ul>
+  <div class="nav"><a class="prv" href="0276-fixed-window-sliding-window-counters.html"><span class="mini">← Previous</span>Fixed window & sliding window counters</a><a class="nxt" href="0278-distributed-rate-limiting-redis-backed.html"><span class="mini">Next →</span>Distributed rate limiting (Redis-backed)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t277";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

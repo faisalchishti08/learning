@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Fixed window & sliding window counters" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Fixed window & sliding window counters"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Fixed window and sliding window are two simpler counter-based rate-limiting strategies, alternatives to <a href="0274-token-bucket-algorithm.md">token bucket</a> and <a href="0275-leaky-bucket-algorithm.md">leaky bucket</a>. A fixed window counter divides time into discrete, non-overlapping blocks (e.g., &quot;the current minute&quot;) and counts requests within the current block, resetting to zero the instant a new block begins. A sliding window counter fixes the boundary-burst problem of fixed windows by weighting the count from the previous window based on how much of it still overlaps the current moment, producing a smoother, more accurate approximation of &quot;requests in the last N seconds&quot; measured continuously rather than in resettable blocks.</p>
+<h2>2. Why &amp; when</h2>
+<p>Fixed window is the simplest possible rate limiter to implement and reason about — one counter, one reset timer — which makes it attractive when a rough, easy-to-audit limit is good enough. But it has a well-known flaw: a client can send its full quota right at the end of one window and its full quota again right at the start of the next, producing up to 2x the intended rate within a short burst straddling the boundary. Sliding window counters exist specifically to close that gap cheaply, without the memory cost of tracking every individual request timestamp (which a true sliding log would require).</p>
+<p>Use fixed window when simplicity and low overhead matter more than precision and boundary bursts are tolerable (e.g., a soft usage-tier limit). Use the sliding window counter approximation when boundary bursts are a real concern but the cost of a full sliding log (storing every request&#x27;s exact timestamp) is not justified — it is the common middle ground used by many production API gateways.</p>
+<h2>3. Core concept</h2>
+<p>Fixed window: one integer counter and a window-start timestamp, reset when the window elapses.</p>
+<p>Sliding window counter: keep the previous window&#x27;s count and the current window&#x27;s count; the *estimated* count &quot;right now&quot; is <code>currentCount + previousCount * overlapFraction</code>, where <code>overlapFraction</code> shrinks linearly from 1 (just entered the new window) to 0 (about to enter the next one).</p>
+<pre><code class="lang-java">class SlidingWindowCounter {
+    long windowStart; final long windowSizeMillis; final int limit;
+    int previousCount = 0, currentCount = 0;
+
+    boolean allow(long now) {
+        if (now - windowStart &gt;= windowSizeMillis) {
+            long windowsElapsed = (now - windowStart) / windowSizeMillis;
+            previousCount = (windowsElapsed == 1) ? currentCount : 0; // roll forward ONE window
+            currentCount = 0;
+            windowStart += windowsElapsed * windowSizeMillis;
+        }
+        double elapsedInWindow = now - windowStart;
+        double overlap = 1.0 - (elapsedInWindow / windowSizeMillis); // shrinks toward 0
+        double estimated = currentCount + previousCount * overlap;
+        if (estimated &lt; limit) { currentCount++; return true; }
+        return false;
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fixed window resets its counter abruptly at each boundary, allowing a double burst straddling the boundary; sliding window blends a weighted portion of the previous window's count into the current estimate, smoothing out the boundary and preventing the double-burst problem">
+  <text x="160" y="16" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Fixed window (hard reset)</text>
+  <rect x="30" y="25" width="130" height="30" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="95" y="44" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">window N: count=10/10</text>
+  <rect x="160" y="25" width="130" height="30" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="225" y="44" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">window N+1: RESET to 0</text>
+  <line x1="160" y1="20" x2="160" y2="60" stroke="#8b949e" stroke-dasharray="2,2"/>
+  <text x="160" y="70" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">burst of 10 here + 10 here = 20 in a blink</text>
+
+  <text x="160" y="100" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Sliding window (weighted blend)</text>
+  <rect x="30" y="110" width="130" height="30" fill="#1c2430" stroke="#6db33f"/>
+  <text x="95" y="129" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">previous: count=10</text>
+  <rect x="160" y="110" width="130" height="30" fill="#1c2430" stroke="#6db33f"/>
+  <text x="225" y="129" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">current: count=0</text>
+  <text x="320" y="129" fill="#6db33f" font-size="7.5" font-family="sans-serif">estimate = 0 + 10 &#215; overlap%</text>
+</svg>
+<p>Fixed window resets abruptly at the boundary; sliding window blends a shrinking weight of the previous window in.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a fixed window counter that visibly allows a double-burst across a boundary, extended to a sliding window counter that closes that gap by blending the previous window&#x27;s weighted count, and finally a version exposed behind a small HTTP-style request handler that returns 429 with a Retry-After-style hint when denied.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: FixedWindowBoundaryBurst.java -- demonstrates the classic flaw:
+// a full quota right before a window boundary plus a full quota right
+// after it lets nearly double the intended rate through.
+public class FixedWindowBoundaryBurst {
+    static class FixedWindowCounter {
+        long windowStart; final long windowSizeMillis; final int limit;
+        int count = 0;
+        FixedWindowCounter(long windowSizeMillis, int limit) {
+            this.windowSizeMillis = windowSizeMillis; this.limit = limit;
+            this.windowStart = System.currentTimeMillis();
+        }
+        boolean allow(long now) {
+            if (now - windowStart &gt;= windowSizeMillis) { windowStart = now; count = 0; }
+            if (count &lt; limit) { count++; return true; }
+            return false;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        FixedWindowCounter limiter = new FixedWindowCounter(1000, 5); // 5 req / 1s window
+        int allowed = 0;
+        // Burst 1: fires right at the START of the window.
+        for (int i = 0; i &lt; 5; i++) if (limiter.allow(System.currentTimeMillis())) allowed++;
+        Thread.sleep(999); // wait until JUST before the window resets
+        // Burst 2: fires right after the window resets.
+        for (int i = 0; i &lt; 5; i++) if (limiter.allow(System.currentTimeMillis())) allowed++;
+        System.out.println(&quot;Allowed across ~1 second straddling the boundary: &quot; + allowed + &quot; (limit was 5/window)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java FixedWindowBoundaryBurst.java</code></p>
+<p>Five requests fire immediately, consuming the full quota for window N. Then the program sleeps 999ms — just short of the 1000ms window size — and fires five more requests, which land just after the window resets and get a fresh quota. The total allowed count prints close to 10, roughly double the configured 5/second limit, even though both bursts occurred within about one second of wall-clock time. This is the boundary-burst flaw made concrete.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SlidingWindowCounterFix.java -- same scenario, but the counter
+// now blends a weighted share of the previous window&#x27;s count into the
+// estimate, closing the boundary-burst gap.
+public class SlidingWindowCounterFix {
+    static class SlidingWindowCounter {
+        long windowStart; final long windowSizeMillis; final int limit;
+        int previousCount = 0, currentCount = 0;
+
+        SlidingWindowCounter(long windowSizeMillis, int limit) {
+            this.windowSizeMillis = windowSizeMillis; this.limit = limit;
+            this.windowStart = System.currentTimeMillis();
+        }
+
+        boolean allow(long now) {
+            long windowsElapsed = (now - windowStart) / windowSizeMillis;
+            if (windowsElapsed &gt;= 1) {
+                previousCount = (windowsElapsed == 1) ? currentCount : 0;
+                currentCount = 0;
+                windowStart += windowsElapsed * windowSizeMillis;
+            }
+            double elapsedInWindow = now - windowStart;
+            double overlap = 1.0 - (elapsedInWindow / windowSizeMillis);
+            double estimated = currentCount + previousCount * overlap;
+            if (estimated &lt; limit) { currentCount++; return true; }
+            return false;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        SlidingWindowCounter limiter = new SlidingWindowCounter(1000, 5);
+        int allowed = 0;
+        for (int i = 0; i &lt; 5; i++) if (limiter.allow(System.currentTimeMillis())) allowed++;
+        Thread.sleep(999);
+        for (int i = 0; i &lt; 5; i++) if (limiter.allow(System.currentTimeMillis())) allowed++;
+        System.out.println(&quot;Allowed across ~1 second straddling the boundary: &quot; + allowed + &quot; (limit was 5/window, sliding-window corrected)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java SlidingWindowCounterFix.java</code></p>
+<p>Same burst pattern as Level 1, but this time the second burst, arriving just 1ms after the boundary, still sees an <code>overlap</code> fraction close to 1.0 for the previous window&#x27;s count of 5 — so the estimated count is close to <code>0 + 5*1.0 = 5</code>, which is already at the limit, and most of the second burst&#x27;s requests get rejected. The printed allowed total comes out much closer to 5-6 instead of 10, showing the sliding window&#x27;s weighted blend closes the loophole that plain fixed window has.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: RateLimitedHandler.java -- wraps the sliding window counter in a
+// tiny synchronous &quot;HTTP handler&quot; that returns a 429-style response with
+// a retry hint when the limit is exceeded, as a real API gateway would.
+public class RateLimitedHandler {
+    static class SlidingWindowCounter {
+        long windowStart; final long windowSizeMillis; final int limit;
+        int previousCount = 0, currentCount = 0;
+        SlidingWindowCounter(long windowSizeMillis, int limit) {
+            this.windowSizeMillis = windowSizeMillis; this.limit = limit;
+            this.windowStart = System.currentTimeMillis();
+        }
+        synchronized boolean allow(long now) {
+            long windowsElapsed = (now - windowStart) / windowSizeMillis;
+            if (windowsElapsed &gt;= 1) {
+                previousCount = (windowsElapsed == 1) ? currentCount : 0;
+                currentCount = 0;
+                windowStart += windowsElapsed * windowSizeMillis;
+            }
+            double elapsedInWindow = now - windowStart;
+            double overlap = 1.0 - (elapsedInWindow / windowSizeMillis);
+            double estimated = currentCount + previousCount * overlap;
+            if (estimated &lt; limit) { currentCount++; return true; }
+            return false;
+        }
+        long millisUntilNextWindow(long now) { return windowSizeMillis - ((now - windowStart) % windowSizeMillis); }
+    }
+
+    record Response(int status, String body, Long retryAfterMillis) {}
+
+    static Response handle(SlidingWindowCounter limiter, String clientId, long now) {
+        if (limiter.allow(now)) {
+            return new Response(200, &quot;{\&quot;client\&quot;:\&quot;&quot; + clientId + &quot;\&quot;,\&quot;result\&quot;:\&quot;ok\&quot;}&quot;, null);
+        }
+        long retryAfter = limiter.millisUntilNextWindow(now);
+        return new Response(429,
+                &quot;{\&quot;error\&quot;:\&quot;rate_limited\&quot;,\&quot;client\&quot;:\&quot;&quot; + clientId + &quot;\&quot;}&quot;, retryAfter);
+    }
+
+    public static void main(String[] args) {
+        SlidingWindowCounter limiter = new SlidingWindowCounter(1000, 3);
+        long now = System.currentTimeMillis();
+        for (int i = 1; i &lt;= 5; i++) {
+            Response r = handle(limiter, &quot;client-42&quot;, now);
+            if (r.status() == 200) {
+                System.out.println(&quot;Request &quot; + i + &quot; -&gt; 200 OK  body=&quot; + r.body());
+            } else {
+                System.out.println(&quot;Request &quot; + i + &quot; -&gt; 429 Too Many Requests  Retry-After=&quot; + r.retryAfterMillis() + &quot;ms  body=&quot; + r.body());
+            }
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java RateLimitedHandler.java</code></p>
+<p>Five requests hit a handler wrapping a 3-request-per-second sliding window limiter, all at essentially the same instant (<code>now</code> captured once). The first three get a <code>200 OK</code> JSON body; the fourth and fifth get a <code>429 Too Many Requests</code> JSON body with a computed <code>Retry-After</code>-style hint telling the caller how many milliseconds remain until the current window rolls over. This is the shape a real API gateway or Spring <code>HandlerInterceptor</code> would return to a rate-limited client, including the retry hint so well-behaved clients can back off intelligently instead of retrying immediately.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>RateLimitedHandler.main</code> in execution order. <strong>First</strong>, a <code>SlidingWindowCounter</code> is constructed with a 1000ms window and a limit of 3, capturing <code>windowStart</code> at the current time.</p>
+<p><strong>Next</strong>, the loop sends five requests, each calling <code>handle(limiter, &quot;client-42&quot;, now)</code> with the same captured <code>now</code>. Inside <code>handle</code>, <code>limiter.allow(now)</code> runs: since <code>now - windowStart</code> is near zero, <code>windowsElapsed</code> is 0, so no window roll-over happens; <code>overlap</code> is close to 1.0 but <code>previousCount</code> is 0 (no prior window yet), so <code>estimated = currentCount</code>. For the first three calls, <code>currentCount</code> is 0, 1, 2 respectively — all below the limit of 3 — so each increments <code>currentCount</code> and returns <code>true</code>.</p>
+<p><strong>Request example</strong> — think of request 1 as <code>GET /api/resource</code> with header <code>X-Client-Id: client-42</code>. Its response, encoded in the <code>Response</code> record, is:</p>
+<pre><code>HTTP/1.1 200 OK
+Content-Type: application/json
+
+{&quot;client&quot;:&quot;client-42&quot;,&quot;result&quot;:&quot;ok&quot;}</code></pre>
+<p><strong>By request 4</strong>, <code>currentCount</code> is already 3, so <code>estimated = 3</code>, which is not less than the limit of 3 — <code>allow</code> returns <code>false</code>. Back in <code>handle</code>, this triggers the rejection branch: it calls <code>millisUntilNextWindow(now)</code> to compute how long until the window resets, then builds a 429 response:</p>
+<pre><code>HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+Retry-After: 843
+
+{&quot;error&quot;:&quot;rate_limited&quot;,&quot;client&quot;:&quot;client-42&quot;}</code></pre>
+<p><strong>Request 5</strong> follows the identical path as request 4 — <code>currentCount</code> is still 3 (rejections do not increment the counter), so it is also rejected with a fresh <code>Retry-After</code> value.</p>
+<p><strong>State transformation summary</strong>: the raw call arrives at <code>handle</code> (entry point) → <code>handle</code> delegates the accept/reject decision to <code>limiter.allow</code> (business logic layer) → <code>allow</code> mutates the counter&#x27;s internal <code>currentCount</code>/<code>previousCount</code> state (the &quot;storage&quot; layer, here just in-memory fields) → the boolean result propagates back up through <code>handle</code>, which shapes it into either a 200 or 429 <code>Response</code> object (the outward-facing layer) that the caller consumes.</p>
+<pre><code>client -&gt; handle() -&gt; limiter.allow() -&gt; [currentCount/previousCount state] -&gt; allow() returns bool -&gt; handle() builds Response -&gt; client</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A pure fixed window counter can silently let through up to roughly 2x its configured limit for traffic that clusters around a window boundary — this is not a bug in a specific implementation, it is inherent to the algorithm&#x27;s hard resets.</blockquote>
+<ul><li>Fixed window is cheap and simple but structurally allows boundary bursts; only use it where that slack is acceptable.</li><li>The sliding window counter is an *approximation*, not an exact sliding log — it assumes requests in the previous window were spread evenly across it, which is close enough for most rate-limiting purposes without the memory cost of a true sliding log.</li><li>A true sliding log (storing every request&#x27;s exact timestamp and counting those within the last N seconds) is the most precise option but is far more memory-intensive at scale — reserve it for cases needing exact enforcement.</li><li>Always return a <code>Retry-After</code>-style hint on rejection so well-behaved clients can back off instead of hammering the limiter immediately after being denied.</li></ul>
+  <div class="nav"><a class="prv" href="0275-leaky-bucket-algorithm.html"><span class="mini">← Previous</span>Leaky bucket algorithm</a><a class="nxt" href="0277-client-side-vs-server-side-rate-limiting.html"><span class="mini">Next →</span>Client-side vs server-side rate limiting</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t276";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

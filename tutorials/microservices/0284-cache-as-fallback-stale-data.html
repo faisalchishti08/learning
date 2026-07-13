@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Cache as fallback (stale data)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Cache as fallback (stale data)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Using a cache as a <a href="0282-fallback-methods-default-responses.md">fallback</a> means that when a live call to a dependency fails, instead of returning a generic default or an error, the caller returns the *last known good response* it previously cached for that same request — even though that cached value may now be stale (out of date relative to the live source of truth). This trades data freshness for availability: the caller gets a real, specific answer instead of no answer or a made-up generic one.</p>
+<h2>2. Why &amp; when</h2>
+<p>A generic fallback (like &quot;show popular items&quot; when personalized recommendations fail) works when there is no meaningful per-request cached alternative. But for many kinds of data — a user&#x27;s profile, a product&#x27;s price and description, an account balance snapshot — a generic default isn&#x27;t meaningful at all; the only sensible fallback is &quot;the last value we successfully fetched for this specific thing,&quot; even if it&#x27;s a few minutes or hours old.</p>
+<p>Use cache-as-fallback when the data changes slowly relative to how long an outage might last, and when slightly stale data is clearly preferable to no data at all — a product page showing yesterday&#x27;s price during a brief outage is almost always better than a broken page. Do not use it for data where staleness is actively dangerous or misleading, such as real-time inventory counts used to prevent overselling, or anything where an out-of-date value could cause a user or the system to take an incorrect action.</p>
+<h2>3. Core concept</h2>
+<p>The cache is populated opportunistically on every successful live call (so it&#x27;s always as fresh as the last success), and consulted only on failure — the live call is still always attempted first, since fresh data is always preferred when available.</p>
+<pre><code class="lang-java">class CacheFallbackClient&lt;T&gt; {
+    final java.util.Map&lt;String, T&gt; cache = new java.util.concurrent.ConcurrentHashMap&lt;&gt;();
+    final java.util.Map&lt;String, Long&gt; cachedAt = new java.util.concurrent.ConcurrentHashMap&lt;&gt;();
+
+    T get(String key, java.util.function.Supplier&lt;T&gt; liveCall) {
+        try {
+            T fresh = liveCall.get();
+            cache.put(key, fresh); cachedAt.put(key, System.currentTimeMillis()); // REFRESH cache on success
+            return fresh;
+        } catch (Exception e) {
+            T stale = cache.get(key); // FALL BACK to last known good value
+            if (stale == null) throw new RuntimeException(&quot;no live data and no cached fallback&quot;, e);
+            return stale; // STALE but AVAILABLE
+        }
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Every successful live call refreshes the cache with the new value; when a live call fails, the caller falls back to the last cached value instead of the live one, trading data freshness for availability rather than returning an error">
+  <rect x="30" y="20" width="150" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="105" y="44" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">live call</text>
+
+  <line x1="105" y1="60" x2="105" y2="90" stroke="#6db33f" marker-end="url(#arr284)"/>
+  <text x="150" y="78" fill="#8b949e" font-size="7" font-family="sans-serif">success: REFRESH cache</text>
+  <rect x="30" y="95" width="150" height="40" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="105" y="119" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">cache (last known good)</text>
+
+  <line x1="180" y1="40" x2="440" y2="40" stroke="#8b949e" stroke-dasharray="2,2" marker-end="url(#arr284)"/>
+  <text x="310" y="30" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">failure: FALL BACK to cache</text>
+  <line x1="180" y1="115" x2="440" y2="60" stroke="#8b949e" marker-end="url(#arr284)"/>
+
+  <rect x="440" y="20" width="160" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="520" y="44" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">caller gets fresh or stale value</text>
+
+  <defs><marker id="arr284" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Success refreshes the cache; failure falls back to it — the caller always gets a real, specific value when one has ever existed.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a product-price client with no caching that errors out during an outage, extended to cache successful responses and fall back to them on failure, and finally adding staleness awareness — surfacing how old the fallback data is and refusing to use it past a maximum acceptable age, protecting against dangerously outdated fallbacks.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoCacheFailsOnOutage.java -- a live-only client: any failure of
+// the live call is a hard failure for the caller, with no fallback.
+public class NoCacheFailsOnOutage {
+    static int callCount = 0;
+    static double getLivePrice(String productId) {
+        callCount++;
+        if (callCount == 1) return 29.99; // first call succeeds
+        throw new RuntimeException(&quot;pricing-service unreachable&quot;); // subsequent calls simulate an outage
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Call 1: $&quot; + getLivePrice(&quot;sku-123&quot;));
+        try {
+            System.out.println(&quot;Call 2: $&quot; + getLivePrice(&quot;sku-123&quot;));
+        } catch (Exception e) {
+            System.out.println(&quot;Call 2: FAILED -- &quot; + e.getMessage() + &quot; (no fallback available)&quot;);
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java NoCacheFailsOnOutage.java</code></p>
+<p>The first call succeeds and returns a price. The second call simulates the pricing service going down and throws. With no caching in place, the caller has nothing to fall back to — the price simply cannot be shown, even though it was successfully fetched moments earlier.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: CacheFallback.java -- the same client, but every successful
+// call is cached; a failed call falls back to the cached value instead
+// of failing outright.
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+
+public class CacheFallback {
+    static int callCount = 0;
+    static double getLivePrice(String productId) {
+        callCount++;
+        if (callCount == 1) return 29.99;
+        throw new RuntimeException(&quot;pricing-service unreachable&quot;);
+    }
+
+    static final Map&lt;String, Double&gt; cache = new ConcurrentHashMap&lt;&gt;();
+
+    static double getPriceWithFallback(String productId) {
+        try {
+            double fresh = getLivePrice(productId);
+            cache.put(productId, fresh); // REFRESH on success
+            return fresh;
+        } catch (Exception e) {
+            Double stale = cache.get(productId);
+            if (stale == null) throw new RuntimeException(&quot;no live price and no cache&quot;, e);
+            System.out.println(&quot;  (live call failed: &quot; + e.getMessage() + &quot; -- falling back to cached price)&quot;);
+            return stale;
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Call 1: $&quot; + getPriceWithFallback(&quot;sku-123&quot;));
+        System.out.println(&quot;Call 2: $&quot; + getPriceWithFallback(&quot;sku-123&quot;));
+        System.out.println(&quot;Call 3: $&quot; + getPriceWithFallback(&quot;sku-123&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java CacheFallback.java</code></p>
+<p>Call 1 succeeds, returns $29.99, and caches it. Calls 2 and 3 hit the simulated outage and fail live, but <code>getPriceWithFallback</code> catches the exception and returns the cached $29.99 both times instead of failing. The caller (and ultimately the user) sees a consistent, usable price throughout the outage, even though it&#x27;s no longer guaranteed to be current.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: StalenessAwareCacheFallback.java -- tracks WHEN each cached
+// value was captured and refuses to serve a fallback older than a
+// configured maximum age, since some data becomes actively dangerous
+// once too stale (rather than merely inconvenient).
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.time.Duration;
+
+public class StalenessAwareCacheFallback {
+    static int callCount = 0;
+    static double getLivePrice(String productId) {
+        callCount++;
+        if (callCount == 1) return 29.99;
+        throw new RuntimeException(&quot;pricing-service unreachable&quot;);
+    }
+
+    record CachedValue(double value, long cachedAtMillis) {}
+
+    static final Map&lt;String, CachedValue&gt; cache = new ConcurrentHashMap&lt;&gt;();
+    static final Duration maxAcceptableStaleness = Duration.ofMillis(500);
+
+    static String getPriceWithFallback(String productId, long simulatedNow) {
+        try {
+            double fresh = getLivePrice(productId);
+            cache.put(productId, new CachedValue(fresh, simulatedNow));
+            return &quot;$&quot; + fresh + &quot; (fresh)&quot;;
+        } catch (Exception e) {
+            CachedValue stale = cache.get(productId);
+            if (stale == null) return &quot;UNAVAILABLE (no live price, no cache)&quot;;
+            long age = simulatedNow - stale.cachedAtMillis();
+            if (age &gt; maxAcceptableStaleness.toMillis()) {
+                return &quot;UNAVAILABLE (cached price is &quot; + age + &quot;ms old, exceeds max staleness of &quot;
+                        + maxAcceptableStaleness.toMillis() + &quot;ms -- too risky to show)&quot;;
+            }
+            return &quot;$&quot; + stale.value() + &quot; (STALE, &quot; + age + &quot;ms old, within acceptable range)&quot;;
+        }
+    }
+
+    public static void main(String[] args) {
+        long t0 = 0;
+        System.out.println(&quot;t=0ms:    &quot; + getPriceWithFallback(&quot;sku-123&quot;, t0));
+        System.out.println(&quot;t=200ms:  &quot; + getPriceWithFallback(&quot;sku-123&quot;, t0 + 200));   // within staleness budget
+        System.out.println(&quot;t=900ms:  &quot; + getPriceWithFallback(&quot;sku-123&quot;, t0 + 900));   // exceeds staleness budget
+    }
+}</code></pre>
+<p>How to run: <code>java StalenessAwareCacheFallback.java</code></p>
+<p>The price is fetched live at <code>t=0</code> and cached with that timestamp. At <code>t=200ms</code>, the live call fails, but the cached value is only 200ms old, well within the 500ms <code>maxAcceptableStaleness</code>, so it is served with a clear &quot;STALE&quot; label. At <code>t=900ms</code>, the live call still fails, and now the cached value is 900ms old — past the configured maximum — so the fallback deliberately refuses to serve it, returning &quot;UNAVAILABLE&quot; instead of a price that might now be dangerously out of date. This is the production-relevant refinement: not all stale data is equally safe to serve, and a maximum staleness bound prevents a long outage from quietly serving increasingly wrong data indefinitely.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>StalenessAwareCacheFallback.main</code> in order. <strong>First</strong>, <code>getPriceWithFallback(&quot;sku-123&quot;, 0)</code> is called. Inside, <code>getLivePrice</code> succeeds (call count 1) and returns 29.99. This value is wrapped in a <code>CachedValue(29.99, 0)</code> and stored in <code>cache</code>. The method returns <code>&quot;$29.99 (fresh)&quot;</code>.</p>
+<p><strong>Next</strong>, <code>getPriceWithFallback(&quot;sku-123&quot;, 200)</code> is called. <code>getLivePrice</code> now throws (call count 2), landing in the <code>catch</code> block. <code>stale</code> is retrieved from <code>cache</code> — it&#x27;s the <code>CachedValue(29.99, 0)</code> stored a moment ago. <code>age</code> is computed as <code>simulatedNow(200) - stale.cachedAtMillis()(0) = 200</code>. Since <code>200 &lt;= 500</code> (the max acceptable staleness), the method returns the cached value with a <code>&quot;(STALE, 200ms old...)&quot;</code> label — the caller still gets a real, specific price, just honestly labeled as not current.</p>
+<p><strong>Finally</strong>, <code>getPriceWithFallback(&quot;sku-123&quot;, 900)</code> is called. <code>getLivePrice</code> throws again. The same cached value (still <code>cachedAtMillis=0</code>, since no live call has succeeded since) is retrieved, and <code>age = 900 - 0 = 900</code>. This time <code>900 &gt; 500</code>, so the staleness check fails, and the method returns <code>&quot;UNAVAILABLE (... too risky to show)&quot;</code> instead of the stale price — deliberately refusing to show data that has become too old to trust.</p>
+<p><strong>Data transformation across the three calls</strong>: the same underlying cached record (<code>value=29.99, cachedAtMillis=0</code>) is reused for both fallback attempts, but the *decision* of whether to serve it changes purely based on how much simulated time has elapsed — the caller-visible outcome shifts from &quot;fresh&quot; to &quot;stale-but-usable&quot; to &quot;unavailable&quot; as staleness crosses the configured threshold, without the cached data itself ever changing.</p>
+<pre><code>t=0ms   live call OK  -&gt; cache = {value:29.99, at:0}   -&gt; &quot;$29.99 (fresh)&quot;
+t=200ms live call FAILS -&gt; age=200ms &lt;= 500ms budget    -&gt; &quot;$29.99 (STALE, 200ms old)&quot;
+t=900ms live call FAILS -&gt; age=900ms &gt;  500ms budget    -&gt; &quot;UNAVAILABLE (too risky)&quot;</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Not all stale data is safe merely because it&#x27;s better than nothing — for data where being wrong is actively harmful (real-time inventory, account balances used to authorize a transaction), an unbounded &quot;always fall back to cache&quot; policy can turn a brief outage into a correctness incident. Bound the acceptable staleness explicitly.</blockquote>
+<ul><li>Cache-as-fallback is strictly more useful than a generic fallback when the request has a specific identity (a product ID, a user ID) — it returns the *actual* last-known value for that specific thing, not a made-up substitute.</li><li>Always populate the cache from successful live calls, never let the fallback cache go stale by only writing to it on the fallback path itself.</li><li>Clearly label fallback/stale responses (in logs, metrics, and ideally in the response itself via a header or field) so both operators and, where relevant, end users can distinguish live data from a cached substitute.</li><li>Set an explicit maximum acceptable staleness for any data where being wrong has real consequences, and fail outright once cached data exceeds it rather than serving indefinitely aging data through an extended outage.</li></ul>
+  <div class="nav"><a class="prv" href="0283-fail-fast-vs-fail-silent.html"><span class="mini">← Previous</span>Fail fast vs fail silent</a><a class="nxt" href="0285-result-caching-for-resiliency.html"><span class="mini">Next →</span>Result caching for resiliency</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t284";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
