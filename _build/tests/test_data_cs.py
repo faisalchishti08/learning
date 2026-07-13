@@ -65,5 +65,30 @@ class TestStructuralInvariants(unittest.TestCase):
             dupes = sorted({s for s in slugs if slugs.count(s) > 1})
             self.assertEqual(dupes, [], "%s dup slugs: %s" % (p["file"], dupes))
 
+class TestSystemDesign(unittest.TestCase):
+    def sd(self):
+        return by_stem()["system-design"]
+
+    def test_has_21_sections(self):
+        self.assertEqual(len(self.sd()["sections"]), 21)
+
+    def test_concept_and_usecase_tags_present(self):
+        tags = [s["tag"] for s in self.sd()["sections"]]
+        for t in ("fundamentals", "caching", "consistency", "resiliency",
+                  "api-design", "use-cases"):
+            self.assertIn(t, tags)
+
+    def test_usecase_section_has_29_designs_each_9_steps(self):
+        uc = [s for s in self.sd()["sections"] if s["tag"] == "use-cases"][0]
+        self.assertEqual(len(uc["groups"]), 29)
+        for g in uc["groups"]:
+            self.assertEqual(len(g["items"]), 9)
+            self.assertTrue(g["items"][-1].endswith("Spring/Java implementation approach"))
+
+    def test_total_topic_count_floor(self):
+        # 20 concept sections * multiple groups + 29*9 use-case items
+        n = len(topics.enumerate_topics(self.sd()))
+        self.assertGreaterEqual(n, 450)
+
 if __name__ == "__main__":
     unittest.main()
