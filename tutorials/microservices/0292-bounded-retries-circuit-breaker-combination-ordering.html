@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Bounded retries + circuit breaker combination ordering" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Bounded retries + circuit breaker combination ordering"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>When both a <a href="0259-retry-pattern.md">retry</a> mechanism and a <a href="0250-circuit-breaker-pattern.md">circuit breaker</a> wrap the same call, the *order* in which they&#x27;re layered changes their behavior substantially. Wrapping retry around the circuit breaker (retry is the outer layer, circuit breaker is inner) means each individual retry attempt passes through the circuit breaker&#x27;s own logic and can itself trip or be blocked by it. Wrapping circuit breaker around retry (circuit breaker outer, retry inner) means the circuit breaker only sees the *final* outcome after all retries are exhausted, treating a &quot;succeeded on the 3rd retry&quot; the same as a first-attempt success.</p>
+<h2>2. Why &amp; when</h2>
+<p>Resilience4j&#x27;s own recommended and default ordering is retry as the outer layer, circuit breaker as the inner layer — meaning each retry attempt is itself subject to the circuit breaker. This matters because if the circuit breaker is inside, once it trips open, *further retry attempts immediately fail fast* against the open circuit instead of continuing to hammer an already-struggling dependency with retries. This is the composition that actually protects the failing dependency: retries stop dead the moment the circuit breaker (which is watching the aggregate failure rate across *all* callers, not just this one call site) opens.</p>
+<p>Wrapping it the other way — circuit breaker outside, retry inside — is usually a mistake: a single logical call retries fully (e.g., 3 attempts with backoff) before the circuit breaker ever sees a single failure, since the circuit breaker only observes the retry group&#x27;s final result. This means the circuit breaker&#x27;s failure-rate calculation is based on a much smaller, delayed signal (whole retry-groups succeeding or failing) rather than individual call attempts, making it slower to detect and react to a struggling dependency, and it does nothing to stop each individual caller from still fully retrying against an already-known-bad dependency.</p>
+<h2>3. Core concept</h2>
+<p>Resilience4j&#x27;s decorator composition order determines which one sees which events; the recommended order applies retry outermost so each attempt is individually gated by the circuit breaker.</p>
+<pre><code class="lang-java">import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.retry.Retry;
+import io.vavr.control.Try;
+import java.util.function.Supplier;
+
+CircuitBreaker circuitBreaker = CircuitBreaker.ofDefaults(&quot;payments&quot;);
+Retry retry = Retry.ofDefaults(&quot;payments&quot;);
+
+Supplier&lt;String&gt; callDependency = () -&gt; paymentClient.charge(request);
+
+// CORRECT order: Retry.decorateSupplier WRAPS the circuit-breaker-decorated supplier.
+// Each retry attempt individually passes through (and can be blocked by) the circuit breaker.
+Supplier&lt;String&gt; decorated = Retry.decorateSupplier(retry,
+        CircuitBreaker.decorateSupplier(circuitBreaker, callDependency));
+
+String result = Try.ofSupplier(decorated).recover(t -&gt; &quot;fallback&quot;).get();</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Retry as the outer layer wraps circuit breaker as the inner layer; each individual retry attempt passes through the circuit breaker, so once the circuit breaker opens, subsequent retry attempts fail fast instead of continuing to call the struggling dependency">
+  <rect x="30" y="20" width="560" height="140" rx="8" fill="none" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="310" y="40" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">RETRY (outer) -- attempt 1, 2, 3...</text>
+
+  <rect x="60" y="55" width="520" height="90" rx="8" fill="none" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="320" y="75" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">CIRCUIT BREAKER (inner) -- gates EVERY attempt</text>
+
+  <rect x="90" y="90" width="150" height="35" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="165" y="112" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">attempt 1: real call, fails</text>
+
+  <rect x="260" y="90" width="150" height="35" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="335" y="112" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">attempt 2: real call, fails</text>
+
+  <rect x="430" y="90" width="150" height="35" rx="5" fill="#1c2430" stroke="#8b949e"/>
+  <text x="505" y="106" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">attempt 3: circuit</text>
+  <text x="505" y="118" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">now OPEN, fails FAST</text>
+</svg>
+<p>Retry wraps circuit breaker: later retry attempts get short-circuited fast once the breaker trips, sparing the dependency.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: circuit breaker wrapped around retry (the less effective order), showing the dependency still receives every retried call even after enough failures to justify tripping, extended to the recommended order — retry wrapped around circuit breaker — showing later retries short-circuit immediately once the breaker opens, and finally a full production-shaped composition adding a fallback so the caller still gets a usable result either way.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: CircuitBreakerOutsideRetry.java -- circuit breaker wraps retry:
+// the breaker only sees the FINAL outcome of a whole retry group, so it
+// reacts slowly, and every individual retry attempt still fully hits
+// the struggling dependency.
+public class CircuitBreakerOutsideRetry {
+    enum State { CLOSED, OPEN }
+    static State circuitState = State.CLOSED;
+    static int consecutiveGroupFailures = 0;
+    static int dependencyCallCount = 0;
+
+    static String callDependency() {
+        dependencyCallCount++;
+        throw new RuntimeException(&quot;dependency down&quot;);
+    }
+
+    static String withRetry() {
+        for (int attempt = 1; attempt &lt;= 3; attempt++) {
+            try { return callDependency(); }
+            catch (Exception e) { if (attempt == 3) throw e; }
+        }
+        throw new IllegalStateException(&quot;unreachable&quot;);
+    }
+
+    static String withCircuitBreakerOutside() {
+        if (circuitState == State.OPEN) throw new RuntimeException(&quot;circuit OPEN&quot;);
+        try {
+            return withRetry(); // retry group runs COMPLETELY before the breaker sees anything
+        } catch (Exception e) {
+            consecutiveGroupFailures++;
+            if (consecutiveGroupFailures &gt;= 2) circuitState = State.OPEN;
+            throw e;
+        }
+    }
+
+    public static void main(String[] args) {
+        for (int call = 1; call &lt;= 3; call++) {
+            try { withCircuitBreakerOutside(); }
+            catch (Exception e) { System.out.println(&quot;Logical call &quot; + call + &quot; failed after its retries.&quot;); }
+        }
+        System.out.println(&quot;Total REAL dependency calls made: &quot; + dependencyCallCount
+                + &quot; (every retry within every logical call hit the dependency, breaker reacted only AFTER whole groups failed)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java CircuitBreakerOutsideRetry.java</code></p>
+<p>Each &quot;logical call&quot; retries 3 times internally before the circuit breaker (wrapping the whole retry group) ever records a failure. Three logical calls each retry 3 times, so <code>dependencyCallCount</code> reaches 9 — every single retry attempt across all three logical calls hit the real (failing) dependency, even though after the second logical call&#x27;s total failure, the circuit breaker did open. The third logical call&#x27;s *first* attempt is blocked by the now-open circuit, but its would-be retries never even get the chance to be gated individually — because retry doesn&#x27;t wrap the breaker, once inside a <code>withRetry()</code> call the breaker isn&#x27;t consulted again until that whole group finishes.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: RetryOutsideCircuitBreaker.java -- the RECOMMENDED order: retry
+// wraps circuit breaker, so EACH individual retry attempt is gated by
+// the breaker. Once the breaker opens mid-retry-sequence, later attempts
+// within the SAME logical call fail fast instead of hitting the dependency.
+public class RetryOutsideCircuitBreaker {
+    enum State { CLOSED, OPEN }
+    static State circuitState = State.CLOSED;
+    static int consecutiveFailures = 0;
+    static int dependencyCallCount = 0;
+
+    static String callDependency() {
+        dependencyCallCount++;
+        throw new RuntimeException(&quot;dependency down&quot;);
+    }
+
+    static String callThroughCircuitBreaker() {
+        if (circuitState == State.OPEN) throw new RuntimeException(&quot;circuit OPEN, not calling dependency&quot;);
+        try {
+            String result = callDependency();
+            consecutiveFailures = 0;
+            return result;
+        } catch (Exception e) {
+            consecutiveFailures++;
+            if (consecutiveFailures &gt;= 2) circuitState = State.OPEN; // trips after just 2 REAL failures
+            throw e;
+        }
+    }
+
+    static String withRetryOutside() {
+        for (int attempt = 1; attempt &lt;= 3; attempt++) {
+            try { return callThroughCircuitBreaker(); } // EACH attempt individually gated by the breaker
+            catch (Exception e) { if (attempt == 3) throw e; }
+        }
+        throw new IllegalStateException(&quot;unreachable&quot;);
+    }
+
+    public static void main(String[] args) {
+        for (int call = 1; call &lt;= 3; call++) {
+            try { withRetryOutside(); }
+            catch (Exception e) { System.out.println(&quot;Logical call &quot; + call + &quot; failed after its retries.&quot;); }
+        }
+        System.out.println(&quot;Total REAL dependency calls made: &quot; + dependencyCallCount
+                + &quot; (far fewer -- the breaker started short-circuiting retries as soon as it opened, mid-sequence)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java RetryOutsideCircuitBreaker.java</code></p>
+<p>With retry as the outer layer, the very first logical call&#x27;s attempts 1 and 2 hit the real dependency and fail, tripping the breaker open after just 2 real failures. Attempt 3 of that *same* logical call already gets short-circuited by the now-open breaker instead of hitting the dependency a third time. Logical calls 2 and 3 never reach the dependency at all — every attempt within them is immediately blocked by the open circuit. The total dependency call count comes out to just 2 (versus 9 in Level 1) for the identical three logical calls, because each retry attempt was individually protected by the breaker rather than the breaker only reacting after whole retry groups completed.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: FullCompositionWithFallback.java -- the complete, realistic
+// production shape: retry (outer) wraps circuit breaker (inner), and the
+// whole thing is wrapped in a fallback so the caller always gets a
+// usable result regardless of which layer ultimately gave up.
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryConfig;
+import io.vavr.control.Try;
+import java.time.Duration;
+import java.util.function.Supplier;
+
+public class FullCompositionWithFallback {
+    static int dependencyCallCount = 0;
+
+    static String callDependency() {
+        dependencyCallCount++;
+        throw new RuntimeException(&quot;dependency down&quot;);
+    }
+
+    public static void main(String[] args) {
+        CircuitBreakerConfig cbConfig = CircuitBreakerConfig.custom()
+                .failureRateThreshold(50)
+                .minimumNumberOfCalls(2)
+                .slidingWindowSize(2)
+                .waitDurationInOpenState(Duration.ofSeconds(10))
+                .build();
+        CircuitBreaker circuitBreaker = CircuitBreaker.of(&quot;payments&quot;, cbConfig);
+
+        RetryConfig retryConfig = RetryConfig.custom().maxAttempts(3).waitDuration(Duration.ofMillis(10)).build();
+        Retry retry = Retry.of(&quot;payments&quot;, retryConfig);
+
+        Supplier&lt;String&gt; decorated = Retry.decorateSupplier(retry, // RETRY OUTER
+                CircuitBreaker.decorateSupplier(circuitBreaker, FullCompositionWithFallback::callDependency)); // CIRCUIT BREAKER INNER
+
+        for (int call = 1; call &lt;= 3; call++) {
+            String result = Try.ofSupplier(decorated)
+                    .recover(t -&gt; &quot;FALLBACK: showing cached/default result&quot;)
+                    .get();
+            System.out.println(&quot;Logical call &quot; + call + &quot; -&gt; &quot; + result);
+        }
+        System.out.println(&quot;Total REAL dependency calls made: &quot; + dependencyCallCount);
+    }
+}</code></pre>
+<p>How to run: <code>java -cp .:resilience4j-retry-2.2.0.jar:resilience4j-circuitbreaker-2.2.0.jar:resilience4j-core-2.2.0.jar:vavr-0.10.4.jar FullCompositionWithFallback.java</code> (with the Resilience4j and Vavr jars on the classpath; typically pulled in transitively via <code>spring-cloud-starter-circuitbreaker-resilience4j</code> in a Spring Boot project).</p>
+<p>This wires the actual Resilience4j library with the recommended composition order — <code>Retry.decorateSupplier</code> wrapping a <code>CircuitBreaker.decorateSupplier</code>-wrapped call — and adds a <code>Try...recover</code> fallback around the whole thing. Every attempt, whether it&#x27;s an initial call or a retry, passes through the circuit breaker, so the breaker opens quickly (after just 2 calls per the configured <code>slidingWindowSize</code>) and subsequent attempts across all three logical calls fail fast. Regardless of whether a given logical call succeeds, exhausts retries, or gets short-circuited by an open breaker, <code>recover</code> catches whatever exception surfaces and returns a usable fallback string — the caller of <code>main</code>&#x27;s loop never sees a raw exception, only a graceful degraded result, demonstrating the full production-shaped stack of resilience patterns working together.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>RetryOutsideCircuitBreaker.main</code>&#x27;s first logical call (<code>call=1</code>) in order. <strong>First</strong>, <code>withRetryOutside()</code> begins its loop at <code>attempt=1</code> and calls <code>callThroughCircuitBreaker()</code>.</p>
+<p><strong>Inside</strong>, <code>circuitState</code> is still <code>CLOSED</code>, so the guard passes; <code>callDependency()</code> is invoked, incrementing <code>dependencyCallCount</code> to 1 and throwing. The <code>catch</code> block increments <code>consecutiveFailures</code> to 1, which is <code>&lt; 2</code> (the threshold), so the circuit stays <code>CLOSED</code>, and the exception is re-thrown up to <code>withRetryOutside</code>.</p>
+<p><strong>Back in <code>withRetryOutside</code></strong>, <code>attempt=1</code>&#x27;s failure is caught; since <code>attempt != 3</code>, the loop continues to <code>attempt=2</code>, calling <code>callThroughCircuitBreaker()</code> again. The circuit is still <code>CLOSED</code>, so <code>callDependency()</code> runs again — <code>dependencyCallCount</code> reaches 2, <code>consecutiveFailures</code> reaches 2, which now meets the threshold, so <code>circuitState</code> flips to <code>OPEN</code>. The exception still propagates back to <code>withRetryOutside</code> as a normal retry-attempt failure.</p>
+<p><strong><code>attempt=3</code></strong> now calls <code>callThroughCircuitBreaker()</code> a third time — but this time, the very first line, <code>if (circuitState == State.OPEN)</code>, is true, so the method throws immediately without ever calling <code>callDependency()</code>. <code>dependencyCallCount</code> stays at 2. Since <code>attempt == 3</code>, this final failure is re-thrown out of <code>withRetryOutside</code>, and <code>main</code>&#x27;s <code>catch</code> block prints &quot;Logical call 1 failed after its retries.&quot;</p>
+<p><strong>For logical call 2</strong>, <code>withRetryOutside</code> again starts at <code>attempt=1</code>, calling <code>callThroughCircuitBreaker()</code> — but <code>circuitState</code> is *still* <code>OPEN</code> from the previous logical call (state persists across calls, as a real circuit breaker&#x27;s does), so all three of this call&#x27;s attempts are immediately short-circuited without ever touching <code>dependencyCallCount</code>. The same happens for logical call 3.</p>
+<p><strong>Final state</strong>: <code>dependencyCallCount</code> is 2 total across all three logical calls (9 attempts), because the breaker — being consulted on *every individual attempt*, not just once per logical call — stopped nearly all of them from ever reaching the failing dependency.</p>
+<pre><code>call 1: attempt1(real,fail,count=1) -&gt; attempt2(real,fail,count=2,BREAKER OPENS) -&gt; attempt3(short-circuited)
+call 2: attempt1(short-circuited) -&gt; attempt2(short-circuited) -&gt; attempt3(short-circuited)
+call 3: attempt1(short-circuited) -&gt; attempt2(short-circuited) -&gt; attempt3(short-circuited)
+                                    total real dependency calls: 2</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Wrapping a circuit breaker *outside* a retry loop means the breaker only ever observes whole-retry-group outcomes, reacting far more slowly and doing nothing to stop individual retry attempts within an already-doomed call from still hammering a struggling dependency.</blockquote>
+<ul><li>The recommended composition is retry as the outer decorator and circuit breaker as the inner one, so every individual attempt — original call and every retry — is gated by the breaker.</li><li>This ordering makes the breaker&#x27;s failure-rate calculation far more responsive, since it&#x27;s based on individual call attempts rather than delayed whole-group outcomes.</li><li>Always add a fallback around the entire composed stack (as in Level 3) so the caller receives a usable result regardless of which specific layer — retry exhaustion or an open circuit — ultimately caused the failure.</li><li>When composing multiple resilience decorators, always verify the actual order empirically (as this topic&#x27;s runnable example does) rather than assuming — decorator composition order is easy to get backward, and the resulting behavior difference is significant but not obviously reflected by superficially similar-looking code.</li></ul>
+  <div class="nav"><a class="prv" href="0291-chaos-engineering-fault-injection.html"><span class="mini">← Previous</span>Chaos engineering & fault injection</a><a class="nxt" href="0293-spring-cloud-circuit-breaker-abstraction.html"><span class="mini">Next →</span>Spring Cloud Circuit Breaker abstraction</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t292";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

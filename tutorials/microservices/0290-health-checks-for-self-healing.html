@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Health checks for self-healing" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Health checks for self-healing"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A health check is an endpoint or probe that reports whether a service instance is currently able to do its job — commonly split into *liveness* (&quot;is this process alive and not deadlocked?&quot;) and *readiness* (&quot;is this instance currently able to serve traffic correctly?&quot;). Self-healing is what an orchestrator (Kubernetes, a load balancer, a service mesh) does in response: automatically restarting an instance that fails its liveness check, or automatically removing an instance that fails its readiness check from receiving traffic, without any human intervening.</p>
+<h2>2. Why &amp; when</h2>
+<p>A service instance can be in a broken state in ways that are invisible from the outside unless something actively asks: a deadlocked thread pool, a lost database connection that hasn&#x27;t yet triggered a visible error, a memory leak degrading performance, a dependency the instance needs but currently cannot reach. Without health checks, an orchestrator has no way to know an instance is unhealthy — it keeps routing traffic to it (readiness) or assumes it&#x27;s fine and never restarts it (liveness), and the only signal anyone gets is a stream of failed user requests.</p>
+<p>Liveness and readiness answer different questions and should trigger different remedies. A failed liveness check means &quot;this process is fundamentally broken and needs to be replaced&quot; — the orchestrator restarts it. A failed readiness check means &quot;this process is fine but temporarily cannot serve traffic correctly&quot; (e.g., still warming up, or its database connection pool briefly exhausted) — the orchestrator stops sending it traffic but does *not* restart it, since restarting wouldn&#x27;t help and would just add more churn. Use both together: readiness protects users from being routed to an instance that can&#x27;t currently serve them; liveness ensures a genuinely stuck instance gets automatically replaced.</p>
+<h2>3. Core concept</h2>
+<p>A Spring Boot application typically exposes both via the Actuator&#x27;s <code>/actuator/health/liveness</code> and <code>/actuator/health/readiness</code> endpoints, each backed by custom health indicators reflecting the actual state that matters.</p>
+<pre><code class="lang-java">import org.springframework.boot.actuate.health.Health;
+import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.stereotype.Component;
+
+@Component(&quot;database&quot;)
+class DatabaseHealthIndicator implements HealthIndicator {
+    private final DataSource dataSource;
+    DatabaseHealthIndicator(DataSource dataSource) { this.dataSource = dataSource; }
+
+    @Override
+    public Health health() {
+        try (Connection conn = dataSource.getConnection()) {
+            if (conn.isValid(1)) return Health.up().build();     // READINESS-relevant: can currently serve
+            return Health.down().withDetail(&quot;reason&quot;, &quot;connection invalid&quot;).build();
+        } catch (SQLException e) {
+            return Health.down(e).build(); // instance is UP (liveness fine) but NOT READY
+        }
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A liveness probe failing causes the orchestrator to restart the instance because it is fundamentally broken; a readiness probe failing causes the orchestrator to remove the instance from the load balancer's traffic rotation without restarting it, since the instance may recover on its own">
+  <rect x="30" y="20" width="200" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="130" y="44" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">liveness probe FAILS</text>
+  <line x1="130" y1="60" x2="130" y2="90" stroke="#8b949e" marker-end="url(#arr290)"/>
+  <rect x="30" y="95" width="200" height="40" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="130" y="119" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">orchestrator RESTARTS instance</text>
+
+  <rect x="400" y="20" width="200" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="500" y="44" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">readiness probe FAILS</text>
+  <line x1="500" y1="60" x2="500" y2="90" stroke="#8b949e" marker-end="url(#arr290)"/>
+  <rect x="400" y="95" width="200" height="40" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="500" y="115" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">removed from traffic rotation</text>
+  <text x="500" y="128" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">(NOT restarted -- may self-recover)</text>
+
+  <text x="315" y="170" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">two different questions, two different remedies</text>
+
+  <defs><marker id="arr290" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Liveness failures get the instance restarted; readiness failures just pull it from traffic — different problems, different fixes.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a service with no health checks that keeps receiving traffic even while its database connection is down, extended to add a readiness check that lets an orchestrator stop routing to it, and finally adding a separate liveness check with different logic, simulating an orchestrator&#x27;s polling loop reacting differently to each kind of failure.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoHealthChecksSilentlyFails.java -- a service instance loses its
+// database connection but has NO health check exposing this; a simulated
+// load balancer keeps routing traffic to it regardless, and every
+// request fails.
+public class NoHealthChecksSilentlyFails {
+    static boolean databaseConnected = true;
+
+    static String handleRequest() {
+        if (!databaseConnected) throw new RuntimeException(&quot;500: database unavailable&quot;);
+        return &quot;200 OK&quot;;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Request 1: &quot; + handleRequest());
+        databaseConnected = false; // simulate losing the DB connection
+        for (int i = 2; i &lt;= 4; i++) {
+            try {
+                System.out.println(&quot;Request &quot; + i + &quot;: &quot; + handleRequest());
+            } catch (Exception e) {
+                System.out.println(&quot;Request &quot; + i + &quot;: FAILED -- &quot; + e.getMessage()
+                        + &quot; (load balancer had NO way to know, kept routing here anyway)&quot;);
+            }
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java NoHealthChecksSilentlyFails.java</code></p>
+<p>The first request succeeds. Once <code>databaseConnected</code> flips to false (simulating a lost DB connection), every subsequent request fails with a 500 — but nothing in this program tells any external load balancer or orchestrator that this instance has a problem. With no health check to consult, a real load balancer would keep sending every user&#x27;s request to this broken instance indefinitely, producing a stream of failed requests until a human notices.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ReadinessRemovesFromRotation.java -- adds a readiness check the
+// &quot;load balancer&quot; polls; once it fails, the simulated load balancer
+// stops routing traffic to this instance, protecting users from hitting
+// the broken instance at all.
+public class ReadinessRemovesFromRotation {
+    static boolean databaseConnected = true;
+
+    static boolean isReady() { return databaseConnected; } // READINESS: can this instance serve correctly RIGHT NOW?
+
+    static String handleRequest() {
+        if (!databaseConnected) throw new RuntimeException(&quot;500: database unavailable&quot;);
+        return &quot;200 OK&quot;;
+    }
+
+    static class SimulatedLoadBalancer {
+        boolean instanceInRotation = true;
+        void pollReadiness() {
+            instanceInRotation = isReady();
+            if (!instanceInRotation) System.out.println(&quot;  [load balancer] readiness check FAILED -- removing instance from rotation&quot;);
+        }
+        String routeRequest(int requestNum) {
+            if (!instanceInRotation) return &quot;Request &quot; + requestNum + &quot;: NOT ROUTED HERE (instance out of rotation)&quot;;
+            try { return &quot;Request &quot; + requestNum + &quot;: &quot; + handleRequest(); }
+            catch (Exception e) { return &quot;Request &quot; + requestNum + &quot;: FAILED -- &quot; + e.getMessage(); }
+        }
+    }
+
+    public static void main(String[] args) {
+        SimulatedLoadBalancer lb = new SimulatedLoadBalancer();
+        System.out.println(lb.routeRequest(1));
+        databaseConnected = false;
+        lb.pollReadiness(); // orchestrator/load balancer periodically checks readiness
+        System.out.println(lb.routeRequest(2));
+        System.out.println(lb.routeRequest(3));
+    }
+}</code></pre>
+<p>How to run: <code>java ReadinessRemovesFromRotation.java</code></p>
+<p>Request 1 succeeds normally. Once the database connection drops, the simulated load balancer&#x27;s <code>pollReadiness()</code> call (standing in for Kubernetes&#x27; periodic readiness probe) detects <code>isReady()</code> returning false and removes the instance from <code>instanceInRotation</code>. Requests 2 and 3 are never even routed to this instance&#x27;s <code>handleRequest()</code> — they&#x27;re intercepted at the load balancer layer and reported as &quot;NOT ROUTED HERE,&quot; meaning real user traffic would instead go to a different, healthy instance rather than hitting this broken one and failing.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: LivenessVsReadinessDifferentiated.java -- separate liveness and
+// readiness checks with DIFFERENT triggers and DIFFERENT orchestrator
+// responses: a lost DB connection only fails readiness (removed from
+// traffic, might self-recover), while a detected deadlock fails
+// liveness (orchestrator RESTARTS the whole instance).
+public class LivenessVsReadinessDifferentiated {
+    static boolean databaseConnected = true;
+    static boolean deadlocked = false;
+
+    static boolean isReady() { return databaseConnected &amp;&amp; !deadlocked; }
+    static boolean isAlive() { return !deadlocked; } // deadlock = fundamentally broken process
+
+    static class SimulatedOrchestrator {
+        boolean inRotation = true;
+        boolean restarted = false;
+
+        void poll() {
+            if (!isAlive()) {
+                System.out.println(&quot;  [orchestrator] LIVENESS FAILED -- process is fundamentally broken, RESTARTING instance&quot;);
+                restarted = true;
+                deadlocked = false;      // restart clears the deadlock -- fresh process
+                databaseConnected = true; // fresh process reconnects to the DB on startup
+                inRotation = true;
+                return;
+            }
+            inRotation = isReady();
+            if (!inRotation) System.out.println(&quot;  [orchestrator] READINESS FAILED -- removing from traffic, NOT restarting (may self-recover)&quot;);
+            else if (restarted) { System.out.println(&quot;  [orchestrator] instance back to normal after restart&quot;); restarted = false; }
+        }
+    }
+
+    public static void main(String[] args) {
+        SimulatedOrchestrator orch = new SimulatedOrchestrator();
+
+        System.out.println(&quot;-- scenario 1: DB connection lost (readiness issue only) --&quot;);
+        databaseConnected = false;
+        orch.poll();
+        System.out.println(&quot;inRotation=&quot; + orch.inRotation + &quot; (removed from traffic, but process itself is fine, no restart)&quot;);
+
+        databaseConnected = true; // DB comes back on its own
+        orch.poll();
+        System.out.println(&quot;inRotation=&quot; + orch.inRotation + &quot; (self-recovered, back in rotation, still never restarted)&quot;);
+
+        System.out.println(&quot;-- scenario 2: thread pool deadlock detected (liveness issue) --&quot;);
+        deadlocked = true;
+        orch.poll();
+        System.out.println(&quot;restarted=&quot; + orch.restarted + &quot; inRotation=&quot; + orch.inRotation + &quot; (fresh process, back in rotation immediately)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java LivenessVsReadinessDifferentiated.java</code></p>
+<p>Scenario 1 simulates a lost database connection: <code>isReady()</code> returns false but <code>isAlive()</code> still returns true (the process itself isn&#x27;t broken, just temporarily unable to serve). The orchestrator&#x27;s <code>poll()</code> sees a failed readiness check, removes the instance from rotation, and does *not* restart it. When the database reconnects on its own, the next poll finds <code>isReady()</code> true again and puts the instance back in rotation — no restart was ever needed, because the process itself was never broken. Scenario 2 simulates a detected deadlock: <code>isAlive()</code> now returns false, which the orchestrator treats as a fundamentally broken process — it restarts the instance (clearing the deadlock and reconnecting the database as a side effect of a fresh start) rather than merely pulling it from rotation, since a deadlocked process would never recover on its own no matter how long it stayed out of traffic.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>LivenessVsReadinessDifferentiated.main</code> through scenario 2. <strong>First</strong>, scenario 1 has already run and left the system in a healthy state (<code>databaseConnected=true</code>, <code>deadlocked=false</code>, <code>orch.inRotation=true</code>).</p>
+<p><strong><code>deadlocked</code> is set to <code>true</code></strong>, simulating a health indicator detecting a genuinely stuck thread pool inside the instance.</p>
+<p><strong><code>orch.poll()</code> is called.</strong> Inside, the first check is <code>if (!isAlive())</code>. <code>isAlive()</code> returns <code>!deadlocked</code>, which is now <code>!true = false</code>, so <code>!isAlive()</code> evaluates to <code>true</code> — the liveness check has failed, and this branch executes *before* the readiness check is even consulted, reflecting the real precedence: a liveness failure is the more severe condition and takes priority.</p>
+<p><strong>Inside the liveness-failure branch</strong>, the orchestrator prints its restart message, sets <code>restarted = true</code>, and then — modeling exactly what a real process restart accomplishes — resets <code>deadlocked = false</code> and <code>databaseConnected = true</code> (a fresh process starts with a clean thread pool and re-establishes its database connection from scratch) and sets <code>inRotation = true</code> (the newly restarted, healthy instance rejoins traffic). The method then <code>return</code>s immediately, skipping the readiness-check logic entirely for this poll cycle, since the restart already resolved everything.</p>
+<p><strong>Back in <code>main</code></strong>, the printed state shows <code>restarted=true inRotation=true</code> — the instance was actively restarted by the orchestrator and immediately came back healthy, in contrast to scenario 1&#x27;s DB-only failure, where <code>restarted</code> never became <code>true</code> at all and the instance simply waited out of rotation until it recovered on its own.</p>
+<pre><code>poll() called
+   |
+   v
+isAlive()? --false--&gt; RESTART instance (clears deadlock, reconnects DB, back in rotation) -&gt; return, skip readiness check
+   |true
+   v
+isReady()? --false--&gt; remove from rotation, do NOT restart
+   |true
+   v
+stays in rotation, serving traffic normally</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Making a liveness check depend on an external dependency (like the database) is a common, serious mistake: if the database goes down, every instance&#x27;s liveness check would fail simultaneously, and the orchestrator would restart the entire fleet at once — which does nothing to fix the actual problem (the database is still down) and adds a thundering herd of restart churn on top of an already-degraded system. Liveness should only reflect the process&#x27;s own internal health; readiness should reflect its ability to serve given current external dependencies.</blockquote>
+<ul><li>Liveness answers &quot;should this process be replaced?&quot; and should be restart-fixable — deadlocks, unrecoverable internal corruption, truly hung state.</li><li>Readiness answers &quot;can this instance serve traffic right now?&quot; and should reflect external dependency health — database connectivity, downstream service availability, whether startup/warm-up has completed.</li><li>Never make a liveness probe depend on a shared external resource, or a single outage of that resource can trigger a synchronized, useless restart of an entire fleet.</li><li>Spring Boot Actuator exposes both out of the box (<code>/actuator/health/liveness</code> and <code>/actuator/health/readiness</code>) and lets custom <code>HealthIndicator</code> beans contribute to either group — Kubernetes deployments should point their <code>livenessProbe</code> and <code>readinessProbe</code> at the corresponding distinct endpoints, never the same one for both.</li></ul>
+  <div class="nav"><a class="prv" href="0289-bounded-queues.html"><span class="mini">← Previous</span>Bounded queues</a><a class="nxt" href="0291-chaos-engineering-fault-injection.html"><span class="mini">Next →</span>Chaos engineering & fault injection</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t290";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

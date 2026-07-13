@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Let-it-crash / supervision" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Let-it-crash / supervision"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Let-it-crash is a resilience philosophy — popularized by Erlang/OTP and its supervision trees — that says: don&#x27;t try to anticipate and handle every possible failure mode inside a unit of work; instead, let that unit fail completely and quickly when something unexpected happens, and rely on an external *supervisor* to notice the failure and restart it into a known-good state. Rather than defensive code littered with speculative error handling for conditions that are hard to predict, the unit is kept simple and allowed to die; recovery is the supervisor&#x27;s job, not the unit&#x27;s own job.</p>
+<h2>2. Why &amp; when</h2>
+<p>Code that tries to handle every conceivable failure inline tends to accumulate defensive complexity, and worse, it can mask bugs by continuing to run in a corrupted or inconsistent state that&#x27;s hard to reason about — a half-broken worker limping along is often more dangerous than one that&#x27;s cleanly dead. Let-it-crash inverts this: a worker that hits something truly unexpected just dies immediately, taking any corrupted in-process state down with it, and a supervisor restarts a fresh instance from scratch, which is by construction back to a known-good starting state.</p>
+<p>This works well specifically because the unit of failure is small and cheap to restart — a single actor, a single worker thread, a single container/pod — and its state (if any needs to survive) lives outside it, in a database or message queue, not only in memory. Use let-it-crash for stateless or externally-persisted workers where a fresh restart is cheap and safe: message consumers, background job processors, container orchestration (Kubernetes restarting a crashed pod is exactly this pattern at the infrastructure level). It is a poor fit for anything holding unrecoverable in-memory state that would be lost on crash with no way to reconstruct it.</p>
+<h2>3. Core concept</h2>
+<p>A supervisor watches a worker; on an uncaught failure, it restarts the worker instead of trying to recover the worker&#x27;s internal state.</p>
+<pre><code class="lang-java">class Supervisor {
+    final java.util.function.Supplier&lt;Runnable&gt; workerFactory;
+    int restartCount = 0;
+    final int maxRestarts;
+
+    Supervisor(java.util.function.Supplier&lt;Runnable&gt; workerFactory, int maxRestarts) {
+        this.workerFactory = workerFactory; this.maxRestarts = maxRestarts;
+    }
+
+    void runSupervised() {
+        while (restartCount &lt;= maxRestarts) {
+            try {
+                workerFactory.get().run(); // a fresh worker EVERY restart -- no carried-over broken state
+                return; // clean completion
+            } catch (Throwable crash) {
+                restartCount++;
+                System.out.println(&quot;Worker crashed (&quot; + crash.getMessage() + &quot;), restarting (&quot; + restartCount + &quot;/&quot; + maxRestarts + &quot;)&quot;);
+            }
+        }
+        throw new IllegalStateException(&quot;exceeded max restarts, giving up&quot;);
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A worker runs and hits an unexpected failure, crashing completely rather than attempting to self-heal; a supervisor detects the crash and starts a brand-new worker instance from a known-good state, repeating this cycle up to a maximum restart count">
+  <rect x="30" y="30" width="130" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="95" y="54" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">worker (attempt 1)</text>
+
+  <line x1="160" y1="50" x2="230" y2="50" stroke="#8b949e" marker-end="url(#arr287)"/>
+  <text x="195" y="40" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">crash</text>
+
+  <rect x="240" y="30" width="130" height="40" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="305" y="54" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">supervisor</text>
+
+  <line x1="305" y1="70" x2="95" y2="105" stroke="#8b949e" marker-end="url(#arr287)"/>
+  <text x="200" y="100" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">restart: fresh instance</text>
+
+  <rect x="30" y="110" width="130" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="95" y="134" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">worker (attempt 2, clean)</text>
+
+  <defs><marker id="arr287" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>The crashed worker is discarded entirely; the supervisor&#x27;s restart produces a fresh instance rather than repairing the broken one.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a worker that tries to defensively catch and limp along through an unexpected error, ending up in inconsistent state, extended to let it crash cleanly and be supervised with a fresh restart, and finally combining this with a bounded restart count and backoff so a persistently failing worker doesn&#x27;t restart forever, mirroring how Kubernetes&#x27; pod restart policy and CrashLoopBackOff behave.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: DefensiveLimpingWorker.java -- catches an unexpected error and
+// tries to &quot;keep going,&quot; but its internal state is now inconsistent,
+// producing subtly wrong output on every subsequent operation.
+public class DefensiveLimpingWorker {
+    static class Worker {
+        int processedCount = 0;
+        double runningTotal = 0;
+
+        void process(int item) {
+            try {
+                if (item &lt; 0) throw new IllegalArgumentException(&quot;unexpected negative item: &quot; + item);
+                runningTotal += item;
+                processedCount++;
+            } catch (Exception e) {
+                // &quot;Handle&quot; it and keep going -- but processedCount and runningTotal
+                // may now be silently out of sync with what was actually processed.
+                System.out.println(&quot;  Caught and ignored: &quot; + e.getMessage() + &quot; (worker limps on)&quot;);
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        Worker worker = new Worker();
+        int[] items = { 10, 20, -5, 30 }; // an unexpected negative item mid-stream
+        for (int item : items) worker.process(item);
+        System.out.println(&quot;processedCount=&quot; + worker.processedCount + &quot; runningTotal=&quot; + worker.runningTotal
+                + &quot; (average would be computed as &quot; + (worker.runningTotal / worker.processedCount) + &quot;)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java DefensiveLimpingWorker.java</code></p>
+<p>The worker catches the unexpected negative item and &quot;continues,&quot; but it has no real recovery logic — it just swallows the error and moves on. Its counters remain internally consistent by luck in this simple example, but in any worker with more complex, interrelated state, catching an unanticipated error and continuing risks leaving that state in a form nobody explicitly designed for or tested — a subtle, hard-to-detect correctness bug rather than a clean, visible failure.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: LetItCrashWithSupervisor.java -- the worker does NOT try to
+// handle the unexpected condition; it throws immediately and dies. A
+// supervisor catches the crash and restarts a completely FRESH worker.
+public class LetItCrashWithSupervisor {
+    static class Worker {
+        int processedCount = 0;
+        double runningTotal = 0;
+
+        void process(int item) {
+            if (item &lt; 0) throw new IllegalStateException(&quot;unexpected negative item: &quot; + item); // just DIE
+            runningTotal += item;
+            processedCount++;
+        }
+    }
+
+    static class Supervisor {
+        int restartCount = 0;
+        final int maxRestarts = 3;
+
+        void runSupervised(int[] items) {
+            int startIndex = 0;
+            while (restartCount &lt;= maxRestarts &amp;&amp; startIndex &lt; items.length) {
+                Worker worker = new Worker(); // FRESH instance every restart -- no carried-over state
+                try {
+                    for (int i = startIndex; i &lt; items.length; i++) {
+                        worker.process(items[i]);
+                        startIndex = i + 1;
+                    }
+                    System.out.println(&quot;Completed cleanly. processedCount=&quot; + worker.processedCount
+                            + &quot; runningTotal=&quot; + worker.runningTotal);
+                    return;
+                } catch (Exception crash) {
+                    restartCount++;
+                    System.out.println(&quot;Worker CRASHED on item at index &quot; + startIndex + &quot;: &quot; + crash.getMessage()
+                            + &quot; -- restarting fresh worker (&quot; + restartCount + &quot;/&quot; + maxRestarts + &quot;), skipping bad item&quot;);
+                    startIndex++; // skip the item that caused the crash, then restart clean
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        new Supervisor().runSupervised(new int[]{ 10, 20, -5, 30 });
+    }
+}</code></pre>
+<p>How to run: <code>java LetItCrashWithSupervisor.java</code></p>
+<p>The worker throws immediately and completely on the unexpected negative item, rather than trying to handle it inline. The supervisor catches that crash, logs it, skips the offending item, and creates a brand-new <code>Worker</code> instance — resetting <code>processedCount</code> and <code>runningTotal</code> to a known-clean state of 0 — before resuming from the next item. The final printed totals reflect only the items successfully processed by the *current, clean* worker instance, with no risk of carrying forward any inconsistency from the crash.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: BoundedRestartsWithBackoff.java -- adds what a real supervisor
+// (or Kubernetes&#x27; pod restart policy) needs: a maximum restart count so
+// a PERSISTENTLY failing worker doesn&#x27;t restart forever (CrashLoopBackOff),
+// plus exponential backoff between restarts to avoid hammering whatever
+// resource is causing the crash.
+public class BoundedRestartsWithBackoff {
+    static class Worker {
+        void process(int item) {
+            if (item &lt; 0) throw new IllegalStateException(&quot;unexpected negative item: &quot; + item);
+            System.out.println(&quot;  processed: &quot; + item);
+        }
+    }
+
+    static class Supervisor {
+        int restartCount = 0;
+        final int maxRestarts = 3;
+        long backoffMillis = 100;
+
+        void runSupervised(int[] items) throws InterruptedException {
+            int startIndex = 0;
+            while (startIndex &lt; items.length) {
+                Worker worker = new Worker();
+                try {
+                    for (int i = startIndex; i &lt; items.length; i++) {
+                        worker.process(items[i]);
+                        startIndex = i + 1;
+                    }
+                    System.out.println(&quot;Completed cleanly.&quot;);
+                    return;
+                } catch (Exception crash) {
+                    restartCount++;
+                    if (restartCount &gt; maxRestarts) {
+                        System.out.println(&quot;GIVING UP: exceeded max restarts (&quot; + maxRestarts
+                                + &quot;) -- this item is persistently crashing, needs human intervention&quot;);
+                        startIndex++; // permanently skip the poison item, don&#x27;t restart forever
+                        restartCount = 0; // reset budget for the NEXT item
+                        continue;
+                    }
+                    System.out.println(&quot;Worker CRASHED: &quot; + crash.getMessage()
+                            + &quot; -- restart &quot; + restartCount + &quot;/&quot; + maxRestarts
+                            + &quot;, backing off &quot; + backoffMillis + &quot;ms before retry&quot;);
+                    Thread.sleep(backoffMillis);
+                    backoffMillis *= 2; // EXPONENTIAL backoff -- avoids hammering a struggling resource
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        // Every item is negative -- persistently poisoned data, simulating a truly broken input.
+        new Supervisor().runSupervised(new int[]{ -1, -2, -3, -4, 10 });
+    }
+}</code></pre>
+<p>How to run: <code>java BoundedRestartsWithBackoff.java</code></p>
+<p>The first item, <code>-1</code>, crashes the worker every single restart attempt (it&#x27;s structurally always going to fail — a &quot;poison&quot; item). The supervisor restarts up to <code>maxRestarts</code> (3) times with exponentially increasing backoff (100ms, 200ms, 400ms) between attempts, giving whatever transient condition might be causing the crash a chance to resolve. Since this item is *persistently* broken rather than transiently, all 3 restart attempts fail, and the supervisor gives up on that specific item, permanently skips it, resets its restart budget, and moves on to the next item (<code>-2</code>, which is also broken and follows the same pattern) — until it finally reaches <code>10</code>, which processes successfully. This mirrors Kubernetes&#x27; real behavior: a pod that crashes repeatedly gets restarted with exponential backoff, and if it keeps crashing, it enters <code>CrashLoopBackOff</code>, signaling that the problem needs human attention rather than infinite automatic restarts.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>BoundedRestartsWithBackoff.main</code> in order. <strong>First</strong>, <code>runSupervised</code> is called with <code>items = {-1, -2, -3, -4, 10}</code> and <code>startIndex=0</code>.</p>
+<p><strong>Attempt 1</strong> creates a fresh <code>Worker</code>, enters the <code>for</code> loop at <code>i=0</code>, and calls <code>worker.process(-1)</code>, which immediately throws <code>IllegalStateException</code>. This is caught; <code>restartCount</code> becomes 1, which is <code>&lt;= maxRestarts(3)</code>, so the supervisor prints the crash message, sleeps 100ms, doubles <code>backoffMillis</code> to 200, and loops back to the top of the <code>while</code>.</p>
+<p><strong>Attempt 2</strong> creates *another* fresh <code>Worker</code> (discarding the crashed one entirely — no shared state carries over), and again calls <code>process(-1)</code> at the same <code>startIndex=0</code> (unchanged since no items were successfully processed). It crashes again; <code>restartCount</code> becomes 2, still <code>&lt;= 3</code>, backoff sleeps 200ms then becomes 400ms.</p>
+<p><strong>Attempt 3</strong> follows the same pattern: <code>restartCount</code> becomes 3, still <code>&lt;= 3</code> (the boundary case), backoff sleeps 400ms then becomes 800ms.</p>
+<p><strong>Attempt 4</strong>: <code>process(-1)</code> crashes a fourth time; <code>restartCount</code> becomes 4, which now exceeds <code>maxRestarts(3)</code>. This triggers the <code>restartCount &gt; maxRestarts</code> branch: the supervisor prints &quot;GIVING UP,&quot; increments <code>startIndex</code> to 1 (permanently abandoning item <code>-1</code>), resets <code>restartCount</code> to 0 (a fresh budget for the *next* item), and <code>continue</code>s the outer loop.</p>
+<p><strong>The exact same four-attempt cycle repeats for item <code>-2</code></strong> at <code>startIndex=1</code>, then for <code>-3</code> at <code>startIndex=2</code>, then for <code>-4</code> at <code>startIndex=3</code> — each poison item burns through its own independent restart budget before being permanently skipped.</p>
+<p><strong>Finally, at <code>startIndex=4</code></strong>, a fresh worker processes item <code>10</code> successfully — <code>process(10)</code> doesn&#x27;t throw, the inner <code>for</code> loop completes without exception, and <code>runSupervised</code> prints &quot;Completed cleanly&quot; and returns.</p>
+<pre><code>item -1: attempt1 crash -&gt; backoff100ms -&gt; attempt2 crash -&gt; backoff200ms -&gt; attempt3 crash -&gt; backoff400ms -&gt; attempt4 crash -&gt; GIVE UP, skip permanently
+item -2: (same 4-attempt cycle, restart budget reset)
+item -3: (same 4-attempt cycle)
+item -4: (same 4-attempt cycle)
+item 10: attempt1 SUCCEEDS -&gt; &quot;Completed cleanly&quot;</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Let-it-crash only works safely when the unit of failure holds no unrecoverable state — if a worker&#x27;s in-memory progress cannot be reconstructed after a crash (no checkpoint, no durable queue position), crashing it loses that progress permanently. Pair let-it-crash with externalized, durable state (a database row, a message queue offset) so a fresh restart can pick up where the crashed instance left off.</blockquote>
+<ul><li>Let-it-crash trades defensive, speculative error-handling code for simplicity: the worker only needs to handle conditions it actually knows how to recover from, and can safely die on everything else.</li><li>A supervisor must bound its restart attempts — unlimited restarting of a persistently failing worker (a &quot;crash loop&quot;) wastes resources and can mask a bug that needs human attention, rather than eventually surfacing it.</li><li>Exponential backoff between restarts avoids hammering a struggling downstream resource (e.g., a database that&#x27;s briefly unavailable) with a tight restart loop that could make the underlying problem worse.</li><li>This pattern operates at multiple levels of a real system simultaneously: application-level supervisors (actor frameworks, message-consumer retry logic) and infrastructure-level supervisors (Kubernetes restarting crashed pods) are the same idea applied at different granularities.</li></ul>
+  <div class="nav"><a class="prv" href="0286-fail-fast-pattern.html"><span class="mini">← Previous</span>Fail fast pattern</a><a class="nxt" href="0288-backpressure-as-protection.html"><span class="mini">Next →</span>Backpressure as protection</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t287";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

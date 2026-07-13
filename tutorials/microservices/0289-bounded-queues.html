@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Bounded queues" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Bounded queues"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A bounded queue is a queue with a fixed maximum capacity: once it holds that many items, any attempt to add another either blocks the caller, fails immediately, or rejects the new item — it can never grow past its configured limit. This is the concrete data structure that makes <a href="0288-backpressure-as-protection.md">backpressure</a> enforceable: the bound is what actually stops a producer from getting arbitrarily far ahead of a consumer, converting an abstract &quot;slow down&quot; signal into a hard, physical limit.</p>
+<h2>2. Why &amp; when</h2>
+<p>An unbounded queue anywhere in a system — a thread pool&#x27;s work queue, an in-memory buffer between pipeline stages, a message broker&#x27;s client-side buffer — is effectively a promise to accumulate unlimited memory if the producer ever outpaces the consumer for long enough. It doesn&#x27;t matter how unlikely that seems under normal conditions; a single slow dependency, a traffic spike, or a stuck consumer thread is enough to trigger unbounded growth, and by the time it&#x27;s visible as a symptom (rising memory, GC pressure, eventual <code>OutOfMemoryError</code>), the root cause can be hard to trace back to &quot;that one queue we forgot to bound.&quot;</p>
+<p>Bounding a queue forces an explicit decision about what happens when it&#x27;s full — and that decision (block, reject, or drop) should be made deliberately for each specific use case, rather than left as an accident of using an unbounded default. Use bounded queues for essentially every in-memory queue in a production system: thread pool work queues, buffers between async pipeline stages, in-process message buffers — anywhere work can accumulate faster than it&#x27;s consumed.</p>
+<h2>3. Core concept</h2>
+<p>Java&#x27;s <code>java.util.concurrent</code> package provides bounded queue implementations directly; the choice of what happens on a full queue is made explicit via which method is called.</p>
+<pre><code class="lang-java">import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
+
+ArrayBlockingQueue&lt;String&gt; queue = new ArrayBlockingQueue&lt;&gt;(100); // fixed capacity, never grows
+
+queue.put(&quot;item&quot;);                       // BLOCKS if full, until space frees up
+boolean accepted = queue.offer(&quot;item&quot;);  // returns FALSE immediately if full, never blocks
+boolean acceptedWithWait = queue.offer(&quot;item&quot;, 2, TimeUnit.SECONDS); // blocks up to a bound, then gives up</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A bounded queue holds a fixed maximum number of slots; once every slot is filled, the three possible policies for a new arriving item are to block the caller until space frees up, to reject the item immediately, or to wait only up to a bounded timeout before giving up">
+  <rect x="30" y="40" width="220" height="50" rx="6" fill="none" stroke="#6db33f" stroke-width="1.5"/>
+  <rect x="35" y="45" width="35" height="40" fill="#6db33f" opacity="0.35"/>
+  <rect x="73" y="45" width="35" height="40" fill="#6db33f" opacity="0.35"/>
+  <rect x="111" y="45" width="35" height="40" fill="#6db33f" opacity="0.35"/>
+  <rect x="149" y="45" width="35" height="40" fill="#6db33f" opacity="0.35"/>
+  <rect x="187" y="45" width="35" height="40" fill="#6db33f" opacity="0.35"/>
+  <text x="140" y="30" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">FULL bounded queue (fixed slots)</text>
+
+  <text x="380" y="35" fill="#8b949e" font-size="7.5" font-family="sans-serif">put(): BLOCKS until space frees</text>
+  <text x="380" y="65" fill="#8b949e" font-size="7.5" font-family="sans-serif">offer(): rejects IMMEDIATELY</text>
+  <text x="380" y="95" fill="#8b949e" font-size="7.5" font-family="sans-serif">offer(timeout): waits, THEN gives up</text>
+  <line x1="255" y1="60" x2="370" y2="35" stroke="#8b949e" marker-end="url(#arr289)"/>
+  <line x1="255" y1="65" x2="370" y2="65" stroke="#8b949e" marker-end="url(#arr289)"/>
+  <line x1="255" y1="70" x2="370" y2="95" stroke="#8b949e" marker-end="url(#arr289)"/>
+
+  <defs><marker id="arr289" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>A full bounded queue forces an explicit choice: block, reject immediately, or wait up to a bound before giving up.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an unbounded thread pool queue that silently accumulates unbounded pending work under sustained overload, extended to a bounded queue with a rejection policy that fails fast once full, and finally a bounded queue combined with a custom rejection handler that sheds low-priority work while still accepting critical work, tying together bounded queues with priority-aware load shedding.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UnboundedThreadPoolQueue.java -- a thread pool backed by an
+// UNBOUNDED queue: submitting work always &quot;succeeds&quot; immediately, even
+// if the pool can never keep up, silently accumulating unbounded pending tasks.
+import java.util.concurrent.*;
+
+public class UnboundedThreadPoolQueue {
+    public static void main(String[] args) throws InterruptedException {
+        ExecutorService pool = new ThreadPoolExecutor(
+                2, 2, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue&lt;&gt;()); // UNBOUNDED queue -- no limit at all
+
+        for (int i = 0; i &lt; 100000; i++) {
+            int taskId = i;
+            pool.submit(() -&gt; { try { Thread.sleep(100); } catch (InterruptedException ignored) {} });
+        }
+        ThreadPoolExecutor tpe = (ThreadPoolExecutor) pool;
+        System.out.println(&quot;Submitted 100,000 tasks instantly. Queue size right now: &quot; + tpe.getQueue().size()
+                + &quot; (all accepted, all sitting in unbounded memory, 2 threads can only process 2 at a time)&quot;);
+        pool.shutdownNow();
+    }
+}</code></pre>
+<p>How to run: <code>java UnboundedThreadPoolQueue.java</code></p>
+<p>One hundred thousand tasks are submitted to a pool with only 2 worker threads and an unbounded queue. Every single <code>submit</code> call succeeds instantly, regardless of the massive mismatch between submission rate and processing capacity — the queue size printed immediately after is close to 100,000, all held in memory, with the 2 threads able to work through only about 20 tasks per second (100ms each). In a real service under sustained overload, this exact pattern is a common cause of <code>OutOfMemoryError</code>, because nothing ever signals &quot;stop, I can&#x27;t keep up&quot; back to whatever is submitting the work.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: BoundedQueueWithRejection.java -- the SAME pool configuration,
+// but now the queue is bounded; once full, new submissions are REJECTED
+// immediately via the pool&#x27;s rejection policy instead of accumulating
+// without limit.
+import java.util.concurrent.*;
+
+public class BoundedQueueWithRejection {
+    public static void main(String[] args) {
+        ExecutorService pool = new ThreadPoolExecutor(
+                2, 2, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue&lt;&gt;(50), // BOUNDED: at most 50 pending tasks
+                new ThreadPoolExecutor.AbortPolicy()); // reject with RejectedExecutionException once full
+
+        int accepted = 0, rejected = 0;
+        for (int i = 0; i &lt; 200; i++) {
+            try {
+                pool.submit(() -&gt; { try { Thread.sleep(50); } catch (InterruptedException ignored) {} });
+                accepted++;
+            } catch (RejectedExecutionException e) {
+                rejected++;
+            }
+        }
+        System.out.println(&quot;Submitted 200 tasks: accepted=&quot; + accepted + &quot; rejected=&quot; + rejected
+                + &quot; (capped at capacity + 2 in-flight, instead of accepting all 200 into unbounded memory)&quot;);
+        pool.shutdownNow();
+    }
+}</code></pre>
+<p>How to run: <code>java BoundedQueueWithRejection.java</code></p>
+<p>The queue is now bounded at 50, and the pool uses <code>AbortPolicy</code>, which throws <code>RejectedExecutionException</code> for any submission once both the 2 worker threads are busy and the 50-slot queue is full. Submitting 200 tasks in a tight loop quickly fills the queue; once full, subsequent <code>submit</code> calls throw immediately, and the surrounding <code>try/catch</code> counts them as <code>rejected</code>. The accepted count caps out around 52 (2 in-flight + 50 queued) rather than accepting all 200 — the caller gets an immediate, explicit signal that the pool is overwhelmed instead of the work silently piling up.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: BoundedQueueWithPriorityAwareRejection.java -- combines a
+// bounded queue with a CUSTOM rejection handler that inspects the
+// rejected task&#x27;s priority: low-priority work is dropped silently
+// (logged, not executed), but high-priority work is executed directly
+// on the CALLER&#x27;s thread as a last resort, so critical work is never lost
+// purely because the queue happened to be full.
+import java.util.concurrent.*;
+
+public class BoundedQueueWithPriorityAwareRejection {
+    static class PrioritizedTask implements Runnable {
+        final boolean highPriority; final String name;
+        PrioritizedTask(String name, boolean highPriority) { this.name = name; this.highPriority = highPriority; }
+        public void run() {
+            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+        }
+    }
+
+    public static void main(String[] args) {
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(
+                2, 2, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue&lt;&gt;(20),
+                (rejectedRunnable, executor) -&gt; {
+                    PrioritizedTask task = (PrioritizedTask) rejectedRunnable;
+                    if (task.highPriority) {
+                        System.out.println(&quot;  QUEUE FULL: high-priority &#x27;&quot; + task.name + &quot;&#x27; runs on CALLER thread instead of being lost&quot;);
+                        rejectedRunnable.run(); // CallerRunsPolicy-style: execute it anyway, just not on a pool thread
+                    } else {
+                        System.out.println(&quot;  QUEUE FULL: low-priority &#x27;&quot; + task.name + &quot;&#x27; DROPPED (logged, not executed)&quot;);
+                    }
+                });
+
+        for (int i = 0; i &lt; 30; i++) {
+            boolean isHigh = (i % 5 == 0); // every 5th task is high priority
+            pool.submit(new PrioritizedTask(&quot;task-&quot; + i, isHigh));
+        }
+        pool.shutdown();
+        try { pool.awaitTermination(5, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        System.out.println(&quot;Done.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java BoundedQueueWithPriorityAwareRejection.java</code></p>
+<p>Thirty tasks are submitted, one in five marked high-priority, against a pool with only 20 queue slots and 2 worker threads. As the queue fills, the custom <code>RejectedExecutionHandler</code> intercepts every rejection: for a high-priority task, it runs the task directly on the *submitting* thread rather than losing it (a variation on Java&#x27;s built-in <code>CallerRunsPolicy</code>, here made priority-aware); for a low-priority task, it logs the drop and discards it entirely. This shows bounded queues combined with a rejection policy doing real, deliberate load shedding — capacity is preserved for important work even under sustained overload, rather than either accepting everything unboundedly or rejecting everything indiscriminately once full.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>BoundedQueueWithPriorityAwareRejection.main</code> for the point where the queue first becomes full. <strong>First</strong>, the pool is constructed with <code>corePoolSize=2</code>, a 20-slot <code>ArrayBlockingQueue</code>, and a lambda implementing <code>RejectedExecutionHandler</code>.</p>
+<p><strong>The loop submits 30 <code>PrioritizedTask</code> instances.</strong> For the first roughly 22 submissions (2 running immediately on the pool&#x27;s 2 threads, 20 queued), <code>pool.submit</code> succeeds normally — <code>ThreadPoolExecutor</code> accepts into the queue as long as there&#x27;s room.</p>
+<p><strong>Once the queue is full</strong> (both threads busy with 50ms tasks, 20 more queued), the next <code>submit</code> call cannot be accepted through the normal path. <code>ThreadPoolExecutor</code> internally calls the configured <code>RejectedExecutionHandler.rejectedExecution(runnable, executor)</code> — this is where the custom lambda runs.</p>
+<p><strong>Inside the lambda</strong>, the rejected <code>Runnable</code> is cast back to <code>PrioritizedTask</code> to inspect its <code>highPriority</code> field. If <code>true</code>, the lambda calls <code>rejectedRunnable.run()</code> directly — this executes the task&#x27;s <code>run()</code> method synchronously, on the *thread that called <code>submit</code>* (the main thread here), not on one of the pool&#x27;s worker threads. This means the main thread briefly blocks for that task&#x27;s 50ms of work, but the task is never lost. If <code>false</code>, the lambda just logs the drop and returns without calling <code>run()</code> at all — that task&#x27;s work simply never happens.</p>
+<p><strong>This repeats</strong> for each subsequent submission that arrives while the queue remains full: every 5th task (index 0, 5, 10, 15, ...) is high-priority and gets executed inline on the caller&#x27;s thread; the rest are silently dropped with a log line.</p>
+<p><strong>Data/state transformation across layers</strong>: a task enters at the &quot;submission&quot; layer (main thread calling <code>submit</code>) → the pool&#x27;s internal queue layer either accepts it (added to the 20-slot buffer) or, once full, escalates to the rejection-handling layer → the rejection handler layer makes the final priority-based decision → the outcome is either the task executing on a pool worker thread (normal path), executing synchronously on the caller&#x27;s thread (high-priority overflow path), or never executing at all (low-priority overflow path, dropped).</p>
+<pre><code>submit(task) -&gt; pool has room? --yes--&gt; queued, runs on a worker thread eventually
+                        |no (queue FULL)
+                        v
+             rejectedExecution(task, pool) called
+                        |
+        high priority? --yes--&gt; task.run() on the CALLER&#x27;s thread (never lost)
+                        |no
+                        v
+                   dropped, logged, never executed</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>An unbounded queue anywhere in a pipeline defeats every other resilience pattern applied downstream of it — a circuit breaker, a timeout, or a bulkhead protecting the *consumer* does nothing to stop unbounded memory growth in a queue feeding that consumer if the queue itself has no limit.</blockquote>
+<ul><li>Every in-memory queue in a production system should have an explicit, deliberately chosen capacity — there is rarely a good reason to leave one truly unbounded.</li><li>The choice of what happens on a full queue (<code>put</code> blocks, <code>offer</code> rejects immediately, <code>offer(timeout)</code> waits briefly then rejects, or a custom <code>RejectedExecutionHandler</code>) should match the specific use case — a blocking producer thread has a different cost than a synchronous rejection.</li><li>Java&#x27;s default <code>Executors.newFixedThreadPool</code> and similar convenience factory methods use an unbounded <code>LinkedBlockingQueue</code> internally — constructing a <code>ThreadPoolExecutor</code> directly, as shown here, is necessary to get an explicitly bounded queue.</li><li>Combine a bounded queue&#x27;s rejection with priority information when available (as in Level 3) to shed low-value work under overload while still protecting the throughput of critical work, rather than treating all rejected work identically.</li></ul>
+  <div class="nav"><a class="prv" href="0288-backpressure-as-protection.html"><span class="mini">← Previous</span>Backpressure as protection</a><a class="nxt" href="0290-health-checks-for-self-healing.html"><span class="mini">Next →</span>Health checks for self-healing</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t289";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

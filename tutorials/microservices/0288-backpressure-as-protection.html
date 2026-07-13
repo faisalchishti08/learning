@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Backpressure as protection" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Backpressure as protection"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Backpressure is a signal flowing *backward*, from a slower consumer to a faster producer, telling the producer to slow down or stop sending more work until the consumer catches up. As a resilience mechanism, it protects the consumer from being overwhelmed by preventing unbounded work from piling up in the first place, rather than letting it accumulate and then dealing with the consequences (memory exhaustion, cascading slowness, eventual crash) after the fact.</p>
+<h2>2. Why &amp; when</h2>
+<p>When a producer generates work faster than a consumer can process it, that excess work has to go *somewhere* — it either queues up (consuming memory without bound), gets dropped silently (losing data), or the whole pipeline slows to the consumer&#x27;s pace. Backpressure makes this an explicit, controlled choice: the consumer actively communicates &quot;I&#x27;m full, stop sending&quot; back to the producer, which then has to decide what to do (buffer up to a bound, block, drop, or apply its own upstream backpressure to its own producer).</p>
+<p>This differs from <a href="0273-rate-limiter-pattern.md">rate limiting</a> and <a href="0279-throttling-load-shedding.md">throttling</a> in one key way: those are typically based on a configured policy (N requests per second), whereas backpressure is a real-time signal reflecting the consumer&#x27;s *actual current capacity*, which can vary dynamically. Use backpressure anywhere a fast producer and a slower consumer are directly connected — a message queue consumer processing events slower than they&#x27;re published, a reactive stream pipeline, a database connection pool being asked for more connections than exist. It is the mechanism that makes <a href="0289-bounded-queues.md">bounded queues</a> actually effective, rather than just delaying the same overload by a fixed buffer size.</p>
+<h2>3. Core concept</h2>
+<p>A backpressure-aware channel exposes both a way for the producer to check &quot;can I send more?&quot; and a way for the consumer to signal &quot;I&#x27;m ready for more&quot; — the classic reactive-streams model uses an explicit <code>request(n)</code> from the consumer to pull exactly the amount of work it can currently handle.</p>
+<pre><code class="lang-java">class BackpressureAwareQueue&lt;T&gt; {
+    final java.util.concurrent.BlockingQueue&lt;T&gt; queue;
+    BackpressureAwareQueue(int capacity) { queue = new java.util.concurrent.ArrayBlockingQueue&lt;&gt;(capacity); }
+
+    // Producer BLOCKS here once the queue is full -- this IS the backpressure signal.
+    void produce(T item) throws InterruptedException { queue.put(item); }
+
+    // Consumer pulls at its own pace; each poll frees a slot for the producer.
+    T consume() throws InterruptedException { return queue.take(); }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A fast producer sends items into a bounded buffer consumed by a slower consumer; once the buffer fills, a backpressure signal flows backward to the producer, causing it to slow down or block instead of overwhelming the consumer with unbounded work">
+  <rect x="20" y="60" width="110" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="75" y="84" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">fast producer</text>
+
+  <line x1="130" y1="80" x2="230" y2="80" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr288)"/>
+
+  <rect x="240" y="60" width="160" height="40" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="320" y="84" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">bounded buffer (FULL)</text>
+
+  <line x1="400" y1="80" x2="480" y2="80" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arr288)"/>
+
+  <rect x="490" y="60" width="120" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="550" y="84" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">slow consumer</text>
+
+  <path d="M320,100 Q320,140 75,140 Q75,140 75,100" stroke="#8b949e" fill="none" stroke-dasharray="3,3" marker-end="url(#arr288)"/>
+  <text x="200" y="155" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">backpressure signal: "I'm full, slow down"</text>
+
+  <defs><marker id="arr288" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>The consumer&#x27;s fullness flows backward to the producer, actively slowing it rather than letting unbounded work accumulate.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an unbounded queue between a fast producer and slow consumer that grows without limit, extended to a bounded, blocking queue where the producer is forced to slow down once the buffer fills (real backpressure), and finally adding a reactive-style pull model where the consumer explicitly requests batches of work, giving it precise control over its own load.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UnboundedQueueGrowsForever.java -- a fast producer and a slow
+// consumer connected by an UNBOUNDED queue: nothing stops the queue
+// from growing without limit, risking memory exhaustion.
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+
+public class UnboundedQueueGrowsForever {
+    public static void main(String[] args) throws InterruptedException {
+        BlockingQueue&lt;Integer&gt; queue = new LinkedBlockingQueue&lt;&gt;(); // NO capacity bound
+
+        Thread producer = new Thread(() -&gt; {
+            for (int i = 0; i &lt; 1000; i++) {
+                queue.offer(i); // NEVER blocks -- always succeeds, queue just keeps growing
+            }
+        });
+        producer.start();
+        producer.join();
+
+        // Consumer hasn&#x27;t even started yet -- everything piled up in memory already.
+        System.out.println(&quot;Producer finished instantly. Queue size: &quot; + queue.size()
+                + &quot; items sitting in unbounded memory, consumer hasn&#x27;t processed a single one yet.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java UnboundedQueueGrowsForever.java</code></p>
+<p>The producer fires 1000 items into an unbounded <code>LinkedBlockingQueue</code> with no consumer running concurrently to drain it. Because the queue has no capacity limit, <code>offer</code> always succeeds instantly regardless of how far behind the consumer is — the producer finishes immediately, having accumulated all 1000 items in memory with zero backpressure. In a real system with a genuinely faster producer and a much slower consumer, this pattern accumulates unbounded memory until the process runs out of heap.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: BoundedQueueBlocksProducer.java -- the SAME producer/consumer,
+// but now the queue has a fixed capacity; once full, the producer&#x27;s
+// put() call BLOCKS until the consumer frees a slot -- this blocking IS
+// the backpressure.
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+
+public class BoundedQueueBlocksProducer {
+    public static void main(String[] args) throws InterruptedException {
+        BlockingQueue&lt;Integer&gt; queue = new ArrayBlockingQueue&lt;&gt;(10); // capacity BOUND of 10
+
+        Thread consumer = new Thread(() -&gt; {
+            try {
+                for (int i = 0; i &lt; 30; i++) {
+                    int item = queue.take();
+                    Thread.sleep(50); // deliberately SLOW consumer
+                    System.out.println(&quot;  consumed: &quot; + item + &quot; (queue size now &quot; + queue.size() + &quot;)&quot;);
+                }
+            } catch (InterruptedException ignored) {}
+        });
+
+        Thread producer = new Thread(() -&gt; {
+            try {
+                for (int i = 0; i &lt; 30; i++) {
+                    long before = System.currentTimeMillis();
+                    queue.put(i); // BLOCKS once the queue of 10 is full
+                    long waited = System.currentTimeMillis() - before;
+                    if (waited &gt; 5) System.out.println(&quot;producer BLOCKED for &quot; + waited + &quot;ms sending item &quot; + i + &quot; -- backpressure!&quot;);
+                }
+            } catch (InterruptedException ignored) {}
+        });
+
+        consumer.start();
+        producer.start();
+        producer.join();
+        consumer.join();
+    }
+}</code></pre>
+<p>How to run: <code>java BoundedQueueBlocksProducer.java</code></p>
+<p>The queue now has a fixed capacity of 10. The producer runs far faster than the deliberately slow consumer (50ms per item), so it quickly fills the queue to capacity. From that point on, every <code>queue.put(i)</code> call blocks until the consumer&#x27;s <code>queue.take()</code> frees a slot — the printed &quot;producer BLOCKED&quot; messages show the producer being forced to slow down to roughly match the consumer&#x27;s pace, entirely because the bounded queue refuses to accept more than 10 items at once. This is backpressure in its simplest, most direct form: the producer physically cannot get ahead of the consumer by more than the buffer&#x27;s capacity.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: PullBasedBackpressure.java -- a reactive-streams-style PULL
+// model: the consumer explicitly requests a specific number of items at
+// a time, giving it precise, self-paced control over its own load,
+// rather than relying on the producer simply blocking on a full buffer.
+import java.util.concurrent.*;
+import java.util.*;
+
+public class PullBasedBackpressure {
+    static class PullBasedSource {
+        final Queue&lt;Integer&gt; available = new ConcurrentLinkedQueue&lt;&gt;();
+        { for (int i = 0; i &lt; 1000; i++) available.add(i); } // simulates a large upstream data source
+
+        // Consumer calls this to PULL exactly `n` items -- never more than it asked for.
+        List&lt;Integer&gt; request(int n) {
+            List&lt;Integer&gt; batch = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; n &amp;&amp; !available.isEmpty(); i++) batch.add(available.poll());
+            return batch;
+        }
+        boolean hasMore() { return !available.isEmpty(); }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        PullBasedSource source = new PullBasedSource();
+        int batchSize = 5; // consumer decides how much it can handle per round
+        int totalProcessed = 0;
+
+        while (source.hasMore() &amp;&amp; totalProcessed &lt; 20) {
+            List&lt;Integer&gt; batch = source.request(batchSize); // consumer PULLS exactly what it wants
+            for (int item : batch) {
+                Thread.sleep(20); // simulate real per-item processing work
+                totalProcessed++;
+            }
+            System.out.println(&quot;Consumer processed a batch of &quot; + batch.size()
+                    + &quot; (self-paced, never overwhelmed since it only ever asked for &quot; + batchSize + &quot; at a time)&quot;);
+        }
+        System.out.println(&quot;Total processed: &quot; + totalProcessed + &quot;, remaining upstream: (source never pushed more than requested)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java PullBasedBackpressure.java</code></p>
+<p>Instead of a producer pushing items and the consumer being forced to either keep up or block a full queue, the consumer here explicitly *pulls* a batch of exactly <code>batchSize</code> (5) items at a time via <code>source.request(5)</code>. The source never sends more than what was explicitly requested — there is no way for it to overwhelm the consumer, because the consumer is entirely in control of how much work enters its own processing loop at any moment. This is the model used by reactive streams (Project Reactor, RxJava) and the Reactive Streams specification&#x27;s <code>Subscription.request(n)</code>: backpressure isn&#x27;t just &quot;block when full,&quot; it&#x27;s the consumer actively declaring its own capacity up front.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>PullBasedBackpressure.main</code> in order. <strong>First</strong>, a <code>PullBasedSource</code> is created holding 1000 available items, and <code>batchSize</code> is fixed at 5.</p>
+<p><strong>The <code>while</code> loop&#x27;s first iteration</strong> calls <code>source.request(5)</code>. Inside <code>request</code>, a loop pulls up to 5 items from the <code>available</code> queue via <code>poll()</code> (which removes and returns the head, or returns null if empty — here it always succeeds since there are 1000 available) and collects them into <code>batch</code>. The source&#x27;s internal <code>available</code> queue shrinks by exactly 5 as a direct result of this call — nothing more was handed out than was explicitly asked for.</p>
+<p><strong>Back in the main loop</strong>, each of the 5 items in <code>batch</code> is &quot;processed&quot; (a 20ms sleep stands in for real work), incrementing <code>totalProcessed</code>. Only after all 5 are processed does the loop print its status and go back to the top of the <code>while</code>, checking <code>source.hasMore() &amp;&amp; totalProcessed &lt; 20</code>.</p>
+<p><strong>This repeats</strong>: iteration 2 pulls another batch of 5 (<code>totalProcessed</code> reaches 10), iteration 3 pulls another 5 (<code>totalProcessed</code> reaches 15), iteration 4 pulls a final batch of 5 (<code>totalProcessed</code> reaches 20) — at which point the loop condition <code>totalProcessed &lt; 20</code> becomes false and the loop exits.</p>
+<p><strong>The key structural point</strong>: at no moment during this entire run did the source ever hand the consumer more than 5 items without being asked again. Contrast this with the Level 2 push model, where the producer sends continuously and the *queue&#x27;s fixed capacity* is what limits how far ahead it can get — here, there is no queue at all in the traditional sense; the consumer&#x27;s own <code>request(n)</code> calls are the only thing that ever releases work from the source. This is a stronger, more precise form of backpressure: capacity is expressed as &quot;give me exactly this much, when I ask,&quot; not &quot;keep sending until a buffer fills up.&quot;</p>
+<pre><code>consumer: request(5) -&gt; source hands over exactly 5 items -&gt; consumer processes all 5 -&gt; request(5) again -&gt; ...
+                (source NEVER pushes anything the consumer didn&#x27;t explicitly pull)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>An unbounded queue between a fast producer and a slow consumer is not &quot;safe because it never rejects anything&quot; — it is a slow-motion memory leak that eventually crashes the consumer&#x27;s process, just later and more unpredictably than an explicit rejection would have.</blockquote>
+<ul><li>Backpressure prevents overload by construction, rather than reacting to it after work has already piled up — it is proactive where <a href="0279-throttling-load-shedding.md">load shedding</a> is reactive.</li><li>A bounded, blocking queue is the simplest form of backpressure (the producer physically cannot outrun the consumer by more than the queue&#x27;s capacity) but ties up the producer&#x27;s thread while blocked, which has its own cost.</li><li>A pull-based model (the consumer explicitly requesting a bounded amount of work) gives the consumer the most precise control over its own load and is the model used by the Reactive Streams specification underlying Project Reactor and RxJava.</li><li>Backpressure needs to propagate end-to-end through a pipeline — a backpressure-aware stage that sits behind a stage with no backpressure support just moves the unbounded-buffering problem one hop upstream instead of solving it.</li></ul>
+  <div class="nav"><a class="prv" href="0287-let-it-crash-supervision.html"><span class="mini">← Previous</span>Let-it-crash / supervision</a><a class="nxt" href="0289-bounded-queues.html"><span class="mini">Next →</span>Bounded queues</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t288";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
