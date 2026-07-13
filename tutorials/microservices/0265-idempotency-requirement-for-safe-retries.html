@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Idempotency requirement for safe retries" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Idempotency requirement for safe retries"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Idempotency is the property of an operation that produces the same end result whether it&#x27;s performed once or many times — &quot;set the account balance to $100&quot; is idempotent (repeating it changes nothing further), while &quot;add $100 to the account balance&quot; is not (repeating it keeps adding more money) — and it&#x27;s the precondition that determines whether an operation can be safely retried at all after an ambiguous failure like a timeout.</p>
+<h2>2. Why &amp; when</h2>
+<p>As <a href="0239-why-distributed-systems-fail-partial-failure.md">why distributed systems fail</a> covers, a timeout provides no certainty about whether the original request actually completed on the remote side before the response was lost — retrying in that situation risks the operation happening twice. For an idempotent operation, this risk simply doesn&#x27;t matter: performing &quot;set balance to $100&quot; twice produces the exact same final state as performing it once, so retrying after an ambiguous timeout is completely safe regardless of whether the first attempt actually succeeded. For a non-idempotent operation like &quot;charge $100&quot; or &quot;add item to cart,&quot; retrying after a timeout risks a real, harmful duplication — a double charge, a duplicated cart item — making blind retries of such operations actively dangerous rather than merely wasteful.</p>
+<p>Verify an operation&#x27;s idempotency before enabling automatic retries for it — this isn&#x27;t a detail to assume favorably, since getting it wrong produces real, sometimes financially significant, duplicated side effects. Naturally idempotent operations (most <code>GET</code> requests, a <code>PUT</code> that fully replaces a resource with a specific new state) can be retried freely; naturally non-idempotent operations (most <code>POST</code> requests creating a new resource, any &quot;add&quot; or &quot;increment&quot; operation) need either restructuring to become idempotent or an explicit idempotency mechanism (like an <a href="0239-why-distributed-systems-fail-partial-failure.md">idempotency key</a>) before they&#x27;re safe to retry.</p>
+<h2>3. Core concept</h2>
+<p>An operation&#x27;s idempotency is a property of its *effect* on state, not of whether it happens to succeed — the test is: if this operation is performed N times instead of once, is the resulting state identical to performing it exactly once? Operations expressed as absolute assignments tend to be idempotent; operations expressed as relative deltas tend not to be.</p>
+<pre><code class="lang-java">// NOT idempotent -- each call ADDS 100, so calling it twice DOUBLES the effect
+void addToBalance(String accountId, int amount) { balances.merge(accountId, amount, Integer::sum); }
+
+// IDEMPOTENT -- calling it any number of times produces the IDENTICAL final state
+void setBalance(String accountId, int newBalance) { balances.put(accountId, newBalance); }
+
+// a NON-idempotent operation made SAFE to retry via an idempotency key (deduplication at the target)
+void chargeOnce(String idempotencyKey, int amount) {
+    if (processedKeys.contains(idempotencyKey)) return; // the KEY, not the operation itself, makes retrying SAFE
+    balances.merge(accountId, amount, Integer::sum);
+    processedKeys.add(idempotencyKey);
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Calling an idempotent operation twice, like setting a balance to one hundred, results in the same final state as calling it once; calling a non-idempotent operation twice, like adding one hundred, results in a doubled, incorrect final state" >
+  <rect x="20" y="20" width="270" height="60" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="155" y="42" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Idempotent: setBalance(100)</text>
+  <text x="155" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">called ONCE or TWICE -- SAME result: 100</text>
+  <text x="155" y="72" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">SAFE to retry after a timeout</text>
+
+  <rect x="350" y="20" width="270" height="60" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="485" y="42" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Non-idempotent: addToBalance(100)</text>
+  <text x="485" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">called TWICE -- WRONG result: +200</text>
+  <text x="485" y="72" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">DANGEROUS to retry blindly</text>
+</svg>
+<p>The same &quot;retry after a timeout&quot; action produces correct results for one operation and a duplicated, wrong result for the other.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a naive &quot;add to balance&quot; retry that duplicates the effect when the same operation is retried after an ambiguous timeout, refactored to the equivalent idempotent &quot;set balance&quot; formulation that&#x27;s inherently safe to retry regardless of how many times it&#x27;s called, and finally demonstrating an idempotency key applied to a genuinely non-idempotent operation (a payment charge that can&#x27;t naturally be restructured as an assignment), making it safe to retry without changing its fundamental nature.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NonIdempotentRetryDuplicates.java -- retrying an &quot;ADD&quot; operation
+// after an AMBIGUOUS timeout DUPLICATES its effect -- a real bug.
+import java.util.*;
+
+public class NonIdempotentRetryDuplicates {
+    static Map&lt;String, Integer&gt; balances = new HashMap&lt;&gt;(Map.of(&quot;acct-1&quot;, 500));
+
+    static void addToBalance(String accountId, int amount) {
+        balances.merge(accountId, amount, Integer::sum); // each call ADDS -- NOT idempotent
+    }
+
+    public static void main(String[] args) {
+        addToBalance(&quot;acct-1&quot;, 100); // the ORIGINAL request -- SUCCEEDED, but response was LOST (simulated timeout)
+        System.out.println(&quot;Balance after original request (response lost): &quot; + balances.get(&quot;acct-1&quot;));
+
+        addToBalance(&quot;acct-1&quot;, 100); // the RETRY, believing the original might not have gone through
+        System.out.println(&quot;Balance after retry: &quot; + balances.get(&quot;acct-1&quot;) + &quot; -- should be 600, but retrying DOUBLED the deposit!&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac NonIdempotentRetryDuplicates.java &amp;&amp; java NonIdempotentRetryDuplicates</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Balance after original request (response lost): 600
+Balance after retry: 700 -- should be 600, but retrying DOUBLED the deposit!</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: IdempotentSetIsSafeToRetry.java -- restructured to an ABSOLUTE
+// &quot;SET&quot; operation -- retrying it ANY number of times produces the SAME
+// final result.
+import java.util.*;
+
+public class IdempotentSetIsSafeToRetry {
+    static Map&lt;String, Integer&gt; balances = new HashMap&lt;&gt;(Map.of(&quot;acct-1&quot;, 500));
+
+    static void setBalance(String accountId, int newBalance) {
+        balances.put(accountId, newBalance); // IDEMPOTENT -- an absolute assignment, not a relative delta
+    }
+
+    public static void main(String[] args) {
+        int intendedNewBalance = 600; // the CLIENT computes the target state, not a delta
+
+        setBalance(&quot;acct-1&quot;, intendedNewBalance); // ORIGINAL request -- succeeded, response lost
+        System.out.println(&quot;Balance after original request (response lost): &quot; + balances.get(&quot;acct-1&quot;));
+
+        setBalance(&quot;acct-1&quot;, intendedNewBalance); // RETRY -- SAFE, produces the IDENTICAL result
+        System.out.println(&quot;Balance after retry: &quot; + balances.get(&quot;acct-1&quot;) + &quot; -- CORRECT, retrying changed NOTHING further.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac IdempotentSetIsSafeToRetry.java &amp;&amp; java IdempotentSetIsSafeToRetry</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Balance after original request (response lost): 600
+Balance after retry: 600 -- CORRECT, retrying changed NOTHING further.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: IdempotencyKeyForUnavoidableAddOperation.java -- a payment
+// CHARGE can&#x27;t naturally be expressed as a &quot;set&quot; (each charge is a
+// genuinely NEW, distinct event) -- an IDEMPOTENCY KEY makes it SAFE
+// to retry WITHOUT changing the operation&#x27;s fundamental &quot;add&quot; nature.
+import java.util.*;
+
+public class IdempotencyKeyForUnavoidableAddOperation {
+    static Map&lt;String, Integer&gt; balances = new HashMap&lt;&gt;(Map.of(&quot;acct-1&quot;, 500));
+    static Set&lt;String&gt; processedIdempotencyKeys = new HashSet&lt;&gt;(); // the SERVER&#x27;S own deduplication record
+
+    static void chargeAccount(String idempotencyKey, String accountId, int amount) {
+        if (processedIdempotencyKeys.contains(idempotencyKey)) {
+            System.out.println(&quot;  [server] idempotency key &#x27;&quot; + idempotencyKey + &quot;&#x27; already processed -- SKIPPING, not charging again&quot;);
+            return; // the KEY, checked FIRST, prevents the underlying non-idempotent &quot;add&quot; from running twice
+        }
+        balances.merge(accountId, amount, Integer::sum); // the actual, genuinely non-idempotent ADD
+        processedIdempotencyKeys.add(idempotencyKey);
+        System.out.println(&quot;  [server] charge of &quot; + amount + &quot; processed under key &#x27;&quot; + idempotencyKey + &quot;&#x27;&quot;);
+    }
+
+    public static void main(String[] args) {
+        String idempotencyKey = &quot;charge-order-42&quot;; // STABLE across retries for the SAME logical charge
+
+        chargeAccount(idempotencyKey, &quot;acct-1&quot;, 100); // ORIGINAL -- succeeded, response lost
+        System.out.println(&quot;Balance after original charge (response lost): &quot; + balances.get(&quot;acct-1&quot;));
+
+        chargeAccount(idempotencyKey, &quot;acct-1&quot;, 100); // RETRY -- the SAME key -- server recognizes and SKIPS it
+        System.out.println(&quot;Balance after retry: &quot; + balances.get(&quot;acct-1&quot;) + &quot; -- CORRECT, the key prevented a duplicate charge.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac IdempotencyKeyForUnavoidableAddOperation.java &amp;&amp; java IdempotencyKeyForUnavoidableAddOperation</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>  [server] charge of 100 processed under key &#x27;charge-order-42&#x27;
+Balance after original charge (response lost): 600
+  [server] idempotency key &#x27;charge-order-42&#x27; already processed -- SKIPPING, not charging again
+Balance after retry: 600 -- CORRECT, the key prevented a duplicate charge.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the bug made concrete</strong> — <code>addToBalance</code> executes <code>balances.merge(accountId, amount, Integer::sum)</code>, which unconditionally adds <code>amount</code> to whatever the current balance is; calling this twice with the identical <code>100</code> produces <code>500 + 100 + 100 = 700</code>, not the intended <code>600</code> — this is exactly what happens if a caller retries a non-idempotent &quot;add money&quot; operation after a timeout, unaware the original request had actually already succeeded.</li><li><strong>Level 2, restructuring as an assignment</strong> — <code>setBalance</code> takes the *target* value directly (<code>intendedNewBalance</code>, computed by the caller as &quot;current balance plus deposit amount, resolved once, upfront&quot;) and assigns it unconditionally via <code>balances.put</code>, overwriting whatever was there before, rather than modifying it relative to the current value.</li><li><strong>Level 2, the retry becoming harmless</strong> — calling <code>setBalance(&quot;acct-1&quot;, 600)</code> twice in a row produces <code>600</code> both times, since the second call simply overwrites the balance with the identical value the first call already set it to — the operation&#x27;s mathematical structure itself, not any external tracking mechanism, is what makes the retry safe here.</li><li><strong>Level 3, an operation that genuinely can&#x27;t be restructured this way</strong> — a payment charge is fundamentally a *new event* each time (a real charge, a real transaction record) rather than a state that can be meaningfully expressed as &quot;set the total charged amount to X&quot; — <code>chargeAccount</code> still performs the same kind of relative <code>merge</code>/add operation as Level 1&#x27;s problematic version, since that&#x27;s the operation&#x27;s true nature.</li><li><strong>Level 3, the idempotency key providing safety externally</strong> — <code>chargeAccount</code> checks <code>processedIdempotencyKeys.contains(idempotencyKey)</code> *before* performing the actual balance modification; the first call with a given key processes normally and records that key, while any subsequent call with the *same* key is recognized and skipped entirely, regardless of how many times it&#x27;s retried.</li><li><strong>Level 3, the resulting safety without changing the operation&#x27;s nature</strong> — the balance ends up at the correct <code>600</code> after both the original call and the retry, exactly matching Level 2&#x27;s outcome, but achieved through an entirely different mechanism: rather than the operation itself being mathematically idempotent (as <code>setBalance</code> is), an external deduplication record makes an inherently non-idempotent operation *behave* idempotently from the caller&#x27;s perspective — this is precisely why idempotency keys exist: for the many real operations (payments, order creation, any genuinely new-event-generating action) that cannot naturally be expressed as an absolute assignment the way a balance update sometimes can.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> an idempotency key only provides safety if it&#x27;s genuinely stable across retries of the *same logical operation* — generating a new, random key for every retry attempt (rather than reusing the same key derived from the original request) defeats the entire mechanism, since the server would then see each &quot;retry&quot; as a distinct, new key and process it as a brand-new charge; the key must be derived deterministically from something identifying the original logical request (an order ID, a client-generated request ID sent once and reused across retries), not freshly generated per attempt.</blockquote>
+<ul><li>Idempotency is the property that performing an operation multiple times produces the same final state as performing it once — it&#x27;s the precondition for safely retrying an operation after an ambiguous failure like a timeout.</li><li>Operations expressed as absolute assignments (&quot;set to X&quot;) tend to be naturally idempotent; operations expressed as relative deltas (&quot;add X,&quot; &quot;increment by X&quot;) are not, and retrying them blindly risks real, duplicated effects.</li><li>Where an operation can be restructured as an idempotent assignment without losing its intended meaning, doing so is the simplest way to make it safe to retry.</li><li>Where an operation is fundamentally non-idempotent by nature (like a payment charge, a genuinely new event each time), an idempotency key lets the server deduplicate repeated attempts, making the operation safe to retry without changing its underlying structure.</li><li>An idempotency key only works if it&#x27;s stable and reused across retries of the same logical operation — a freshly generated key on every retry attempt defeats the mechanism entirely, since the server would then see each attempt as an unrelated, new request.</li></ul>
+  <div class="nav"><a class="prv" href="0264-retry-only-on-transient-retryable-errors.html"><span class="mini">← Previous</span>Retry only on transient/retryable errors</a><a class="nxt" href="0266-retry-storm-amplification-risk.html"><span class="mini">Next →</span>Retry storm / amplification risk</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t265";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Retry storm / amplification risk" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Retry storm / amplification risk"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A retry storm is the runaway scenario where retries, instead of helping a system recover from a failure, actively make it worse — a struggling dependency gets hit with amplified load from many callers&#x27; retries, which pushes it further into failure, generating even more retries, in a self-reinforcing feedback loop that can turn a brief, recoverable blip into a prolonged, severe outage.</p>
+<h2>2. Why &amp; when</h2>
+<p>Each individual safeguard covered earlier in this section — <a href="0260-max-retry-attempts.md">max attempts</a>, <a href="0261-fixed-vs-exponential-backoff.md">backoff</a>, <a href="0262-jitter-randomized-backoff.md">jitter</a>, <a href="0263-retry-budgets.md">retry budgets</a>, <a href="0264-retry-only-on-transient-retryable-errors.md">transient-only classification</a> — addresses one specific contributing factor to this same underlying risk, but a retry storm is what happens when several of them are missing or under-tuned *simultaneously*: unbounded or overly aggressive retries, applied indiscriminately to every failure type, with no coordination across concurrent callers, layered on top of retries happening at *multiple levels* of a call chain (a client retries, and the service it called also retries its own downstream call, multiplying the effective retry count at each hop) — each factor alone might be manageable, but their combination can produce amplification factors many times the original traffic volume, arriving precisely when the target system is least able to absorb it.</p>
+<p>Treat retry storm risk as the reason every other topic in this cluster (budgets, classification, backoff, jitter, bounded attempts) matters together, not in isolation — a system with excellent backoff and jitter but no retry budget, or excellent budgets but no per-call attempt limit, still has real amplification exposure through whichever safeguard is missing.</p>
+<h2>3. Core concept</h2>
+<p>Amplification compounds multiplicatively across every layer of a call chain that independently retries — if a client retries up to 3 times, and the service it calls also retries its own downstream dependency up to 3 times per client attempt, the effective load multiplier at the innermost dependency isn&#x27;t 3, it&#x27;s 3 × 3 = 9, and this compounding grows rapidly with each additional layer of independent retrying.</p>
+<pre><code class="lang-java">// EACH layer&#x27;s retry count MULTIPLIES with the layers above it
+int clientMaxAttempts = 3;
+int gatewayMaxAttempts = 3;   // the gateway ALSO retries its own call to the next layer
+int serviceMaxAttempts = 3;   // and THAT service retries its OWN downstream call too
+
+// the WORST-CASE amplification at the innermost dependency:
+int worstCaseMultiplier = clientMaxAttempts * gatewayMaxAttempts * serviceMaxAttempts; // = 27, NOT 3+3+3=9
+// ONE original client request can generate up to 27 actual calls to the innermost dependency</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A client retrying up to three times calls a gateway that independently retries up to three times per client attempt, calling a service that independently retries up to three times per gateway attempt, so the innermost dependency can receive up to twenty seven calls from a single original client request due to multiplicative compounding across layers" >
+  <rect x="20" y="70" width="100" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="70" y="94" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Client (x3)</text>
+
+  <rect x="200" y="70" width="100" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="250" y="94" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Gateway (x3)</text>
+
+  <rect x="380" y="70" width="100" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="430" y="94" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Service (x3)</text>
+
+  <rect x="530" y="60" width="90" height="55" rx="5" fill="#1c2430" stroke="#8b949e"/>
+  <text x="575" y="85" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">Innermost</text>
+  <text x="575" y="98" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">up to 27x</text>
+
+  <line x1="120" y1="90" x2="198" y2="90" stroke="#8b949e" marker-end="url(#arr266)"/>
+  <line x1="300" y1="90" x2="378" y2="90" stroke="#8b949e" marker-end="url(#arr266)"/>
+  <line x1="480" y1="90" x2="528" y2="90" stroke="#8b949e" marker-end="url(#arr266)"/>
+
+  <defs>
+    <marker id="arr266" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Retry counts multiply, not add, across independently-retrying layers of a call chain.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a three-layer call chain where each layer retries independently with no coordination, measuring the resulting worst-case amplification at the innermost dependency, refactored to disable retries at intermediate layers (retrying only at the outermost layer, which is the layer that actually knows about the end-to-end operation), and finally demonstrating the full storm scenario under a sustained failure, measuring the actual call volume generated compared to the original request rate.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: MultiLayerRetryAmplification.java -- EACH layer retries
+// INDEPENDENTLY, with NO coordination -- amplification COMPOUNDS
+// multiplicatively across the chain.
+public class MultiLayerRetryAmplification {
+    static int innermostCallCount = 0;
+
+    static void callInnermostDependency() { innermostCallCount++; throw new RuntimeException(&quot;still failing&quot;); }
+
+    static void callService(int maxAttempts) {
+        for (int i = 1; i &lt;= maxAttempts; i++) {
+            try { callInnermostDependency(); return; } catch (RuntimeException ignored) {}
+        }
+    }
+
+    static void callGateway(int maxAttempts) {
+        for (int i = 1; i &lt;= maxAttempts; i++) {
+            callService(3); // the GATEWAY retries its own call to `callService`, WHICH ITSELF retries internally
+        }
+    }
+
+    static void callFromClient(int maxAttempts) {
+        for (int i = 1; i &lt;= maxAttempts; i++) {
+            callGateway(3); // the CLIENT retries its call to the GATEWAY, WHICH retries its OWN downstream call
+        }
+    }
+
+    public static void main(String[] args) {
+        callFromClient(3); // ONE logical client request
+        System.out.println(&quot;ONE original client request generated &quot; + innermostCallCount + &quot; actual calls to the innermost dependency!&quot;);
+        System.out.println(&quot;Expected worst case: 3 x 3 x 3 = 27 -- COMPOUNDING, not additive.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac MultiLayerRetryAmplification.java &amp;&amp; java MultiLayerRetryAmplification</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>ONE original client request generated 27 actual calls to the innermost dependency!
+Expected worst case: 3 x 3 x 3 = 27 -- COMPOUNDING, not additive.</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: RetryOnlyAtOneLayer.java -- retries happen ONLY at the OUTERMOST
+// layer (the one that actually knows about the end-to-end operation);
+// intermediate layers do NOT retry independently -- amplification is
+// now LINEAR, not multiplicative.
+public class RetryOnlyAtOneLayer {
+    static int innermostCallCount = 0;
+
+    static void callInnermostDependency() { innermostCallCount++; throw new RuntimeException(&quot;still failing&quot;); }
+
+    static void callService() { callInnermostDependency(); } // NO retry loop here -- just propagates the failure UP
+    static void callGateway() { callService(); }              // NO retry loop here EITHER
+
+    static void callFromClient(int maxAttempts) { // ONLY the outermost layer retries
+        for (int i = 1; i &lt;= maxAttempts; i++) {
+            try { callGateway(); return; } catch (RuntimeException ignored) {}
+        }
+    }
+
+    public static void main(String[] args) {
+        try { callFromClient(3); } catch (RuntimeException ignored) {}
+        System.out.println(&quot;ONE original client request generated &quot; + innermostCallCount + &quot; actual calls to the innermost dependency.&quot;);
+        System.out.println(&quot;Expected: exactly 3 -- LINEAR, matching the client&#x27;s OWN retry count, no multiplicative compounding.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac RetryOnlyAtOneLayer.java &amp;&amp; java RetryOnlyAtOneLayer</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>ONE original client request generated 3 actual calls to the innermost dependency.
+Expected: exactly 3 -- LINEAR, matching the client&#x27;s OWN retry count, no multiplicative compounding.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: MeasuredStormUnderConcurrentClients.java -- measures the FULL
+// storm scenario: MANY concurrent clients, each independently retrying
+// through a MULTI-LAYER chain, all during a SUSTAINED failure --
+// comparing multi-layer vs single-layer retry against REALISTIC scale.
+public class MeasuredStormUnderConcurrentClients {
+    static int multiLayerInnermostCalls;
+    static int singleLayerInnermostCalls;
+
+    static void multiLayerCallChain() {
+        for (int client = 1; client &lt;= 3; client++) {          // client layer: 3 attempts
+            for (int gateway = 1; gateway &lt;= 3; gateway++) {    // gateway layer: 3 attempts PER client attempt
+                for (int service = 1; service &lt;= 3; service++) { // service layer: 3 attempts PER gateway attempt
+                    multiLayerInnermostCalls++;
+                }
+            }
+        }
+    }
+
+    static void singleLayerCallChain() {
+        for (int client = 1; client &lt;= 3; client++) { // ONLY the client retries
+            singleLayerInnermostCalls++;
+        }
+    }
+
+    public static void main(String[] args) {
+        int concurrentClients = 100; // a realistic burst during a sustained outage
+
+        for (int i = 0; i &lt; concurrentClients; i++) multiLayerCallChain();
+        for (int i = 0; i &lt; concurrentClients; i++) singleLayerCallChain();
+
+        System.out.println(concurrentClients + &quot; concurrent clients, each with 1 original logical request:&quot;);
+        System.out.println(&quot;Multi-layer independent retries -- innermost dependency receives: &quot; + multiLayerInnermostCalls + &quot; calls&quot;);
+        System.out.println(&quot;Single-layer (outermost only) retries -- innermost dependency receives: &quot; + singleLayerInnermostCalls + &quot; calls&quot;);
+        System.out.println(&quot;\nAmplification factor: multi-layer = &quot; + (multiLayerInnermostCalls / concurrentClients) +
+            &quot;x per client, single-layer = &quot; + (singleLayerInnermostCalls / concurrentClients) + &quot;x per client.&quot;);
+        System.out.println(&quot;The multi-layer chain, during a SUSTAINED failure, hits the struggling dependency &quot; +
+            (multiLayerInnermostCalls / singleLayerInnermostCalls) + &quot;x HARDER than the single-layer approach.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac MeasuredStormUnderConcurrentClients.java &amp;&amp; java MeasuredStormUnderConcurrentClients</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>100 concurrent clients, each with 1 original logical request:
+Multi-layer independent retries -- innermost dependency receives: 2700 calls
+Single-layer (outermost only) retries -- innermost dependency receives: 300 calls
+
+Amplification factor: multi-layer = 27x per client, single-layer = 3x per client.
+The multi-layer chain, during a SUSTAINED failure, hits the struggling dependency 9x HARDER than the single-layer approach.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the multiplicative compounding traced explicitly</strong> — <code>callFromClient</code>&#x27;s loop calls <code>callGateway</code> up to 3 times, and *each* of those calls runs <code>callGateway</code>&#x27;s own loop, which calls <code>callService</code> up to 3 more times, and *each* of *those* calls runs <code>callService</code>&#x27;s own loop, calling <code>callInnermostDependency</code> up to 3 more times — the innermost function ends up called <code>3 × 3 × 3 = 27</code> times from a single top-level invocation, exactly matching the printed count.</li><li><strong>Level 1, why this is dangerous</strong> — none of the three layers individually looks unreasonable in isolation (each retries &quot;only&quot; 3 times), but their combination, entirely invisible from looking at any single layer&#x27;s code alone, produces a 27x amplification at the dependency that&#x27;s actually struggling — a system designed layer-by-layer without considering this compounding can accidentally build exactly this structure.</li><li><strong>Level 2, retrying at only one layer</strong> — <code>callService</code> and <code>callGateway</code> are now simple pass-through calls with no retry loop of their own; only <code>callFromClient</code>, the outermost layer that actually represents the true end-to-end logical operation, contains a retry loop.</li><li><strong>Level 2, the resulting linear (not multiplicative) count</strong> — <code>innermostCallCount</code> ends at exactly 3, matching the client&#x27;s own retry count directly, since no intermediate layer adds its own independent multiplication on top.</li><li><strong>Level 3, scaling both approaches to a realistic concurrent load</strong> — <code>multiLayerCallChain</code> and <code>singleLayerCallChain</code> each model the identical per-request retry structure from Levels 1 and 2 respectively, and both are run 100 times to simulate 100 concurrent client requests, all experiencing the same sustained downstream failure simultaneously.</li><li><strong>Level 3, the measured real-world-scale difference</strong> — the multi-layer approach results in 2700 total calls to the innermost dependency (27 per client × 100 clients), while the single-layer approach results in only 300 (3 per client × 100 clients) — a 9x difference in aggregate load hitting the exact dependency that&#x27;s already struggling, purely as a consequence of *where* in the call chain retry logic is placed, not how aggressive any individual layer&#x27;s retry configuration looks on its own; this measured, concrete gap is exactly what makes retry storms a real, severe risk rather than a theoretical concern, and exactly why coordinating retry responsibility to a single, deliberate layer of a call chain (rather than adding it independently at every layer &quot;just in case&quot;) is a critical design decision.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the &quot;retry only at the outermost layer&quot; principle demonstrated in Level 2 is a useful simplification, but real systems sometimes have legitimate reasons for retries at more than one layer (a gateway retrying a load-balancer-level routing failure independently of the client&#x27;s own application-level retry logic) — the actual guiding principle is to be *deliberate and aware* of how many layers retry independently and what the resulting worst-case multiplication is, not to assume every layer needs its own retry logic, and not to assume retries must be confined to exactly one layer either; the danger is *unintentional*, unaccounted-for compounding, not multi-layer retrying per se.</blockquote>
+<ul><li>A retry storm occurs when retries, instead of aiding recovery, amplify load on an already-struggling dependency, potentially turning a brief blip into a severe, prolonged outage.</li><li>Retry counts compound multiplicatively, not additively, across independently-retrying layers of a call chain — three layers each retrying three times produces a worst-case 27x multiplier, not 9.</li><li>This risk emerges from the combination of missing or under-tuned safeguards (unbounded attempts, indiscriminate retrying of non-transient errors, no retry budget, no jitter) rather than any single factor alone.</li><li>Consolidating retry responsibility to a deliberate, specific layer of a call chain — rather than adding independent retry logic at every layer by default — prevents unintentional multiplicative amplification.</li><li>The other topics in this cluster (budgets, classification, backoff, jitter, bounded attempts) each address one contributing factor; retry storm risk is what results when several of them are simultaneously absent or poorly tuned across a real system.</li></ul>
+  <div class="nav"><a class="prv" href="0265-idempotency-requirement-for-safe-retries.html"><span class="mini">← Previous</span>Idempotency requirement for safe retries</a><a class="nxt" href="0267-bulkhead-pattern.html"><span class="mini">Next →</span>Bulkhead pattern</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t266";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

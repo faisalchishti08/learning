@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Retry only on transient/retryable errors" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Retry only on transient/retryable errors"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Retry-only-on-transient-errors is the discipline of classifying failures before deciding whether to retry them at all — a network timeout or a 503 Service Unavailable is worth retrying since the underlying cause is likely momentary, but a 400 Bad Request or a 401 Unauthorized represents a deterministic failure that will produce the exact same result every time, no matter how many times it&#x27;s retried, making a retry pure wasted effort at best and actively harmful amplification at worst.</p>
+<h2>2. Why &amp; when</h2>
+<p>A <a href="0259-retry-pattern.md">retry pattern</a> applied indiscriminately to every kind of failure treats a client sending malformed input identically to a server that&#x27;s temporarily overloaded — but retrying the malformed request will fail identically every single time, since nothing about the request itself changed between attempts, meaning every one of those retries is pure wasted load on the server and pure wasted latency for the caller, with zero chance of ever succeeding. Worse, if many callers are simultaneously sending some kind of permanently invalid request (a client bug, a bad deployment), indiscriminate retrying multiplies that already-wasted traffic by the retry count, contributing directly to the amplification risk covered in <a href="0263-retry-budgets.md">retry budgets</a> and <a href="0266-retry-storm-amplification-risk.md">retry storms</a> — for no possible benefit, since these failures were never going to resolve through retrying.</p>
+<p>Classify every error a retryable call might produce into &quot;worth retrying&quot; (timeouts, connection failures, 5xx server errors, explicitly-marked-retryable application errors) versus &quot;never worth retrying&quot; (4xx client errors except perhaps 429, validation failures, authorization failures, any deterministic business-rule rejection) before wiring up any retry logic, and enforce that classification in the retry mechanism itself, not just as an informal convention.</p>
+<h2>3. Core concept</h2>
+<p>The retry loop checks the caught exception or response against an explicit classification before deciding whether to attempt again — a retryable failure proceeds to the next attempt, while a non-retryable failure is surfaced to the caller immediately, on the very first occurrence, with no further attempts wasted on it.</p>
+<pre><code class="lang-java">boolean isRetryable(Exception e) {
+    if (e instanceof ConnectException || e instanceof SocketTimeoutException) return true; // TRANSIENT -- worth retrying
+    if (e instanceof HttpServerErrorException http) return http.getStatusCode().is5xxServerError(); // 5xx -- likely transient
+    if (e instanceof HttpClientErrorException) return false; // 4xx -- DETERMINISTIC, retrying changes NOTHING
+    return false; // UNKNOWN error types default to NOT retryable -- safer than assuming retryability
+}
+
+&lt;T&gt; T callWithRetry(Supplier&lt;T&gt; operation, int maxAttempts) {
+    for (int attempt = 1; attempt &lt;= maxAttempts; attempt++) {
+        try { return operation.get(); }
+        catch (Exception e) {
+            if (!isRetryable(e) || attempt == maxAttempts) throw e; // STOP immediately on a non-retryable error
+        }
+    }
+    throw new IllegalStateException(&quot;unreachable&quot;);
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A caught exception is classified before any retry decision -- a transient network timeout proceeds through the normal retry loop, while a deterministic client error is surfaced to the caller immediately on the first occurrence, with no wasted further attempts" >
+  <rect x="20" y="65" width="140" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="90" y="90" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Caught exception</text>
+
+  <rect x="230" y="20" width="180" height="45" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="320" y="43" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Transient (timeout, 5xx)</text>
+  <text x="320" y="57" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">RETRY normally</text>
+
+  <rect x="230" y="105" width="180" height="45" rx="5" fill="#1c2430" stroke="#8b949e"/>
+  <text x="320" y="128" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">Deterministic (4xx)</text>
+  <text x="320" y="142" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">SURFACE immediately, NO retry</text>
+
+  <line x1="160" y1="85" x2="228" y2="42" stroke="#8b949e" marker-end="url(#arr264)"/>
+  <line x1="160" y1="85" x2="228" y2="128" stroke="#8b949e" marker-end="url(#arr264)"/>
+
+  <defs>
+    <marker id="arr264" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>The failure&#x27;s classification, decided once, determines whether it enters the retry loop at all.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a retry mechanism that treats every kind of failure identically, wasting attempts on a client error that could never succeed no matter how many times it&#x27;s retried, refactored to classify errors explicitly and stop immediately on non-retryable ones, and finally demonstrating both error categories occurring together in a mixed batch of calls, with the total wasted-attempt count measured directly between the naive and classified approaches.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: RetriesEverythingIndiscriminately.java -- treats a DETERMINISTIC
+// client error EXACTLY like a transient one -- wastes ALL retry attempts
+// on something that could NEVER succeed.
+import java.util.function.*;
+
+public class RetriesEverythingIndiscriminately {
+    static class ClientError extends RuntimeException { ClientError(String m) { super(m); } } // e.g. malformed input -- DETERMINISTIC
+    static int attemptCount = 0;
+
+    static String callWithMalformedInput() {
+        attemptCount++;
+        throw new ClientError(&quot;400: missing required field &#x27;orderId&#x27;&quot;); // will ALWAYS throw this, no matter how many times called
+    }
+
+    static &lt;T&gt; T callWithRetry(Supplier&lt;T&gt; operation, int maxAttempts) {
+        RuntimeException last = null;
+        for (int attempt = 1; attempt &lt;= maxAttempts; attempt++) {
+            try { return operation.get(); } catch (RuntimeException e) { last = e; } // retries UNCONDITIONALLY
+        }
+        throw last;
+    }
+
+    public static void main(String[] args) {
+        try { callWithRetry(RestrictedCallable(), 3); } catch (RuntimeException ignored) {}
+        System.out.println(&quot;Made &quot; + attemptCount + &quot; attempts on a request that was GUARANTEED to fail identically every time.&quot;);
+    }
+    static Supplier&lt;String&gt; RestrictedCallable() { return RetriesEverythingIndiscriminately::callWithMalformedInput; }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac RetriesEverythingIndiscriminately.java &amp;&amp; java RetriesEverythingIndiscriminately</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Made 3 attempts on a request that was GUARANTEED to fail identically every time.</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ClassifiesBeforeRetrying.java -- classifies the error FIRST;
+// a DETERMINISTIC client error is surfaced IMMEDIATELY, on the VERY
+// FIRST occurrence -- no attempts wasted.
+import java.util.function.*;
+
+public class ClassifiesBeforeRetrying {
+    static class ClientError extends RuntimeException { ClientError(String m) { super(m); } }
+    static class TransientError extends RuntimeException { TransientError(String m) { super(m); } }
+    static int attemptCount = 0;
+
+    static boolean isRetryable(RuntimeException e) { return e instanceof TransientError; } // EXPLICIT classification
+
+    static String callWithMalformedInput() {
+        attemptCount++;
+        throw new ClientError(&quot;400: missing required field &#x27;orderId&#x27;&quot;);
+    }
+
+    static &lt;T&gt; T callWithRetry(Supplier&lt;T&gt; operation, int maxAttempts) {
+        RuntimeException last = null;
+        for (int attempt = 1; attempt &lt;= maxAttempts; attempt++) {
+            try { return operation.get(); }
+            catch (RuntimeException e) {
+                last = e;
+                if (!isRetryable(e)) { System.out.println(&quot;  Non-retryable error on attempt &quot; + attempt + &quot; -- STOPPING immediately&quot;); throw e; }
+            }
+        }
+        throw last;
+    }
+
+    public static void main(String[] args) {
+        try { callWithRetry(ClassifiesBeforeRetrying::callWithMalformedInput, 3); }
+        catch (RuntimeException ignored) {}
+        System.out.println(&quot;Made only &quot; + attemptCount + &quot; attempt(s) -- correctly recognized this could NEVER succeed via retrying.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ClassifiesBeforeRetrying.java &amp;&amp; java ClassifiesBeforeRetrying</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>  Non-retryable error on attempt 1 -- STOPPING immediately
+Made only 1 attempt(s) -- correctly recognized this could NEVER succeed via retrying.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: MixedBatchMeasuredWasteComparison.java -- runs a REALISTIC MIX
+// of transient and deterministic errors through BOTH the naive and
+// classified approaches, MEASURING the total wasted attempts saved.
+import java.util.function.*;
+import java.util.*;
+
+public class MixedBatchMeasuredWasteComparison {
+    static class ClientError extends RuntimeException { ClientError(String m) { super(m); } }
+    static class TransientError extends RuntimeException { TransientError(String m) { super(m); } }
+
+    static boolean isRetryable(RuntimeException e) { return e instanceof TransientError; }
+
+    static int naiveAttempts(boolean isTransient, int maxAttempts) {
+        int attempts = 0;
+        for (int a = 1; a &lt;= maxAttempts; a++) {
+            attempts++;
+            if (isTransient &amp;&amp; a == maxAttempts) break; // simulate: transient errors EVENTUALLY succeed on the last attempt
+            // deterministic errors NEVER succeed -- but the naive loop doesn&#x27;t know that, keeps trying anyway
+        }
+        return attempts;
+    }
+
+    static int classifiedAttempts(boolean isTransient, int maxAttempts) {
+        int attempts = 0;
+        for (int a = 1; a &lt;= maxAttempts; a++) {
+            attempts++;
+            if (isTransient &amp;&amp; a == maxAttempts) break; // transient: retries until success, same as naive
+            if (!isTransient) break; // DETERMINISTIC: stop after the FIRST attempt, correctly
+        }
+        return attempts;
+    }
+
+    public static void main(String[] args) {
+        // a REALISTIC mixed batch: 100 requests, 70% transient (network blips), 30% deterministic (bad client requests)
+        int transientCount = 70, deterministicCount = 30, maxAttempts = 3;
+
+        int naiveTotalAttempts = transientCount * naiveAttempts(true, maxAttempts) + deterministicCount * naiveAttempts(false, maxAttempts);
+        int classifiedTotalAttempts = transientCount * classifiedAttempts(true, maxAttempts) + deterministicCount * classifiedAttempts(false, maxAttempts);
+
+        System.out.println(&quot;Naive (retries everything): &quot; + naiveTotalAttempts + &quot; total attempts across 100 requests&quot;);
+        System.out.println(&quot;Classified (retries only transient): &quot; + classifiedTotalAttempts + &quot; total attempts across 100 requests&quot;);
+        System.out.println(&quot;Wasted attempts eliminated: &quot; + (naiveTotalAttempts - classifiedTotalAttempts) +
+            &quot; (&quot; + ((naiveTotalAttempts - classifiedTotalAttempts) * 100 / naiveTotalAttempts) + &quot;% fewer wasted calls)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac MixedBatchMeasuredWasteComparison.java &amp;&amp; java MixedBatchMeasuredWasteComparison</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Naive (retries everything): 300 total attempts across 100 requests
+Classified (retries only transient): 240 total attempts across 100 requests
+Wasted attempts eliminated: 60 (20% fewer wasted calls)</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, indiscriminate retrying</strong> — <code>callWithRetry</code>&#x27;s <code>catch</code> block has no classification logic at all; it retries any caught <code>RuntimeException</code> unconditionally, up to <code>maxAttempts</code>, meaning a <code>ClientError</code> (guaranteed to throw the identical error on every single call, since <code>callWithMalformedInput</code> never changes behavior) is still retried the full 3 times before finally being surfaced.</li><li><strong>Level 2, stopping on the first non-retryable occurrence</strong> — <code>isRetryable</code> explicitly checks whether the caught exception is an instance of <code>TransientError</code>, returning <code>false</code> for anything else, including <code>ClientError</code>; <code>callWithRetry</code>&#x27;s <code>catch</code> block checks this classification and, when it returns <code>false</code>, throws immediately rather than looping again.</li><li><strong>Level 2, the correct, minimal outcome</strong> — the identical <code>ClientError</code>-throwing scenario from Level 1 now results in exactly 1 attempt instead of 3, since the classification correctly recognizes on the very first occurrence that further attempts would be pointless — this is both faster for the caller (one wasted attempt instead of three) and lighter on the server (no repeated pointless requests).</li><li><strong>Level 3, modeling a realistic mixed population</strong> — <code>naiveAttempts</code> and <code>classifiedAttempts</code> simulate two categories of requests: transient ones (which eventually succeed by the final attempt, modeling a genuine transient blip resolving) and deterministic ones (which the naive version keeps retrying uselessly, while the classified version stops after one attempt).</li><li><strong>Level 3, the naive total</strong> — with 70 transient requests each taking their full 3 attempts (legitimately, since they eventually succeed) and 30 deterministic requests *also* each taking their full 3 attempts (wastefully, since none of them could ever succeed), the naive total comes to <code>70×3 + 30×3 = 300</code> attempts.</li><li><strong>Level 3, the classified total and the measured savings</strong> — the classified version still lets the 70 transient requests take their full, legitimate 3 attempts each (<code>70×3 = 210</code>), but correctly limits the 30 deterministic requests to just 1 attempt each (<code>30×1 = 30</code>), for a total of <code>210 + 30 = 240</code> — a difference of exactly 60 attempts, all of which represented pure waste in the naive version: retries against requests that were mathematically guaranteed to fail identically every single time, contributing nothing but extra load and extra latency for no possible benefit.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> an unrecognized or ambiguous exception type defaulting to &quot;retryable&quot; is a risky choice — an unknown failure mode might well be deterministic (a new kind of client error the classification logic hasn&#x27;t been updated to recognize yet), and treating it as retryable by default risks the exact wasted-attempt problem this discipline is meant to eliminate; defaulting unknown error types to non-retryable, as the concept example does, is the safer choice, even though it occasionally means a genuinely transient-but-unrecognized failure misses out on a retry it could have benefited from.</blockquote>
+<ul><li>Classifying failures as transient (worth retrying) versus deterministic (never worth retrying) before wiring up retry logic prevents wasting retry attempts on failures that were mathematically guaranteed to recur identically.</li><li>Deterministic failures — malformed input, authorization failures, most 4xx client errors — represent conditions that don&#x27;t change between attempts, so retrying them changes nothing and only adds waste.</li><li>The retry mechanism should check this classification explicitly and stop immediately on the first non-retryable occurrence, rather than proceeding through the full attempt count regardless of the failure&#x27;s nature.</li><li>Applying this discipline across a realistic mixed population of failures, as demonstrated, produces a measurable, meaningful reduction in wasted attempts compared to retrying indiscriminately.</li><li>Unrecognized or ambiguous error types should default to non-retryable rather than retryable — the safer failure mode is occasionally missing a retry opportunity, not repeatedly wasting attempts on an unrecognized-but-actually-deterministic failure.</li></ul>
+  <div class="nav"><a class="prv" href="0263-retry-budgets.html"><span class="mini">← Previous</span>Retry budgets</a><a class="nxt" href="0265-idempotency-requirement-for-safe-retries.html"><span class="mini">Next →</span>Idempotency requirement for safe retries</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t264";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

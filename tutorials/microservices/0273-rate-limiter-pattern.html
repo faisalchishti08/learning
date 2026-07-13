@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Rate limiter pattern" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Rate limiter pattern"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A rate limiter caps how many operations are permitted within a given time window — for example, 100 requests per second — rejecting or delaying anything beyond that rate, regardless of how many are currently in flight simultaneously; this distinguishes it from a <a href="0267-bulkhead-pattern.md">bulkhead</a>, which caps *concurrency* (how many calls are in flight at once) rather than *throughput* (how many calls happen per unit of time).</p>
+<h2>2. Why &amp; when</h2>
+<p>A bulkhead limiting concurrency to, say, 10 simultaneous calls doesn&#x27;t prevent an extremely high *rate* of very fast calls from overwhelming a downstream dependency or its own infrastructure — 10 concurrent slots, each completing and being reused thousands of times per second, could still generate an enormous request rate even while concurrency itself stays perfectly bounded. Rate limiting addresses a fundamentally different dimension of protection: it&#x27;s the right tool when the concern is the *frequency* of requests (a downstream API&#x27;s contractual rate limit, protecting a resource with a fixed processing rate rather than a fixed concurrency capacity, fairly sharing a resource&#x27;s fixed throughput among many clients) rather than how many are simultaneously outstanding.</p>
+<p>Use a rate limiter to protect a resource with a rate-based constraint — a third-party API enforcing its own rate limit that must be respected, a downstream system whose processing capacity is naturally expressed as &quot;units per second&quot; rather than &quot;concurrent connections,&quot; or to enforce fair usage limits across multiple clients sharing a resource. Use a bulkhead instead (or alongside) when the concern is specifically about concurrent in-flight calls rather than request frequency — the two patterns address different, complementary dimensions and are frequently used together.</p>
+<h2>3. Core concept</h2>
+<p>A rate limiter tracks how many operations have occurred within the current time window and permits a new operation only if that count is still under the configured limit for the window — several concrete algorithms (covered by name in the rest of this section: <a href="0274-token-bucket-algorithm.md">token bucket</a>, <a href="0275-leaky-bucket-algorithm.md">leaky bucket</a>, <a href="0276-fixed-window-sliding-window-counters.md">fixed/sliding window counters</a>) implement this same basic idea with different tradeoffs around burst tolerance and smoothness.</p>
+<pre><code class="lang-java">RateLimiterConfig config = RateLimiterConfig.custom()
+    .limitForPeriod(100) // 100 operations
+    .limitRefreshPeriod(Duration.ofSeconds(1)) // ...per 1-second window
+    .timeoutDuration(Duration.ofMillis(0)) // reject immediately if the limit is already reached
+    .build();
+RateLimiter rateLimiter = RateLimiter.of(&quot;external-api&quot;, config);
+
+String result = rateLimiter.executeSupplier(() -&gt; externalApiClient.call());
+// the 101st call within the SAME 1-second window is REJECTED, regardless of how many calls are
+// CURRENTLY in flight (which is what a bulkhead, a DIFFERENT concern, would instead govern)</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A bulkhead caps how many calls are simultaneously in flight at any instant, regardless of how fast they complete; a rate limiter caps how many calls occur per unit of time, regardless of how many are simultaneously in flight -- the two address orthogonal dimensions of load" >
+  <rect x="20" y="20" width="270" height="55" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="155" y="42" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Bulkhead: CONCURRENCY</text>
+  <text x="155" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">caps HOW MANY at once, ANY speed</text>
+
+  <rect x="350" y="20" width="270" height="55" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="485" y="42" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Rate limiter: THROUGHPUT</text>
+  <text x="485" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">caps HOW OFTEN, ANY concurrency</text>
+</svg>
+<p>Concurrency and throughput are orthogonal load dimensions; a system can be bounded on one while unbounded on the other.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a call pattern with low concurrency but an extremely high rate, protected only by a bulkhead that completely fails to catch the resulting overload, refactored to add a rate limiter that correctly bounds the request frequency, and finally demonstrating both mechanisms combined, each catching a different kind of overload that the other alone would miss.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: BulkheadMissesRateOverload.java -- LOW concurrency (never more
+// than 1 at a time) but an EXTREMELY HIGH RATE -- a bulkhead alone
+// PROVIDES NO PROTECTION against this AT ALL.
+public class BulkheadMissesRateOverload {
+    static int concurrentCallsRightNow = 0;
+    static int peakConcurrency = 0;
+    static int totalCallsThisSecond = 0;
+
+    static void fastCall() { // completes INSTANTLY -- so concurrency NEVER builds up, even at a huge RATE
+        concurrentCallsRightNow++;
+        peakConcurrency = Math.max(peakConcurrency, concurrentCallsRightNow);
+        totalCallsThisSecond++;
+        concurrentCallsRightNow--; // completes IMMEDIATELY
+    }
+
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 10000; i++) fastCall(); // 10,000 calls, but EACH completes before the next starts
+
+        System.out.println(&quot;Peak CONCURRENCY observed: &quot; + peakConcurrency + &quot; (a bulkhead sized for even 1 would have been &#x27;sufficient&#x27;)&quot;);
+        System.out.println(&quot;Total calls made in this burst: &quot; + totalCallsThisSecond + &quot; -- a MASSIVE rate, completely UNCAUGHT by concurrency-based protection.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BulkheadMissesRateOverload.java &amp;&amp; java BulkheadMissesRateOverload</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Peak CONCURRENCY observed: 1 (a bulkhead sized for even 1 would have been &#x27;sufficient&#x27;)
+Total calls made in this burst: 10000 -- a MASSIVE rate, completely UNCAUGHT by concurrency-based protection.</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: RateLimiterCatchesIt.java -- adds a RATE limiter -- correctly
+// bounds the SAME call pattern to a MAXIMUM number PER time window.
+import java.util.concurrent.atomic.*;
+
+public class RateLimiterCatchesIt {
+    static final int LIMIT_PER_WINDOW = 100; // AT MOST 100 calls per simulated &quot;window&quot;
+    static AtomicInteger callsInCurrentWindow = new AtomicInteger(0);
+
+    static boolean tryCall() {
+        if (callsInCurrentWindow.get() &gt;= LIMIT_PER_WINDOW) return false; // REJECTED -- rate limit reached
+        callsInCurrentWindow.incrementAndGet();
+        return true;
+    }
+
+    public static void main(String[] args) {
+        int attemptedCalls = 10000; // the SAME huge burst as Level 1
+        int accepted = 0, rejected = 0;
+        for (int i = 0; i &lt; attemptedCalls; i++) {
+            if (tryCall()) accepted++; else rejected++;
+        }
+        System.out.println(&quot;Attempted: &quot; + attemptedCalls + &quot;, accepted: &quot; + accepted + &quot; (capped at the &quot; + LIMIT_PER_WINDOW + &quot;-per-window limit), rejected: &quot; + rejected);
+        System.out.println(&quot;The RATE limiter correctly bounded throughput, regardless of the fact that concurrency NEVER exceeded 1.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac RateLimiterCatchesIt.java &amp;&amp; java RateLimiterCatchesIt</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Attempted: 10000, accepted: 100 (capped at the 100-per-window limit), rejected: 9900
+The RATE limiter correctly bounded throughput, regardless of the fact that concurrency NEVER exceeded 1.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: BulkheadAndRateLimiterTogether.java -- COMBINES both mechanisms,
+// demonstrating EACH catching a DIFFERENT kind of overload the OTHER
+// alone would miss -- a HIGH-concurrency-LOW-rate scenario, and a
+// LOW-concurrency-HIGH-rate scenario.
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class BulkheadAndRateLimiterTogether {
+    static Semaphore bulkhead = new Semaphore(10); // caps CONCURRENCY at 10
+    static AtomicInteger callsInWindow = new AtomicInteger(0);
+    static final int RATE_LIMIT = 50; // caps THROUGHPUT at 50 per window
+
+    static String tryProtectedCall(String scenario) {
+        if (!bulkhead.tryAcquire()) return scenario + &quot;: REJECTED by BULKHEAD (concurrency limit)&quot;;
+        try {
+            if (callsInWindow.incrementAndGet() &gt; RATE_LIMIT) return scenario + &quot;: REJECTED by RATE LIMITER (throughput limit)&quot;;
+            return scenario + &quot;: ACCEPTED&quot;;
+        } finally {
+            bulkhead.release();
+        }
+    }
+
+    public static void main(String[] args) {
+        // SCENARIO 1: HIGH concurrency (20 SIMULTANEOUS holds), LOW total rate -- BULKHEAD catches this
+        Semaphore concurrencyHog = new Semaphore(0);
+        for (int i = 0; i &lt; 15; i++) bulkhead.tryAcquire(); // simulate 15 ALREADY-held slots (exceeds the 10 limit)
+        System.out.println(tryProtectedCall(&quot;high-concurrency scenario&quot;));
+        for (int i = 0; i &lt; 15; i++) bulkhead.release(); // release the simulated holds
+
+        // SCENARIO 2: LOW concurrency, but the window is ALREADY at its rate limit -- RATE LIMITER catches this
+        callsInWindow.set(RATE_LIMIT); // simulate the window ALREADY being at its 50-call limit
+        System.out.println(tryProtectedCall(&quot;high-rate scenario&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BulkheadAndRateLimiterTogether.java &amp;&amp; java BulkheadAndRateLimiterTogether</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>high-concurrency scenario: REJECTED by BULKHEAD (concurrency limit)
+high-rate scenario: REJECTED by RATE LIMITER (throughput limit)</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the blind spot made explicit</strong> — <code>fastCall</code> increments and immediately decrements <code>concurrentCallsRightNow</code> within the same method call, meaning <code>peakConcurrency</code> never exceeds 1, even as <code>totalCallsThisSecond</code> climbs to 10000 across the loop — a bulkhead monitoring only concurrency would see nothing alarming here at all, since concurrency genuinely never builds up, despite an enormous total request volume.</li><li><strong>Level 2, tracking frequency instead of concurrency</strong> — <code>tryCall</code> checks <code>callsInCurrentWindow</code> against <code>LIMIT_PER_WINDOW</code> (100) *before* incrementing, entirely independent of anything resembling concurrent in-flight state; this correctly caps the total number of accepted calls at exactly 100, regardless of how quickly or slowly they arrive or how many are &quot;in flight&quot; at any given instant.</li><li><strong>Level 2, the correct rejection behavior observed</strong> — out of 10000 attempted calls, exactly 100 are accepted and 9900 rejected, precisely matching the configured rate limit — demonstrating protection against exactly the scenario Level 1&#x27;s concurrency-only approach was structurally blind to.</li><li><strong>Level 3, combining both mechanisms deliberately</strong> — <code>tryProtectedCall</code> checks the bulkhead (<code>bulkhead.tryAcquire()</code>) first, and only if that succeeds, checks the rate limiter (<code>callsInWindow.incrementAndGet() &gt; RATE_LIMIT</code>) — both checks are independent gates a call must pass through, each protecting against a different dimension of overload.</li><li><strong>Level 3, the high-concurrency scenario caught by the bulkhead</strong> — by pre-acquiring 15 permits (simulating 15 already-in-flight calls, exceeding the bulkhead&#x27;s 10-permit capacity) before attempting a new call, the new call&#x27;s <code>bulkhead.tryAcquire()</code> fails immediately, and the rate limiter check is never even reached — this is exactly the kind of overload (too many *simultaneous* calls) a rate limiter alone, which only tracks frequency, would never catch on its own.</li><li><strong>Level 3, the high-rate scenario caught by the rate limiter</strong> — for the second scenario, <code>callsInWindow</code> is set directly to <code>RATE_LIMIT</code> (simulating the window already being fully consumed by prior, now-completed calls, meaning concurrency itself is currently low or zero), so the bulkhead check succeeds normally, but the subsequent rate-limiter check correctly rejects the call — this is exactly the kind of overload (too many calls *over time*, even with low concurrency) a bulkhead alone, which only tracks simultaneous in-flight count, would never catch on its own; together, the two mechanisms provide complete coverage across both dimensions of load that either one alone would leave a real gap in.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a bulkhead and a rate limiter address genuinely different, orthogonal concerns — mistaking one for adequately covering the other (assuming a bulkhead alone protects against request frequency, or a rate limiter alone protects against concurrent resource exhaustion) leaves a real gap, as both directions of Level 3&#x27;s demonstration show; a thorough protection strategy for a dependency with both concurrency and throughput constraints needs both mechanisms applied deliberately, not either one alone assumed to cover both.</blockquote>
+<ul><li>A rate limiter caps the number of operations permitted per unit of time, addressing throughput, while a bulkhead caps the number of simultaneously in-flight operations, addressing concurrency — two genuinely different, orthogonal dimensions of load.</li><li>A high-frequency but low-concurrency call pattern (many fast, sequential calls) can overwhelm a rate-constrained resource while never triggering a concurrency-based bulkhead at all.</li><li>A high-concurrency but low-frequency call pattern (many slow, simultaneous calls) can overwhelm a concurrency-constrained resource while staying well within a rate limit.</li><li>The two patterns are frequently used together, each guarding against the specific kind of overload the other structurally cannot detect.</li><li>Several concrete algorithms — token bucket, leaky bucket, fixed/sliding window counters, each covered next in this section — implement the same basic rate-limiting idea with different tradeoffs around burst tolerance and smoothness of enforcement.</li></ul>
+  <div class="nav"><a class="prv" href="0272-max-wait-duration-in-bulkhead.html"><span class="mini">← Previous</span>Max wait duration in bulkhead</a><a class="nxt" href="0274-token-bucket-algorithm.html"><span class="mini">Next →</span>Token bucket algorithm</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t273";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

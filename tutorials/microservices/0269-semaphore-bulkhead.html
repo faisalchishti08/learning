@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Semaphore bulkhead" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Semaphore bulkhead"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A semaphore bulkhead is a <a href="0267-bulkhead-pattern.md">bulkhead</a> implemented using a counting semaphore rather than a dedicated thread pool — the protected call still executes on the caller&#x27;s own thread, but a semaphore limits how many callers can be inside the protected call simultaneously, rejecting any caller that arrives once the permitted concurrency limit is already reached.</p>
+<h2>2. Why &amp; when</h2>
+<p>A <a href="0268-thread-pool-bulkhead.md">thread-pool bulkhead</a> provides strong isolation by moving execution to separate threads, but that thread hand-off has real overhead — for a call that&#x27;s fast and non-blocking (a reactive, asynchronous call already running on an event loop, for instance), submitting it to yet another thread pool just to bound its concurrency adds unnecessary context-switching cost for no additional benefit, since the call was never going to tie up the caller&#x27;s thread in a blocking way regardless. A semaphore bulkhead achieves the same concurrency-limiting protection — capping how many calls to a specific dependency can be in flight at once — without the overhead of thread hand-off, since the call still runs on whichever thread the caller was already using; the semaphore&#x27;s only job is deciding, cheaply, whether to allow the call to proceed at all.</p>
+<p>Use a semaphore bulkhead for calls that are fast, non-blocking, or already running in a reactive/asynchronous execution model, where the overhead of a separate thread pool would be unnecessary and where you want to cap concurrency without the added complexity of managing a dedicated <code>ExecutorService</code>.</p>
+<h2>3. Core concept</h2>
+<p>A semaphore bulkhead acquires a permit from a fixed-size semaphore before proceeding with the protected call, releasing it when the call completes (successfully or not); a caller arriving when no permits are available is rejected immediately (or, depending on configuration, waits briefly up to a maximum wait duration) — the call itself always runs on the calling thread, never handed off elsewhere.</p>
+<pre><code class="lang-java">Semaphore bulkheadPermits = new Semaphore(10); // caps CONCURRENT calls to 10, no dedicated thread pool involved
+
+&lt;T&gt; T callWithSemaphoreBulkhead(Supplier&lt;T&gt; operation) {
+    if (!bulkheadPermits.tryAcquire()) {
+        throw new BulkheadFullException(&quot;bulkhead at capacity, call rejected&quot;); // REJECTED immediately, cheap check
+    }
+    try {
+        return operation.get(); // executes on THIS SAME thread -- no hand-off to another pool
+    } finally {
+        bulkheadPermits.release(); // ALWAYS release, whether the call succeeded or threw
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A caller thread acquires a permit from a semaphore before proceeding, executes the protected call directly on its own thread without any hand-off, and releases the permit when finished -- a caller arriving when no permits remain is rejected immediately" >
+  <rect x="20" y="65" width="130" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="85" y="92" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Caller thread</text>
+
+  <rect x="220" y="65" width="150" height="45" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="295" y="88" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Semaphore (permits)</text>
+  <text x="295" y="102" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">acquire / release</text>
+
+  <rect x="450" y="65" width="150" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="525" y="92" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Call runs on SAME thread</text>
+
+  <line x1="150" y1="87" x2="218" y2="87" stroke="#8b949e" marker-end="url(#arr269)"/>
+  <line x1="370" y1="87" x2="448" y2="87" stroke="#8b949e" marker-end="url(#arr269)"/>
+
+  <defs>
+    <marker id="arr269" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>No thread hand-off occurs — the semaphore only decides whether the caller&#x27;s own thread is permitted to proceed.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a fast, non-blocking call protected unnecessarily by a thread-pool bulkhead (paying hand-off overhead for no real benefit), refactored to a semaphore bulkhead achieving the identical concurrency cap without that overhead, and finally comparing measured overhead directly between the two approaches for a high-volume, fast call pattern, quantifying the cost difference concretely.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ThreadPoolForFastCall.java -- uses a THREAD POOL to protect a
+// FAST, non-blocking call -- paying HAND-OFF overhead for a call that
+// never needed it.
+import java.util.concurrent.*;
+
+public class ThreadPoolForFastCall {
+    static ExecutorService threadPoolBulkhead = Executors.newFixedThreadPool(10);
+
+    static String fastNonBlockingCall() { return &quot;result&quot;; } // genuinely FAST -- no blocking I/O at all
+
+    public static void main(String[] args) throws Exception {
+        int callCount = 10000;
+        long start = System.nanoTime();
+        for (int i = 0; i &lt; callCount; i++) {
+            Future&lt;String&gt; future = threadPoolBulkhead.submit(ThreadPoolForFastCall::fastNonBlockingCall); // HAND-OFF to another thread
+            future.get(); // wait for it -- paying the FULL round-trip cost, for a call that took NO time itself
+        }
+        long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(callCount + &quot; fast calls via THREAD POOL bulkhead: &quot; + elapsedMillis + &quot;ms total&quot;);
+        threadPoolBulkhead.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ThreadPoolForFastCall.java &amp;&amp; java ThreadPoolForFastCall</code> (JDK 17+).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SemaphoreForFastCall.java -- the SAME concurrency cap, via a
+// SEMAPHORE -- the call runs DIRECTLY on the caller&#x27;s OWN thread, NO
+// hand-off overhead.
+import java.util.concurrent.*;
+
+public class SemaphoreForFastCall {
+    static Semaphore semaphoreBulkhead = new Semaphore(10); // the SAME &quot;10 concurrent&quot; cap as Level 1&#x27;s pool size
+
+    static String fastNonBlockingCall() { return &quot;result&quot;; }
+
+    static String callWithSemaphoreBulkhead() {
+        if (!semaphoreBulkhead.tryAcquire()) throw new RuntimeException(&quot;bulkhead full&quot;);
+        try {
+            return fastNonBlockingCall(); // runs DIRECTLY here -- no thread hand-off AT ALL
+        } finally {
+            semaphoreBulkhead.release();
+        }
+    }
+
+    public static void main(String[] args) {
+        int callCount = 10000;
+        long start = System.nanoTime();
+        for (int i = 0; i &lt; callCount; i++) {
+            callWithSemaphoreBulkhead(); // NO Future, NO submit -- runs INLINE, on the SAME thread
+        }
+        long elapsedMillis = (System.nanoTime() - start) / 1_000_000;
+        System.out.println(callCount + &quot; fast calls via SEMAPHORE bulkhead: &quot; + elapsedMillis + &quot;ms total&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac SemaphoreForFastCall.java &amp;&amp; java SemaphoreForFastCall</code> (JDK 17+).</p>
+<p>Expected output (both approaches complete, but semaphore is dramatically faster for this call pattern):</p>
+<pre><code>10000 fast calls via SEMAPHORE bulkhead: 3ms total</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: DirectOverheadComparison.java -- runs BOTH approaches back to
+// back against the IDENTICAL fast-call workload, printing a DIRECT,
+// measured comparison of the hand-off overhead.
+import java.util.concurrent.*;
+
+public class DirectOverheadComparison {
+    static ExecutorService threadPoolBulkhead = Executors.newFixedThreadPool(10);
+    static Semaphore semaphoreBulkhead = new Semaphore(10);
+    static String fastNonBlockingCall() { return &quot;result&quot;; }
+
+    static long measureThreadPoolApproach(int callCount) throws Exception {
+        long start = System.nanoTime();
+        for (int i = 0; i &lt; callCount; i++) {
+            Future&lt;String&gt; future = threadPoolBulkhead.submit(DirectOverheadComparison::fastNonBlockingCall);
+            future.get();
+        }
+        return (System.nanoTime() - start) / 1_000_000;
+    }
+
+    static long measureSemaphoreApproach(int callCount) {
+        long start = System.nanoTime();
+        for (int i = 0; i &lt; callCount; i++) {
+            if (!semaphoreBulkhead.tryAcquire()) continue;
+            try { fastNonBlockingCall(); } finally { semaphoreBulkhead.release(); }
+        }
+        return (System.nanoTime() - start) / 1_000_000;
+    }
+
+    public static void main(String[] args) throws Exception {
+        int callCount = 20000;
+        long threadPoolTime = measureThreadPoolApproach(callCount);
+        long semaphoreTime = measureSemaphoreApproach(callCount);
+
+        System.out.println(&quot;Thread-pool bulkhead: &quot; + threadPoolTime + &quot;ms for &quot; + callCount + &quot; fast calls&quot;);
+        System.out.println(&quot;Semaphore bulkhead: &quot; + semaphoreTime + &quot;ms for &quot; + callCount + &quot; fast calls&quot;);
+        System.out.println(&quot;\nFor a FAST, non-blocking call, the semaphore approach avoids the hand-off overhead entirely --&quot;);
+        System.out.println(&quot;roughly &quot; + (threadPoolTime / Math.max(semaphoreTime, 1)) + &quot;x less overhead in this measurement.&quot;);
+        threadPoolBulkhead.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac DirectOverheadComparison.java &amp;&amp; java DirectOverheadComparison</code> (JDK 17+).</p>
+<p>Expected output (exact numbers vary by machine, but the qualitative gap is consistent and significant):</p>
+<pre><code>Thread-pool bulkhead: 850ms for 20000 fast calls
+Semaphore bulkhead: 5ms for 20000 fast calls
+
+For a FAST, non-blocking call, the semaphore approach avoids the hand-off overhead entirely --
+roughly 170x less overhead in this measurement.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the hand-off cost for every single fast call</strong> — each iteration calls <code>threadPoolBulkhead.submit(...)</code>, which queues the call for execution on a separate thread, and then <code>future.get()</code>, which blocks the calling thread until that separate thread picks up and completes the (essentially instantaneous) work; even though <code>fastNonBlockingCall</code> itself does almost nothing, every single call pays the overhead of thread scheduling, context switching, and inter-thread communication involved in the submit-and-wait cycle.</li><li><strong>Level 2, bypassing the hand-off entirely</strong> — <code>callWithSemaphoreBulkhead</code> calls <code>fastNonBlockingCall()</code> directly, inline, on whatever thread is currently executing <code>main</code>&#x27;s loop; the semaphore&#x27;s <code>tryAcquire</code>/<code>release</code> calls are cheap, in-memory operations that don&#x27;t involve any thread scheduling or hand-off at all.</li><li><strong>Level 2, the same concurrency guarantee, without the cost</strong> — <code>semaphoreBulkhead</code>, initialized with 10 permits, provides the identical &quot;at most 10 concurrent calls&quot; guarantee as Level 1&#x27;s 10-thread pool would under genuinely concurrent access, but here, running sequentially in a single-threaded loop for the demo, the semaphore&#x27;s overhead is negligible compared to the thread pool&#x27;s submit-and-wait machinery.</li><li><strong>Level 3, measuring both approaches against the identical workload</strong> — <code>measureThreadPoolApproach</code> and <code>measureSemaphoreApproach</code> both run <code>fastNonBlockingCall</code> 20000 times, using their respective bulkhead mechanisms, with elapsed time measured precisely around each approach&#x27;s full loop.</li><li><strong>Level 3, the dramatic, measured overhead gap</strong> — the printed results show the thread-pool approach taking hundreds of milliseconds for 20000 calls, while the semaphore approach completes the identical 20000 calls in a handful of milliseconds — a difference of one or two orders of magnitude, entirely attributable to the thread-pool approach&#x27;s per-call submission, scheduling, and cross-thread result-retrieval overhead, none of which the semaphore approach incurs.</li><li><strong>Level 3, the concrete lesson this measurement supports</strong> — this gap is specifically pronounced *because* <code>fastNonBlockingCall</code> does essentially no real work — for a genuinely slow, blocking call (as in the <a href="0268-thread-pool-bulkhead.md">thread-pool bulkhead</a> topic&#x27;s own examples), the thread-pool approach&#x27;s overhead becomes comparatively negligible next to the call&#x27;s own duration, and its thread-isolation benefit becomes the dominant consideration instead; the choice between semaphore and thread-pool bulkheads should be driven by whether the protected call is fast/non-blocking (favoring semaphore, as measured here) or slow/blocking (favoring thread-pool, for its stronger isolation), not applied as a one-size-fits-all default in either direction.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> because a semaphore bulkhead runs the protected call on the caller&#x27;s own thread with no isolation between threads, a call that unexpectedly *does* block for a long time (despite being assumed fast) will tie up the calling thread directly, exactly the problem a thread-pool bulkhead is specifically designed to avoid — a semaphore bulkhead&#x27;s concurrency cap protects against too many *simultaneous* calls, but provides no protection against any individual call blocking the calling thread if that call turns out to be slower than assumed.</blockquote>
+<ul><li>A semaphore bulkhead limits concurrent calls to a dependency using a counting semaphore, with the protected call still executing directly on the caller&#x27;s own thread — no hand-off to a separate pool.</li><li>This avoids the thread-scheduling and context-switching overhead a thread-pool bulkhead incurs, which matters significantly for fast, high-volume, non-blocking calls, as directly measured in this example.</li><li>The concurrency-limiting guarantee itself is equivalent between the two approaches — both cap &quot;at most N concurrent calls to this dependency&quot; — differing only in implementation mechanism and overhead characteristics.</li><li>Semaphore bulkheads suit fast, non-blocking, or already-asynchronous calls; <a href="0268-thread-pool-bulkhead.md">thread-pool bulkheads</a> suit slow, blocking calls where isolating the caller&#x27;s own thread specifically matters.</li><li>A semaphore bulkhead provides no protection against an individual call blocking the calling thread — if a call assumed to be fast turns out to block unexpectedly, that blocking directly affects the caller, unlike with a thread-pool bulkhead&#x27;s stronger thread-level isolation.</li></ul>
+  <div class="nav"><a class="prv" href="0268-thread-pool-bulkhead.html"><span class="mini">← Previous</span>Thread-pool bulkhead</a><a class="nxt" href="0270-resource-partitioning-to-contain-failures.html"><span class="mini">Next →</span>Resource partitioning to contain failures</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t269";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Max wait duration in bulkhead" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Max wait duration in bulkhead"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Max wait duration is a <a href="0267-bulkhead-pattern.md">bulkhead</a> configuration option controlling what happens when a call arrives while the bulkhead is already at full <a href="0271-max-concurrent-calls.md">max concurrent calls</a> capacity: rather than rejecting the call immediately (a wait duration of zero), the caller can be allowed to wait briefly, up to the configured maximum, for a slot to free up before finally being rejected if none becomes available in time.</p>
+<h2>2. Why &amp; when</h2>
+<p>Immediate rejection the instant a bulkhead is at capacity is the simplest, safest default, but it can be needlessly aggressive for a brief, momentary spike where a slot is very likely to free up within a short time — an in-flight call finishing a moment later, freeing its slot for a waiting caller almost immediately, rather than that caller being rejected outright for a capacity constraint that resolved itself within milliseconds. A small, non-zero max wait duration absorbs this kind of brief burst gracefully, giving waiting callers a real chance to succeed rather than an automatic rejection, while a wait duration of zero (or a very small one) keeps the bulkhead&#x27;s behavior close to its strongest, most protective form — no waiting at all, immediate feedback.</p>
+<p>Set a small, non-zero max wait duration when brief capacity spikes are common and a short wait is preferable to an immediate rejection for calls likely to succeed shortly after. Keep the wait duration at zero (immediate rejection) when the calling code has its own fast, effective fallback and prefers instant feedback over any waiting at all, or when waiting itself risks accumulating queued callers in a way the bulkhead&#x27;s whole design was meant to avoid.</p>
+<h2>3. Core concept</h2>
+<p>A non-zero max wait duration makes the bulkhead&#x27;s acquisition attempt blocking (up to that duration) rather than purely non-blocking — the caller either acquires a slot within the wait window (because one freed up in time) or is rejected once the wait duration elapses without success, exactly mirroring the semaphore&#x27;s own timed-acquire semantics.</p>
+<pre><code class="lang-java">Semaphore bulkheadPermits = new Semaphore(10);
+
+&lt;T&gt; T callWithBulkhead(Supplier&lt;T&gt; operation, Duration maxWaitDuration) throws Exception {
+    boolean acquired = bulkheadPermits.tryAcquire(maxWaitDuration.toMillis(), TimeUnit.MILLISECONDS); // WAITS up to this long
+    if (!acquired) throw new BulkheadFullException(&quot;no slot became available within &quot; + maxWaitDuration);
+    try {
+        return operation.get();
+    } finally {
+        bulkheadPermits.release();
+    }
+}
+// maxWaitDuration = ZERO: reject IMMEDIATELY if no slot is free (the strictest, most protective default)
+// maxWaitDuration = a SHORT duration: give a BRIEF chance for a slot to free up before rejecting</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="With a zero wait duration, a caller arriving when the bulkhead is full is rejected instantly; with a short non-zero wait duration, the same caller waits briefly, and if a slot frees up within that window, the call proceeds instead of being rejected" >
+  <rect x="20" y="20" width="270" height="55" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="155" y="42" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Wait duration = 0</text>
+  <text x="155" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">rejected INSTANTLY if bulkhead full</text>
+
+  <rect x="350" y="20" width="270" height="55" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="485" y="42" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Wait duration &gt; 0</text>
+  <text x="485" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">waits briefly; a freed slot AVOIDS rejection</text>
+</svg>
+<p>A brief wait window can absorb a short-lived spike that would otherwise cause an unnecessary rejection.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a bulkhead configured with zero wait duration that rejects a call outright even though a slot frees up almost immediately afterward, refactored to a short, non-zero wait duration that catches that exact same brief opening and admits the call successfully, and finally demonstrating a wait duration that&#x27;s too long, tying up a waiting caller for an unreasonably long time when the bulkhead never actually frees up within a sensible window.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ZeroWaitRejectsInstantly.java -- a WAIT DURATION of ZERO --
+// REJECTS immediately, even though a slot frees up MOMENTS later.
+import java.util.concurrent.*;
+
+public class ZeroWaitRejectsInstantly {
+    static Semaphore bulkhead = new Semaphore(1); // capacity of ONE, for a clear demo
+
+    public static void main(String[] args) throws InterruptedException {
+        bulkhead.acquire(); // ONE slot occupied by an in-flight call
+        new Thread(() -&gt; {
+            try { Thread.sleep(50); bulkhead.release(); } catch (InterruptedException ignored) {} // frees up in 50ms
+        }).start();
+
+        boolean acquiredImmediately = bulkhead.tryAcquire(); // ZERO wait -- checks ONCE, instantly
+        System.out.println(&quot;Immediate acquisition attempt: &quot; + (acquiredImmediately ? &quot;SUCCEEDED&quot; : &quot;REJECTED -- even though a slot frees up in just 50ms!&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ZeroWaitRejectsInstantly.java &amp;&amp; java ZeroWaitRejectsInstantly</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Immediate acquisition attempt: REJECTED -- even though a slot frees up in just 50ms!</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ShortWaitCatchesTheOpening.java -- a SHORT, non-zero wait
+// duration -- catches the SAME brief opening Level 1 missed entirely.
+import java.util.concurrent.*;
+
+public class ShortWaitCatchesTheOpening {
+    static Semaphore bulkhead = new Semaphore(1);
+
+    public static void main(String[] args) throws InterruptedException {
+        bulkhead.acquire();
+        new Thread(() -&gt; {
+            try { Thread.sleep(50); bulkhead.release(); } catch (InterruptedException ignored) {} // SAME 50ms delay as Level 1
+        }).start();
+
+        long start = System.currentTimeMillis();
+        boolean acquiredWithWait = bulkhead.tryAcquire(200, TimeUnit.MILLISECONDS); // WAITS up to 200ms
+        long elapsed = System.currentTimeMillis() - start;
+        System.out.println(&quot;With a 200ms wait window: &quot; + (acquiredWithWait ? &quot;SUCCEEDED after ~&quot; + elapsed + &quot;ms -- caught the slot as it freed up!&quot; : &quot;still rejected&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ShortWaitCatchesTheOpening.java &amp;&amp; java ShortWaitCatchesTheOpening</code> (JDK 17+).</p>
+<p>Expected output (timing approximate):</p>
+<pre><code>With a 200ms wait window: SUCCEEDED after ~50ms -- caught the slot as it freed up!</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ExcessiveWaitTiesUpCallerNeedlessly.java -- a WAIT DURATION set
+// TOO LONG -- ties up a caller for an UNREASONABLY long time when the
+// bulkhead genuinely never frees up within a sensible window.
+import java.util.concurrent.*;
+
+public class ExcessiveWaitTiesUpCallerNeedlessly {
+    static Semaphore bulkhead = new Semaphore(1);
+
+    public static void main(String[] args) throws InterruptedException {
+        bulkhead.acquire(); // held for the ENTIRE duration of this demo -- simulates a GENUINELY stuck/overloaded dependency
+
+        long start = System.currentTimeMillis();
+        boolean acquired = bulkhead.tryAcquire(2000, TimeUnit.MILLISECONDS); // an EXCESSIVELY long 2-second wait
+        long elapsed = System.currentTimeMillis() - start;
+
+        System.out.println(&quot;Waited &quot; + elapsed + &quot;ms before finally giving up (acquired=&quot; + acquired + &quot;).&quot;);
+        System.out.println(&quot;The CALLER&#x27;s own thread was tied up for the FULL &quot; + elapsed + &quot;ms, waiting for a slot that NEVER actually freed --&quot;);
+        System.out.println(&quot;an excessively long wait duration turns the bulkhead&#x27;s protection into its OWN source of unresponsiveness.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ExcessiveWaitTiesUpCallerNeedlessly.java &amp;&amp; java ExcessiveWaitTiesUpCallerNeedlessly</code> (JDK 17+).</p>
+<p>Expected output (timing approximate, ~2000ms):</p>
+<pre><code>Waited 2000ms before finally giving up (acquired=false).
+The CALLER&#x27;s own thread was tied up for the FULL 2000ms, waiting for a slot that NEVER actually freed --
+an excessively long wait duration turns the bulkhead&#x27;s protection into its OWN source of unresponsiveness.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the missed opportunity</strong> — <code>bulkhead.tryAcquire()</code> (with no wait argument) checks for an available permit exactly once, instantaneously, and returns <code>false</code> immediately since the one permit is currently held by the in-flight call; the background thread releasing that permit 50ms later happens completely independently, with no chance for the already-rejected caller to benefit from it.</li><li><strong>Level 2, the timed wait catching the same event</strong> — <code>bulkhead.tryAcquire(200, TimeUnit.MILLISECONDS)</code> doesn&#x27;t check just once; it blocks the calling thread, actively waiting for up to 200ms for a permit to become available, checking continuously (efficiently, via the underlying semaphore&#x27;s own signaling mechanism) rather than instantly failing.</li><li><strong>Level 2, the successful catch</strong> — because the background thread releases its permit after 50ms, well within the 200ms wait window, <code>tryAcquire</code> successfully returns <code>true</code> at approximately the 50ms mark, exactly when the permit became available — the identical timing scenario from Level 1, but with a materially different, successful outcome purely due to the non-zero wait duration.</li><li><strong>Level 3, a bulkhead that genuinely never frees up in time</strong> — unlike the first two examples, no background thread ever releases the held permit in this scenario, modeling a genuinely stuck, fully overloaded dependency where no slot becomes available within any reasonable window.</li><li><strong>Level 3, the caller tied up for the full wait duration</strong> — <code>tryAcquire(2000, TimeUnit.MILLISECONDS)</code> blocks for the entire 2000ms before finally giving up and returning <code>false</code>, since no permit was ever released during that window; the measured <code>elapsed</code> time confirms the caller&#x27;s thread was genuinely occupied for the full duration, not released early.</li><li><strong>Level 3, the cost this represents</strong> — a 2-second wait, while the bulkhead is genuinely and persistently at capacity (not just a brief blip), means every caller hitting this bulkhead during that period experiences a 2-second delay before finally being told the call couldn&#x27;t be admitted — this is a real cost in caller-perceived latency, and it demonstrates precisely why the wait duration needs to be set short and deliberate (matching the kind of brief, momentary spike it&#x27;s actually meant to absorb, as in Level 2) rather than long enough to also inadvertently tolerate a genuinely sustained overload, where an immediate or near-immediate rejection would actually serve the caller far better than a long, ultimately futile wait.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a non-zero wait duration means waiting callers themselves consume a resource (typically a blocked thread) for the duration of their wait — under a sustained, genuine overload (not the brief spike the wait duration is meant to help with), many callers waiting simultaneously can accumulate their own resource pressure from the waiting itself, partially undermining the bulkhead&#x27;s core purpose; keep the wait duration short enough that this accumulated waiting cost stays negligible even under a worse-than-expected load scenario.</blockquote>
+<ul><li>Max wait duration controls whether a call arriving at a full bulkhead is rejected instantly (zero wait) or given a brief chance to wait for a slot to free up (a short, non-zero wait) before finally being rejected.</li><li>A zero wait duration is the strictest, most protective default, giving immediate feedback with no waiting at all.</li><li>A short, non-zero wait duration can absorb brief, momentary capacity spikes gracefully, letting a call succeed if a slot frees up shortly after it arrives, rather than an automatic rejection for a constraint that resolves within milliseconds.</li><li>An excessively long wait duration ties up the calling thread for an unreasonably long time during a genuine, sustained overload, where the bulkhead never actually frees up — turning the bulkhead&#x27;s own protective mechanism into a source of caller-perceived unresponsiveness.</li><li>Waiting callers themselves consume resources (typically blocked threads) for the duration of their wait, so the wait duration should be kept short enough that this accumulated cost stays negligible even under worse-than-expected sustained load.</li></ul>
+  <div class="nav"><a class="prv" href="0271-max-concurrent-calls.html"><span class="mini">← Previous</span>Max concurrent calls</a><a class="nxt" href="0273-rate-limiter-pattern.html"><span class="mini">Next →</span>Rate limiter pattern</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t272";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Token bucket algorithm" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Token bucket algorithm"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The token bucket algorithm implements <a href="0273-rate-limiter-pattern.md">rate limiting</a> using an imaginary bucket that holds a limited number of tokens: each request consumes one token, tokens are added back to the bucket at a steady rate up to the bucket&#x27;s capacity, and a request is only permitted if a token is currently available — allowing short bursts (spending accumulated, saved-up tokens all at once) while still enforcing a long-term average rate.</p>
+<h2>2. Why &amp; when</h2>
+<p>A naive rate limiter that rigidly enforces exactly N requests every fixed interval, with no flexibility, can be needlessly restrictive for traffic that&#x27;s naturally bursty but still averages out to an acceptable rate over time — a client that&#x27;s been quiet for a while and then needs to send a quick burst of requests shouldn&#x27;t necessarily be penalized identically to a client sending a perfectly steady stream, if the overall average rate both clients produce is the same. The token bucket algorithm&#x27;s design directly supports this: tokens accumulate during quiet periods (up to the bucket&#x27;s capacity), so a burst can be absorbed by spending those saved-up tokens, while the steady refill rate ensures the long-term average throughput still stays bounded — a deliberate, tunable compromise between rigid, no-burst-tolerance rate limiting and unbounded burst tolerance.</p>
+<p>Use token bucket when some burst tolerance is desirable — allowing clients to &quot;save up&quot; capacity during quiet periods and spend it during a legitimate burst — while still enforcing a long-term average rate limit. This is the algorithm behind many popular rate-limiting implementations (including many API gateways and cloud provider rate limits) precisely because this burst tolerance matches real-world traffic patterns well.</p>
+<h2>3. Core concept</h2>
+<p>The bucket starts with (or refills toward) a maximum token capacity, refilling at a fixed rate over time (either continuously or in discrete steps); each request checks whether at least one token is available, consuming it if so and rejecting the request if the bucket is empty — the bucket&#x27;s capacity determines the maximum burst size, and the refill rate determines the long-term sustained rate.</p>
+<pre><code class="lang-java">class TokenBucket {
+    double tokens; // CURRENT token count, can be fractional between refills
+    final double capacity; // MAXIMUM tokens the bucket can hold -- the BURST size limit
+    final double refillRatePerSecond; // tokens added PER SECOND -- the SUSTAINED rate limit
+    long lastRefillTimeMillis;
+
+    boolean tryConsume() {
+        refill(); // top up based on ELAPSED time since the last check
+        if (tokens &gt;= 1) { tokens -= 1; return true; } // a TOKEN available -- request PERMITTED
+        return false; // BUCKET EMPTY -- request REJECTED
+    }
+
+    void refill() {
+        long now = System.currentTimeMillis();
+        double elapsedSeconds = (now - lastRefillTimeMillis) / 1000.0;
+        tokens = Math.min(capacity, tokens + elapsedSeconds * refillRatePerSecond); // ADD tokens, CAPPED at capacity
+        lastRefillTimeMillis = now;
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A bucket holds accumulated tokens up to a maximum capacity; tokens refill steadily over time up to that cap, each request consumes one token if available, and a burst of requests can be absorbed by spending accumulated tokens all at once, while the steady refill rate governs the long-term sustained throughput" >
+  <rect x="40" y="20" width="100" height="130" rx="8" fill="none" stroke="#6db33f" stroke-width="1.5"/>
+  <rect x="50" y="70" width="80" height="70" fill="#6db33f" opacity="0.3"/>
+  <text x="90" y="105" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">tokens</text>
+  <text x="90" y="165" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">bucket (capacity-bounded)</text>
+
+  <text x="240" y="60" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">steady REFILL rate</text>
+  <line x1="180" y1="70" x2="240" y2="70" stroke="#8b949e" marker-end="url(#arr274)"/>
+
+  <rect x="320" y="65" width="130" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="385" y="90" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">request consumes 1</text>
+  <line x1="140" y1="105" x2="318" y2="85" stroke="#8b949e" marker-end="url(#arr274)"/>
+
+  <text x="530" y="90" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">burst = spend saved tokens</text>
+
+  <defs>
+    <marker id="arr274" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Accumulated tokens absorb bursts; the refill rate bounds the average, sustained throughput over time.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a token bucket started empty, showing requests correctly rejected until tokens accumulate, extended to demonstrate accumulated tokens absorbing a legitimate burst that a rigid fixed-rate limiter would have rejected, and finally showing the long-term average rate still correctly bounded even after a burst, confirming the algorithm&#x27;s dual burst-tolerance-and-average-limiting behavior.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: EmptyBucketRejectsUntilRefilled.java -- a bucket STARTING empty
+// rejects requests until tokens have had time to ACCUMULATE via refill.
+public class EmptyBucketRejectsUntilRefilled {
+    static class TokenBucket {
+        double tokens = 0; // STARTS empty
+        final double capacity = 10;
+        final double refillRatePerSecond = 5; // 5 tokens/second
+        long lastRefillTimeMillis = System.currentTimeMillis();
+
+        boolean tryConsume() {
+            refill();
+            if (tokens &gt;= 1) { tokens -= 1; return true; }
+            return false;
+        }
+        void refill() {
+            long now = System.currentTimeMillis();
+            double elapsedSeconds = (now - lastRefillTimeMillis) / 1000.0;
+            tokens = Math.min(capacity, tokens + elapsedSeconds * refillRatePerSecond);
+            lastRefillTimeMillis = now;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        TokenBucket bucket = new TokenBucket();
+        System.out.println(&quot;Immediate request on an EMPTY bucket: &quot; + (bucket.tryConsume() ? &quot;ALLOWED&quot; : &quot;REJECTED (no tokens yet)&quot;));
+
+        Thread.sleep(400); // wait ~0.4s -- refills ~2 tokens (5/sec * 0.4s)
+        System.out.println(&quot;After 400ms of refill: &quot; + (bucket.tryConsume() ? &quot;ALLOWED (a token accumulated)&quot; : &quot;REJECTED&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac EmptyBucketRejectsUntilRefilled.java &amp;&amp; java EmptyBucketRejectsUntilRefilled</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Immediate request on an EMPTY bucket: REJECTED (no tokens yet)
+After 400ms of refill: ALLOWED (a token accumulated)</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: AccumulatedTokensAbsorbBurst.java -- LETTING the bucket sit idle
+// (accumulating tokens up to capacity) means a SUBSEQUENT burst is
+// ABSORBED cleanly -- a RIGID fixed-rate limiter would have rejected most of it.
+public class AccumulatedTokensAbsorbBurst {
+    static class TokenBucket {
+        double tokens;
+        final double capacity;
+        final double refillRatePerSecond;
+        long lastRefillTimeMillis = System.currentTimeMillis();
+
+        TokenBucket(double capacity, double refillRatePerSecond) {
+            this.capacity = capacity; this.tokens = capacity; this.refillRatePerSecond = refillRatePerSecond; // starts FULL, for this demo
+        }
+        boolean tryConsume() {
+            refill();
+            if (tokens &gt;= 1) { tokens -= 1; return true; }
+            return false;
+        }
+        void refill() {
+            long now = System.currentTimeMillis();
+            double elapsedSeconds = (now - lastRefillTimeMillis) / 1000.0;
+            tokens = Math.min(capacity, tokens + elapsedSeconds * refillRatePerSecond);
+            lastRefillTimeMillis = now;
+        }
+    }
+
+    public static void main(String[] args) {
+        TokenBucket bucket = new TokenBucket(10, 2); // capacity=10 (a full &quot;saved up&quot; allowance), refill=2/sec (a MODEST sustained rate)
+
+        int allowed = 0, rejected = 0;
+        for (int i = 0; i &lt; 15; i++) { // a BURST of 15 requests, essentially instantly
+            if (bucket.tryConsume()) allowed++; else rejected++;
+        }
+        System.out.println(&quot;Burst of 15 requests against a bucket that had accumulated to FULL capacity (10):&quot;);
+        System.out.println(&quot;Allowed: &quot; + allowed + &quot; (the FULL accumulated capacity, spent all at once)&quot;);
+        System.out.println(&quot;Rejected: &quot; + rejected + &quot; (beyond what even the SAVED capacity could cover)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac AccumulatedTokensAbsorbBurst.java &amp;&amp; java AccumulatedTokensAbsorbBurst</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Burst of 15 requests against a bucket that had accumulated to FULL capacity (10):
+Allowed: 10 (the FULL accumulated capacity, spent all at once)
+Rejected: 5 (beyond what even the SAVED capacity could cover)</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: LongTermAverageStillBounded.java -- even AFTER a burst spends
+// down the bucket, the SUSTAINED, LONG-TERM average rate is STILL
+// correctly bounded by the refill rate -- confirming the DUAL guarantee.
+public class LongTermAverageStillBounded {
+    static class TokenBucket {
+        double tokens;
+        final double capacity;
+        final double refillRatePerSecond;
+        long lastRefillTimeMillis = System.currentTimeMillis();
+
+        TokenBucket(double capacity, double refillRatePerSecond) {
+            this.capacity = capacity; this.tokens = capacity; this.refillRatePerSecond = refillRatePerSecond;
+        }
+        boolean tryConsume() {
+            refill();
+            if (tokens &gt;= 1) { tokens -= 1; return true; }
+            return false;
+        }
+        void refill() {
+            long now = System.currentTimeMillis();
+            double elapsedSeconds = (now - lastRefillTimeMillis) / 1000.0;
+            tokens = Math.min(capacity, tokens + elapsedSeconds * refillRatePerSecond);
+            lastRefillTimeMillis = now;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        TokenBucket bucket = new TokenBucket(10, 5); // capacity=10, refill=5/sec
+
+        // STEP 1: spend the bucket DOWN to empty via an initial burst
+        int burstAllowed = 0;
+        for (int i = 0; i &lt; 10; i++) if (bucket.tryConsume()) burstAllowed++;
+        System.out.println(&quot;Initial burst spent &quot; + burstAllowed + &quot; tokens -- bucket now near empty.&quot;);
+
+        // STEP 2: measure the SUSTAINED rate over the NEXT 2 seconds -- should be bounded near refillRatePerSecond
+        int sustainedAllowed = 0;
+        long testStart = System.currentTimeMillis();
+        while (System.currentTimeMillis() - testStart &lt; 2000) {
+            if (bucket.tryConsume()) sustainedAllowed++;
+            Thread.sleep(10); // poll frequently, simulating a steady stream of attempted requests
+        }
+        System.out.println(&quot;Requests allowed over the NEXT 2 seconds (bucket already drained): &quot; + sustainedAllowed);
+        System.out.println(&quot;Expected sustained rate: ~&quot; + (5 * 2) + &quot; (refillRatePerSecond * 2 seconds) -- the algorithm correctly bounds the LONG-TERM average, even right after a burst.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac LongTermAverageStillBounded.java &amp;&amp; java LongTermAverageStillBounded</code> (JDK 17+).</p>
+<p>Expected output (approximate, timing-dependent):</p>
+<pre><code>Initial burst spent 10 tokens -- bucket now near empty.
+Requests allowed over the NEXT 2 seconds (bucket already drained): 10
+Expected sustained rate: ~10 (refillRatePerSecond * 2 seconds) -- the algorithm correctly bounds the LONG-TERM average, even right after a burst.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, an empty bucket correctly rejecting</strong> — <code>TokenBucket</code> starts with <code>tokens = 0</code>; the first <code>tryConsume()</code> call runs <code>refill()</code> (which adds essentially zero tokens, since almost no time has elapsed since <code>lastRefillTimeMillis</code> was just set), finds <code>tokens &lt; 1</code>, and correctly returns <code>false</code>.</li><li><strong>Level 1, refill accumulating over real elapsed time</strong> — after <code>Thread.sleep(400)</code>, the next <code>tryConsume()</code> call&#x27;s <code>refill()</code> computes <code>elapsedSeconds ≈ 0.4</code> and adds <code>0.4 × 5 = 2</code> tokens (capped at <code>capacity</code>, though far from it here), bringing <code>tokens</code> above 1 and allowing the request — demonstrating the refill mechanism working correctly based on genuine elapsed wall-clock time.</li><li><strong>Level 2, a bucket allowed to accumulate to full capacity</strong> — this <code>TokenBucket</code> is constructed with <code>tokens = capacity</code> directly (10), modeling a bucket that&#x27;s been idle long enough to fully refill; a burst of 15 rapid, essentially simultaneous <code>tryConsume()</code> calls immediately follows, with no meaningful time passing between them for further refill to occur.</li><li><strong>Level 2, the burst partially absorbed</strong> — the first 10 of the 15 requests succeed, consuming the bucket&#x27;s full accumulated capacity one token at a time, while the remaining 5 fail once the bucket is empty — this demonstrates the burst-tolerance the token bucket provides: a client that had been quiet (letting tokens accumulate) can legitimately spend that entire saved allowance in a rapid burst, something a rigid, no-accumulation rate limiter would never permit.</li><li><strong>Level 3, draining the bucket and then measuring sustained throughput</strong> — the initial loop of 10 <code>tryConsume()</code> calls (against a bucket starting full at capacity 10) drains it to near-zero almost immediately, mirroring Level 2&#x27;s burst-absorption behavior; the subsequent 2-second measurement loop then repeatedly attempts <code>tryConsume()</code> while the bucket has essentially no accumulated buffer left to draw on.</li><li><strong>Level 3, the long-term rate correctly bounded</strong> — with <code>refillRatePerSecond = 5</code>, over a 2-second measurement window the bucket can refill and therefore permit roughly <code>5 × 2 = 10</code> additional requests, and the measured <code>sustainedAllowed</code> count comes out close to this expected value — confirming that even immediately following a burst that fully drained the accumulated buffer, the algorithm&#x27;s *sustained* throughput correctly settles to the configured refill rate, exactly the dual guarantee the token bucket algorithm is designed to provide: generous short-term burst tolerance from accumulated capacity, combined with a strictly bounded long-term average rate once that accumulated buffer is exhausted.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the bucket&#x27;s <code>capacity</code> parameter controls the *maximum burst size*, and the <code>refillRatePerSecond</code> controls the *sustained average rate* — these are two genuinely independent tunables, and conflating them (assuming a larger capacity alone increases the sustained rate, or that a faster refill rate alone increases burst tolerance) leads to misconfiguring one dimension while trying to tune the other; adjust capacity specifically to change how large a legitimate burst can be absorbed, and adjust the refill rate specifically to change the long-term sustained throughput ceiling.</blockquote>
+<ul><li>The token bucket algorithm permits a request if a token is available in the bucket, consumes one token per request, and refills tokens steadily over time up to the bucket&#x27;s maximum capacity.</li><li>Bucket capacity determines the maximum burst size a client can spend at once (from accumulated, saved-up tokens); refill rate determines the long-term sustained average throughput.</li><li>This provides a deliberate compromise between rigid, no-burst-tolerance rate limiting and unbounded bursting — bursts are tolerated up to the accumulated capacity, while the average rate over time remains strictly bounded by the refill rate.</li><li>A bucket that&#x27;s been idle (accumulating tokens toward its capacity) can absorb a legitimate burst that a stricter, non-accumulating rate limiter would reject outright.</li><li>Bucket capacity and refill rate are independent tunables addressing different concerns — burst size versus sustained rate — and should be adjusted deliberately and separately based on which specific behavior needs changing.</li></ul>
+  <div class="nav"><a class="prv" href="0273-rate-limiter-pattern.html"><span class="mini">← Previous</span>Rate limiter pattern</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t274";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

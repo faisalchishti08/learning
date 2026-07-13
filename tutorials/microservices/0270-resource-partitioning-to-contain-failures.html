@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Resource partitioning to contain failures" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Resource partitioning to contain failures"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Resource partitioning to contain failures is the broader principle underlying the <a href="0267-bulkhead-pattern.md">bulkhead pattern</a>: deliberately dividing any shared resource — not just thread pools, but connection pools, memory budgets, rate limit allocations, queue capacity — into separate compartments assigned to specific consumers, so a failure or overload affecting one consumer&#x27;s compartment cannot spread to consume resources allocated to a different, healthy consumer.</p>
+<h2>2. Why &amp; when</h2>
+<p>Thread-pool and semaphore bulkheads apply this partitioning specifically to *concurrency* — how many calls can be in flight at once — but the same underlying principle applies to any resource multiple consumers might otherwise compete for unpredictably: a shared connection pool where one misbehaving tenant&#x27;s queries can exhaust every available connection, a shared message queue where one slow consumer&#x27;s backlog can delay processing for every other consumer sharing that queue, a shared rate-limit budget where one noisy client can consume the entire allowance meant to serve many clients fairly. Recognizing partitioning as a general principle — not just &quot;the thing bulkheads do for threads&quot; — helps identify other places in a system where an unpartitioned shared resource creates the same kind of hidden coupling risk.</p>
+<p>Apply partitioning to any shared resource where multiple distinct, independently-behaving consumers (different tenants, different dependencies, different traffic categories) draw from a common pool that, if exhausted by one consumer, would degrade service for the others — a pattern that recurs across many different resource types beyond just threads.</p>
+<h2>3. Core concept</h2>
+<p>Partitioning assigns each consumer (or category of consumers) a fixed, bounded share of a resource, so that consumer&#x27;s maximum possible consumption is capped independently of how the resource as a whole is being used — the resource&#x27;s total capacity is divided upfront into guaranteed, isolated allocations, rather than being available as one undifferentiated shared pool that any consumer could exhaust.</p>
+<pre><code class="lang-java">// UNPARTITIONED -- ONE shared connection pool, ANY tenant could exhaust it ENTIRELY
+DataSource sharedPool = createConnectionPool(maxConnections = 50); // ANY tenant&#x27;s runaway query load starves EVERYONE
+
+// PARTITIONED -- EACH tenant gets its OWN guaranteed, bounded allocation
+Map&lt;String, DataSource&gt; perTenantPools = Map.of(
+    &quot;tenant-a&quot;, createConnectionPool(maxConnections = 15), // tenant A CANNOT consume more than 15, EVER
+    &quot;tenant-b&quot;, createConnectionPool(maxConnections = 15), // tenant B&#x27;s OWN separate allocation
+    &quot;tenant-c&quot;, createConnectionPool(maxConnections = 20)  // sized differently, based on tenant C&#x27;s KNOWN higher volume
+);
+// a runaway tenant A exhausts ONLY its OWN 15-connection allocation -- tenant B and C are COMPLETELY unaffected</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An unpartitioned shared connection pool lets any one tenant exhaust the entire fifty-connection capacity, starving every other tenant; a partitioned pool divides the same total capacity into fixed, guaranteed allocations per tenant, so one tenant's exhaustion is contained to its own share" >
+  <rect x="20" y="20" width="270" height="60" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="155" y="42" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Unpartitioned: 50 shared</text>
+  <text x="155" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">ANY tenant can exhaust ALL 50</text>
+  <text x="155" y="72" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">starves EVERYONE else</text>
+
+  <rect x="350" y="20" width="270" height="60" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="485" y="42" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Partitioned: 15+15+20</text>
+  <text x="485" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">EACH tenant capped INDEPENDENTLY</text>
+  <text x="485" y="72" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">one exhausting affects ONLY itself</text>
+</svg>
+<p>The same total capacity, divided upfront into guaranteed shares, contains any single consumer&#x27;s overconsumption to just its own allocation.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a shared connection pool where one runaway tenant&#x27;s excessive query load exhausts the entire pool, starving every other tenant, refactored to per-tenant partitioned pools that contain the runaway tenant&#x27;s impact to its own allocation, and finally demonstrating unequal partition sizing based on each tenant&#x27;s actual known traffic characteristics rather than uniform division, showing partitioning as a deliberate capacity-planning decision, not just an equal split.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UnpartitionedSharedPool.java -- ONE shared pool; a RUNAWAY
+// tenant exhausts it ENTIRELY, starving EVERY other tenant.
+import java.util.concurrent.*;
+
+public class UnpartitionedSharedPool {
+    static Semaphore sharedConnections = new Semaphore(10); // ONE shared allocation for ALL tenants
+
+    static boolean tryAcquireForTenant(String tenantId) { return sharedConnections.tryAcquire(); }
+
+    public static void main(String[] args) {
+        // tenant-a has a RUNAWAY query pattern -- acquires 9 of the 10 SHARED connections
+        for (int i = 0; i &lt; 9; i++) tryAcquireForTenant(&quot;tenant-a&quot;);
+
+        boolean tenantBGotConnection = tryAcquireForTenant(&quot;tenant-b&quot;); // tenant-b just needs ONE, ordinary connection
+        System.out.println(&quot;tenant-a consumed 9/10 SHARED connections.&quot;);
+        System.out.println(&quot;tenant-b&#x27;s request for its OWN, ordinary work: &quot; + (tenantBGotConnection ? &quot;SUCCEEDED&quot; : &quot;STARVED -- only 1 connection left, shared with EVERYONE else&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac UnpartitionedSharedPool.java &amp;&amp; java UnpartitionedSharedPool</code> (JDK 17+).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: PartitionedPerTenantPools.java -- EACH tenant gets its OWN
+// guaranteed allocation -- tenant-a&#x27;s runaway behavior CANNOT touch
+// tenant-b&#x27;s connections AT ALL.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class PartitionedPerTenantPools {
+    static Map&lt;String, Semaphore&gt; perTenantConnections = Map.of(
+        &quot;tenant-a&quot;, new Semaphore(5), // tenant-a&#x27;s OWN allocation
+        &quot;tenant-b&quot;, new Semaphore(5)  // tenant-b&#x27;s SEPARATE, isolated allocation
+    );
+
+    static boolean tryAcquireForTenant(String tenantId) { return perTenantConnections.get(tenantId).tryAcquire(); }
+
+    public static void main(String[] args) {
+        // tenant-a&#x27;s SAME runaway behavior -- but can ONLY consume from its OWN 5-connection allocation
+        int tenantAAcquired = 0;
+        for (int i = 0; i &lt; 9; i++) if (tryAcquireForTenant(&quot;tenant-a&quot;)) tenantAAcquired++;
+
+        boolean tenantBGotConnection = tryAcquireForTenant(&quot;tenant-b&quot;); // tenant-b&#x27;s SEPARATE pool -- UNTOUCHED
+        System.out.println(&quot;tenant-a acquired &quot; + tenantAAcquired + &quot;/9 attempted connections (capped at its OWN allocation of 5).&quot;);
+        System.out.println(&quot;tenant-b&#x27;s request: &quot; + (tenantBGotConnection ? &quot;SUCCEEDED -- COMPLETELY unaffected by tenant-a&quot; : &quot;starved&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac PartitionedPerTenantPools.java &amp;&amp; java PartitionedPerTenantPools</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>tenant-a acquired 5/9 attempted connections (capped at its OWN allocation of 5).
+tenant-b&#x27;s request: SUCCEEDED -- COMPLETELY unaffected by tenant-a</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: UnequalPartitionSizingByTrafficProfile.java -- partitions are
+// sized UNEQUALLY, based on EACH tenant&#x27;s ACTUAL known traffic volume --
+// a DELIBERATE capacity-planning decision, not a uniform, equal split.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class UnequalPartitionSizingByTrafficProfile {
+    record TenantProfile(String tenantId, int observedAvgConcurrentQueries, int allocatedCapacity) {}
+
+    static List&lt;TenantProfile&gt; planPartitions(Map&lt;String, Integer&gt; observedTrafficByTenant, int totalCapacity) {
+        int totalObserved = observedTrafficByTenant.values().stream().mapToInt(Integer::intValue).sum();
+        List&lt;TenantProfile&gt; plan = new ArrayList&lt;&gt;();
+        for (var entry : observedTrafficByTenant.entrySet()) {
+            // allocate PROPORIONALLY to each tenant&#x27;s OBSERVED share of typical traffic, not an EQUAL split
+            int allocated = (int) Math.round((double) entry.getValue() / totalObserved * totalCapacity);
+            plan.add(new TenantProfile(entry.getKey(), entry.getValue(), allocated));
+        }
+        return plan;
+    }
+
+    public static void main(String[] args) {
+        // REAL observed traffic: tenant-large uses FAR more typical concurrency than tenant-small
+        Map&lt;String, Integer&gt; observedTraffic = new LinkedHashMap&lt;&gt;();
+        observedTraffic.put(&quot;tenant-large&quot;, 60);  // observed: routinely runs ~60 concurrent queries
+        observedTraffic.put(&quot;tenant-medium&quot;, 30); // observed: ~30
+        observedTraffic.put(&quot;tenant-small&quot;, 10);  // observed: ~10
+
+        List&lt;TenantProfile&gt; plan = planPartitions(observedTraffic, 100); // total pool capacity: 100 connections
+
+        System.out.println(&quot;Partition plan (proportional to OBSERVED traffic, NOT an equal 33/33/33 split):&quot;);
+        for (TenantProfile p : plan) {
+            System.out.println(&quot;  &quot; + p.tenantId() + &quot;: observed avg=&quot; + p.observedAvgConcurrentQueries() + &quot; -&gt; allocated capacity=&quot; + p.allocatedCapacity());
+        }
+        System.out.println(&quot;\nAn EQUAL split (33/33/33) would have UNDER-provisioned tenant-large and OVER-provisioned tenant-small --&quot;);
+        System.out.println(&quot;proportional partitioning matches ACTUAL capacity to ACTUAL need, while STILL containing any one tenant&#x27;s overconsumption.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac UnequalPartitionSizingByTrafficProfile.java &amp;&amp; java UnequalPartitionSizingByTrafficProfile</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Partition plan (proportional to OBSERVED traffic, NOT an equal 33/33/33 split):
+  tenant-large: observed avg=60 -&gt; allocated capacity=60
+  tenant-medium: observed avg=30 -&gt; allocated capacity=30
+  tenant-small: observed avg=10 -&gt; allocated capacity=10
+
+An EQUAL split (33/33/33) would have UNDER-provisioned tenant-large and OVER-provisioned tenant-small --
+proportional partitioning matches ACTUAL capacity to ACTUAL need, while STILL containing any one tenant&#x27;s overconsumption.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the shared-pool vulnerability</strong> — <code>sharedConnections</code>, a single <code>Semaphore</code> with 10 permits, is drawn from by every tenant indiscriminately; tenant-a&#x27;s simulated runaway behavior acquiring 9 of those 10 permits leaves only 1 remaining for tenant-b&#x27;s completely ordinary, well-behaved request, which either barely succeeds or fails depending on exact timing — a fragile situation entirely caused by tenant-a&#x27;s misbehavior having unrestricted access to the shared pool.</li><li><strong>Level 2, separate allocations per consumer</strong> — <code>perTenantConnections</code> maps each tenant to its *own* independent <code>Semaphore</code>, each with its own fixed capacity of 5; tenant-a&#x27;s identical runaway attempt to acquire 9 connections can now succeed at most 5 times, since <code>tryAcquireForTenant(&quot;tenant-a&quot;)</code> only ever draws from <code>tenant-a</code>&#x27;s own semaphore.</li><li><strong>Level 2, the isolation confirmed</strong> — tenant-b&#x27;s request checks <code>perTenantConnections.get(&quot;tenant-b&quot;)</code>, an entirely separate <code>Semaphore</code> object untouched by anything tenant-a did; the request succeeds cleanly and predictably, completely unaffected by tenant-a&#x27;s misbehavior, which is exactly the containment partitioning is meant to provide.</li><li><strong>Level 3, sizing partitions by actual observed need</strong> — <code>planPartitions</code> computes each tenant&#x27;s allocated capacity proportionally to its <code>observedAvgConcurrentQueries</code> relative to the total observed traffic across all tenants, rather than dividing the total capacity equally regardless of actual usage patterns.</li><li><strong>Level 3, the resulting proportional allocation</strong> — with observed traffic of 60, 30, and 10 for tenant-large, tenant-medium, and tenant-small respectively (totaling 100), and a total pool capacity of 100, each tenant&#x27;s allocated capacity matches its proportional share exactly: 60, 30, and 10 connections respectively — deliberately mirroring their real, differing needs rather than an arbitrary equal split.</li><li><strong>Level 3, why proportional sizing matters alongside containment</strong> — an equal three-way split (roughly 33 each) would have under-provisioned tenant-large (whose genuine, legitimate traffic routinely needs around 60 concurrent connections, more than an equal share would provide) while wastefully over-provisioning tenant-small (whose actual need is only around 10) — this demonstrates that resource partitioning isn&#x27;t just about equally dividing a resource to prevent one consumer from starving another; it&#x27;s a deliberate capacity-planning exercise that should match each partition&#x27;s size to that consumer&#x27;s actual, real-world resource needs, while still preserving the fundamental containment guarantee that no single consumer, however much traffic it generates, can ever exceed its own allocated share and affect anyone else&#x27;s.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> partitioning a resource based on traffic observed at one point in time can become stale as usage patterns shift — a tenant whose traffic grows well beyond its originally allocated partition will experience artificial throttling even though the resource as a whole (summed across all partitions) may have plenty of spare capacity sitting unused in other tenants&#x27; allocations; partition sizes need periodic review and rebalancing against current traffic, not a one-time allocation set once and left unchanged indefinitely.</blockquote>
+<ul><li>Resource partitioning to contain failures is the general principle behind the bulkhead pattern, applicable to any shared resource — connection pools, memory budgets, queue capacity, rate limits — not just thread concurrency.</li><li>An unpartitioned shared resource lets any single consumer&#x27;s overconsumption (whether from a bug, a runaway process, or simply unexpectedly high legitimate load) potentially exhaust the entire resource, degrading service for every other, unrelated consumer.</li><li>Partitioning divides the resource upfront into fixed, guaranteed allocations per consumer, so one consumer&#x27;s maximum possible impact is capped independently of how the resource is being used elsewhere.</li><li>Partition sizes should be set deliberately based on each consumer&#x27;s actual, observed resource needs — proportional to real traffic patterns — rather than an arbitrary equal split that could both under-serve high-volume consumers and waste capacity on low-volume ones.</li><li>Partition sizing needs periodic revisiting as usage patterns evolve; a static allocation set once can become mismatched with reality over time, artificially constraining a growing consumer even while unused capacity sits idle in another consumer&#x27;s shrinking allocation.</li></ul>
+  <div class="nav"><a class="prv" href="0269-semaphore-bulkhead.html"><span class="mini">← Previous</span>Semaphore bulkhead</a><a class="nxt" href="0271-max-concurrent-calls.html"><span class="mini">Next →</span>Max concurrent calls</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t270";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

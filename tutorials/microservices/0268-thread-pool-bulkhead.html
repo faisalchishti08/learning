@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Thread-pool bulkhead" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Thread-pool bulkhead"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A thread-pool bulkhead is a <a href="0267-bulkhead-pattern.md">bulkhead</a> implemented by running a protected call on a dedicated, isolated thread pool separate from the caller&#x27;s own thread — the call executes asynchronously on one of that pool&#x27;s threads, and the pool&#x27;s fixed size becomes the hard concurrency limit for that specific protected dependency.</p>
+<h2>2. Why &amp; when</h2>
+<p>Running a protected call on its own dedicated thread pool provides a genuinely strong isolation guarantee: because the call executes on threads that belong exclusively to that pool, nothing about a slow or blocked call can ever consume a thread the caller itself needed for something else — the caller&#x27;s own thread is free to continue (or to time out waiting on a <code>Future</code>) regardless of what&#x27;s happening inside the isolated pool. This makes a thread-pool bulkhead well suited specifically to protecting calls that might block for a long time (a slow, blocking I/O call, a legacy blocking client library), since the isolation happens at the thread level, not merely at a counting level.</p>
+<p>Use a thread-pool bulkhead when the protected operation is itself blocking (synchronous I/O, a call using a blocking client) and you want the calling thread to remain free regardless of what happens inside the protected call — commonly paired with a timeout on the resulting <code>Future</code>, since the isolated thread executing the actual call can still hang, even though it no longer blocks the caller&#x27;s own thread while doing so.</p>
+<h2>3. Core concept</h2>
+<p>A thread-pool bulkhead submits the protected operation to a dedicated <code>ExecutorService</code> sized to a fixed maximum, returning a <code>Future</code> to the caller immediately; the caller&#x27;s own thread is never blocked by the protected call&#x27;s execution, only (optionally, and separately) by waiting on the <code>Future</code>&#x27;s result with its own timeout.</p>
+<pre><code class="lang-java">ExecutorService inventoryThreadPool = Executors.newFixedThreadPool(10); // FIXED size -- the hard concurrency limit
+
+&lt;T&gt; T callWithThreadPoolBulkhead(Supplier&lt;T&gt; operation, Duration timeout) throws Exception {
+    Future&lt;T&gt; future = inventoryThreadPool.submit(operation::get); // executes on a DEDICATED thread, NOT the caller&#x27;s own
+    return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS); // the CALLER&#x27;s thread only waits HERE, with ITS OWN timeout
+}
+// if inventoryThreadPool&#x27;s 10 threads are ALL busy, submit() QUEUES (or REJECTS, depending on configuration) --
+// the CALLER&#x27;s own thread is NEVER directly tied up executing the actual (potentially blocking) call</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The caller's thread submits work to a dedicated thread pool and receives a future immediately; the actual protected call executes on one of the pool's own threads, entirely separate from the caller's thread, which only later waits on the future's result with its own timeout" >
+  <rect x="20" y="65" width="120" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="80" y="92" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Caller thread</text>
+
+  <rect x="230" y="20" width="180" height="110" rx="8" fill="none" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="320" y="40" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">Dedicated thread pool</text>
+  <rect x="250" y="55" width="50" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <rect x="315" y="55" width="50" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="320" y="105" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">executes the call HERE</text>
+
+  <rect x="470" y="65" width="150" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="545" y="92" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">future.get(timeout)</text>
+
+  <line x1="140" y1="87" x2="228" y2="75" stroke="#8b949e" marker-end="url(#arr268)"/>
+  <line x1="140" y1="87" x2="468" y2="87" stroke="#8b949e" stroke-dasharray="3,3" marker-end="url(#arr268)"/>
+
+  <defs>
+    <marker id="arr268" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Submission is immediate; the actual work happens on separate threads, and the caller waits only via its own bounded <code>Future.get</code>.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a blocking legacy client call made directly on the caller&#x27;s own thread (tying it up for the full duration), refactored to run through a dedicated thread-pool bulkhead so the caller&#x27;s thread is freed to do other work while the call executes elsewhere, and finally demonstrating the bulkhead&#x27;s fixed pool size becoming the hard concurrency ceiling under a burst of concurrent calls exceeding that size.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: DirectBlockingCallOnCallerThread.java -- the SLOW call executes
+// DIRECTLY on the caller&#x27;s own thread -- the caller is TIED UP for the
+// full duration, unable to do anything else.
+public class DirectBlockingCallOnCallerThread {
+    static String slowBlockingCall() throws InterruptedException {
+        Thread.sleep(300); // simulates a SLOW, blocking legacy client call
+        return &quot;result&quot;;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(&quot;Caller thread starting the call directly...&quot;);
+        long start = System.currentTimeMillis();
+        String result = slowBlockingCall(); // the CALLER&#x27;s OWN thread is BLOCKED here for the full duration
+        System.out.println(&quot;Caller thread FREE again after &quot; + (System.currentTimeMillis() - start) + &quot;ms -- it could do NOTHING else during that time.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac DirectBlockingCallOnCallerThread.java &amp;&amp; java DirectBlockingCallOnCallerThread</code> (JDK 17+).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ThreadPoolBulkheadFreesCaller.java -- the call runs on a
+// DEDICATED thread pool; the CALLER&#x27;s thread submits it and is FREE
+// to do other work while it executes elsewhere.
+import java.util.concurrent.*;
+
+public class ThreadPoolBulkheadFreesCaller {
+    static ExecutorService bulkheadPool = Executors.newFixedThreadPool(5); // the DEDICATED, isolated pool
+
+    static String slowBlockingCall() throws InterruptedException {
+        Thread.sleep(300);
+        return &quot;result&quot;;
+    }
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(&quot;Caller thread SUBMITTING the call to the bulkhead pool...&quot;);
+        Future&lt;String&gt; future = bulkheadPool.submit(ThreadPoolBulkheadFreesCaller::slowBlockingCall); // returns IMMEDIATELY
+
+        System.out.println(&quot;Caller thread is FREE to do other work RIGHT NOW, while the call runs elsewhere.&quot;);
+        // ... simulate the caller doing OTHER useful work here, concurrently ...
+
+        String result = future.get(); // ONLY blocks HERE, when the result is actually needed
+        System.out.println(&quot;Result finally retrieved: &quot; + result);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ThreadPoolBulkheadFreesCaller.java &amp;&amp; java ThreadPoolBulkheadFreesCaller</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Caller thread SUBMITTING the call to the bulkhead pool...
+Caller thread is FREE to do other work RIGHT NOW, while the call runs elsewhere.
+Result finally retrieved: result</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: FixedPoolSizeIsTheHardLimit.java -- the pool&#x27;s FIXED SIZE
+// becomes the HARD concurrency ceiling -- calls BEYOND that limit
+// QUEUE, demonstrating the bulkhead&#x27;s OWN bounded capacity.
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class FixedPoolSizeIsTheHardLimit {
+    static final int BULKHEAD_SIZE = 3;
+    static ExecutorService bulkheadPool = Executors.newFixedThreadPool(BULKHEAD_SIZE);
+    static AtomicInteger currentlyExecuting = new AtomicInteger(0);
+    static AtomicInteger peakConcurrent = new AtomicInteger(0);
+
+    static String trackedCall(int callId) throws InterruptedException {
+        int current = currentlyExecuting.incrementAndGet();
+        peakConcurrent.updateAndGet(peak -&gt; Math.max(peak, current)); // track the PEAK concurrent executions observed
+        Thread.sleep(200);
+        currentlyExecuting.decrementAndGet();
+        return &quot;call &quot; + callId + &quot; done&quot;;
+    }
+
+    public static void main(String[] args) throws Exception {
+        int totalCalls = 10; // MORE calls than the pool&#x27;s 3-thread capacity
+        Future&lt;String&gt;[] futures = new Future[totalCalls];
+        for (int i = 0; i &lt; totalCalls; i++) {
+            final int callId = i + 1;
+            futures[i] = bulkheadPool.submit(() -&gt; trackedCall(callId));
+        }
+        for (Future&lt;String&gt; f : futures) f.get(); // wait for ALL to complete
+
+        System.out.println(&quot;Bulkhead pool size: &quot; + BULKHEAD_SIZE);
+        System.out.println(&quot;Peak CONCURRENT executions observed across &quot; + totalCalls + &quot; submitted calls: &quot; + peakConcurrent.get());
+        System.out.println(&quot;The pool&#x27;s FIXED size correctly capped concurrency at &quot; + BULKHEAD_SIZE + &quot;, regardless of how many calls were submitted.&quot;);
+        bulkheadPool.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac FixedPoolSizeIsTheHardLimit.java &amp;&amp; java FixedPoolSizeIsTheHardLimit</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Bulkhead pool size: 3
+Peak CONCURRENT executions observed across 10 submitted calls: 3
+The pool&#x27;s FIXED size correctly capped concurrency at 3, regardless of how many calls were submitted.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the caller directly tied up</strong> — <code>slowBlockingCall</code> is invoked directly within <code>main</code>&#x27;s own execution, on <code>main</code>&#x27;s own thread; the <code>Thread.sleep(300)</code> inside it blocks that exact thread for the full 300ms, during which <code>main</code> (representing the caller) can execute nothing else at all.</li><li><strong>Level 2, submission returning immediately</strong> — <code>bulkheadPool.submit(...)</code> returns a <code>Future&lt;String&gt;</code> right away, without blocking; the actual execution of <code>slowBlockingCall</code> happens on one of <code>bulkheadPool</code>&#x27;s own dedicated threads, entirely separate from <code>main</code>&#x27;s thread.</li><li><strong>Level 2, the caller&#x27;s thread genuinely freed</strong> — the print statement confirming the caller is &quot;free to do other work&quot; executes immediately after submission, well before the 300ms call has completed — demonstrating that the caller&#x27;s own thread was never blocked by the protected call&#x27;s execution at all, only later, deliberately, when <code>future.get()</code> is called to retrieve the result.</li><li><strong>Level 3, tracking actual concurrent execution</strong> — <code>trackedCall</code> increments <code>currentlyExecuting</code> upon starting and decrements it upon finishing, with <code>peakConcurrent</code> recording the highest value <code>currentlyExecuting</code> ever reached across the entire run — this gives a direct, measured signal for how many calls were genuinely running simultaneously at any point.</li><li><strong>Level 3, ten calls submitted to a three-thread pool</strong> — all ten calls are submitted to <code>bulkheadPool</code> in quick succession; because the pool has only 3 threads, at most 3 of those calls can be actively executing (and thus incrementing <code>currentlyExecuting</code>) at any given moment, with the remaining 7 queued internally by the <code>ExecutorService</code>, waiting for a thread to free up.</li><li><strong>Level 3, the pool size as the enforced ceiling</strong> — the final printed <code>peakConcurrent.get()</code> value is exactly <code>3</code>, matching <code>BULKHEAD_SIZE</code>, confirming that no more than 3 calls were ever executing at once, regardless of the fact that 10 were submitted essentially simultaneously — this is the direct, measured proof that the thread pool&#x27;s fixed size functions as a hard concurrency ceiling for this specific protected dependency, isolated from and unaffected by whatever concurrency limits (or lack thereof) apply to any other part of a larger application.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a thread-pool bulkhead&#x27;s internal queue (calls submitted beyond the pool&#x27;s active thread capacity, waiting for a thread to free up) can itself grow unbounded if not explicitly capped — <code>Executors.newFixedThreadPool</code> uses an unbounded internal queue by default, meaning a sustained burst of calls beyond the pool&#x27;s size doesn&#x27;t get rejected, it just queues indefinitely, silently building up a backlog and associated memory use; a production thread-pool bulkhead typically needs an explicitly bounded queue (with a defined rejection policy once that queue itself fills) to fully realize the &quot;reject rather than accumulate unboundedly&quot; protection the bulkhead pattern is meant to provide.</blockquote>
+<ul><li>A thread-pool bulkhead runs a protected call on a dedicated, isolated thread pool, so the caller&#x27;s own thread is never blocked by the protected call&#x27;s execution, only optionally by a bounded wait on the resulting <code>Future</code>.</li><li>This provides strong isolation specifically for blocking operations, since the isolation happens at the thread level — the caller&#x27;s thread is genuinely free to do other work while the protected call runs elsewhere.</li><li>The pool&#x27;s fixed size functions as a hard concurrency ceiling for that specific protected dependency, verifiable directly by measuring peak concurrent executions under a burst exceeding that size.</li><li>It&#x27;s best suited to protecting operations that are themselves blocking (synchronous I/O, legacy blocking clients) where freeing the caller&#x27;s thread specifically matters.</li><li>A thread pool&#x27;s default unbounded internal queue undermines the bulkhead&#x27;s rejection guarantee under sustained overload — a production configuration needs an explicitly bounded queue and rejection policy to fully realize the pattern&#x27;s protective intent.</li></ul>
+  <div class="nav"><a class="prv" href="0267-bulkhead-pattern.html"><span class="mini">← Previous</span>Bulkhead pattern</a><a class="nxt" href="0269-semaphore-bulkhead.html"><span class="mini">Next →</span>Semaphore bulkhead</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t268";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

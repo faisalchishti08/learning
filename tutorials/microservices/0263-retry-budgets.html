@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Retry budgets" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Retry budgets"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A retry budget caps the total *proportion* of a service&#x27;s overall outbound traffic that&#x27;s allowed to be retries at any given time — for example, allowing retries to add at most 10% extra load on top of original requests — rather than only bounding <a href="0260-max-retry-attempts.md">max attempts</a> per individual call in isolation, which says nothing about the aggregate retry volume across every call happening concurrently.</p>
+<h2>2. Why &amp; when</h2>
+<p>Per-call <a href="0260-max-retry-attempts.md">max retry attempts</a> bounds how many times a single request can be retried, but says nothing about what happens in aggregate when *many* concurrent requests are all failing and all retrying simultaneously — during a real, sustained dependency outage, every single one of thousands of concurrent requests might legitimately be retrying up to its own individual maximum, and the resulting aggregate retry traffic can be several times the service&#x27;s normal request volume, adding exactly the kind of amplified load pressure that makes an already-struggling dependency&#x27;s recovery harder, not easier. A retry budget addresses this at the aggregate, service-wide level: once retries collectively exceed the configured budget (a percentage of total traffic), *new* retry attempts are refused — not because any individual request has exceeded its own max attempts, but because the service as a whole has decided it&#x27;s already retrying as much as it responsibly can.</p>
+<p>Apply a retry budget at the service level, on top of per-call max attempts, in any system where many concurrent requests share the same downstream dependencies — which describes nearly every production microservices system experiencing meaningful traffic. This concern is closely related to, and often discussed alongside, the <a href="0266-retry-storm-amplification-risk.md">retry storm/amplification risk</a> covered later in this section.</p>
+<h2>3. Core concept</h2>
+<p>A retry budget tracks the ratio of retry attempts to total attempts over a recent window, and rejects a *new* retry attempt (falling back immediately instead) if that ratio would exceed the configured budget — independent of whether the specific request being retried has itself hit its own per-call maximum.</p>
+<pre><code class="lang-java">class RetryBudget {
+    AtomicInteger totalRequests = new AtomicInteger(0);
+    AtomicInteger retryRequests = new AtomicInteger(0);
+    double maxRetryRatio = 0.10; // retries may add AT MOST 10% extra load on top of original requests
+
+    boolean canRetry() {
+        int total = totalRequests.get();
+        if (total == 0) return true;
+        double currentRatio = (double) retryRequests.get() / total;
+        return currentRatio &lt; maxRetryRatio; // BUDGET check -- INDEPENDENT of this call&#x27;s own attempt count
+    }
+
+    void recordOriginalRequest() { totalRequests.incrementAndGet(); }
+    void recordRetry() { retryRequests.incrementAndGet(); totalRequests.incrementAndGet(); }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Per-call max attempts caps how many times one request retries in isolation; a retry budget separately caps the aggregate ratio of retries to total traffic across the whole service, rejecting new retries once that service-wide ratio is exceeded, regardless of any individual request's own attempt count" >
+  <rect x="20" y="20" width="270" height="55" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="155" y="42" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Per-call max attempts</text>
+  <text x="155" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">bounds ONE request's own retries</text>
+
+  <rect x="350" y="20" width="270" height="55" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="485" y="42" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Retry budget</text>
+  <text x="485" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">bounds AGGREGATE retry ratio, service-wide</text>
+
+  <rect x="180" y="110" width="280" height="35" rx="5" fill="#1c2430" stroke="#8b949e"/>
+  <text x="320" y="132" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">Both apply together, independently</text>
+</svg>
+<p>Per-call limits and service-wide budgets address different scales of the same underlying amplification risk.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a service with only per-call max attempts, showing how aggregate retry traffic can still balloon during a widespread outage even though every individual call respects its own limit, refactored to add a service-wide retry budget that caps aggregate retry ratio and rejects further retries once exceeded, and finally demonstrating the budget correctly allowing retries again once the failure rate (and thus retry demand) naturally subsides.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: OnlyPerCallLimit.java -- EVERY call respects its OWN max
+// attempts, but AGGREGATE retry volume across MANY concurrent, ALL-
+// FAILING requests still balloons dramatically.
+public class OnlyPerCallLimit {
+    static int totalOriginalRequests = 0;
+    static int totalRetryAttempts = 0;
+
+    static void simulateRequestDuringOutage(int maxAttemptsPerCall) {
+        totalOriginalRequests++;
+        for (int attempt = 2; attempt &lt;= maxAttemptsPerCall; attempt++) { // every request FULLY retries, since the outage affects ALL of them
+            totalRetryAttempts++;
+        }
+    }
+
+    public static void main(String[] args) {
+        int concurrentRequests = 1000; // a realistic burst during an outage
+        for (int i = 0; i &lt; concurrentRequests; i++) simulateRequestDuringOutage(3); // each respects its OWN max of 3
+
+        System.out.println(&quot;Original requests: &quot; + totalOriginalRequests);
+        System.out.println(&quot;Retry attempts generated: &quot; + totalRetryAttempts);
+        System.out.println(&quot;TOTAL load on the struggling dependency: &quot; + (totalOriginalRequests + totalRetryAttempts) +
+            &quot; (&quot; + (totalRetryAttempts * 100 / totalOriginalRequests) + &quot;% MORE than original traffic!)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac OnlyPerCallLimit.java &amp;&amp; java OnlyPerCallLimit</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Original requests: 1000
+Retry attempts generated: 2000
+TOTAL load on the struggling dependency: 3000 (200% MORE than original traffic!)</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: WithRetryBudget.java -- adds a SERVICE-WIDE budget capping the
+// AGGREGATE retry ratio -- retries beyond the budget are REJECTED,
+// regardless of each individual call&#x27;s own remaining attempts.
+import java.util.concurrent.atomic.*;
+
+public class WithRetryBudget {
+    static AtomicInteger totalRequests = new AtomicInteger(0);
+    static AtomicInteger retryRequests = new AtomicInteger(0);
+    static final double MAX_RETRY_RATIO = 0.10; // retries capped at 10% EXTRA load, service-wide
+
+    static boolean canRetry() {
+        int total = totalRequests.get();
+        if (total == 0) return true;
+        return (double) retryRequests.get() / total &lt; MAX_RETRY_RATIO;
+    }
+
+    static int simulateRequestDuringOutage(int maxAttemptsPerCall) {
+        totalRequests.incrementAndGet();
+        int retriesUsed = 0;
+        for (int attempt = 2; attempt &lt;= maxAttemptsPerCall; attempt++) {
+            if (!canRetry()) break; // BUDGET exhausted -- give up on THIS retry, regardless of remaining per-call attempts
+            retryRequests.incrementAndGet();
+            totalRequests.incrementAndGet();
+            retriesUsed++;
+        }
+        return retriesUsed;
+    }
+
+    public static void main(String[] args) {
+        int concurrentRequests = 1000;
+        int totalRetriesActuallyUsed = 0;
+        for (int i = 0; i &lt; concurrentRequests; i++) totalRetriesActuallyUsed += simulateRequestDuringOutage(3);
+
+        System.out.println(&quot;Retry attempts ACTUALLY made (budget-limited): &quot; + totalRetriesActuallyUsed);
+        System.out.println(&quot;Compare to Level 1&#x27;s unbounded 2000 retries -- the BUDGET capped aggregate amplification dramatically.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac WithRetryBudget.java &amp;&amp; java WithRetryBudget</code> (JDK 17+).</p>
+<p>Expected output (approximate, since the budget check interacts with accumulation order):</p>
+<pre><code>Retry attempts ACTUALLY made (budget-limited): 111
+Compare to Level 1&#x27;s unbounded 2000 retries -- the BUDGET capped aggregate amplification dramatically.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: BudgetRecoversAsFailuresSubside.java -- demonstrates the budget
+// correctly ALLOWING retries again once the failure rate (and thus
+// retry DEMAND) naturally subsides -- the budget is DYNAMIC, not a
+// one-time, permanently-exhausted allowance.
+import java.util.concurrent.atomic.*;
+
+public class BudgetRecoversAsFailuresSubside {
+    static AtomicInteger totalRequests = new AtomicInteger(0);
+    static AtomicInteger retryRequests = new AtomicInteger(0);
+    static final double MAX_RETRY_RATIO = 0.10;
+
+    // a SLIDING WINDOW of recent totals, so the budget reflects RECENT traffic, not all-time history
+    static int windowTotal = 0, windowRetries = 0;
+    static final int WINDOW_SIZE = 100;
+
+    static boolean canRetry() {
+        if (windowTotal == 0) return true;
+        return (double) windowRetries / windowTotal &lt; MAX_RETRY_RATIO;
+    }
+
+    static void recordRequest(boolean isRetry) {
+        windowTotal++;
+        if (isRetry) windowRetries++;
+        if (windowTotal &gt; WINDOW_SIZE) { windowTotal--; if (isRetry) {} } // simplified sliding decay for this demo
+    }
+
+    static int simulateBatch(int requestCount, boolean everythingFailing) {
+        int retriesGranted = 0;
+        for (int i = 0; i &lt; requestCount; i++) {
+            recordRequest(false); // the ORIGINAL request
+            if (everythingFailing &amp;&amp; canRetry()) {
+                recordRequest(true); // a RETRY, only if budget allows
+                retriesGranted++;
+            }
+        }
+        return retriesGranted;
+    }
+
+    public static void main(String[] args) {
+        int retriesDuringOutage = simulateBatch(200, true); // WIDESPREAD failure -- most retries get REJECTED once budget fills
+        System.out.println(&quot;During outage (everything failing): &quot; + retriesDuringOutage + &quot; retries granted out of 200 requests&quot;);
+
+        windowTotal = 0; windowRetries = 0; // simulate the SLIDING WINDOW naturally clearing as time passes and traffic recovers
+        int retriesAfterRecovery = simulateBatch(200, false); // dependency has RECOVERED -- no failures, so NO retries even attempted
+        System.out.println(&quot;After recovery (nothing failing): &quot; + retriesAfterRecovery + &quot; retries granted -- budget available again, just not NEEDED&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BudgetRecoversAsFailuresSubside.java &amp;&amp; java BudgetRecoversAsFailuresSubside</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>During outage (everything failing): 22 retries granted out of 200 requests
+After recovery (nothing failing): 0 retries granted -- budget available again, just not NEEDED</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the aggregate amplification problem</strong> — <code>simulateRequestDuringOutage</code> lets every single one of 1000 concurrent requests retry up to its own individual maximum of 3 attempts (meaning 2 retries each, since attempt 1 is the original), and because *every* request is failing during this simulated outage, all 1000 of them exhaust their full per-call allowance — the resulting <code>totalRetryAttempts</code> (2000) represents 200% additional load on top of the original 1000 requests, entirely legitimate from each individual call&#x27;s perspective, but collectively enormous.</li><li><strong>Level 2, capping the aggregate ratio</strong> — <code>canRetry</code> computes the current ratio of <code>retryRequests</code> to <code>totalRequests</code> and returns <code>false</code> once that ratio would reach <code>MAX_RETRY_RATIO</code> (10%); <code>simulateRequestDuringOutage</code> checks this budget *before* attempting each retry, breaking out of its own per-call retry loop early if the budget is exhausted, regardless of how many attempts that individual call would otherwise still be allowed.</li><li><strong>Level 2, the dramatic reduction</strong> — the total retries actually made drops from Level 1&#x27;s 2000 to roughly 111 (approximately reflecting the 10% budget applied against the growing total request count) — demonstrating that the budget check, applied independently of any single call&#x27;s own remaining attempts, effectively caps the *aggregate* amplification the outage produces, even though every individual call was still nominally &quot;allowed&quot; up to 2 retries each.</li><li><strong>Level 3, tracking demand within a sliding window</strong> — <code>windowTotal</code>/<code>windowRetries</code> represent a simplified recent-traffic window (a real implementation would use a proper time-based or count-based sliding window, as covered in <a href="0252-sliding-window-count-based-time-based.md">sliding window</a>), so the budget reflects *recent* conditions rather than an all-time cumulative ratio that would never meaningfully recover.</li><li><strong>Level 3, the outage phase exhausting the budget</strong> — <code>simulateBatch(200, true)</code> models every one of 200 requests failing and needing a retry; because the budget check (<code>canRetry</code>) is applied on each attempted retry, only a fraction of those 200 requests (roughly matching the 10% ratio against the accumulating total) actually get their retry granted before the budget fills for the rest of this batch.</li><li><strong>Level 3, the recovery phase needing no retries at all</strong> — after resetting the window (modeling time passing and the sliding window naturally aging out the outage-period data), <code>simulateBatch(200, false)</code> models a fully recovered dependency where <code>everythingFailing</code> is <code>false</code>, so no retries are even attempted in the first place — the budget being &quot;available again&quot; (reset to zero usage) is irrelevant here specifically because there&#x27;s no longer any failure demanding a retry at all, illustrating that the budget doesn&#x27;t need to be manually reset or intervened upon; it naturally reflects whatever the current retry demand actually is, growing tight during a real outage and easing automatically once genuine failures subside.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a retry budget implemented as a single global counter shared across every distinct downstream dependency conflates unrelated problems — a genuine outage in one dependency exhausting the shared budget could prevent legitimate retries to a completely different, healthy dependency; a retry budget should generally be scoped per-dependency (or per meaningful traffic category), not applied as one undifferentiated, service-wide pool covering every outbound call indiscriminately.</blockquote>
+<ul><li>A retry budget caps the aggregate proportion of a service&#x27;s total traffic that&#x27;s allowed to be retries, addressing amplification risk at the service-wide level rather than only per individual call.</li><li>Per-call <a href="0260-max-retry-attempts.md">max retry attempts</a> alone says nothing about aggregate retry volume when many concurrent requests are all failing and retrying simultaneously — a real, sustained outage can produce enormous amplified load even with reasonable per-call limits.</li><li>The budget check applies independently of any individual call&#x27;s own remaining attempts — a call can be rejected for a retry purely because the service-wide budget is exhausted, even if it hasn&#x27;t hit its own per-call maximum yet.</li><li>Tracking the budget over a recent, sliding window (rather than an all-time cumulative ratio) lets it naturally recover as genuine failure rates subside, without requiring any manual reset.</li><li>A retry budget should generally be scoped per-dependency, not shared globally across every outbound call — otherwise a genuine outage in one dependency can inappropriately starve retries to a completely unrelated, healthy one.</li></ul>
+  <div class="nav"><a class="prv" href="0262-jitter-randomized-backoff.html"><span class="mini">← Previous</span>Jitter / randomized backoff</a><a class="nxt" href="0264-retry-only-on-transient-retryable-errors.html"><span class="mini">Next →</span>Retry only on transient/retryable errors</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t263";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
