@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Debezium + Spring for CDC-based outbox" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Debezium + Spring for CDC-based outbox"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Debezium</strong>, combined with Spring, implements the <a href="0331-transactional-outbox-pattern.md">transactional outbox pattern</a>&#x27;s relay side using <a href="0333-change-data-capture-cdc.md">Change Data Capture</a> instead of a hand-built polling or event-publishing loop: a Spring service writes to its own outbox table exactly as the outbox pattern requires (atomically, in the same local transaction as the business change), and Debezium — tailing the database&#x27;s <a href="0332-transaction-log-tailing.md">transaction log</a> directly — detects each new outbox row the instant it commits and publishes it to Kafka, with no application code needed to do the actual relaying.</p>
+<h2>2. Why &amp; when</h2>
+<p>Earlier topics showed the outbox pattern&#x27;s relay implemented as a <a href="0334-polling-publisher-pattern.md">polling publisher</a> — a scheduled query against the outbox table. That works, but it adds recurring query load and a polling-interval delay. Debezium&#x27;s &quot;outbox event router&quot; is a purpose-built connector that specifically watches an outbox table via CDC and, the moment a row commits, transforms it into a properly-formed Kafka message (using the outbox row&#x27;s columns to determine the target topic, message key, and payload) — combining the reliability of the outbox pattern with the low-latency, low-overhead relay mechanism of log tailing, without a team needing to write and operate that relay itself.</p>
+<p>Use Debezium&#x27;s outbox event router when a Spring service already writes to an outbox table (application-side) and you want the most reliable, lowest-latency, and least-custom-code way to get those rows onto Kafka — this combination is effectively the production-grade version of the polling-publisher outbox examples shown earlier, trading the operational simplicity of polling for Debezium&#x27;s more sophisticated (and more capable) CDC-based relay.</p>
+<h2>3. Core concept</h2>
+<p>The Spring service&#x27;s transaction writes both the business row and an outbox row (with a well-known shape: an <code>aggregate_type</code>, <code>aggregate_id</code>, <code>type</code>, and <code>payload</code> column, by Debezium&#x27;s outbox convention) atomically, exactly as any outbox implementation requires. Debezium, running as a separate connector process (or embedded), tails the database&#x27;s transaction log, recognizes new rows in the outbox table specifically, and — using its outbox event router single message transform — publishes each one to Kafka, deriving the topic and key from the outbox row&#x27;s own columns, then effectively &quot;deletes&quot; its job (the outbox table itself can be trimmed independently, since Debezium reads from the log, not the table&#x27;s current contents).</p>
+<pre><code class="lang-java">@Transactional
+public void placeOrder(Order order) {
+    orderRepository.save(order);
+    outboxRepository.save(new OutboxEvent(&quot;Order&quot;, order.getId(), &quot;OrderPlaced&quot;, toJson(order)));
+} // Debezium&#x27;s log-tailing connector picks this row up and publishes to Kafka -- no relay code needed</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Spring service commits an order row and an outbox row atomically; Debezium tails the transaction log, detects the new outbox row, and publishes it to Kafka using the outbox event router transform -- no relay code written by the team">
+  <rect x="20" y="20" width="260" height="60" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="150" y="42" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Spring @Transactional</text>
+  <text x="150" y="60" fill="#8b949e" font-size="8.5" text-anchor="middle" font-family="sans-serif">order row + outbox row, atomically</text>
+
+  <line x1="150" y1="80" x2="150" y2="110" stroke="#8b949e" marker-end="url(#a348)"/>
+  <rect x="30" y="110" width="240" height="34" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="150" y="132" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Transaction log (Debezium tails this)</text>
+
+  <line x1="270" y1="127" x2="380" y2="127" stroke="#79c0ff" marker-end="url(#a348b)"/>
+  <rect x="390" y="90" width="220" height="70" rx="6" fill="#1c2430" stroke="#3fb950"/>
+  <text x="500" y="112" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Debezium outbox event router</text>
+  <text x="500" y="128" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">no team-written relay code</text>
+  <text x="500" y="144" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">-&gt; publishes to Kafka</text>
+
+  <defs>
+    <marker id="a348" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="a348b" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#79c0ff"/></marker>
+  </defs>
+</svg>
+<p>The application writes the outbox row atomically; Debezium&#x27;s log-tailing connector detects and publishes it to Kafka, with no hand-written relay.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order-placement flow, first shown with a hand-written polling relay (from earlier in this section, for comparison), then rebuilt as a simulated Debezium-style log-tailing router that reacts to outbox commits with no polling at all, and finally extended to show the router deriving the Kafka topic and key directly from the outbox row&#x27;s own columns, exactly as Debezium&#x27;s outbox event router convention specifies.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: HandWrittenPollingRelay.java -- the polling-publisher approach
+// from earlier in this section, shown again here for direct comparison.
+import java.util.*;
+
+public class HandWrittenPollingRelay {
+    record OutboxRow(int id, String payload) {}
+    static List&lt;OutboxRow&gt; outboxTable = new ArrayList&lt;&gt;();
+    static List&lt;String&gt; kafkaTopic = new ArrayList&lt;&gt;();
+    static int lastPublishedId = -1;
+
+    static void placeOrder(String orderId) {
+        outboxTable.add(new OutboxRow(outboxTable.size(), &quot;OrderPlaced:&quot; + orderId));
+        System.out.println(&quot;transaction committed: order &quot; + orderId + &quot; + outbox row&quot;);
+    }
+
+    static void pollAndPublish() { // TEAM-WRITTEN relay code -- must be built and operated
+        for (OutboxRow row : outboxTable) {
+            if (row.id() &lt;= lastPublishedId) continue;
+            kafkaTopic.add(row.payload());
+            lastPublishedId = row.id();
+            System.out.println(&quot;poll: published &quot; + row.payload());
+        }
+    }
+
+    public static void main(String[] args) {
+        placeOrder(&quot;order-1&quot;);
+        System.out.println(&quot;--- waiting for the next scheduled poll cycle ---&quot;);
+        pollAndPublish();
+        System.out.println(&quot;kafkaTopic: &quot; + kafkaTopic);
+    }
+}</code></pre>
+<p>How to run: <code>java HandWrittenPollingRelay.java</code></p>
+<p><code>pollAndPublish</code> is team-written and team-operated relay code — a scheduled query, a loop, tracked position — exactly as covered in the <a href="0334-polling-publisher-pattern.md">polling publisher pattern</a>. This works, but it&#x27;s infrastructure the team built and must maintain.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: DebeziumStyleLogTailingRouter.java -- NO polling code at all; a
+// simulated Debezium connector reacts the INSTANT the outbox transaction
+// commits, by tailing the transaction log directly.
+import java.util.*;
+import java.util.function.Consumer;
+
+public class DebeziumStyleLogTailingRouter {
+    record OutboxRow(String aggregateType, String aggregateId, String eventType, String payload) {}
+    static List&lt;Consumer&lt;OutboxRow&gt;&gt; logTailers = new ArrayList&lt;&gt;(); // Debezium attaches here, as a log reader
+    static List&lt;String&gt; kafkaTopic = new ArrayList&lt;&gt;();
+
+    static void commitOrderAndOutboxRow(String orderId) { // the ONLY code the Spring team writes
+        OutboxRow row = new OutboxRow(&quot;Order&quot;, orderId, &quot;OrderPlaced&quot;, &quot;{\&quot;orderId\&quot;:\&quot;&quot; + orderId + &quot;\&quot;}&quot;);
+        System.out.println(&quot;transaction committed: order &quot; + orderId + &quot; + outbox row (Debezium sees this via the log)&quot;);
+        logTailers.forEach(tailer -&gt; tailer.accept(row)); // NO polling -- notified IMMEDIATELY via the log
+    }
+
+    public static void main(String[] args) {
+        // This registration IS Debezium&#x27;s outbox event router -- NOT team-written relay code, just configuration in reality.
+        logTailers.add(row -&gt; {
+            kafkaTopic.add(row.payload());
+            System.out.println(&quot;Debezium outbox router: detected commit via log tail, published &quot; + row.payload() + &quot; to Kafka INSTANTLY&quot;);
+        });
+
+        commitOrderAndOutboxRow(&quot;order-1&quot;); // no poll cycle to wait for at all
+
+        System.out.println(&quot;kafkaTopic: &quot; + kafkaTopic);
+    }
+}</code></pre>
+<p>How to run: <code>java DebeziumStyleLogTailingRouter.java</code></p>
+<p><code>commitOrderAndOutboxRow</code> is the only code the Spring application team writes — it commits the outbox row and notifies attached log tailers, standing in for Debezium detecting the commit via the transaction log the instant it happens, with zero polling delay and no team-written relay loop. The router registered in <code>main</code> mirrors Debezium&#x27;s outbox event router, which in a real deployment is pure configuration, not code the team builds or maintains.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: RouterDerivesTopicAndKeyFromOutboxColumns.java -- the router
+// derives the KAFKA TOPIC and MESSAGE KEY directly from the outbox row&#x27;s
+// own columns (aggregateType, aggregateId), exactly as Debezium&#x27;s outbox
+// event router convention specifies -- different aggregate types route
+// to different topics automatically.
+import java.util.*;
+import java.util.function.Consumer;
+
+public class RouterDerivesTopicAndKeyFromOutboxColumns {
+    record OutboxRow(String aggregateType, String aggregateId, String eventType, String payload) {}
+    record KafkaMessage(String topic, String key, String payload) {}
+    static List&lt;Consumer&lt;OutboxRow&gt;&gt; logTailers = new ArrayList&lt;&gt;();
+    static Map&lt;String, List&lt;KafkaMessage&gt;&gt; kafkaTopics = new HashMap&lt;&gt;(); // simulates MULTIPLE real topics
+
+    static void commitOutboxRow(String aggregateType, String aggregateId, String eventType, String payload) {
+        OutboxRow row = new OutboxRow(aggregateType, aggregateId, eventType, payload);
+        System.out.println(&quot;transaction committed: &quot; + aggregateType + &quot;/&quot; + aggregateId + &quot; outbox row&quot;);
+        logTailers.forEach(tailer -&gt; tailer.accept(row));
+    }
+
+    public static void main(String[] args) {
+        // Debezium&#x27;s outbox event router, configured (not coded) to derive topic from aggregateType, key from aggregateId.
+        logTailers.add(row -&gt; {
+            String topic = row.aggregateType().toLowerCase() + &quot;-events&quot;; // e.g. &quot;order&quot; -&gt; &quot;order-events&quot;
+            KafkaMessage message = new KafkaMessage(topic, row.aggregateId(), row.payload());
+            kafkaTopics.computeIfAbsent(topic, k -&gt; new ArrayList&lt;&gt;()).add(message);
+            System.out.println(&quot;Debezium router: routed &quot; + row.eventType() + &quot; to topic &#x27;&quot; + topic
+                    + &quot;&#x27; with key &#x27;&quot; + row.aggregateId() + &quot;&#x27; -- DERIVED entirely from the outbox row&#x27;s own columns&quot;);
+        });
+
+        commitOutboxRow(&quot;Order&quot;, &quot;order-1&quot;, &quot;OrderPlaced&quot;, &quot;{\&quot;orderId\&quot;:\&quot;order-1\&quot;}&quot;);
+        commitOutboxRow(&quot;Payment&quot;, &quot;payment-1&quot;, &quot;PaymentProcessed&quot;, &quot;{\&quot;paymentId\&quot;:\&quot;payment-1\&quot;}&quot;);
+
+        System.out.println(&quot;order-events topic: &quot; + kafkaTopics.get(&quot;order-events&quot;));
+        System.out.println(&quot;payment-events topic: &quot; + kafkaTopics.get(&quot;payment-events&quot;));
+        System.out.println(&quot;Two DIFFERENT aggregate types automatically routed to two DIFFERENT topics, with NO per-aggregate routing code written.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java RouterDerivesTopicAndKeyFromOutboxColumns.java</code></p>
+<p>Both <code>commitOutboxRow</code> calls go through the identical router logic, but because the first row&#x27;s <code>aggregateType</code> is <code>&quot;Order&quot;</code> and the second&#x27;s is <code>&quot;Payment&quot;</code>, the router computes different topic names (<code>&quot;order-events&quot;</code> and <code>&quot;payment-events&quot;</code>) purely from that one column — no explicit <code>if aggregateType == &quot;Order&quot; then ... else if ... &quot;Payment&quot;</code> branching was written anywhere. The message key is likewise derived directly from <code>aggregateId</code>, ensuring all events for the same entity land on the same key (and therefore the same partition, preserving per-entity ordering) automatically.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>RouterDerivesTopicAndKeyFromOutboxColumns.main</code> in order. <strong>First</strong>, <code>commitOutboxRow(&quot;Order&quot;, &quot;order-1&quot;, &quot;OrderPlaced&quot;, ...)</code> runs: it constructs an <code>OutboxRow</code> and calls every registered log tailer with it — here, the one router lambda.</p>
+<p><strong>Inside the router</strong>, <code>topic</code> is computed as <code>row.aggregateType().toLowerCase() + &quot;-events&quot;</code>, which evaluates to <code>&quot;order-events&quot;</code> since <code>aggregateType</code> is <code>&quot;Order&quot;</code>. A <code>KafkaMessage</code> is built with this topic, <code>key=row.aggregateId()</code> (<code>&quot;order-1&quot;</code>), and the original payload, and it&#x27;s appended to <code>kafkaTopics.get(&quot;order-events&quot;)</code> (created fresh via <code>computeIfAbsent</code>).</p>
+<p><strong>Next</strong>, <code>commitOutboxRow(&quot;Payment&quot;, &quot;payment-1&quot;, &quot;PaymentProcessed&quot;, ...)</code> runs the same way: the router computes <code>topic = &quot;payment-events&quot;</code> this time, since <code>aggregateType</code> is <code>&quot;Payment&quot;</code>, and appends a new <code>KafkaMessage</code> to a *different* list in <code>kafkaTopics</code>, keyed by <code>&quot;payment-events&quot;</code>.</p>
+<p><strong>Finally</strong>, <code>main</code> prints both <code>kafkaTopics.get(&quot;order-events&quot;)</code> and <code>kafkaTopics.get(&quot;payment-events&quot;)</code>, showing each contains exactly the one message routed to it — confirming that the same router logic, with no per-type branching written by hand, correctly separated the two aggregate types into their own topics purely by reading the outbox row&#x27;s own <code>aggregateType</code> column.</p>
+<pre><code>commitOutboxRow(Order, order-1, ...)     -&gt; router computes topic=&quot;order-events&quot;,   key=&quot;order-1&quot;   -&gt; routed there
+commitOutboxRow(Payment, payment-1, ...) -&gt; router computes topic=&quot;payment-events&quot;, key=&quot;payment-1&quot; -&gt; routed there
+kafkaTopics: {order-events: [order-1 msg], payment-events: [payment-1 msg]}  -- automatic routing, no per-type code</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Debezium&#x27;s outbox event router relies on the outbox table following its expected column convention (<code>aggregate_type</code>, <code>aggregate_id</code>, <code>type</code>/<code>event type</code>, <code>payload</code>, and typically an <code>id</code>) — deviating from this shape without adjusting the router&#x27;s configuration means the connector won&#x27;t route messages correctly, or at all. Check the specific Debezium version&#x27;s documented outbox table schema before building against it.</blockquote>
+<ul><li>Debezium + Spring implements the <a href="0331-transactional-outbox-pattern.md">transactional outbox pattern</a>&#x27;s relay via <a href="0333-change-data-capture-cdc.md">Change Data Capture</a>, giving the reliability of the outbox pattern with the low-latency, low-overhead delivery of <a href="0332-transaction-log-tailing.md">transaction log tailing</a>.</li><li>The Spring application still writes its outbox row exactly as any outbox implementation requires — atomically, within the business transaction; Debezium handles everything from there.</li><li>Debezium&#x27;s outbox event router derives the Kafka topic and message key directly from the outbox row&#x27;s own columns (typically aggregate type and aggregate ID), automatically routing different entity types to different topics with no per-type application code.</li><li>This combination is effectively a production-grade replacement for a hand-written <a href="0334-polling-publisher-pattern.md">polling publisher</a> relay, trading a small amount of connector configuration and operational complexity for lower latency and no team-maintained relay code.</li></ul>
+  <div class="nav"><a class="prv" href="0347-spring-cloud-stream-for-propagating-data-change-events.html"><span class="mini">← Previous</span>Spring Cloud Stream for propagating data-change events</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t348";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

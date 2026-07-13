@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Spring for Apache Kafka transactions" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 10. Distributed Data Management</div>
+  <div class="htitle">
+    <h1>"Spring for Apache Kafka transactions"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Spring for Apache Kafka&#x27;s transaction support</strong> (<code>KafkaTransactionManager</code>, <code>@Transactional</code> on a method using a transactional <code>KafkaTemplate</code>) lets a service atomically produce multiple Kafka messages — or, with the right configuration, coordinate a Kafka publish with a database write via <code>ChainedTransactionManager</code> — so that either all the messages in a logical batch are committed to Kafka or none are, and consumers reading with <code>read_committed</code> isolation never see a partial, uncommitted batch.</p>
+<h2>2. Why &amp; when</h2>
+<p>A service that needs to publish several related messages together — say, an <code>OrderPlaced</code> event and a <code>StockReservationRequested</code> command, produced from the same business operation — normally has no guarantee that both actually land: a crash between the two <code>send()</code> calls leaves one published and the other not, an instance of the <a href="0338-dual-write-problem.md">dual-write problem</a> but purely within Kafka itself (multiple topics or partitions, not a database and a broker). Kafka transactions solve this specifically for multi-message and multi-partition atomicity: every message sent within the transaction is committed together, and importantly, <code>read_committed</code> consumers won&#x27;t see *any* of them until the whole transaction commits, so no consumer ever observes a half-published batch.</p>
+<p>Use Kafka transactions when a single logical operation must produce more than one related message atomically, particularly in <strong>consume-transform-produce</strong> pipelines — a service reads from one topic, transforms the data, and produces to another topic, wanting the &quot;mark input as consumed&quot; and &quot;produce the output&quot; to happen atomically together (this is what <code>KafkaTemplate.executeInTransaction</code> and <code>@Transactional</code> combined with a transactional producer achieve). It does not, by itself, make a Kafka publish and a *separate database write* atomic — that still requires either the <a href="0331-transactional-outbox-pattern.md">transactional outbox pattern</a> or a <code>ChainedTransactionManager</code> coordinating both, which has its own tradeoffs.</p>
+<h2>3. Core concept</h2>
+<p>A Kafka producer configured as transactional (<code>transactional.id</code> set) can begin a transaction, send any number of messages across any number of topics/partitions, and either commit (all messages become visible to <code>read_committed</code> consumers atomically) or abort (none of them ever become visible). Spring wires this into the familiar <code>@Transactional</code> programming model via <code>KafkaTransactionManager</code>, so the same annotation style used for database transactions applies to Kafka producer operations.</p>
+<pre><code class="lang-java">@Transactional(&quot;kafkaTransactionManager&quot;)
+public void placeOrder(Order order) {
+    kafkaTemplate.send(&quot;orders&quot;, order.getId(), toJson(order));
+    kafkaTemplate.send(&quot;stock-requests&quot;, order.getId(), toStockRequestJson(order));
+} // both messages commit together, or neither does</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A transactional producer sends two messages to two different topics inside one Kafka transaction; a read_committed consumer sees both messages together only after the transaction commits, never a partial view">
+  <rect x="30" y="20" width="580" height="50" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="320" y="42" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">Kafka transaction: send(orders) + send(stock-requests)</text>
+  <text x="320" y="58" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">both PENDING until commit</text>
+
+  <line x1="320" y1="70" x2="320" y2="110" stroke="#3fb950" marker-end="url(#a345)"/>
+  <rect x="180" y="110" width="280" height="40" rx="6" fill="#1c2430" stroke="#3fb950"/>
+  <text x="320" y="135" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">COMMIT -&gt; read_committed consumers see BOTH together</text>
+
+  <defs><marker id="a345" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#3fb950"/></marker></defs>
+</svg>
+<p>Multiple sends inside one Kafka transaction become visible to read_committed consumers together, atomically, or not at all.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a service producing two related messages, first shown with independent, non-transactional sends where a crash leaves one message published and one lost, then fixed with a simulated Kafka transaction that commits or aborts both together, and finally extended to show a <code>read_committed</code>-style consumer that correctly never observes a partially-committed transaction.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NonTransactionalSends.java -- two related messages sent
+// INDEPENDENTLY; a failure after the FIRST send leaves it published with
+// no corresponding second message.
+import java.util.*;
+
+public class NonTransactionalSends {
+    static Map&lt;String, List&lt;String&gt;&gt; topics = new HashMap&lt;&gt;();
+
+    static void send(String topic, String message) {
+        topics.computeIfAbsent(topic, k -&gt; new ArrayList&lt;&gt;()).add(message);
+        System.out.println(&quot;sent to &quot; + topic + &quot;: &quot; + message);
+    }
+
+    static void placeOrder(String orderId, boolean simulateFailureBeforeSecondSend) {
+        send(&quot;orders&quot;, &quot;OrderPlaced:&quot; + orderId); // message 1: SUCCEEDS
+        if (simulateFailureBeforeSecondSend) {
+            System.out.println(&quot;CRASH before sending to stock-requests -- message 1 is ALREADY published, unpaired!&quot;);
+            return;
+        }
+        send(&quot;stock-requests&quot;, &quot;ReserveStock:&quot; + orderId); // message 2: never sent in this run
+    }
+
+    public static void main(String[] args) {
+        placeOrder(&quot;order-1&quot;, true);
+        System.out.println(&quot;orders topic: &quot; + topics.get(&quot;orders&quot;));
+        System.out.println(&quot;stock-requests topic: &quot; + topics.getOrDefault(&quot;stock-requests&quot;, List.of())
+                + &quot; -- inventory service will NEVER see a stock request for this order!&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NonTransactionalSends.java</code></p>
+<p>The two <code>send</code> calls are entirely independent. The simulated crash after the first prevents the second from ever running, leaving <code>&quot;orders&quot;</code> with a message that has no corresponding <code>&quot;stock-requests&quot;</code> message — any consumer relying on both existing together is left in an inconsistent view.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: TransactionalSendsCommitTogether.java -- both sends are wrapped
+// in a SIMULATED Kafka transaction: messages are buffered as PENDING and
+// only become &quot;visible&quot; (moved to the real topic) together, on commit;
+// a failure discards BOTH.
+import java.util.*;
+
+public class TransactionalSendsCommitTogether {
+    static Map&lt;String, List&lt;String&gt;&gt; committedTopics = new HashMap&lt;&gt;(); // what consumers can actually see
+    static Map&lt;String, List&lt;String&gt;&gt; pendingInTransaction = new HashMap&lt;&gt;(); // buffered, not yet visible
+
+    static void sendInTransaction(String topic, String message) {
+        pendingInTransaction.computeIfAbsent(topic, k -&gt; new ArrayList&lt;&gt;()).add(message);
+        System.out.println(&quot;buffered (PENDING, not yet visible) to &quot; + topic + &quot;: &quot; + message);
+    }
+
+    static void runKafkaTransaction(Runnable body) {
+        pendingInTransaction.clear();
+        boolean committed = false;
+        try {
+            body.run();
+            committed = true;
+        } finally {
+            if (committed) {
+                pendingInTransaction.forEach((topic, messages) -&gt;
+                        committedTopics.computeIfAbsent(topic, k -&gt; new ArrayList&lt;&gt;()).addAll(messages));
+                System.out.println(&quot;Kafka transaction COMMITTED -- all buffered messages now visible together&quot;);
+            } else {
+                System.out.println(&quot;Kafka transaction ABORTED -- all buffered messages DISCARDED, nothing becomes visible&quot;);
+            }
+        }
+    }
+
+    static void placeOrder(String orderId, boolean simulateFailure) {
+        sendInTransaction(&quot;orders&quot;, &quot;OrderPlaced:&quot; + orderId);
+        if (simulateFailure) throw new RuntimeException(&quot;failed before second send&quot;);
+        sendInTransaction(&quot;stock-requests&quot;, &quot;ReserveStock:&quot; + orderId);
+    }
+
+    public static void main(String[] args) {
+        try { runKafkaTransaction(() -&gt; placeOrder(&quot;order-1&quot;, true)); } catch (RuntimeException ignored) {}
+        System.out.println(&quot;orders (committed, visible): &quot; + committedTopics.getOrDefault(&quot;orders&quot;, List.of())
+                + &quot; -- correctly EMPTY, the whole transaction aborted.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java TransactionalSendsCommitTogether.java</code></p>
+<p><code>sendInTransaction</code> only buffers messages into <code>pendingInTransaction</code>; nothing lands in <code>committedTopics</code> (what a consumer would actually see) until <code>runKafkaTransaction</code>&#x27;s <code>finally</code> block runs the commit path. Because <code>placeOrder</code> throws before its second send, <code>committed</code> stays <code>false</code>, so the abort branch discards the entire buffer — <code>committedTopics</code> correctly ends up with no <code>&quot;orders&quot;</code> entry at all, avoiding the unpaired-message problem Level 1 had.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ReadCommittedConsumerNeverSeesPartial.java -- simulates a
+// read_committed CONSUMER: even if it polls WHILE a transaction is still
+// open (messages buffered but not yet committed), it sees NOTHING from
+// that in-flight transaction until commit -- never a partial view.
+import java.util.*;
+
+public class ReadCommittedConsumerNeverSeesPartial {
+    static Map&lt;String, List&lt;String&gt;&gt; committedTopics = new HashMap&lt;&gt;();
+    static Map&lt;String, List&lt;String&gt;&gt; pendingInTransaction = new HashMap&lt;&gt;();
+
+    static void sendInTransaction(String topic, String message) {
+        pendingInTransaction.computeIfAbsent(topic, k -&gt; new ArrayList&lt;&gt;()).add(message);
+    }
+
+    static List&lt;String&gt; readCommittedConsumerPoll(String topic) { // ONLY ever reads committedTopics -- NEVER pendingInTransaction
+        return committedTopics.getOrDefault(topic, List.of());
+    }
+
+    static void commitTransaction() {
+        pendingInTransaction.forEach((topic, messages) -&gt;
+                committedTopics.computeIfAbsent(topic, k -&gt; new ArrayList&lt;&gt;()).addAll(messages));
+        pendingInTransaction.clear();
+    }
+
+    public static void main(String[] args) {
+        sendInTransaction(&quot;orders&quot;, &quot;OrderPlaced:order-1&quot;);
+        sendInTransaction(&quot;stock-requests&quot;, &quot;ReserveStock:order-1&quot;);
+
+        System.out.println(&quot;--- transaction still OPEN, not yet committed ---&quot;);
+        System.out.println(&quot;read_committed consumer polls &#x27;orders&#x27;: &quot; + readCommittedConsumerPoll(&quot;orders&quot;)
+                + &quot; -- sees NOTHING yet, even though the message was already SENT (just not committed).&quot;);
+
+        commitTransaction();
+
+        System.out.println(&quot;--- transaction COMMITTED ---&quot;);
+        System.out.println(&quot;read_committed consumer polls &#x27;orders&#x27;: &quot; + readCommittedConsumerPoll(&quot;orders&quot;));
+        System.out.println(&quot;read_committed consumer polls &#x27;stock-requests&#x27;: &quot; + readCommittedConsumerPoll(&quot;stock-requests&quot;)
+                + &quot; -- BOTH now visible together, atomically.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ReadCommittedConsumerNeverSeesPartial.java</code></p>
+<p>Both <code>sendInTransaction</code> calls only populate <code>pendingInTransaction</code>. <code>readCommittedConsumerPoll</code> is written to only ever read from <code>committedTopics</code>, modeling the real behavior of a Kafka consumer configured with <code>isolation.level=read_committed</code>: even though both messages have technically been sent to the broker at this point, a <code>read_committed</code> consumer&#x27;s poll returns nothing for either topic, because the transaction hasn&#x27;t committed yet. Only after <code>commitTransaction()</code> moves both buffered messages into <code>committedTopics</code> does the consumer&#x27;s poll return them — and it returns both together, never one without the other.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>ReadCommittedConsumerNeverSeesPartial.main</code> in order. <strong>First</strong>, both <code>sendInTransaction</code> calls append their respective messages to <code>pendingInTransaction</code>, keyed by topic — <code>committedTopics</code> remains completely untouched at this point.</p>
+<p><strong>Next</strong>, <code>readCommittedConsumerPoll(&quot;orders&quot;)</code> is called while the transaction is still conceptually open. It reads <code>committedTopics.getOrDefault(&quot;orders&quot;, List.of())</code>, which returns an empty list, since nothing has been moved into <code>committedTopics</code> yet — this models the real guarantee that a <code>read_committed</code> consumer cannot see messages from a transaction that hasn&#x27;t committed, even though those messages already exist in Kafka&#x27;s internal, uncommitted state.</p>
+<p><strong>Then</strong>, <code>commitTransaction()</code> runs: it iterates <code>pendingInTransaction</code> and, for each topic, appends its buffered messages into the corresponding list in <code>committedTopics</code>, then clears <code>pendingInTransaction</code>.</p>
+<p><strong>Finally</strong>, <code>readCommittedConsumerPoll</code> is called for both <code>&quot;orders&quot;</code> and <code>&quot;stock-requests&quot;</code>. Both calls now read from <code>committedTopics</code>, which has been populated by the commit step — both return their respective messages, demonstrating that both became visible at the same moment, as a single atomic unit, rather than one appearing before the other.</p>
+<pre><code>sendInTransaction(orders)         -&gt; pendingInTransaction={orders: [...]}          | committedTopics={} (consumer sees NOTHING)
+sendInTransaction(stock-requests) -&gt; pendingInTransaction={orders:[...], stock:[...]} | committedTopics={} (still nothing)
+commitTransaction()                -&gt; committedTopics gets BOTH topics&#x27; messages, atomically
+consumer poll(orders)         -&gt; now visible
+consumer poll(stock-requests) -&gt; now visible, together with orders</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A Kafka transaction makes multiple produced messages atomic *within Kafka*, but does not, by itself, make a Kafka send and a separate database write atomic together — that still requires either a <a href="0331-transactional-outbox-pattern.md">transactional outbox pattern</a> or a <code>ChainedTransactionManager</code>, each with real tradeoffs and added complexity. Don&#x27;t assume <code>@Transactional</code> alone spanning a database call and a <code>kafkaTemplate.send</code> gives full atomicity without verifying the actual transaction manager configuration.</blockquote>
+<ul><li>Kafka transactions let a producer send multiple messages across topics/partitions atomically — all become visible together, or none do.</li><li>Consumers must be configured with <code>isolation.level=read_committed</code> to get this guarantee; the default <code>read_uncommitted</code> would let a consumer see messages from a transaction that later aborts.</li><li>This is especially valuable in consume-transform-produce pipelines, atomically coupling &quot;mark input consumed&quot; with &quot;produce transformed output.&quot;</li><li>Combining a Kafka transaction with a separate database transaction (via <code>ChainedTransactionManager</code>) is possible but adds real complexity — the <a href="0331-transactional-outbox-pattern.md">transactional outbox pattern</a> remains the simpler, more common choice for that specific need.</li></ul>
+  <div class="nav"><a class="prv" href="0344-spring-modulith-event-publication-registry-outbox-style.html"><span class="mini">← Previous</span>Spring Modulith event publication registry (outbox-style)</a><a class="nxt" href="0346-axon-framework-eventuate-with-spring-for-saga-event-sourcing.html"><span class="mini">Next →</span>Axon Framework / Eventuate with Spring for saga & event sourcing</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t345";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
