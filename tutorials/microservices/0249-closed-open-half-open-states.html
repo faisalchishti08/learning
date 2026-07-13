@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Closed / open / half-open states" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Closed / open / half-open states"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Closed, open, and half-open are the three states a <a href="0248-circuit-breaker-pattern.md">circuit breaker</a> moves through: closed means calls flow through normally while failures are tracked; open means calls are rejected immediately without attempting the dependency at all; half-open is a probing state, entered after a wait period, that allows a limited number of test calls through to check whether the dependency has recovered, deciding whether to return to closed (recovered) or back to open (still failing).</p>
+<h2>2. Why &amp; when</h2>
+<p>A circuit breaker that only ever trips (moves to open) and never re-tests the dependency would provide only half the pattern&#x27;s value — protecting the caller during an outage, but then leaving every future call permanently failing via fallback even long after the dependency has genuinely recovered, since nothing would ever attempt a real call again to discover that recovery. The three-state design solves this: the half-open state provides a deliberate, controlled way to test recovery without fully reopening the floodgates — a small number of trial calls, rather than every caller&#x27;s traffic, get to attempt the real dependency, so recovery can be detected safely and the breaker can transition back to normal operation automatically once it&#x27;s confirmed.</p>
+<p>Understand this state machine when configuring or reasoning about any circuit breaker&#x27;s behavior — the specific transition conditions (how many consecutive successes in half-open state are needed to fully close, how long open state waits before allowing a half-open probe) are exactly the tunable parameters that determine how quickly a system recovers after a dependency comes back, and how much load a still-recovering dependency receives during that recovery.</p>
+<h2>3. Core concept</h2>
+<p>The breaker transitions closed → open when the tracked failure rate crosses its threshold, open → half-open automatically after a configured wait duration, and half-open → either closed (if the limited probe calls succeed) or back to open (if they fail) — each transition is triggered by a specific, measurable condition, not a manual intervention.</p>
+<pre><code class="lang-java">enum BreakerState { CLOSED, OPEN, HALF_OPEN }
+
+BreakerState state = BreakerState.CLOSED;
+// CLOSED -- calls flow through; failures tracked; too many failures -&gt; transition to OPEN
+// OPEN -- calls REJECTED immediately; after waitDurationInOpenState elapses -&gt; transition to HALF_OPEN
+// HALF_OPEN -- a LIMITED number of trial calls allowed through:
+//   enough SUCCEED -&gt; transition back to CLOSED (dependency has recovered)
+//   ANY fail (or fail rate still too high) -&gt; transition back to OPEN (still broken, wait again)</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A circuit breaker cycles through three states: closed, where calls flow normally until a failure threshold trips it to open; open, where calls are rejected immediately until a wait duration elapses, moving to half-open; half-open, where limited trial calls determine whether the breaker returns to closed on success or back to open on failure" >
+  <rect x="30" y="80" width="150" height="55" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="105" y="103" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">CLOSED</text>
+  <text x="105" y="119" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">calls flow normally</text>
+
+  <rect x="245" y="20" width="150" height="55" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="320" y="43" fill="#e6edf3" font-size="8.5" text-anchor="middle" font-family="sans-serif">HALF_OPEN</text>
+  <text x="320" y="59" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">limited trial calls</text>
+
+  <rect x="460" y="80" width="150" height="55" rx="6" fill="#1c2430" stroke="#8b949e"/>
+  <text x="535" y="103" fill="#8b949e" font-size="8.5" text-anchor="middle" font-family="sans-serif">OPEN</text>
+  <text x="535" y="119" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">calls rejected immediately</text>
+
+  <line x1="180" y1="95" x2="458" y2="95" stroke="#8b949e" marker-end="url(#arr249)"/>
+  <text x="320" y="150" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">failure threshold crossed</text>
+
+  <line x1="500" y1="80" x2="360" y2="65" stroke="#8b949e" marker-end="url(#arr249)"/>
+  <text x="440" y="170" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">wait duration elapses</text>
+
+  <line x1="245" y1="55" x2="185" y2="90" stroke="#6db33f" stroke-width="1.5" marker-end="url(#arr249g)"/>
+  <text x="180" y="190" fill="#6db33f" font-size="7" text-anchor="middle" font-family="sans-serif">trial calls succeed</text>
+
+  <line x1="330" y1="75" x2="470" y2="82" stroke="#8b949e" marker-end="url(#arr249)"/>
+  <text x="440" y="195" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">trial calls fail</text>
+
+  <defs>
+    <marker id="arr249" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+    <marker id="arr249g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>Each transition is triggered by a specific, measurable condition, cycling the breaker automatically between protection and recovery testing.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a circuit breaker state machine built first with only closed and open states (protecting the caller but never recovering automatically), extended with a half-open state that tests recovery after a wait period, and finally demonstrating the full cycle across a dependency that fails, gets protected against, recovers, and is automatically detected as healthy again — all three transitions exercised in one continuous run.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: TwoStateOnly.java -- only CLOSED and OPEN; ONCE tripped, it
+// NEVER re-tests the dependency -- permanently stuck rejecting calls,
+// even after the dependency recovers.
+public class TwoStateOnly {
+    enum State { CLOSED, OPEN }
+    static State state = State.CLOSED;
+    static int consecutiveFailures = 0;
+
+    static String callDependency(boolean dependencyHealthy) {
+        if (!dependencyHealthy) throw new RuntimeException(&quot;dependency failed&quot;);
+        return &quot;success&quot;;
+    }
+
+    static String protectedCall(boolean dependencyHealthy) {
+        if (state == State.OPEN) return &quot;REJECTED (permanently open, no recovery mechanism)&quot;;
+        try {
+            String result = callDependency(dependencyHealthy);
+            consecutiveFailures = 0;
+            return result;
+        } catch (RuntimeException e) {
+            if (++consecutiveFailures &gt;= 3) state = State.OPEN;
+            return &quot;FAILED&quot;;
+        }
+    }
+
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 3; i++) System.out.println(protectedCall(false)); // dependency FAILS 3 times -- trips
+        System.out.println(&quot;State: &quot; + state);
+
+        // the dependency has now RECOVERED -- but this breaker has NO WAY to find out
+        System.out.println(protectedCall(true)); // STILL rejected, even though dependencyHealthy=true now!
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac TwoStateOnly.java &amp;&amp; java TwoStateOnly</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>FAILED
+FAILED
+FAILED
+State: OPEN
+REJECTED (permanently open, no recovery mechanism)</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ThreeStateWithRecovery.java -- adds HALF_OPEN: after a WAIT
+// PERIOD, a LIMITED trial call is allowed through to test recovery.
+public class ThreeStateWithRecovery {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    static State state = State.CLOSED;
+    static int consecutiveFailures = 0;
+    static long openedAt;
+    static final long WAIT_DURATION_MILLIS = 100;
+
+    static String callDependency(boolean dependencyHealthy) {
+        if (!dependencyHealthy) throw new RuntimeException(&quot;dependency failed&quot;);
+        return &quot;success&quot;;
+    }
+
+    static String protectedCall(boolean dependencyHealthy, long now) {
+        if (state == State.OPEN &amp;&amp; now - openedAt &gt;= WAIT_DURATION_MILLIS) {
+            state = State.HALF_OPEN; // TRANSITION: wait period elapsed -- allow a TRIAL call
+            System.out.println(&quot;  [breaker] OPEN -&gt; HALF_OPEN (wait period elapsed, testing recovery)&quot;);
+        }
+        if (state == State.OPEN) return &quot;REJECTED (still open, waiting)&quot;;
+
+        try {
+            String result = callDependency(dependencyHealthy);
+            if (state == State.HALF_OPEN) {
+                state = State.CLOSED; consecutiveFailures = 0; // TRIAL succeeded -- FULLY recovered
+                System.out.println(&quot;  [breaker] HALF_OPEN -&gt; CLOSED (trial call succeeded)&quot;);
+            }
+            return result;
+        } catch (RuntimeException e) {
+            if (state == State.HALF_OPEN) {
+                state = State.OPEN; openedAt = now; // TRIAL failed -- back to OPEN, wait again
+                System.out.println(&quot;  [breaker] HALF_OPEN -&gt; OPEN (trial call still failing)&quot;);
+            } else if (++consecutiveFailures &gt;= 3) {
+                state = State.OPEN; openedAt = now;
+                System.out.println(&quot;  [breaker] CLOSED -&gt; OPEN (failure threshold reached)&quot;);
+            }
+            return &quot;FAILED&quot;;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        for (int i = 0; i &lt; 3; i++) protectedCall(false, System.currentTimeMillis()); // trip it
+        System.out.println(&quot;State after 3 failures: &quot; + state);
+
+        Thread.sleep(150); // let the wait duration pass
+
+        String result = protectedCall(true, System.currentTimeMillis()); // dependency has RECOVERED -- trial call attempted
+        System.out.println(&quot;Trial call result: &quot; + result + &quot;, final state: &quot; + state);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac ThreeStateWithRecovery.java &amp;&amp; java ThreeStateWithRecovery</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>State after 3 failures: OPEN
+  [breaker] OPEN -&gt; HALF_OPEN (wait period elapsed, testing recovery)
+  [breaker] HALF_OPEN -&gt; CLOSED (trial call succeeded)
+Trial call result: success, final state: CLOSED</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: FullCycleWithFlappingRecovery.java -- exercises the FULL cycle,
+// including a HALF_OPEN trial that FAILS first (dependency still
+// unstable) before EVENTUALLY succeeding -- realistic &quot;flapping&quot; recovery.
+public class FullCycleWithFlappingRecovery {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    static State state = State.CLOSED;
+    static int consecutiveFailures = 0;
+    static long openedAt;
+    static final long WAIT_DURATION_MILLIS = 50;
+
+    static String callDependency(boolean healthy) {
+        if (!healthy) throw new RuntimeException(&quot;dependency failed&quot;);
+        return &quot;success&quot;;
+    }
+
+    static String protectedCall(boolean healthy, long now) {
+        if (state == State.OPEN &amp;&amp; now - openedAt &gt;= WAIT_DURATION_MILLIS) {
+            state = State.HALF_OPEN;
+            System.out.println(&quot;  [t+&quot; + now + &quot;] OPEN -&gt; HALF_OPEN&quot;);
+        }
+        if (state == State.OPEN) return &quot;REJECTED&quot;;
+
+        try {
+            String result = callDependency(healthy);
+            if (state == State.HALF_OPEN) { state = State.CLOSED; consecutiveFailures = 0; System.out.println(&quot;  HALF_OPEN -&gt; CLOSED (recovered)&quot;); }
+            return result;
+        } catch (RuntimeException e) {
+            if (state == State.HALF_OPEN) { state = State.OPEN; openedAt = now; System.out.println(&quot;  HALF_OPEN -&gt; OPEN (still unstable)&quot;); }
+            else if (++consecutiveFailures &gt;= 3) { state = State.OPEN; openedAt = now; System.out.println(&quot;  CLOSED -&gt; OPEN (threshold reached)&quot;); }
+            return &quot;FAILED&quot;;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        long t = System.currentTimeMillis();
+        for (int i = 0; i &lt; 3; i++) protectedCall(false, t); // trip the breaker
+        System.out.println(&quot;State: &quot; + state + &quot;\n&quot;);
+
+        Thread.sleep(70); // pass the wait duration
+        protectedCall(false, System.currentTimeMillis()); // FIRST recovery attempt -- dependency STILL flaky, trial FAILS
+        System.out.println(&quot;State: &quot; + state + &quot;\n&quot;);
+
+        Thread.sleep(70); // wait again, per the (re-)opened state
+        String finalResult = protectedCall(true, System.currentTimeMillis()); // SECOND recovery attempt -- dependency NOW genuinely healthy
+        System.out.println(&quot;Final trial result: &quot; + finalResult + &quot;, state: &quot; + state);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac FullCycleWithFlappingRecovery.java &amp;&amp; java FullCycleWithFlappingRecovery</code> (JDK 17+).</p>
+<p>Expected output (timestamps vary, sequence is stable):</p>
+<pre><code>  CLOSED -&gt; OPEN (threshold reached)
+State: OPEN
+
+  [t+...] OPEN -&gt; HALF_OPEN
+  HALF_OPEN -&gt; OPEN (still unstable)
+State: OPEN
+
+  [t+...] OPEN -&gt; HALF_OPEN
+  HALF_OPEN -&gt; CLOSED (recovered)
+Final trial result: success, state: CLOSED</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the missing recovery path</strong> — <code>TwoStateOnly</code> has only <code>CLOSED</code> and <code>OPEN</code>; once three failures push <code>state</code> to <code>OPEN</code>, nothing in <code>protectedCall</code> ever checks the dependency again, so even calling it with <code>dependencyHealthy = true</code> (simulating full recovery) is rejected identically to when the dependency was actually still down — the breaker has no way to ever discover recovery on its own.</li><li><strong>Level 2, the wait-triggered probe</strong> — <code>ThreeStateWithRecovery</code> checks, at the top of every call while <code>state == OPEN</code>, whether <code>WAIT_DURATION_MILLIS</code> has elapsed since <code>openedAt</code>; once it has, <code>state</code> transitions to <code>HALF_OPEN</code> *before* deciding whether to actually attempt the call, allowing exactly one trial call through.</li><li><strong>Level 2, the successful recovery path</strong> — because <code>dependencyHealthy</code> is <code>true</code> on the trial call in <code>main</code>, <code>callDependency</code> succeeds, and the <code>if (state == State.HALF_OPEN)</code> check inside the success branch transitions <code>state</code> back to <code>CLOSED</code>, resetting <code>consecutiveFailures</code> — the breaker has now fully recovered, having discovered this automatically rather than requiring any manual intervention.</li><li><strong>Level 3, a trial call that itself fails</strong> — <code>FullCycleWithFlappingRecovery</code> calls <code>protectedCall(false, ...)</code> for its *first* post-wait attempt, meaning the dependency is still unhealthy at that point; the <code>catch</code> block&#x27;s <code>if (state == State.HALF_OPEN)</code> branch fires instead of the success branch, transitioning <code>state</code> back to <code>OPEN</code> and resetting <code>openedAt</code> to the current time — modeling a realistic &quot;flapping&quot; dependency that appears to have recovered timing-wise but is still actually broken.</li><li><strong>Level 3, the second wait cycle</strong> — because the breaker went back to <code>OPEN</code> (not straight to <code>CLOSED</code>), it must wait out <code>WAIT_DURATION_MILLIS</code> *again* before offering another trial call; <code>main</code>&#x27;s second <code>Thread.sleep(70)</code> and subsequent call models exactly this second wait-and-retry cycle.</li><li><strong>Level 3, eventual genuine recovery detected</strong> — the second trial call passes <code>healthy = true</code>, and this time <code>callDependency</code> succeeds, transitioning <code>state</code> to <code>CLOSED</code> for good; the full sequence — trip, failed recovery attempt, successful recovery attempt — demonstrates that the half-open state&#x27;s design correctly handles not just a clean, one-shot recovery (as in Level 2) but also a more realistic, imperfect recovery where the dependency needs more than one probe before it&#x27;s genuinely stable again, without ever needing a human to intervene at any point in the cycle.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> in half-open state, only a small, limited number of calls should be allowed through as trials — allowing unlimited traffic through the moment the breaker enters half-open would defeat its purpose, potentially overwhelming a dependency that&#x27;s only barely starting to recover; real circuit breaker implementations (like Resilience4j) configure a specific <code>permittedNumberOfCallsInHalfOpenState</code>, and this example&#x27;s single-trial-call simplification stands in for that same, deliberately limited probing behavior.</blockquote>
+<ul><li>Closed, open, and half-open are the three states a circuit breaker cycles through: normal operation, tripped rejection, and controlled recovery testing.</li><li>The open-to-half-open transition happens automatically after a configured wait duration, giving the breaker a way to periodically re-check whether a failing dependency has recovered.</li><li>Half-open allows only a limited number of trial calls through — success transitions back to closed (fully recovered), while failure transitions back to open (still broken, wait again).</li><li>A real dependency&#x27;s recovery isn&#x27;t always clean on the first try; the cycle can repeat through open and half-open multiple times before genuinely stabilizing, and the state machine handles this correctly without manual intervention.</li><li>Without the half-open state, a tripped circuit breaker would stay permanently rejecting calls even long after the underlying dependency has fully recovered — half-open is what makes the pattern self-healing rather than a one-way trip.</li></ul>
+  <div class="nav"><a class="prv" href="0248-circuit-breaker-pattern.html"><span class="mini">← Previous</span>Circuit breaker pattern</a><a class="nxt" href="0250-failure-rate-threshold.html"><span class="mini">Next →</span>Failure rate threshold</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t249";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
