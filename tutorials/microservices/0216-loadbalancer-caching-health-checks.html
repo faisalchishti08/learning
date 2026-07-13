@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"LoadBalancer caching & health checks" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 7. Load Balancing</div>
+  <div class="htitle">
+    <h1>"LoadBalancer caching & health checks"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Cloud LoadBalancer optionally caches the instance list it gets from <code>DiscoveryClient</code> for a short, configurable time-to-live, and separately can layer a <code>HealthCheckServiceInstanceListSupplier</code> in front of the default supplier chain to actively probe instances and exclude unhealthy ones — two independent optimizations that both sit between raw discovery data and the final candidate list the selection algorithm chooses from.</p>
+<h2>2. Why &amp; when</h2>
+<p>Querying <code>DiscoveryClient</code> on every single outbound call, as the uncached default effectively does, means a registry lookup for every call — fine for occasional calls but a real, avoidable overhead under high call volume, since the instance list rarely changes between two calls milliseconds apart. Caching the resolved instance list for a short TTL (a second or a few seconds, not minutes) removes this redundant lookup cost for the common case while still refreshing often enough that scale-up and scale-down events are reflected quickly. Separately, <code>DiscoveryClient</code>-reported instances reflect registration status, not necessarily current, real-time health — an instance can be registered and yet be temporarily failing or slow to respond, a gap a <code>HealthCheckServiceInstanceListSupplier</code> closes by actively probing each candidate&#x27;s health endpoint before including it.</p>
+<p>Enable caching in any application making a meaningfully high volume of load-balanced calls, where shaving repeated registry lookups off the hot path matters; leave it disabled for lower-volume cases where the extra millisecond of a fresh lookup is negligible. Layer in a <code>HealthCheckServiceInstanceListSupplier</code> whenever registered-but-unhealthy instances are a real risk in the target environment — the combination of caching and health-checking is a very common production configuration.</p>
+<h2>3. Core concept</h2>
+<p>Caching and health-checking are both implemented as <code>ServiceInstanceListSupplier</code> decorators — the same composable extension point used for <a href="0214-custom-loadbalancer-configuration-serviceinstancelistsupplie.md">custom candidate filtering</a> — meaning both can be enabled together, and the order they&#x27;re composed in determines whether health checks run against cached data or trigger their own fresher lookups.</p>
+<pre><code class="lang-java">// CACHING supplier -- wraps a delegate, reuses its result for a short TTL instead of calling it every time
+class CachingServiceInstanceListSupplier implements ServiceInstanceListSupplier {
+    ServiceInstanceListSupplier delegate;
+    List&lt;ServiceInstance&gt; cached; long cachedAt; long ttlMillis = 2000; // e.g. a 2-second TTL
+
+    public Flux&lt;List&lt;ServiceInstance&gt;&gt; get() {
+        long now = System.currentTimeMillis();
+        if (cached != null &amp;&amp; now - cachedAt &lt; ttlMillis) return Flux.just(cached); // CACHE HIT
+        return delegate.get().doOnNext(list -&gt; { cached = list; cachedAt = now; }); // CACHE MISS -- refresh
+    }
+}
+
+// HEALTH-CHECK supplier -- wraps a delegate, probes each instance, EXCLUDES failing ones
+class HealthCheckServiceInstanceListSupplier implements ServiceInstanceListSupplier {
+    ServiceInstanceListSupplier delegate;
+    public Flux&lt;List&lt;ServiceInstance&gt;&gt; get() {
+        return delegate.get().map(instances -&gt; instances.stream().filter(this::isHealthy).toList());
+    }
+    boolean isHealthy(ServiceInstance i) { /* probe i&#x27;s /actuator/health endpoint */ return true; }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Discovery client feeds a caching supplier, which serves cached results within its TTL or refreshes from discovery, and its output then passes through a health-check supplier that probes and filters instances before the final list reaches selection" >
+  <rect x="15" y="70" width="110" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="70" y="90" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">DiscoveryClient</text>
+  <text x="70" y="103" fill="#8b949e" font-size="6.5" text-anchor="middle" font-family="sans-serif">raw instance list</text>
+
+  <rect x="170" y="60" width="150" height="65" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="245" y="83" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Caching supplier</text>
+  <text x="245" y="98" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">hit: cached copy</text>
+  <text x="245" y="111" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">miss: refresh + store</text>
+
+  <rect x="365" y="60" width="150" height="65" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="440" y="83" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Health-check supplier</text>
+  <text x="440" y="98" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">probes each instance</text>
+  <text x="440" y="111" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">drops unhealthy ones</text>
+
+  <rect x="555" y="70" width="70" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="590" y="97" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Selection</text>
+
+  <line x1="125" y1="92" x2="168" y2="92" stroke="#8b949e" marker-end="url(#arr216)"/>
+  <line x1="320" y1="92" x2="363" y2="92" stroke="#8b949e" marker-end="url(#arr216)"/>
+  <line x1="515" y1="92" x2="553" y2="92" stroke="#8b949e" marker-end="url(#arr216)"/>
+
+  <defs>
+    <marker id="arr216" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Caching avoids redundant discovery lookups; health-checking layers on top to exclude instances that are registered but currently unhealthy.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a call counter tracks how many times the &quot;expensive&quot; discovery lookup actually runs, first with no caching (every call triggers a lookup), then with TTL-based caching added (most calls reuse a cached result), and finally with a health check layered on top that excludes an instance which starts failing mid-run — the SAME underlying lookup-counting mechanism used throughout to make the optimization&#x27;s effect directly observable.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UncachedLookupEveryCall.java -- EVERY call triggers a fresh,
+// &quot;expensive&quot; discovery lookup -- the counter proves this.
+import java.util.*;
+
+public class UncachedLookupEveryCall {
+    record ServiceInstance(String host, boolean healthy) {}
+    static int lookupCount = 0;
+
+    static List&lt;ServiceInstance&gt; expensiveDiscoveryLookup() {
+        lookupCount++; // counts EVERY call -- simulates real registry lookup cost
+        return List.of(new ServiceInstance(&quot;10.0.1.5&quot;, true), new ServiceInstance(&quot;10.0.1.6&quot;, true));
+    }
+
+    public static void main(String[] args) {
+        for (int i = 0; i &lt; 5; i++) expensiveDiscoveryLookup(); // 5 outbound calls, 5 SEPARATE lookups
+        System.out.println(&quot;Calls made: 5, discovery lookups performed: &quot; + lookupCount);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac UncachedLookupEveryCall.java &amp;&amp; java UncachedLookupEveryCall</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Calls made: 5, discovery lookups performed: 5</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: CachedLookupWithTtl.java -- the SAME 5 calls, but now cached with
+// a TTL -- most reuse the cached list instead of re-querying.
+import java.util.*;
+
+public class CachedLookupWithTtl {
+    record ServiceInstance(String host, boolean healthy) {}
+    static int lookupCount = 0;
+    static List&lt;ServiceInstance&gt; cached; static long cachedAt = -1; static final long TTL_MILLIS = 100;
+
+    static List&lt;ServiceInstance&gt; expensiveDiscoveryLookup() {
+        lookupCount++;
+        return List.of(new ServiceInstance(&quot;10.0.1.5&quot;, true), new ServiceInstance(&quot;10.0.1.6&quot;, true));
+    }
+
+    static List&lt;ServiceInstance&gt; cachedGetInstances(long simulatedNow) {
+        if (cached != null &amp;&amp; simulatedNow - cachedAt &lt; TTL_MILLIS) return cached; // CACHE HIT -- no lookup
+        cached = expensiveDiscoveryLookup(); cachedAt = simulatedNow; // CACHE MISS -- refresh
+        return cached;
+    }
+
+    public static void main(String[] args) {
+        long[] callTimes = {0, 10, 20, 150, 160}; // 5 calls; only the 4th falls outside the 100ms TTL
+        for (long t : callTimes) cachedGetInstances(t);
+        System.out.println(&quot;Calls made: 5, discovery lookups performed: &quot; + lookupCount + &quot; (cache absorbed the rest)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac CachedLookupWithTtl.java &amp;&amp; java CachedLookupWithTtl</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Calls made: 5, discovery lookups performed: 2 (cache absorbed the rest)</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: CachedPlusHealthCheckedLookup.java -- caching AND health-checking
+// layered together; an instance that starts failing mid-run gets excluded
+// from the final candidate list even though it&#x27;s still cached/registered.
+import java.util.*;
+
+public class CachedPlusHealthCheckedLookup {
+    record ServiceInstance(String host, boolean healthyAtProbeTime) {}
+    static int lookupCount = 0; static int healthProbeCount = 0;
+    static List&lt;ServiceInstance&gt; cached; static long cachedAt = -1; static final long TTL_MILLIS = 100;
+    static boolean instanceBFailing = false; // toggled mid-run to simulate a real failure
+
+    static List&lt;ServiceInstance&gt; expensiveDiscoveryLookup() {
+        lookupCount++;
+        return List.of(new ServiceInstance(&quot;10.0.1.5&quot;, true), new ServiceInstance(&quot;10.0.1.6&quot;, !instanceBFailing));
+    }
+
+    static List&lt;ServiceInstance&gt; cachedGetInstances(long simulatedNow) {
+        if (cached != null &amp;&amp; simulatedNow - cachedAt &lt; TTL_MILLIS) return cached;
+        cached = expensiveDiscoveryLookup(); cachedAt = simulatedNow;
+        return cached;
+    }
+
+    // health check runs on EVERY call, even against cached data -- caching and health-checking are INDEPENDENT layers
+    static List&lt;ServiceInstance&gt; healthFilteredInstances(long simulatedNow) {
+        List&lt;ServiceInstance&gt; candidates = cachedGetInstances(simulatedNow);
+        List&lt;ServiceInstance&gt; healthy = new ArrayList&lt;&gt;();
+        for (ServiceInstance i : candidates) {
+            healthProbeCount++;
+            boolean stillHealthy = i.host().equals(&quot;10.0.1.6&quot;) ? !instanceBFailing : true; // re-probe LIVE health
+            if (stillHealthy) healthy.add(i);
+        }
+        return healthy;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Before instance B fails: &quot; + healthFilteredInstances(0));
+        instanceBFailing = true; // instance B starts failing, but cache entry is still fresh (within TTL)
+        System.out.println(&quot;After instance B fails (cache still fresh):  &quot; + healthFilteredInstances(10));
+        System.out.println(&quot;Discovery lookups: &quot; + lookupCount + &quot;, health probes: &quot; + healthProbeCount);
+        System.out.println(&quot;Health checks excluded the failing instance WITHOUT needing a fresh discovery lookup.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac CachedPlusHealthCheckedLookup.java &amp;&amp; java CachedPlusHealthCheckedLookup</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Before instance B fails: [ServiceInstance[host=10.0.1.5, healthyAtProbeTime=true], ServiceInstance[host=10.0.1.6, healthyAtProbeTime=true]]
+After instance B fails (cache still fresh):  [ServiceInstance[host=10.0.1.5, healthyAtProbeTime=true]]
+Discovery lookups: 1, health probes: 4
+Health checks excluded the failing instance WITHOUT needing a fresh discovery lookup.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1, the uncached baseline</strong> — <code>expensiveDiscoveryLookup</code> increments <code>lookupCount</code> on every invocation, and <code>main</code> calls it directly 5 times, so <code>lookupCount</code> ends at exactly 5 — one lookup per call, with no reuse whatsoever.</li><li><strong>Level 2, introducing the TTL cache</strong> — <code>cachedGetInstances</code> checks whether <code>cached</code> exists and is still within <code>TTL_MILLIS</code> of <code>cachedAt</code>; if so it returns <code>cached</code> directly (a cache hit, no lookup performed), otherwise it calls <code>expensiveDiscoveryLookup</code> and records the new <code>cachedAt</code> timestamp (a cache miss).</li><li><strong>Level 2, why only 2 lookups happen</strong> — of the five simulated call times (<code>0, 10, 20, 150, 160</code>), the calls at <code>10</code> and <code>20</code> fall within 100ms of the cache entry created at <code>0</code>, so they hit the cache; the call at <code>150</code> is outside the TTL, forcing a refresh (second lookup, new <code>cachedAt = 150</code>); the call at <code>160</code> then falls within 100ms of *that* refreshed entry, so it hits the cache again — two lookups total instead of five.</li><li><strong>Level 3, layering health-checking on top of caching</strong> — <code>healthFilteredInstances</code> calls <code>cachedGetInstances</code> to get the (possibly cached) candidate list, then independently re-probes each candidate&#x27;s live health via <code>healthProbeCount</code>-incrementing checks, filtering out anything currently unhealthy — this probing happens on *every* call, regardless of whether the underlying instance list itself came from cache or a fresh lookup.</li><li><strong>Level 3, the failure and its detection</strong> — <code>instanceBFailing</code> is set to <code>true</code> between the two <code>healthFilteredInstances</code> calls in <code>main</code>, simulating instance B degrading; because the cache entry from time <code>0</code> is still within its TTL at time <code>10</code>, <code>cachedGetInstances</code> returns the *same* cached instance list (still showing B as originally healthy) — but the *health probe*, which runs independently on each call, catches B&#x27;s now-failing state and excludes it from the returned list regardless.</li><li><strong>Level 3, why this separation matters</strong> — the final printed counts (<code>1</code> discovery lookup, <code>4</code> health probes across two calls of two instances each) show that caching reduced expensive registry lookups while health-checking still caught the failure promptly, because the two concerns are decoupled: caching controls how often the *candidate list* is refreshed, while health-checking controls which candidates in that list are currently considered usable, and it re-evaluates on every call independent of the cache.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> caching the instance *list* and checking instance *health* are separate concerns with separate refresh cadences — a long cache TTL does not mean health information goes stale for that same duration, since health checks (when enabled) typically re-probe independently of the caching layer, as Level 3 demonstrates; conversely, don&#x27;t assume enabling health checks alone gives you caching, or that caching alone gives you health awareness — both need to be explicitly configured for the combined benefit.</blockquote>
+<ul><li>Caching the resolved instance list with a short TTL cuts down on redundant <code>DiscoveryClient</code> lookups under high call volume, at the cost of the instance list being up to one TTL period stale after a registry change.</li><li><code>HealthCheckServiceInstanceListSupplier</code> actively probes candidate instances and excludes currently-unhealthy ones, closing the gap between &quot;registered&quot; (what <code>DiscoveryClient</code> reports) and &quot;actually able to serve a request right now.&quot;</li><li>Both caching and health-checking are implemented as composable <code>ServiceInstanceListSupplier</code> decorators, the same extension point used for <a href="0214-custom-loadbalancer-configuration-serviceinstancelistsupplie.md">custom candidate filtering</a>, and can be combined freely.</li><li>Caching and health-checking operate on different cadences by design — caching reduces lookup frequency, while health-checking can still re-evaluate instance health independently of whether the underlying list came from cache.</li><li>Enable caching for high-call-volume applications where lookup overhead matters, and layer in health-checking wherever registered-but-unhealthy instances are a realistic risk — the two together are a common, complementary production configuration.</li></ul>
+  <div class="nav"><a class="prv" href="0215-load-balanced-webclient-restclient-resttemplate-loadbalanced.html"><span class="mini">← Previous</span>Load-balanced WebClient / RestClient / RestTemplate (@LoadBalanced)</a><a class="nxt" href="0217-legacy-netflix-ribbon-deprecated-awareness.html"><span class="mini">Next →</span>Legacy Netflix Ribbon (deprecated) awareness</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t216";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
