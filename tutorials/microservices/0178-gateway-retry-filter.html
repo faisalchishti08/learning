@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Gateway retry filter" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 5. API Gateway & Edge</div>
+  <div class="htitle">
+    <h1>"Gateway retry filter"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Cloud Gateway&#x27;s retry filter automatically re-attempts a failed request to a backend a configured number of times, optionally with backoff between attempts and limited to specific HTTP status codes or exception types — declarative, configuration-driven retry behavior applied at the routing layer, sparing every individual client and every individual backend from needing to implement retry logic themselves.</p>
+<h2>2. Why &amp; when</h2>
+<p>A backend failure is often transient — a momentary network blip, a brief instance restart, a fleeting overload — and simply failing the client&#x27;s request immediately on the first such failure wastes an opportunity to succeed on a near-immediate retry, something a struggling but fundamentally healthy backend would often satisfy just fine a moment later. Implementing retry logic in every client that talks to the gateway duplicates that logic across every consumer; implementing it in every backend service duplicates it across every service. A retry filter at the gateway handles this exactly once, uniformly, for every route configured to use it.</p>
+<p>Configure the retry filter for routes to backends where transient failures are plausible and where the underlying operation is safe to retry — critically, only for operations that are genuinely safe to repeat (idempotent reads, or writes protected by <a href="0127-idempotent-consumers.md">idempotent consumer</a>-style safeguards), since blindly retrying a non-idempotent write (a payment charge, for instance) risks the exact double-processing problem idempotency is meant to prevent.</p>
+<h2>3. Core concept</h2>
+<p>The retry filter wraps a route&#x27;s backend call; on a failure matching the configured retryable conditions (specific status codes, specific exceptions), it re-attempts the call, up to a configured maximum number of attempts, optionally with a backoff delay between attempts — only surfacing a failure to the client once the retry budget is exhausted.</p>
+<pre><code class="lang-java">.filters(f -&gt; f.retry(config -&gt; config
+    .setRetries(3)
+    .setStatuses(HttpStatus.BAD_GATEWAY, HttpStatus.SERVICE_UNAVAILABLE) // ONLY retry these -- not 400s, which won&#x27;t fix themselves
+    .setBackoff(Duration.ofMillis(100), Duration.ofSeconds(1), 2, true))) // exponential backoff between attempts</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A request fails on its first attempt with a 503; the retry filter automatically retries with backoff, and the second attempt succeeds -- the client only ever sees the final successful response, unaware a retry happened" >
+  <rect x="20" y="60" width="100" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="70" y="87" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Client</text>
+
+  <rect x="220" y="20" width="200" height="130" rx="8" fill="none" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="320" y="40" fill="#8b949e" font-size="8" font-family="sans-serif">Retry filter</text>
+  <text x="240" y="65" fill="#e6edf3" font-size="7.5" font-family="sans-serif">attempt 1 -&gt; 503, backoff</text>
+  <text x="240" y="90" fill="#e6edf3" font-size="7.5" font-family="sans-serif">attempt 2 -&gt; 200 OK</text>
+  <text x="240" y="125" fill="#8b949e" font-size="7" font-family="sans-serif">client only sees the final result</text>
+
+  <rect x="480" y="60" width="140" height="45" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="550" y="87" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Backend</text>
+
+  <line x1="120" y1="82" x2="218" y2="82" stroke="#8b949e" marker-end="url(#arr59)"/>
+  <line x1="420" y1="82" x2="478" y2="82" stroke="#8b949e" marker-end="url(#arr59)"/>
+
+  <defs>
+    <marker id="arr59" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>The retry happens entirely inside the gateway; the client experiences only the eventual outcome, never the intermediate failure.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order lookup route that starts with no retry, failing the client immediately on a single transient error, adds a configurable retry filter with status-code-based eligibility and backoff, and finally demonstrates the critical safety distinction between retrying a safe, idempotent GET versus correctly refusing to blindly retry a non-idempotent POST.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoRetryImmediateFailure.java -- ONE transient failure immediately fails
+// the client&#x27;s request, even though a near-instant retry would likely succeed.
+public class NoRetryImmediateFailure {
+    static int callCount = 0;
+    static String callBackend() {
+        callCount++;
+        if (callCount == 1) throw new RuntimeException(&quot;503 Service Unavailable (transient)&quot;); // fails ONCE, then would succeed
+        return &quot;200 OK&quot;;
+    }
+
+    public static void main(String[] args) {
+        try {
+            System.out.println(callBackend());
+        } catch (RuntimeException e) {
+            System.out.println(&quot;Client sees: &quot; + e.getMessage());
+            System.out.println(&quot;A retry would have succeeded (the SECOND call works fine), but nothing retried it.&quot;);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac NoRetryImmediateFailure.java &amp;&amp; java NoRetryImmediateFailure</code> (JDK 17+).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: RetryFilterWithBackoffAndStatusFilter.java -- retries ONLY configured
+// status codes, with BACKOFF between attempts, transparently to the client.
+import java.util.*;
+
+public class RetryFilterWithBackoffAndStatusFilter {
+    static class BackendException extends RuntimeException {
+        int statusCode;
+        BackendException(int statusCode, String message) { super(message); this.statusCode = statusCode; }
+    }
+
+    static class RetryFilter {
+        int maxRetries;
+        Set&lt;Integer&gt; retryableStatuses;
+        long backoffMillis;
+        RetryFilter(int maxRetries, Set&lt;Integer&gt; retryableStatuses, long backoffMillis) {
+            this.maxRetries = maxRetries; this.retryableStatuses = retryableStatuses; this.backoffMillis = backoffMillis;
+        }
+
+        String call(java.util.function.Supplier&lt;String&gt; backendCall) throws InterruptedException {
+            int attempt = 0;
+            while (true) {
+                attempt++;
+                try {
+                    return backendCall.get();
+                } catch (BackendException e) {
+                    boolean retryable = retryableStatuses.contains(e.statusCode);
+                    System.out.println(&quot;  attempt &quot; + attempt + &quot; failed with status &quot; + e.statusCode + &quot; (retryable=&quot; + retryable + &quot;)&quot;);
+                    if (!retryable || attempt &gt; maxRetries) throw e; // give up: not retryable, or budget exhausted
+                    Thread.sleep(backoffMillis); // BACKOFF before the next attempt
+                }
+            }
+        }
+    }
+
+    static int callCount = 0;
+    static String flakyBackendCall() {
+        callCount++;
+        if (callCount &lt; 3) throw new BackendException(503, &quot;Service Unavailable&quot;); // fails TWICE, succeeds on the 3rd
+        return &quot;200 OK, order data&quot;;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        RetryFilter retryFilter = new RetryFilter(3, Set.of(503, 502), 50);
+        String result = retryFilter.call(RetryFilterWithBackoffAndStatusFilter::flakyBackendCall);
+        System.out.println(&quot;Client receives: &quot; + result + &quot; (client NEVER saw the two intermediate 503s)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac RetryFilterWithBackoffAndStatusFilter.java &amp;&amp; java RetryFilterWithBackoffAndStatusFilter</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>  attempt 1 failed with status 503 (retryable=true)
+  attempt 2 failed with status 503 (retryable=true)
+Client receives: 200 OK, order data (client NEVER saw the two intermediate 503s)</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: SafeVsUnsafeRetryDistinction.java -- retrying a SAFE, idempotent GET is
+// fine; blindly retrying an UNSAFE, non-idempotent POST risks DOUBLE-PROCESSING.
+import java.util.*;
+
+public class SafeVsUnsafeRetryDistinction {
+    static class BackendException extends RuntimeException {
+        int statusCode;
+        BackendException(int statusCode, String message) { super(message); this.statusCode = statusCode; }
+    }
+
+    static class RetryFilter {
+        int maxRetries; Set&lt;Integer&gt; retryableStatuses; Set&lt;String&gt; retryableMethods;
+        RetryFilter(int maxRetries, Set&lt;Integer&gt; retryableStatuses, Set&lt;String&gt; retryableMethods) {
+            this.maxRetries = maxRetries; this.retryableStatuses = retryableStatuses; this.retryableMethods = retryableMethods;
+        }
+        String call(String httpMethod, java.util.function.Supplier&lt;String&gt; backendCall) {
+            int attempt = 0;
+            while (true) {
+                attempt++;
+                try {
+                    return backendCall.get();
+                } catch (BackendException e) {
+                    // BOTH conditions matter: retryable STATUS *and* retryable METHOD (idempotent-safe)
+                    boolean statusOk = retryableStatuses.contains(e.statusCode);
+                    boolean methodOk = retryableMethods.contains(httpMethod);
+                    if (!statusOk || !methodOk || attempt &gt; maxRetries) {
+                        System.out.println(&quot;  &quot; + httpMethod + &quot; attempt &quot; + attempt + &quot;: NOT retrying (statusOk=&quot; + statusOk + &quot;, methodOk=&quot; + methodOk + &quot;)&quot;);
+                        throw e;
+                    }
+                    System.out.println(&quot;  &quot; + httpMethod + &quot; attempt &quot; + attempt + &quot;: retrying (safe: idempotent method + retryable status)&quot;);
+                }
+            }
+        }
+    }
+
+    static int chargeAttempts = 0;
+    static String chargeCustomerPost() { // NON-idempotent: charging TWICE is a REAL financial bug
+        chargeAttempts++;
+        System.out.println(&quot;    !!! ACTUALLY CHARGING THE CUSTOMER (attempt &quot; + chargeAttempts + &quot;) !!!&quot;);
+        throw new BackendException(503, &quot;Service Unavailable&quot;);
+    }
+
+    static int getAttempts = 0;
+    static String getOrderStatusGet() { // idempotent: reading twice is harmless
+        getAttempts++;
+        if (getAttempts &lt; 2) throw new BackendException(503, &quot;Service Unavailable&quot;);
+        return &quot;200 OK, order status&quot;;
+    }
+
+    public static void main(String[] args) {
+        RetryFilter retryFilter = new RetryFilter(2, Set.of(503), Set.of(&quot;GET&quot;)); // ONLY GET is in the safe-to-retry set
+
+        System.out.println(&quot;=== GET (idempotent, safe to retry) ===&quot;);
+        String getResult = retryFilter.call(&quot;GET&quot;, SafeVsUnsafeRetryDistinction::getOrderStatusGet);
+        System.out.println(&quot;Result: &quot; + getResult);
+
+        System.out.println(&quot;\n=== POST (NOT idempotent, must NOT blindly retry) ===&quot;);
+        try {
+            retryFilter.call(&quot;POST&quot;, SafeVsUnsafeRetryDistinction::chargeCustomerPost);
+        } catch (BackendException e) {
+            System.out.println(&quot;Failed as expected -- POST failure surfaced to caller WITHOUT a blind retry.&quot;);
+        }
+        System.out.println(&quot;Customer was charged &quot; + chargeAttempts + &quot; time(s) -- the retry filter correctly refused to risk a SECOND charge.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac SafeVsUnsafeRetryDistinction.java &amp;&amp; java SafeVsUnsafeRetryDistinction</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>=== GET (idempotent, safe to retry) ===
+  GET attempt 1: retrying (safe: idempotent method + retryable status)
+Result: 200 OK, order status
+
+=== POST (NOT idempotent, must NOT blindly retry) ===
+    !!! ACTUALLY CHARGING THE CUSTOMER (attempt 1) !!!
+  POST attempt 1: NOT retrying (statusOk=true, methodOk=false)
+Failed as expected -- POST failure surfaced to caller WITHOUT a blind retry.
+Customer was charged 1 time(s) -- the retry filter correctly refused to risk a SECOND charge.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>callBackend</code> throws on its first invocation and would succeed on a second, but nothing in <code>main</code> attempts a second call; the client&#x27;s <code>catch</code> block reports the failure directly, having never had the opportunity to benefit from the transient nature of the error.</li><li><strong>Level 2, the retry loop with eligibility check</strong> — <code>RetryFilter.call</code> wraps <code>backendCall.get()</code> in a <code>while (true)</code> loop; on catching a <code>BackendException</code>, it checks <code>retryableStatuses.contains(e.statusCode)</code> before deciding whether to retry, meaning only failures matching the configured status codes trigger another attempt.</li><li><strong>Level 2, backoff between attempts</strong> — <code>Thread.sleep(backoffMillis)</code> runs between a failed attempt and the next retry, giving the backend a brief window to recover rather than immediately hammering it again.</li><li><strong>Level 2, the client&#x27;s experience</strong> — <code>flakyBackendCall</code> fails on its first two invocations and succeeds on the third; <code>main</code>&#x27;s single call to <code>retryFilter.call(...)</code> handles all three attempts internally, and the printed <code>&quot;Client receives:&quot;</code> line shows only the final, successful result — the two intermediate 503 failures were entirely absorbed inside the filter.</li><li><strong>Level 3, adding a method-safety check</strong> — <code>RetryFilter.call</code> now takes an <code>httpMethod</code> parameter and checks <code>retryableMethods.contains(httpMethod)</code> *in addition to* the status code check; the configured <code>retryableMethods</code> set contains only <code>&quot;GET&quot;</code>, deliberately excluding <code>&quot;POST&quot;</code>.</li><li><strong>Level 3, the safe GET retrying normally</strong> — <code>getOrderStatusGet</code> fails once and succeeds on its second attempt; because <code>httpMethod</code> is <code>&quot;GET&quot;</code> (in the safe set) and the status is retryable, the retry proceeds exactly as in Level 2, and the client receives the eventual success transparently.</li><li><strong>Level 3, the unsafe POST correctly refusing to retry</strong> — <code>chargeCustomerPost</code> throws on its first (and only) invocation; even though its <code>statusCode</code> (503) matches <code>retryableStatuses</code>, <code>methodOk</code> evaluates to <code>false</code> because <code>&quot;POST&quot;</code> is not in <code>retryableMethods</code>, so <code>call</code> immediately re-throws the exception rather than attempting a second call — the printed <code>chargeAttempts</code> count of exactly <code>1</code> confirms the customer&#x27;s card was charged (or at least attempted) only once, directly demonstrating that the retry filter&#x27;s method-awareness prevented a potential double-charge that a naive, status-code-only retry policy (like Level 2&#x27;s) would have risked.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a request can fail with a network-level error (a connection timeout, a dropped connection) *after* the backend has already begun processing it, meaning even a nominally idempotent-looking operation might have partially executed before the failure that triggered a retry — true safety requires the backend operation itself to be genuinely idempotent (see <a href="0127-idempotent-consumers.md">idempotent consumers</a>), not just relying on the gateway&#x27;s HTTP-method-based heuristic (GET is &quot;probably safe,&quot; POST is &quot;probably not&quot;) as a complete guarantee.</blockquote>
+<ul><li>The retry filter automatically re-attempts failed backend calls according to configured status-code and retry-count rules, transparently to the client, sparing individual clients and backends from implementing this logic themselves.</li><li>Backoff between retry attempts gives a struggling backend room to recover rather than immediately re-sending the same load that may have contributed to the original failure.</li><li>Retry eligibility should be restricted to genuinely idempotent operations — retrying a non-idempotent write (like a payment charge) risks the exact double-processing problem idempotency safeguards are meant to prevent.</li><li>Combining status-code-based and HTTP-method-based eligibility checks (retry GETs, refuse to blindly retry POSTs) is a practical, if imperfect, heuristic for distinguishing safe from unsafe retries.</li><li>True retry safety ultimately depends on the backend operation&#x27;s own idempotency, not just the gateway&#x27;s HTTP-method heuristic — a network failure can occur after a backend has partially processed even a nominally safe-looking request.</li></ul>
+  <div class="nav"><a class="prv" href="0177-gateway-circuit-breaker-filter-resilience4j.html"><span class="mini">← Previous</span>Gateway circuit breaker filter (Resilience4j)</a><a class="nxt" href="0179-gateway-integration-with-service-discovery.html"><span class="mini">Next →</span>Gateway integration with service discovery</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t178";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
