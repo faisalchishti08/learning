@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Dead letter queue (DLQ)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 4. Asynchronous & Event-Driven Communication</div>
+  <div class="htitle">
+    <h1>"Dead letter queue (DLQ)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A dead letter queue is a separate, dedicated queue where messages get routed after they fail processing too many times to be worth retrying automatically — instead of being retried forever or silently discarded, they land somewhere visible where a human or a separate recovery process can inspect and decide what to do with them.</p>
+<h2>2. Why &amp; when</h2>
+<p><a href="0118-at-most-once-at-least-once-exactly-once-delivery.md">At-least-once delivery</a> with redelivery is great for transient failures (a downstream service was briefly down), but a message that fails for a *permanent* reason — malformed data, a bug in the consumer, a business rule that will never be satisfied — will simply be redelivered and fail again forever, endlessly consuming consumer capacity and cluttering logs without ever making progress. A DLQ breaks that infinite loop: after a bounded number of failed attempts, the message is moved out of the main queue entirely, so the main pipeline keeps flowing and the stuck message is parked somewhere for deliberate follow-up.</p>
+<p>Configure a DLQ (or the closest equivalent your broker offers) for any queue processing messages where a permanent failure is plausible — which is nearly always, since bad data or unexpected edge cases eventually reach every consumer in production. Skip it only for messages so low-stakes that losing them after retries is an acceptable, deliberate trade-off.</p>
+<h2>3. Core concept</h2>
+<p>Every failed processing attempt increments a retry counter attached to the message; once that counter crosses a configured threshold, instead of requeueing the message onto the original queue, the consumer (or the broker itself, in brokers with native DLQ support) routes it to the DLQ, tagged with the failure reason, leaving the main queue free to keep processing everything else.</p>
+<pre><code class="lang-java">try {
+    processOrder(message);
+    message.ack();
+} catch (Exception e) {
+    if (message.deliveryCount() &gt;= maxRetries) {
+        deadLetterQueue.send(message, reason = e.getMessage()); // stop retrying, park it
+        message.ack(); // acknowledge on the ORIGINAL queue -- it&#x27;s handled, just handled elsewhere
+    } else {
+        message.nack(); // still within retry budget -- try again
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A message failing repeatedly is retried up to a limit on the main queue; once the limit is exceeded it is routed to a dead letter queue instead of retried forever, keeping the main queue flowing" >
+  <rect x="20" y="70" width="180" height="60" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="110" y="95" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Main queue</text>
+  <text x="110" y="112" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">retry 1, 2, 3...</text>
+
+  <rect x="250" y="70" width="140" height="60" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="320" y="95" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Consumer</text>
+  <text x="320" y="112" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">keeps failing</text>
+
+  <rect x="440" y="70" width="170" height="60" rx="6" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,2"/>
+  <text x="525" y="95" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Dead letter queue</text>
+  <text x="525" y="112" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">parked for review</text>
+
+  <line x1="200" y1="100" x2="248" y2="100" stroke="#8b949e" marker-end="url(#arr10)"/>
+  <path d="M320,70 Q320,20 200,20 Q120,20 120,68" fill="none" stroke="#8b949e" stroke-dasharray="3,2" marker-end="url(#arr10)"/>
+  <text x="220" y="15" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">retry loop (bounded)</text>
+  <line x1="390" y1="100" x2="438" y2="100" stroke="#8b949e" marker-end="url(#arr10)"/>
+  <text x="415" y="90" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">limit hit</text>
+
+  <defs>
+    <marker id="arr10" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Retries loop back to the main queue up to a limit; crossing that limit diverts the message to the DLQ instead of looping forever.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order-processing consumer that starts with unbounded retries getting stuck forever on a permanently-bad message, then adds a bounded retry count with DLQ routing to unblock the queue, and finally adds a DLQ inspection tool that reports why each parked message failed.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: InfiniteRetryStuck.java -- no retry limit: a permanently bad message loops forever,
+// blocking everything behind it (loop capped here only so the demo terminates).
+import java.util.*;
+import java.util.concurrent.*;
+
+public class InfiniteRetryStuck {
+    public static void main(String[] args) throws InterruptedException {
+        BlockingQueue&lt;String&gt; queue = new LinkedBlockingQueue&lt;&gt;();
+        queue.put(&quot;OrderPlaced:BAD-DATA&quot;); // this one will NEVER succeed, no matter how many times retried
+        queue.put(&quot;OrderPlaced:42&quot;);        // stuck behind it, never gets a chance
+
+        int attempts = 0;
+        int demoCap = 5; // in reality this would be unbounded and truly infinite
+        while (attempts &lt; demoCap) {
+            String msg = queue.peek();
+            attempts++;
+            try {
+                processOrder(msg);
+                queue.take();
+            } catch (RuntimeException e) {
+                System.out.println(&quot;Attempt &quot; + attempts + &quot; failed for &#x27;&quot; + msg + &quot;&#x27;: &quot; + e.getMessage() + &quot; -- retrying forever, nothing else gets processed&quot;);
+            }
+        }
+        System.out.println(&quot;Demo capped at &quot; + demoCap + &quot; attempts; in production this never stops, and OrderPlaced:42 is NEVER reached.&quot;);
+    }
+
+    static void processOrder(String msg) {
+        if (msg.contains(&quot;BAD-DATA&quot;)) throw new RuntimeException(&quot;cannot parse order payload&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac InfiniteRetryStuck.java &amp;&amp; java InfiniteRetryStuck</code> (JDK 17+).</p>
+<p>The malformed message is retried without limit and the healthy <code>OrderPlaced:42</code> behind it never even gets attempted — a single bad message can stall an entire queue.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: BoundedRetryWithDlq.java -- a retry limit plus a DLQ unblocks the main queue.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class BoundedRetryWithDlq {
+    public static void main(String[] args) throws InterruptedException {
+        BlockingQueue&lt;String&gt; queue = new LinkedBlockingQueue&lt;&gt;();
+        BlockingQueue&lt;String&gt; deadLetterQueue = new LinkedBlockingQueue&lt;&gt;();
+        queue.put(&quot;OrderPlaced:BAD-DATA&quot;);
+        queue.put(&quot;OrderPlaced:42&quot;);
+
+        Map&lt;String, Integer&gt; attemptCounts = new HashMap&lt;&gt;();
+        int maxRetries = 3;
+
+        while (!queue.isEmpty()) {
+            String msg = queue.take();
+            try {
+                processOrder(msg);
+                System.out.println(&quot;Processed successfully: &quot; + msg);
+            } catch (RuntimeException e) {
+                int attempts = attemptCounts.merge(msg, 1, Integer::sum);
+                if (attempts &gt;= maxRetries) {
+                    deadLetterQueue.offer(msg); // give up on the main queue, park it instead
+                    System.out.println(msg + &quot; exceeded &quot; + maxRetries + &quot; retries -- moved to DLQ: &quot; + e.getMessage());
+                } else {
+                    queue.offer(msg); // still within budget -- requeue for another attempt
+                    System.out.println(msg + &quot; failed attempt &quot; + attempts + &quot;/&quot; + maxRetries + &quot;, requeued&quot;);
+                }
+            }
+        }
+        System.out.println(&quot;Main queue drained. DLQ contains: &quot; + deadLetterQueue.size() + &quot; message(s).&quot;);
+    }
+
+    static void processOrder(String msg) {
+        if (msg.contains(&quot;BAD-DATA&quot;)) throw new RuntimeException(&quot;cannot parse order payload&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac BoundedRetryWithDlq.java &amp;&amp; java BoundedRetryWithDlq</code> (JDK 17+).</p>
+<p>Expected output (order of retries vs. the healthy message may interleave differently, but the shape is the same):</p>
+<pre><code>Processed successfully: OrderPlaced:42
+OrderPlaced:BAD-DATA failed attempt 1/3, requeued
+OrderPlaced:BAD-DATA failed attempt 2/3, requeued
+OrderPlaced:BAD-DATA exceeded 3 retries -- moved to DLQ: cannot parse order payload
+Main queue drained. DLQ contains: 1 message(s).</code></pre>
+<p>Crucially, <code>OrderPlaced:42</code> gets processed successfully without waiting for the bad message to be resolved — the queue as a whole keeps flowing.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: DlqInspection.java -- a DLQ that records failure metadata, plus a
+// simple inspection tool an operator would use to triage parked messages.
+import java.util.*;
+import java.util.concurrent.*;
+
+public class DlqInspection {
+    record DeadLetter(String originalMessage, String failureReason, int attemptsMade, long parkedAtMillis) {}
+
+    static class BrokerWithDlq {
+        private final BlockingQueue&lt;String&gt; queue = new LinkedBlockingQueue&lt;&gt;();
+        private final List&lt;DeadLetter&gt; deadLetterQueue = new ArrayList&lt;&gt;();
+        private final Map&lt;String, Integer&gt; attemptCounts = new HashMap&lt;&gt;();
+        private final int maxRetries;
+
+        BrokerWithDlq(int maxRetries) { this.maxRetries = maxRetries; }
+        void send(String msg) { queue.offer(msg); }
+
+        void processAll() {
+            while (!queue.isEmpty()) {
+                String msg = queue.poll();
+                try {
+                    processOrder(msg);
+                    System.out.println(&quot;Processed successfully: &quot; + msg);
+                } catch (RuntimeException e) {
+                    int attempts = attemptCounts.merge(msg, 1, Integer::sum);
+                    if (attempts &gt;= maxRetries) {
+                        deadLetterQueue.add(new DeadLetter(msg, e.getMessage(), attempts, System.currentTimeMillis()));
+                    } else {
+                        queue.offer(msg);
+                    }
+                }
+            }
+        }
+
+        void inspectDlq() { // what an operator&#x27;s triage tool would show
+            System.out.println(&quot;=== DLQ inspection: &quot; + deadLetterQueue.size() + &quot; message(s) parked ===&quot;);
+            for (DeadLetter dl : deadLetterQueue) {
+                System.out.println(&quot;  message: &quot; + dl.originalMessage());
+                System.out.println(&quot;    reason: &quot; + dl.failureReason());
+                System.out.println(&quot;    attempts made before parking: &quot; + dl.attemptsMade());
+            }
+        }
+    }
+
+    static void processOrder(String msg) {
+        if (msg.contains(&quot;BAD-DATA&quot;)) throw new RuntimeException(&quot;cannot parse order payload&quot;);
+        if (msg.contains(&quot;MISSING-CUSTOMER&quot;)) throw new RuntimeException(&quot;referenced customer no longer exists&quot;);
+    }
+
+    public static void main(String[] args) {
+        BrokerWithDlq broker = new BrokerWithDlq(3);
+        broker.send(&quot;OrderPlaced:BAD-DATA&quot;);
+        broker.send(&quot;OrderPlaced:MISSING-CUSTOMER&quot;);
+        broker.send(&quot;OrderPlaced:42&quot;);
+
+        broker.processAll();
+        broker.inspectDlq();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac DlqInspection.java &amp;&amp; java DlqInspection</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Processed successfully: OrderPlaced:42
+=== DLQ inspection: 2 message(s) parked ===
+  message: OrderPlaced:BAD-DATA
+    reason: cannot parse order payload
+    attempts made before parking: 3
+  message: OrderPlaced:MISSING-CUSTOMER
+    reason: referenced customer no longer exists
+    attempts made before parking: 3</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>processOrder</code> throws every single time for <code>&quot;OrderPlaced:BAD-DATA&quot;</code>, and the loop&#x27;s only response is to log and try again, indefinitely; because <code>queue.peek()</code> (not <code>take()</code>) is used until success, the bad message is never removed and <code>&quot;OrderPlaced:42&quot;</code> behind it is never even looked at.</li><li><strong>Level 2, tracking attempts per message</strong> — <code>attemptCounts.merge(msg, 1, Integer::sum)</code> increments a counter keyed by the message content each time processing fails, giving each message its own retry budget instead of one global retry state.</li><li><strong>Level 2, the branch at the retry limit</strong> — once <code>attempts &gt;= maxRetries</code>, the message goes to <code>deadLetterQueue.offer(msg)</code> instead of back onto <code>queue</code>; critically, it is *not* requeued onto the main <code>queue</code> anymore, so the main processing loop&#x27;s <code>while (!queue.isEmpty())</code> condition can actually become true and terminate.</li><li><strong>Level 2, the healthy message gets through</strong> — because <code>&quot;OrderPlaced:42&quot;</code> was queued right behind the bad message but doesn&#x27;t throw, it is processed and removed the very first time it&#x27;s tried, independent of how many retries the bad message is still working through — the queue&#x27;s overall progress is no longer blocked by one stuck message.</li><li><strong>Level 3, richer failure metadata</strong> — <code>DeadLetter</code> captures not just the original message but the specific <code>failureReason</code> (the exception&#x27;s message), <code>attemptsMade</code>, and a timestamp, giving an operator enough context to diagnose the failure without needing to reproduce it from scratch.</li><li><strong>Level 3, two different permanent failures</strong> — <code>&quot;BAD-DATA&quot;</code> and <code>&quot;MISSING-CUSTOMER&quot;</code> fail for two distinct reasons; both exhaust their retry budgets and land in <code>deadLetterQueue</code>, each tagged with its *own* specific <code>failureReason</code>, while <code>&quot;OrderPlaced:42&quot;</code> again sails through untouched.</li><li><strong>Level 3, the inspection tool</strong> — <code>inspectDlq()</code> iterates the parked messages and prints each one&#x27;s original content, failure reason, and attempt count — this is the shape of tooling a real operator or automated alerting system would build on top of a broker&#x27;s native DLQ feature (most production brokers expose exactly this kind of metadata automatically).</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a DLQ that nobody monitors is just a slower, quieter way to lose data — messages that land there still represent real failed work (a customer&#x27;s order, a payment that didn&#x27;t process) and need an actual operational process (alerting, a dashboard, a scheduled review) to act on them, or the DLQ becomes a graveyard instead of a safety net.</blockquote>
+<ul><li>A dead letter queue breaks the infinite-retry loop that a permanently-failing message would otherwise cause, keeping the main queue&#x27;s healthy messages flowing.</li><li>The retry limit that triggers DLQ routing is a deliberate trade-off: too low risks giving up on transient failures too early, too high delays unblocking the queue.</li><li>DLQ entries should carry enough context (original payload, failure reason, attempt count) to let a human or automated process actually diagnose and act on the failure.</li><li>Acknowledging the message on the *original* queue after routing it to the DLQ is essential — otherwise the broker will keep redelivering it there too, defeating the point.</li><li>A DLQ without monitoring or an operational review process is not actually solving the problem, just moving and hiding it.</li></ul>
+  <div class="nav"><a class="prv" href="0122-backpressure-flow-control.html"><span class="mini">← Previous</span>Backpressure & flow control</a><a class="nxt" href="0124-poison-message-handling.html"><span class="mini">Next →</span>Poison message handling</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t123";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
