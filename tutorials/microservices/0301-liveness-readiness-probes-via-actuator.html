@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Liveness & readiness probes via Actuator" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 9. Resiliency & Fault Tolerance</div>
+  <div class="htitle">
+    <h1>"Liveness & readiness probes via Actuator"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Boot Actuator exposes Kubernetes-compatible liveness and readiness endpoints out of the box — <code>/actuator/health/liveness</code> and <code>/actuator/health/readiness</code> — once <code>management.endpoint.health.probes.enabled=true</code> is set (automatically enabled when Spring Boot detects it&#x27;s running inside a Kubernetes environment). These map directly onto the <a href="0290-health-checks-for-self-healing.md">liveness vs readiness</a> distinction: the liveness group reflects the application&#x27;s <code>LivenessState</code> (<code>CORRECT</code> or <code>BROKEN</code>), and the readiness group reflects its <code>ReadinessState</code> (<code>ACCEPTING_TRAFFIC</code> or <code>REFUSING_TRAFFIC</code>), each independently composed from any registered <code>HealthIndicator</code> beans assigned to that group.</p>
+<h2>2. Why &amp; when</h2>
+<p>Wiring up separate liveness and readiness signals from scratch for every service would be repetitive and error-prone — Actuator standardizes this so that any Spring Boot application gets working, Kubernetes-shaped probe endpoints with minimal configuration, and lets custom health indicators plug into whichever group (or both) is appropriate for what they check. It also automatically publishes <code>AvailabilityChangeEvent</code>s that application code can listen for or trigger explicitly — for instance, code that detects an unrecoverable internal problem can publish an event switching <code>LivenessState</code> to <code>BROKEN</code>, causing Kubernetes to restart the pod, without that code needing to know anything about HTTP endpoints or Kubernetes APIs directly.</p>
+<p>Use this whenever deploying a Spring Boot application to Kubernetes (or any orchestrator understanding the liveness/readiness split) — it is the standard, expected integration point, and configuring the orchestrator&#x27;s <code>livenessProbe</code> and <code>readinessProbe</code> to point at these two distinct paths is a near-universal deployment requirement for production Spring Boot services.</p>
+<h2>3. Core concept</h2>
+<p>Health indicators are grouped by contributing to <code>liveness</code> or <code>readiness</code>; application code can also directly publish availability state changes.</p>
+<pre><code class="lang-java">import org.springframework.boot.availability.AvailabilityChangeEvent;
+import org.springframework.boot.availability.LivenessState;
+import org.springframework.boot.availability.ReadinessState;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.stereotype.Component;
+
+@Component
+class SelfHealthMonitor {
+    private final ApplicationEventPublisher publisher;
+    SelfHealthMonitor(ApplicationEventPublisher publisher) { this.publisher = publisher; }
+
+    void onUnrecoverableError() {
+        // Directly flips the LIVENESS state -- Kubernetes&#x27; livenessProbe will
+        // observe /actuator/health/liveness go DOWN and restart this pod.
+        AvailabilityChangeEvent.publish(publisher, this, LivenessState.BROKEN);
+    }
+
+    void onStartupWarmupComplete() {
+        // Flips READINESS -- this instance can now receive traffic.
+        AvailabilityChangeEvent.publish(publisher, this, ReadinessState.ACCEPTING_TRAFFIC);
+    }
+}</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Registered health indicators contribute to either the liveness group or the readiness group; Actuator aggregates each group into its own endpoint, which Kubernetes polls separately as livenessProbe and readinessProbe, restarting the pod on a liveness failure or removing it from service endpoints on a readiness failure">
+  <rect x="20" y="20" width="140" height="30" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="90" y="40" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">HealthIndicator A</text>
+  <rect x="20" y="60" width="140" height="30" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="90" y="80" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">HealthIndicator B</text>
+
+  <line x1="160" y1="35" x2="230" y2="55" stroke="#8b949e" marker-end="url(#arr301)"/>
+  <line x1="160" y1="75" x2="230" y2="115" stroke="#8b949e" marker-end="url(#arr301)"/>
+
+  <rect x="240" y="35" width="150" height="35" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="315" y="57" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">/actuator/health/liveness</text>
+  <rect x="240" y="100" width="150" height="35" rx="5" fill="#1c2430" stroke="#6db33f"/>
+  <text x="315" y="122" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">/actuator/health/readiness</text>
+
+  <line x1="390" y1="52" x2="470" y2="52" stroke="#8b949e" marker-end="url(#arr301)"/>
+  <text x="530" y="47" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">livenessProbe</text>
+  <text x="530" y="58" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">-&gt; restart pod</text>
+
+  <line x1="390" y1="117" x2="470" y2="117" stroke="#8b949e" marker-end="url(#arr301)"/>
+  <text x="530" y="112" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">readinessProbe</text>
+  <text x="530" y="123" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">-&gt; remove from Service</text>
+
+  <defs><marker id="arr301" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>Indicators feed two separate endpoints; Kubernetes polls each independently and reacts with a different, appropriate remedy.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a bare application with no probe endpoints, leaving Kubernetes with no way to know its health, extended to a hand-rolled stand-in for Actuator&#x27;s grouped health aggregation exposing both endpoints, and finally application code that explicitly publishes availability state changes in response to detected conditions, mirroring <code>AvailabilityChangeEvent</code> usage, along with a simulated Kubernetes poller reacting to each endpoint appropriately.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoProbeEndpoints.java -- the application has no health
+// endpoints at all; a simulated Kubernetes poller has nothing to check
+// and can never detect a real problem inside the process.
+public class NoProbeEndpoints {
+    static boolean applicationHealthy = true;
+
+    public static void main(String[] args) {
+        applicationHealthy = false; // something goes wrong internally
+        System.out.println(&quot;Application is internally unhealthy: &quot; + !applicationHealthy);
+        System.out.println(&quot;But there is NO probe endpoint exposing this -- Kubernetes has no way to know, ever.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NoProbeEndpoints.java</code></p>
+<p>The application&#x27;s internal state genuinely changes to unhealthy, but nothing exposes this to the outside world. A real Kubernetes deployment with no configured probes (or an application with no Actuator health endpoints) would simply never detect this — the broken instance keeps receiving traffic and is never restarted, indefinitely.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ActuatorStyleHealthGroups.java -- a hand-rolled stand-in for
+// Spring Boot Actuator&#x27;s grouped health aggregation: HealthIndicator
+// beans are registered against either the &quot;liveness&quot; or &quot;readiness&quot;
+// group, and each group&#x27;s endpoint aggregates its members&#x27; statuses.
+import java.util.*;
+import java.util.function.Supplier;
+
+public class ActuatorStyleHealthGroups {
+    enum Status { UP, DOWN }
+    record HealthIndicator(String name, String group, Supplier&lt;Status&gt; check) {}
+
+    static final List&lt;HealthIndicator&gt; indicators = new ArrayList&lt;&gt;();
+    static boolean deadlocked = false;
+    static boolean databaseConnected = true;
+
+    static {
+        // &quot;liveness&quot; group: reflects the PROCESS&#x27;s own internal health.
+        indicators.add(new HealthIndicator(&quot;deadlockDetector&quot;, &quot;liveness&quot;,
+                () -&gt; deadlocked ? Status.DOWN : Status.UP));
+        // &quot;readiness&quot; group: reflects ability to serve traffic RIGHT NOW.
+        indicators.add(new HealthIndicator(&quot;database&quot;, &quot;readiness&quot;,
+                () -&gt; databaseConnected ? Status.UP : Status.DOWN));
+    }
+
+    static Status aggregateGroup(String group) {
+        return indicators.stream()
+                .filter(ind -&gt; ind.group().equals(group))
+                .anyMatch(ind -&gt; ind.check().get() == Status.DOWN) ? Status.DOWN : Status.UP;
+    }
+
+    static String probeLiveness() { return &quot;/actuator/health/liveness -&gt; &quot; + aggregateGroup(&quot;liveness&quot;); }
+    static String probeReadiness() { return &quot;/actuator/health/readiness -&gt; &quot; + aggregateGroup(&quot;readiness&quot;); }
+
+    public static void main(String[] args) {
+        System.out.println(probeLiveness());
+        System.out.println(probeReadiness());
+
+        databaseConnected = false; // DB connection lost
+        System.out.println(&quot;-- after DB connection lost --&quot;);
+        System.out.println(probeLiveness());   // still UP -- process itself is fine
+        System.out.println(probeReadiness());  // now DOWN -- can&#x27;t serve correctly
+    }
+}</code></pre>
+<p>How to run: <code>java ActuatorStyleHealthGroups.java</code></p>
+<p>Initially both probes report <code>UP</code>. Once <code>databaseConnected</code> flips to <code>false</code>, the readiness group&#x27;s aggregation correctly reports <code>DOWN</code> (since its member indicator, <code>database</code>, now returns <code>DOWN</code>), while the liveness group is entirely unaffected and stays <code>UP</code>, since <code>deadlockDetector</code> (the only liveness-group indicator) never changed. This mirrors exactly how Actuator&#x27;s real <code>/actuator/health/liveness</code> and <code>/actuator/health/readiness</code> endpoints aggregate only the indicators assigned to their respective groups — a database connectivity problem correctly shows up only in readiness.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ExplicitAvailabilityEventsWithKubernetesPoller.java -- application
+// code EXPLICITLY publishes availability state changes (mirroring
+// AvailabilityChangeEvent.publish(...)) rather than relying only on
+// passive HealthIndicator polling, combined with a simulated Kubernetes
+// poller that reacts differently to each probe&#x27;s outcome.
+public class ExplicitAvailabilityEventsWithKubernetesPoller {
+    enum LivenessState { CORRECT, BROKEN }
+    enum ReadinessState { ACCEPTING_TRAFFIC, REFUSING_TRAFFIC }
+
+    static LivenessState livenessState = LivenessState.CORRECT;
+    static ReadinessState readinessState = ReadinessState.REFUSING_TRAFFIC; // starts REFUSING during startup
+
+    // Mirrors AvailabilityChangeEvent.publish(publisher, source, state)
+    static void publishLiveness(LivenessState newState) {
+        livenessState = newState;
+        System.out.println(&quot;  [event] LivenessState -&gt; &quot; + newState);
+    }
+    static void publishReadiness(ReadinessState newState) {
+        readinessState = newState;
+        System.out.println(&quot;  [event] ReadinessState -&gt; &quot; + newState);
+    }
+
+    static class KubernetesPoller {
+        boolean restarted = false;
+        boolean inServiceEndpoints = false;
+
+        void poll() {
+            if (livenessState == LivenessState.BROKEN) {
+                System.out.println(&quot;  [k8s] livenessProbe FAILED -- restarting pod&quot;);
+                restarted = true;
+                return; // pod is being replaced; readiness is moot until the new pod starts
+            }
+            inServiceEndpoints = (readinessState == ReadinessState.ACCEPTING_TRAFFIC);
+            System.out.println(&quot;  [k8s] readinessProbe &quot; + (inServiceEndpoints ? &quot;PASSED -- in Service endpoints&quot; : &quot;FAILED -- removed from Service endpoints&quot;));
+        }
+    }
+
+    public static void main(String[] args) {
+        KubernetesPoller k8s = new KubernetesPoller();
+
+        System.out.println(&quot;-- application starting up --&quot;);
+        k8s.poll(); // still warming up, readiness = REFUSING_TRAFFIC
+
+        System.out.println(&quot;-- warmup complete --&quot;);
+        publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
+        k8s.poll();
+
+        System.out.println(&quot;-- unrecoverable internal error detected --&quot;);
+        publishLiveness(LivenessState.BROKEN);
+        k8s.poll();
+    }
+}</code></pre>
+<p>How to run: <code>java ExplicitAvailabilityEventsWithKubernetesPoller.java</code></p>
+<p>The application starts with <code>readinessState=REFUSING_TRAFFIC</code> (a realistic default during startup/warmup), so the first poll correctly keeps it out of Service endpoints even though liveness is fine. Once warmup logic explicitly calls <code>publishReadiness(ACCEPTING_TRAFFIC)</code> — mirroring real code calling <code>AvailabilityChangeEvent.publish(...)</code> once initialization completes — the next poll shows the instance entering the Service&#x27;s traffic rotation. Finally, simulated code detects an unrecoverable internal error and explicitly publishes <code>LivenessState.BROKEN</code>; the poller&#x27;s next check short-circuits on the liveness failure first and triggers a pod restart, without even evaluating readiness — matching the real precedence where a broken process needs replacing, not just traffic-draining.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>ExplicitAvailabilityEventsWithKubernetesPoller.main</code> in order. <strong>First</strong>, <code>livenessState</code> starts <code>CORRECT</code> and <code>readinessState</code> starts <code>REFUSING_TRAFFIC</code> — the realistic default for an application still starting up.</p>
+<p><strong>The first <code>k8s.poll()</code> call</strong>: <code>livenessState == LivenessState.BROKEN</code> is <code>false</code>, so the method proceeds to the readiness check. <code>inServiceEndpoints = (readinessState == ReadinessState.ACCEPTING_TRAFFIC)</code> evaluates to <code>false</code>, since <code>readinessState</code> is still <code>REFUSING_TRAFFIC</code>. The poller prints &quot;readinessProbe FAILED -- removed from Service endpoints&quot; — correctly keeping this still-warming-up instance out of traffic.</p>
+<p><strong><code>publishReadiness(ReadinessState.ACCEPTING_TRAFFIC)</code> is called</strong>, simulating application startup code finishing its warmup (e.g., pre-loading a cache, establishing connection pools) and explicitly signaling readiness — this directly sets <code>readinessState</code>.</p>
+<p><strong>The second <code>k8s.poll()</code> call</strong>: liveness check still passes (<code>CORRECT</code>), so it proceeds to readiness — now <code>readinessState == ACCEPTING_TRAFFIC</code> is <code>true</code>, so <code>inServiceEndpoints</code> becomes <code>true</code>, and the poller prints &quot;readinessProbe PASSED -- in Service endpoints.&quot; The instance now begins receiving real traffic.</p>
+<p><strong><code>publishLiveness(LivenessState.BROKEN)</code> is called</strong>, simulating application code detecting a genuinely unrecoverable problem (e.g., a deadlock detector firing) and explicitly signaling that the process itself is broken.</p>
+<p><strong>The third <code>k8s.poll()</code> call</strong>: this time <code>livenessState == LivenessState.BROKEN</code> is <code>true</code> at the very first check — the method prints &quot;livenessProbe FAILED -- restarting pod,&quot; sets <code>restarted = true</code>, and <code>return</code>s immediately, *without* ever evaluating the readiness branch at all, since a liveness failure supersedes any readiness consideration — the pod is being torn down and replaced regardless of what its readiness state currently says.</p>
+<pre><code>poll 1: readiness=REFUSING -&gt; &quot;removed from Service endpoints&quot; (still warming up)
+publishReadiness(ACCEPTING_TRAFFIC)
+poll 2: readiness=ACCEPTING -&gt; &quot;in Service endpoints&quot; (now serving traffic)
+publishLiveness(BROKEN)
+poll 3: liveness=BROKEN -&gt; &quot;restarting pod&quot; (readiness check never even reached)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Spring Boot&#x27;s readiness state defaults to <code>REFUSING_TRAFFIC</code> until the application context has fully started (an <code>ApplicationReadyEvent</code>-adjacent point) — if a custom health indicator or the <code>readinessProbe</code>&#x27;s <code>initialDelaySeconds</code> is misconfigured to check too early, a perfectly healthy, still-starting application can appear to fail its readiness probe, delaying rollout unnecessarily rather than indicating a real problem.</blockquote>
+<ul><li><code>management.endpoint.health.probes.enabled=true</code> (auto-enabled under detected Kubernetes environments) is required to expose the dedicated <code>/actuator/health/liveness</code> and <code>/actuator/health/readiness</code> paths as separate, Kubernetes-shaped endpoints.</li><li>Custom <code>HealthIndicator</code> beans can be assigned to the <code>liveness</code> or <code>readiness</code> group via <code>management.endpoint.health.group.&lt;name&gt;.include</code>, letting application-specific checks (a deadlock detector, a critical cache warm-up flag) plug into the right signal.</li><li><code>AvailabilityChangeEvent.publish(...)</code> lets application code directly and explicitly declare a state change (e.g., after detecting an unrecoverable condition), rather than relying solely on a <code>HealthIndicator</code> being polled reactively — useful for conditions the application itself detects proactively.</li><li>Configure the corresponding Kubernetes <code>livenessProbe</code> and <code>readinessProbe</code> in the deployment manifest to point at these two distinct paths, with <code>initialDelaySeconds</code> tuned to the application&#x27;s real startup time to avoid premature liveness restarts during normal startup.</li></ul>
+  <div class="nav"><a class="prv" href="0300-spring-boot-graceful-shutdown.html"><span class="mini">← Previous</span>Spring Boot graceful shutdown</a><a class="nxt" href="0302-legacy-netflix-hystrix-deprecated-awareness.html"><span class="mini">Next →</span>Legacy Netflix Hystrix (deprecated) awareness</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t301";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
