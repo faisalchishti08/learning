@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Load balancer as point of failure" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 7. Load Balancing</div>
+  <div class="htitle">
+    <h1>"Load balancer as point of failure"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Because a <a href="0204-server-side-load-balancing.md">server-side load balancer</a> sits in the path of every request it handles, it is itself a single point of failure unless deliberately made highly available — the exact same structural risk already covered for <a href="0170-single-point-of-failure-concerns-ha-gateways.md">gateways</a> and <a href="0193-service-registry-high-availability-replication.md">service registries</a>, applied here specifically to the load-balancing tier, and it requires the identical solution: running multiple redundant load balancer instances rather than relying on any single one.</p>
+<h2>2. Why &amp; when</h2>
+<p>A load balancer that concentrates all traffic to a backend fleet through one instance inherits all the availability benefits it provides to that fleet (routing around individual backend failures) while introducing a brand-new, undistributed risk of its own: if the balancer itself goes down, every backend instance it fronts becomes unreachable simultaneously, regardless of how healthy each individual backend is. This is a direct structural consequence of introducing any intermediary component in a request path, and it applies equally whether that intermediary is a load balancer, a gateway, or a service registry — the fix is the same pattern in every case: redundancy, health checking, and automatic failover at the load-balancer tier itself.</p>
+<p>Recognize this risk specifically whenever server-side load balancing is chosen — client-side balancing, by contrast, has no equivalent single point of failure, since the balancing logic runs redundantly inside every calling instance already. Deploy load balancers as a redundant, health-checked cluster (or rely on a cloud provider&#x27;s managed load balancer service, which handles this redundancy internally) for any production deployment where server-side balancing is used.</p>
+<h2>3. Core concept</h2>
+<p>Multiple load balancer instances run simultaneously, each capable of serving any request identically, with a mechanism above them (DNS with multiple records, a floating/virtual IP with automatic failover, or a cloud provider&#x27;s managed service) ensuring traffic is directed only to currently-healthy load balancer instances — mirroring exactly the same redundancy pattern applied to the backend instances the load balancer itself fronts.</p>
+<pre><code class="lang-java">// a SINGLE load balancer instance -- a single point of failure for the ENTIRE backend fleet
+LoadBalancer theOnlyLb = new LoadBalancer(backendInstances);
+
+// REDUNDANT load balancer instances, with a mechanism selecting a HEALTHY one
+List&lt;LoadBalancer&gt; lbCluster = List.of(lb1, lb2, lb3);
+LoadBalancer activeLb = lbCluster.stream().filter(LoadBalancer::isHealthy).findFirst().orElseThrow();</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A single load balancer failing takes down access to an entire, perfectly healthy backend fleet. Multiple redundant load balancer instances mean any single one failing is absorbed by the others, preserving access to the backend fleet" >
+  <text x="150" y="20" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Single LB (risky)</text>
+  <rect x="60" y="40" width="180" height="35" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,2"/><text x="150" y="62" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">LB (DOWN)</text>
+  <text x="150" y="100" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">entire healthy backend fleet unreachable</text>
+
+  <text x="480" y="20" fill="#e6edf3" font-size="9.5" text-anchor="middle" font-family="sans-serif">Redundant LB cluster</text>
+  <rect x="380" y="40" width="80" height="30" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="2,2"/><text x="420" y="60" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">LB-1 (DOWN)</text>
+  <rect x="470" y="40" width="80" height="30" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/><text x="510" y="60" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">LB-2 (up)</text>
+  <text x="480" y="100" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">backend fleet stays reachable via LB-2</text>
+
+  <defs>
+    <marker id="arr90" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Backend health means nothing if the single balancer fronting them is down; redundancy at the balancer tier fixes this.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a fleet of order-service backends fronted by load balancing that starts with a single load-balancer instance, showing total outage of an otherwise-healthy backend fleet when it fails, adds a redundant load-balancer cluster with automatic failover so the fleet stays reachable, and finally demonstrates a rolling restart of the load-balancer tier itself achieving zero downtime, mirroring the exact same operational payoff HA gateway design provides.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: SingleLoadBalancerOutage.java -- ONE load balancer instance; its
+// failure makes an ENTIRE, perfectly HEALTHY backend fleet unreachable.
+public class SingleLoadBalancerOutage {
+    static boolean loadBalancerIsUp = true;
+    static boolean[] backendsHealthy = {true, true, true}; // ALL backends perfectly healthy
+
+    static String routeRequest() {
+        if (!loadBalancerIsUp) return &quot;CONNECTION REFUSED -- load balancer unreachable&quot;;
+        return &quot;200 OK from a healthy backend&quot;;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(routeRequest());
+
+        loadBalancerIsUp = false; // the ONE load balancer crashes
+        System.out.println(routeRequest());
+        System.out.println(&quot;ALL 3 backends are STILL healthy, but EVERY request now fails -- the load balancer itself is the bottleneck.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac SingleLoadBalancerOutage.java &amp;&amp; java SingleLoadBalancerOutage</code> (JDK 17+).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: RedundantLoadBalancerCluster.java -- MULTIPLE load balancer instances;
+// ANY single one failing is ABSORBED by the others, preserving access.
+import java.util.*;
+
+public class RedundantLoadBalancerCluster {
+    static class LoadBalancerInstance {
+        String id;
+        boolean up = true;
+        LoadBalancerInstance(String id) { this.id = id; }
+        String routeRequest() { return &quot;200 OK, via &quot; + id; }
+    }
+
+    static class LbClusterFrontend { // stands in for DNS/VIP failover choosing a HEALTHY LB instance
+        List&lt;LoadBalancerInstance&gt; lbInstances;
+        LbClusterFrontend(List&lt;LoadBalancerInstance&gt; lbInstances) { this.lbInstances = lbInstances; }
+        String routeRequest() {
+            return lbInstances.stream().filter(lb -&gt; lb.up).findFirst()
+                .map(LoadBalancerInstance::routeRequest)
+                .orElseThrow(() -&gt; new RuntimeException(&quot;ALL load balancer instances down&quot;));
+        }
+    }
+
+    public static void main(String[] args) {
+        LoadBalancerInstance lb1 = new LoadBalancerInstance(&quot;lb-1&quot;);
+        LoadBalancerInstance lb2 = new LoadBalancerInstance(&quot;lb-2&quot;);
+        LbClusterFrontend cluster = new LbClusterFrontend(List.of(lb1, lb2));
+
+        System.out.println(cluster.routeRequest());
+
+        lb1.up = false; // lb-1 CRASHES
+        System.out.println(&quot;*** lb-1 CRASHED ***&quot;);
+        System.out.println(cluster.routeRequest() + &quot; (traffic transparently absorbed by lb-2)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac RedundantLoadBalancerCluster.java &amp;&amp; java RedundantLoadBalancerCluster</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>200 OK, via lb-1
+*** lb-1 CRASHED ***
+200 OK, via lb-2 (traffic transparently absorbed by lb-2)</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: RollingRestartOfLoadBalancerTier.java -- a ROUTINE deployment restarts
+// EACH load balancer instance ONE AT A TIME; the cluster&#x27;s redundancy ensures
+// ZERO client-visible downtime -- the SAME payoff HA gateway design provides.
+import java.util.*;
+
+public class RollingRestartOfLoadBalancerTier {
+    static class LoadBalancerInstance {
+        String id; boolean up = true;
+        LoadBalancerInstance(String id) { this.id = id; }
+        String routeRequest() { return &quot;200 OK, via &quot; + id; }
+    }
+    static class LbClusterFrontend {
+        List&lt;LoadBalancerInstance&gt; lbInstances;
+        LbClusterFrontend(List&lt;LoadBalancerInstance&gt; lbInstances) { this.lbInstances = lbInstances; }
+        String routeRequest() {
+            return lbInstances.stream().filter(lb -&gt; lb.up).findFirst()
+                .map(LoadBalancerInstance::routeRequest)
+                .orElseThrow(() -&gt; new RuntimeException(&quot;ALL load balancer instances down&quot;));
+        }
+    }
+
+    public static void main(String[] args) {
+        List&lt;LoadBalancerInstance&gt; instances = List.of(new LoadBalancerInstance(&quot;lb-1&quot;), new LoadBalancerInstance(&quot;lb-2&quot;), new LoadBalancerInstance(&quot;lb-3&quot;));
+        LbClusterFrontend cluster = new LbClusterFrontend(instances);
+
+        int successfulRequests = 0, failedRequests = 0;
+
+        for (LoadBalancerInstance instance : instances) {
+            instance.up = false; // taken OFFLINE for its restart
+            System.out.println(&quot;[deployment] &quot; + instance.id + &quot; taken offline for restart&quot;);
+            try {
+                System.out.println(&quot;  &quot; + cluster.routeRequest() + &quot;  &lt;- traffic continues via other LB instances&quot;);
+                successfulRequests++;
+            } catch (RuntimeException e) { failedRequests++; }
+            instance.up = true; // back online, upgraded
+            System.out.println(&quot;[deployment] &quot; + instance.id + &quot; back online\n&quot;);
+        }
+
+        System.out.println(&quot;Successful requests during rolling restart: &quot; + successfulRequests + &quot;, failed: &quot; + failedRequests);
+        System.out.println(&quot;A FULL rolling restart of the ENTIRE load-balancer tier completed with ZERO failed requests -- identical payoff to HA gateway design.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac RollingRestartOfLoadBalancerTier.java &amp;&amp; java RollingRestartOfLoadBalancerTier</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>[deployment] lb-1 taken offline for restart
+  200 OK, via lb-2  &lt;- traffic continues via other LB instances
+[deployment] lb-1 back online
+
+[deployment] lb-2 taken offline for restart
+  200 OK, via lb-1  &lt;- traffic continues via other LB instances
+[deployment] lb-2 back online
+
+[deployment] lb-3 taken offline for restart
+  200 OK, via lb-1  &lt;- traffic continues via other LB instances
+[deployment] lb-3 back online
+
+Successful requests during rolling restart: 3, failed: 0
+A FULL rolling restart of the ENTIRE load-balancer tier completed with ZERO failed requests -- identical payoff to HA gateway design.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>loadBalancerIsUp</code> is a single boolean representing the entire load-balancing tier&#x27;s health; when it becomes <code>false</code>, <code>routeRequest</code> fails immediately regardless of <code>backendsHealthy</code>, which remains entirely <code>true</code> throughout, directly demonstrating that backend health is irrelevant if the balancer fronting them is down.</li><li><strong>Level 2, multiple independent load balancer instances</strong> — <code>lb1</code> and <code>lb2</code> are separate <code>LoadBalancerInstance</code> objects, each with its own <code>up</code> flag; <code>LbClusterFrontend.routeRequest</code> filters to the first currently-<code>up</code> instance and delegates to it.</li><li><strong>Level 2, the failure absorbed</strong> — setting <code>lb1.up = false</code> removes it from consideration on the next call; <code>cluster.routeRequest()</code> correctly falls through to <code>lb2</code>, which handles the request successfully, with no client-visible failure at all.</li><li><strong>Level 3, iterating through a full rolling restart</strong> — the <code>for</code> loop takes each of the three load balancer instances offline in turn (setting <code>up = false</code>), issues a test request during that window, then brings it back online before moving to the next.</li><li><strong>Level 3, traffic continuing through every restart step</strong> — because at least two of the three instances remain <code>up</code> at any given point in the loop, <code>cluster.routeRequest()</code> always finds an available instance, and the printed <code>&lt;- traffic continues via other LB instances</code> annotation confirms this for every single restart step.</li><li><strong>Level 3, the complete accounting</strong> — across all three restart iterations, covering the entire load-balancer tier, <code>failedRequests</code> remains at exactly <code>0</code> — every single test request succeeded despite each individual load balancer instance being deliberately taken offline at some point during the loop.</li><li><strong>Level 3, the direct parallel to HA gateway design</strong> — the final printed comment makes the connection explicit: this is structurally the identical resilience pattern and identical operational payoff already established for gateways — redundant instances behind a health-aware failover mechanism enable both surviving unplanned crashes and performing routine maintenance with zero downtime, and the fact that this exact same pattern needs to be applied at the load-balancer tier specifically (not just at the backend or gateway tiers) is the core point this topic makes: any intermediary component sitting in a critical request path inherits the same single-point-of-failure risk and needs the same redundancy solution, regardless of what specific role that intermediary plays.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the mechanism selecting *among* redundant load balancer instances (DNS round-robin, a floating/virtual IP, a cloud provider&#x27;s managed load-balancer-of-load-balancers) is itself a component with its own failure modes and its own consistency/propagation-delay characteristics — redundancy at the load-balancer tier doesn&#x27;t eliminate the single-point-of-failure question, it just moves it one level up, to whatever mechanism is responsible for directing traffic to a healthy load balancer instance in the first place; that mechanism&#x27;s own reliability deserves the same scrutiny.</blockquote>
+<ul><li>A server-side load balancer, sitting in the path of every request it handles, is itself a single point of failure unless deployed as a redundant, health-checked cluster rather than a single instance.</li><li>This is the same structural risk already established for gateways and service registries, applied specifically to the load-balancing tier — any intermediary in a critical request path inherits this risk.</li><li>Client-side load balancing has no equivalent single point of failure, since its balancing logic runs redundantly inside every calling instance already, rather than in one shared, centralized component.</li><li>Redundant load-balancer instances, combined with a health-aware failover mechanism, enable both surviving unplanned crashes and performing routine maintenance (rolling restarts) with zero client-visible downtime.</li><li>The mechanism directing traffic to a healthy load-balancer instance (DNS, a floating IP, a managed cloud service) is itself a component with its own reliability characteristics, deserving the same scrutiny as the load-balancer tier it protects.</li></ul>
+  <div class="nav"><a class="prv" href="0210-layer-4-vs-layer-7-load-balancing.html"><span class="mini">← Previous</span>Layer 4 vs Layer 7 load balancing</a><a class="nxt" href="0212-spring-cloud-loadbalancer-default-client-side-lb.html"><span class="mini">Next →</span>Spring Cloud LoadBalancer (default client-side LB)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t211";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

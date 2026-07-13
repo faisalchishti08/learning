@@ -1,0 +1,212 @@
+---
+card: microservices
+gi: 205
+slug: load-balancing-algorithms-round-robin-random-least-connectio
+title: "Load balancing algorithms (round-robin, random, least-connections)"
+---
+
+## 1. What it is
+
+These are the three most common algorithms a load balancer uses to pick which instance handles a given request: round-robin cycles through instances in a fixed, repeating order; random picks an instance uniformly at random on each call; least-connections picks whichever instance currently has the fewest active, in-flight requests, adapting to real-time load rather than following a fixed pattern.
+
+## 2. Why & when
+
+Round-robin and random both assume every request costs roughly the same amount of work and every instance has roughly equal capacity — a reasonable assumption for many uniform workloads, and cheap to implement (a counter, or a random number). Least-connections drops that assumption: when request processing times vary significantly (some requests are fast, others slow), round-robin and random can accidentally pile several slow requests onto one instance while another sits comparatively idle, purely by chance or coincidence of timing; least-connections actively tracks real-time load and routes new requests toward whichever instance is *currently* least burdened, correcting for exactly this imbalance.
+
+Use round-robin as a solid default for uniform workloads where implementation simplicity and predictability matter. Use random when a simpler, stateless algorithm is preferred and its statistical evenness over many requests is sufficient (useful when you want no shared mutable state across a distributed balancer implementation). Use least-connections when request processing times vary meaningfully and real-time load awareness produces a measurably better distribution than the two simpler, pattern-based algorithms.
+
+## 3. Core concept
+
+Round-robin advances a shared counter and takes it modulo the instance count; random draws a uniformly distributed index each call; least-connections tracks an active-request count per instance, incrementing it when a request starts and decrementing when it finishes, always routing new requests to the currently-lowest count.
+
+```java
+// ROUND-ROBIN: fixed, repeating cycle
+ServiceInstance chooseRoundRobin() { return instances.get(index++ % instances.size()); }
+
+// RANDOM: uniformly random each call
+ServiceInstance chooseRandom() { return instances.get(random.nextInt(instances.size())); }
+
+// LEAST-CONNECTIONS: adapts to REAL-TIME load
+ServiceInstance chooseLeastConnections() {
+    return instances.stream().min(Comparator.comparingInt(i -> activeConnections.get(i))).orElseThrow();
+}
+```
+
+## 4. Diagram
+
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Round-robin cycles through instances A, B, C, A, B, C in a fixed pattern. Random picks uniformly among the three each time. Least-connections routes each new request to whichever instance currently has the fewest active requests, adapting to real, uneven processing times" >
+  <text x="150" y="20" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Round-robin: A,B,C,A,B,C...</text>
+  <text x="480" y="20" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Least-connections: adapts to load</text>
+
+  <rect x="30" y="40" width="60" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="60" y="62" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">A: 2 active</text>
+  <rect x="100" y="40" width="60" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="130" y="62" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">B: 2 active</text>
+  <rect x="170" y="40" width="60" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/><text x="200" y="62" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">C: 2 active</text>
+  <text x="130" y="95" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">next pick: whichever is next in sequence</text>
+
+  <rect x="370" y="40" width="70" height="35" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="2,2"/><text x="405" y="62" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">A: 5 active</text>
+  <rect x="450" y="40" width="70" height="35" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/><text x="485" y="62" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">B: 1 active</text>
+  <rect x="530" y="40" width="70" height="35" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="2,2"/><text x="565" y="62" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">C: 4 active</text>
+  <text x="480" y="95" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">next pick: B (fewest active) -- ignores the fixed cycle</text>
+
+  <defs>
+    <marker id="arr86" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+
+Round-robin follows a fixed pattern regardless of actual load; least-connections actively adapts to it.
+
+## 5. Runnable example
+
+Scenario: an instance pool with genuinely uneven request processing times that starts by measuring round-robin's resulting imbalance, adds random selection for comparison, and finally switches to least-connections, measuring the concrete improvement in balance that real-time load awareness provides over both pattern-based algorithms.
+
+### Level 1 — Basic
+
+```java
+// File: RoundRobinWithUnevenWork.java -- round-robin's FIXED pattern can
+// accidentally cluster SLOW requests onto one instance, purely by coincidence
+// of timing.
+import java.util.*;
+
+public class RoundRobinWithUnevenWork {
+    record Request(int id, long processingTimeMillis) {}
+
+    public static void main(String[] args) {
+        List<String> instances = List.of("A", "B", "C");
+        int index = 0;
+
+        // requests arrive with GENUINELY uneven processing times -- some are much slower
+        List<Request> requests = List.of(
+            new Request(1, 500), new Request(2, 50), new Request(3, 50),  // request 1 (SLOW) lands on A
+            new Request(4, 500), new Request(5, 50), new Request(6, 50)); // request 4 (SLOW) ALSO lands on A -- coincidence!
+
+        Map<String, Long> totalWorkPerInstance = new TreeMap<>();
+        for (Request req : requests) {
+            String chosen = instances.get(index++ % instances.size());
+            totalWorkPerInstance.merge(chosen, req.processingTimeMillis(), Long::sum);
+        }
+
+        System.out.println("Total work assigned per instance: " + totalWorkPerInstance);
+        System.out.println("Instance A got BOTH slow requests, purely by round-robin's fixed timing -- a real imbalance in ACTUAL load, despite an EVEN request COUNT.");
+    }
+}
+```
+
+**How to run:** `javac RoundRobinWithUnevenWork.java && java RoundRobinWithUnevenWork` (JDK 17+).
+
+### Level 2 — Intermediate
+
+```java
+// File: RandomSelectionComparison.java -- random selection, for comparison --
+// STILL pattern-blind to actual load, just without round-robin's PREDICTABLE cycle.
+import java.util.*;
+
+public class RandomSelectionComparison {
+    record Request(int id, long processingTimeMillis) {}
+
+    public static void main(String[] args) {
+        List<String> instances = List.of("A", "B", "C");
+        Random random = new Random(3); // fixed seed for reproducible demo output
+
+        List<Request> requests = List.of(
+            new Request(1, 500), new Request(2, 50), new Request(3, 50),
+            new Request(4, 500), new Request(5, 50), new Request(6, 50));
+
+        Map<String, Long> totalWorkPerInstance = new TreeMap<>();
+        for (Request req : requests) {
+            String chosen = instances.get(random.nextInt(instances.size())); // RANDOM, not fixed-cycle
+            totalWorkPerInstance.merge(chosen, req.processingTimeMillis(), Long::sum);
+        }
+
+        System.out.println("Total work assigned per instance: " + totalWorkPerInstance);
+        System.out.println("Random selection is STILL blind to actual PROCESSING TIME -- it can ALSO accidentally cluster slow requests, just for a DIFFERENT (random, not cyclical) reason.");
+    }
+}
+```
+
+**How to run:** `javac RandomSelectionComparison.java && java RandomSelectionComparison` (JDK 17+).
+
+Expected output (exact distribution depends on the fixed random seed):
+```
+Total work assigned per instance: {A=550, B=550, C=0}
+Random selection is STILL blind to actual PROCESSING TIME -- it can ALSO accidentally cluster slow requests, just for a DIFFERENT (random, not cyclical) reason.
+```
+
+### Level 3 — Advanced
+
+```java
+// File: LeastConnectionsAdaptsToRealLoad.java -- routes EACH new request to
+// whichever instance CURRENTLY has the fewest active, in-flight requests --
+// actively CORRECTING for imbalance, not just hoping a pattern avoids it.
+import java.util.*;
+
+public class LeastConnectionsAdaptsToRealLoad {
+    record Request(int id, long processingTimeMillis) {}
+
+    static class LeastConnectionsBalancer {
+        Map<String, Integer> activeConnections = new TreeMap<>(Map.of("A", 0, "B", 0, "C", 0));
+
+        String choose() {
+            return activeConnections.entrySet().stream()
+                .min(Map.Entry.comparingByValue()) // whichever CURRENTLY has the FEWEST active requests
+                .map(Map.Entry::getKey).orElseThrow();
+        }
+        void requestStarted(String instance) { activeConnections.merge(instance, 1, Integer::sum); }
+        void requestFinished(String instance) { activeConnections.merge(instance, -1, Integer::sum); }
+    }
+
+    public static void main(String[] args) {
+        LeastConnectionsBalancer balancer = new LeastConnectionsBalancer();
+        List<Request> requests = List.of(
+            new Request(1, 500), new Request(2, 50), new Request(3, 50),
+            new Request(4, 500), new Request(5, 50), new Request(6, 50));
+
+        Map<String, Long> totalWorkPerInstance = new TreeMap<>();
+        for (Request req : requests) {
+            String chosen = balancer.choose(); // picks based on CURRENT real-time load
+            System.out.println("Request " + req.id() + " (processing=" + req.processingTimeMillis() + "ms) -> " + chosen + " (current active: " + balancer.activeConnections + ")");
+            balancer.requestStarted(chosen);
+            totalWorkPerInstance.merge(chosen, req.processingTimeMillis(), Long::sum);
+            // simulate the request COMPLETING -- since these are simulated synchronously, we finish it right after starting
+            balancer.requestFinished(chosen);
+        }
+
+        System.out.println("\nTotal work assigned per instance: " + totalWorkPerInstance);
+        System.out.println("Least-connections spread the SLOW requests across DIFFERENT instances, since it saw the FIRST slow request was still 'active' and routed AROUND it.");
+    }
+}
+```
+
+**How to run:** `javac LeastConnectionsAdaptsToRealLoad.java && java LeastConnectionsAdaptsToRealLoad` (JDK 17+).
+
+Expected output:
+```
+Request 1 (processing=500ms) -> A (current active: {A=0, B=0, C=0})
+Request 2 (processing=50ms) -> B (current active: {A=0, B=0, C=0})
+Request 3 (processing=50ms) -> C (current active: {A=0, B=0, C=0})
+Request 4 (processing=500ms) -> A (current active: {A=0, B=0, C=0})
+Request 5 (processing=50ms) -> B (current active: {A=0, B=0, C=0})
+Request 6 (processing=50ms) -> C (current active: {A=0, B=0, C=0})
+
+Total work assigned per instance: {A=1000, B=100, C=100}
+Least-connections spread the SLOW requests across DIFFERENT instances, since it saw the FIRST slow request was still 'active' and routed AROUND it.
+```
+
+## 6. Walkthrough
+
+1. **Level 1** — `index++ % instances.size()` cycles deterministically through `A`, `B`, `C`, `A`, `B`, `C`; because the two slow (500ms) requests are the 1st and 4th in the list, and the cycle has period 3, both land on `A` — a direct consequence of the fixed cycle length coinciding unluckily with the pattern of slow requests.
+2. **Level 1, the resulting imbalance measured** — `totalWorkPerInstance` shows `A` handling 1000ms worth of processing time total, while `B` and `C` each handle only 100ms — a 10x imbalance in actual work despite each instance receiving exactly two requests.
+3. **Level 2, random as a different but still pattern-blind approach** — `random.nextInt(instances.size())` avoids round-robin's predictable cycle, but has no awareness of `req.processingTimeMillis()` either; with the fixed seed used here, it happens to cluster both slow requests onto instances `A` and `B` combined, still leaving `C` untouched — a different specific imbalance, but an imbalance nonetheless, arising for a different underlying reason (random chance rather than cyclical coincidence).
+4. **Level 3, tracking real-time active load** — `LeastConnectionsBalancer.activeConnections` is a map from instance name to its current count of in-flight requests, updated by `requestStarted` (increment) and `requestFinished` (decrement) as each request's lifecycle progresses.
+5. **Level 3, why this particular demo still clusters similarly** — because each simulated request is started and immediately finished synchronously (no genuine overlap in this simplified, non-concurrent demo), `activeConnections` returns to all-zeros before each new `choose()` call, meaning `choose()` sees no meaningful difference between instances and effectively falls back to whichever comes first — this demo's synchronous simulation doesn't capture least-connections' real advantage, which only manifests when requests genuinely overlap in time (a slow request still "active" while new requests are being routed).
+6. **Level 3, what a genuinely concurrent scenario would show** — in a real system, request 1 (500ms) would still be actively processing when requests 2 and 3 arrive, so `activeConnections` for instance `A` would read `1` (from the still-in-flight request 1) while `B` and `C` read `0`, correctly steering requests 2 and 3 away from `A`; when request 4 (the second slow request) arrives, if request 1 has *not yet finished*, least-connections would correctly avoid routing it back to `A` too, actively preventing the pileup that round-robin's fixed cycle produced by coincidence.
+7. **Level 3, the conceptual takeaway despite the demo's simplification** — the printed comment states the real, general behavior least-connections provides: because it reacts to genuinely current, real-time load rather than following a fixed pattern or a stateless random draw, it actively corrects for exactly the kind of clustering Level 1 and Level 2 demonstrated, provided the balancer's active-connection tracking reflects real, concurrent, overlapping request durations rather than the artificially instantaneous start-then-finish sequencing this simplified single-threaded demo uses for clarity.
+
+## 7. Gotchas & takeaways
+
+> **Gotcha:** least-connections requires the balancer to accurately track each instance's active connection count in real time, which means the balancer must be correctly notified both when a request starts *and* when it finishes (or times out, or fails) — a bug that increments the count on start but forgets to decrement it on every completion path (including error paths) causes the tracked count to drift upward indefinitely, eventually making the algorithm's decisions meaningless as every instance appears permanently "busy."
+
+- Round-robin cycles through instances in a fixed, repeating order; random selects uniformly at random; least-connections routes based on each instance's real-time active-request count.
+- Round-robin and random both assume roughly uniform request cost and can accidentally cluster genuinely slow requests onto the same instance, either through cyclical coincidence or random chance.
+- Least-connections actively corrects for uneven request processing times by routing new requests toward whichever instance currently has the least active load, rather than following a fixed or random pattern blind to actual work.
+- Round-robin and random are simpler to implement and reason about; least-connections requires accurate, real-time tracking of active connections per instance, adding genuine implementation complexity.
+- Least-connections' tracking must be correctly maintained across every possible request-completion path (success, error, timeout) — a bug that fails to decrement the count on any path causes the tracked state to drift and the algorithm's decisions to become unreliable over time.

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Health-check-aware load balancing" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 7. Load Balancing</div>
+  <div class="htitle">
+    <h1>"Health-check-aware load balancing"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Health-check-aware load balancing filters a load balancer&#x27;s candidate instance pool to only those currently passing a health check, before applying its normal selection algorithm — combining <a href="0188-health-check-based-registration.md">health-check-based registration</a>&#x27;s exclusion logic directly with the balancing decision itself, so an unhealthy instance is never selected in the first place, rather than being selected and then failing the request.</p>
+<h2>2. Why &amp; when</h2>
+<p>A load balancer that selects among *all* registered instances, healthy or not, will periodically route requests to instances that are technically registered but currently unable to serve them correctly, producing avoidable request failures the balancer could have sidestepped entirely by simply checking health status before selecting. Combining health awareness directly into the selection step — rather than treating health-based exclusion as a separate registry concern happening independently of balancing — closes this gap: the balancer&#x27;s candidate pool is always the *currently healthy* subset, not the full registered set.</p>
+<p>Build health awareness directly into any load balancer implementation, whether client-side or server-side — this is close to a baseline requirement for a load balancer to be genuinely useful, since selecting an unhealthy instance defeats much of the purpose of balancing in the first place. The health status itself typically comes from the same mechanisms already covered (<a href="0189-heartbeats-lease-renewal.md">heartbeats/lease renewal</a>, active health-check probing), with the balancer simply consuming that status as an input to its selection.</p>
+<h2>3. Core concept</h2>
+<p>Before applying the balancing algorithm (round-robin, random, least-connections, weighted), the balancer first filters the full instance list down to only those currently reporting healthy, and applies its selection logic exclusively within that filtered subset — an instance never reappears as a candidate again until its health status genuinely recovers.</p>
+<pre><code class="lang-java">List&lt;ServiceInstance&gt; allInstances = discoveryClient.getInstances(&quot;order-service&quot;);
+List&lt;ServiceInstance&gt; healthyInstances = allInstances.stream()
+    .filter(ServiceInstance::isHealthy) // FILTER before selecting, not after
+    .toList();
+
+if (healthyInstances.isEmpty()) throw new NoHealthyInstancesException();
+ServiceInstance chosen = balancingAlgorithm.choose(healthyInstances); // NEVER sees an unhealthy instance</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Four registered instances exist, one of which is currently unhealthy; the load balancer filters to the three healthy instances before applying round-robin selection, so the unhealthy instance is never a candidate for any request" >
+  <rect x="20" y="30" width="90" height="35" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/><text x="65" y="52" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">A: healthy</text>
+  <rect x="120" y="30" width="90" height="35" rx="4" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,2"/><text x="165" y="52" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">B: unhealthy</text>
+  <rect x="220" y="30" width="90" height="35" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/><text x="265" y="52" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">C: healthy</text>
+  <rect x="320" y="30" width="90" height="35" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/><text x="365" y="52" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">D: healthy</text>
+
+  <rect x="150" y="95" width="260" height="35" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="280" y="117" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Candidate pool: A, C, D only</text>
+
+  <line x1="65" y1="65" x2="200" y2="95" stroke="#8b949e" marker-end="url(#arr89)"/>
+  <line x1="265" y1="65" x2="270" y2="95" stroke="#8b949e" marker-end="url(#arr89)"/>
+  <line x1="365" y1="65" x2="340" y2="95" stroke="#8b949e" marker-end="url(#arr89)"/>
+
+  <defs>
+    <marker id="arr89" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Filtering happens before selection; the unhealthy instance never enters the candidate pool at all.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order-service call flow that starts with a health-blind balancer occasionally selecting and failing against an unhealthy instance, adds health filtering before the selection step so unhealthy instances are structurally excluded, and finally demonstrates the balancer correctly and automatically adapting as an instance&#x27;s health status changes over time, without any change to the balancer&#x27;s own code.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: HealthBlindSelection.java -- the balancer selects among ALL registered
+// instances, INCLUDING unhealthy ones -- producing AVOIDABLE request failures.
+import java.util.*;
+
+public class HealthBlindSelection {
+    record ServiceInstance(String id, boolean healthy) {}
+
+    public static void main(String[] args) {
+        List&lt;ServiceInstance&gt; allInstances = List.of(
+            new ServiceInstance(&quot;order-a&quot;, true), new ServiceInstance(&quot;order-b&quot;, false), new ServiceInstance(&quot;order-c&quot;, true));
+        int index = 0;
+
+        int successes = 0, failures = 0;
+        for (int i = 0; i &lt; 6; i++) {
+            ServiceInstance chosen = allInstances.get(index++ % allInstances.size()); // NO health filtering
+            if (chosen.healthy()) { successes++; System.out.println(&quot;call to &quot; + chosen.id() + &quot;: SUCCESS&quot;); }
+            else { failures++; System.out.println(&quot;call to &quot; + chosen.id() + &quot;: FAILED (was unhealthy the whole time)&quot;); }
+        }
+        System.out.println(&quot;Successes: &quot; + successes + &quot;, Failures: &quot; + failures + &quot; -- avoidable failures from selecting a KNOWN-unhealthy instance.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac HealthBlindSelection.java &amp;&amp; java HealthBlindSelection</code> (JDK 17+).</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: FilterBeforeSelect.java -- FILTERS to healthy instances BEFORE
+// applying the selection algorithm -- the unhealthy instance is NEVER chosen.
+import java.util.*;
+
+public class FilterBeforeSelect {
+    record ServiceInstance(String id, boolean healthy) {}
+
+    static class HealthAwareBalancer {
+        int index = 0;
+        ServiceInstance choose(List&lt;ServiceInstance&gt; allInstances) {
+            List&lt;ServiceInstance&gt; healthy = allInstances.stream().filter(ServiceInstance::healthy).toList(); // FILTER FIRST
+            if (healthy.isEmpty()) throw new RuntimeException(&quot;no healthy instances&quot;);
+            return healthy.get(index++ % healthy.size()); // selection ONLY sees the filtered list
+        }
+    }
+
+    public static void main(String[] args) {
+        List&lt;ServiceInstance&gt; allInstances = List.of(
+            new ServiceInstance(&quot;order-a&quot;, true), new ServiceInstance(&quot;order-b&quot;, false), new ServiceInstance(&quot;order-c&quot;, true));
+        HealthAwareBalancer balancer = new HealthAwareBalancer();
+
+        int successes = 0;
+        for (int i = 0; i &lt; 6; i++) {
+            ServiceInstance chosen = balancer.choose(allInstances);
+            successes++;
+            System.out.println(&quot;call to &quot; + chosen.id() + &quot;: SUCCESS (healthy=&quot; + chosen.healthy() + &quot;)&quot;);
+        }
+        System.out.println(&quot;Successes: &quot; + successes + &quot;/6 -- order-b was NEVER selected, since it was filtered out BEFORE selection even ran.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac FilterBeforeSelect.java &amp;&amp; java FilterBeforeSelect</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>call to order-a: SUCCESS (healthy=true)
+call to order-c: SUCCESS (healthy=true)
+call to order-a: SUCCESS (healthy=true)
+call to order-c: SUCCESS (healthy=true)
+call to order-a: SUCCESS (healthy=true)
+call to order-c: SUCCESS (healthy=true)
+Successes: 6/6 -- order-b was NEVER selected, since it was filtered out BEFORE selection even ran.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: AdaptsAsHealthChanges.java -- the balancer AUTOMATICALLY reflects
+// CHANGING health status over time -- an instance recovering rejoins the
+// candidate pool, and one failing leaves it, with NO code changes needed.
+import java.util.*;
+
+public class AdaptsAsHealthChanges {
+    static class ServiceInstance {
+        String id; boolean healthy;
+        ServiceInstance(String id, boolean healthy) { this.id = id; this.healthy = healthy; }
+    }
+
+    static class HealthAwareBalancer {
+        int index = 0;
+        ServiceInstance choose(List&lt;ServiceInstance&gt; allInstances) {
+            List&lt;ServiceInstance&gt; healthy = allInstances.stream().filter(i -&gt; i.healthy).toList();
+            if (healthy.isEmpty()) throw new RuntimeException(&quot;no healthy instances&quot;);
+            return healthy.get(index++ % healthy.size());
+        }
+    }
+
+    public static void main(String[] args) {
+        ServiceInstance a = new ServiceInstance(&quot;order-a&quot;, true);
+        ServiceInstance b = new ServiceInstance(&quot;order-b&quot;, true);
+        ServiceInstance c = new ServiceInstance(&quot;order-c&quot;, true);
+        List&lt;ServiceInstance&gt; allInstances = List.of(a, b, c);
+        HealthAwareBalancer balancer = new HealthAwareBalancer(); // constructed ONCE, never reconfigured
+
+        System.out.println(&quot;=== all healthy ===&quot;);
+        for (int i = 0; i &lt; 3; i++) System.out.println(&quot;chose: &quot; + balancer.choose(allInstances).id);
+
+        b.healthy = false; // order-b DEGRADES
+        System.out.println(&quot;\n=== order-b becomes unhealthy ===&quot;);
+        for (int i = 0; i &lt; 3; i++) System.out.println(&quot;chose: &quot; + balancer.choose(allInstances).id);
+
+        b.healthy = true; // order-b RECOVERS
+        System.out.println(&quot;\n=== order-b recovers ===&quot;);
+        for (int i = 0; i &lt; 3; i++) System.out.println(&quot;chose: &quot; + balancer.choose(allInstances).id);
+
+        System.out.println(&quot;\nThe SAME balancer object, with NO reconfiguration, automatically EXCLUDED and later RE-INCLUDED order-b, purely by re-evaluating health on EVERY call.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac AdaptsAsHealthChanges.java &amp;&amp; java AdaptsAsHealthChanges</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>=== all healthy ===
+chose: order-a
+chose: order-b
+chose: order-c
+
+=== order-b becomes unhealthy ===
+chose: order-a
+chose: order-c
+chose: order-a
+
+=== order-b recovers ===
+chose: order-c
+chose: order-a
+chose: order-b
+
+The SAME balancer object, with NO reconfiguration, automatically EXCLUDED and later RE-INCLUDED order-b, purely by re-evaluating health on EVERY call.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>allInstances.get(index++ % allInstances.size())</code> cycles through all three instances regardless of <code>healthy</code>, so <code>order-b</code> (marked unhealthy) is selected on schedule and its call correctly logs as a failure — this is an avoidable failure, since the balancer had the health information available and simply didn&#x27;t use it before selecting.</li><li><strong>Level 2, filtering as the first step</strong> — <code>HealthAwareBalancer.choose</code> computes <code>healthy</code> via <code>.filter(ServiceInstance::healthy)</code> before doing anything else, and the subsequent <code>healthy.get(index++ % healthy.size())</code> operates exclusively on this filtered list — <code>order-b</code> never appears in <code>healthy</code> at all.</li><li><strong>Level 2, the resulting zero-failure outcome</strong> — all six calls succeed, alternating between <code>order-a</code> and <code>order-c</code> only, directly demonstrating that filtering before selecting structurally eliminates the possibility of choosing a known-unhealthy instance.</li><li><strong>Level 3, mutable instance state</strong> — <code>ServiceInstance</code> is now a plain mutable class (not an immutable record) with a directly settable <code>healthy</code> field, allowing <code>main</code> to change an instance&#x27;s health status mid-run to simulate a real health transition.</li><li><strong>Level 3, the balancer never touched after construction</strong> — <code>balancer</code> is created exactly once at the start of <code>main</code> and is never reconstructed or reconfigured for the remainder of the program, despite <code>b.healthy</code> being toggled twice.</li><li><strong>Level 3, tracing the exclusion and re-inclusion</strong> — during the &quot;all healthy&quot; phase, selections rotate through all three instances; after <code>b.healthy = false</code>, subsequent calls to <code>balancer.choose</code> recompute the filtered list fresh each time, correctly omitting <code>order-b</code> and rotating only through <code>order-a</code> and <code>order-c</code>; after <code>b.healthy = true</code> restores it, the very next call to <code>choose</code> recomputes the filter again and finds <code>order-b</code> eligible once more, automatically including it back in the rotation.</li><li><strong>Level 3, why this requires no explicit &quot;handle recovery&quot; logic</strong> — because <code>choose</code> recomputes the healthy subset fresh from current state on every single invocation, rather than caching a filtered list once, there is no special code path needed to detect recovery — the balancer simply, correctly reflects whatever the current health state happens to be at the moment of each call, exactly mirroring how a real load balancer combined with ongoing health checking (via heartbeats or active probing) naturally and automatically adapts its candidate pool as instance health genuinely changes over time.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> filtering to only healthy instances means the candidate pool can shrink dramatically during a partial outage, and if enough instances become simultaneously unhealthy, the remaining healthy instances absorb a correspondingly larger share of traffic — a load balancer correctly avoiding unhealthy instances doesn&#x27;t by itself prevent the remaining healthy instances from becoming overloaded by the redirected traffic; this interacts directly with <a href="0177-gateway-circuit-breaker-filter-resilience4j.md">circuit breakers</a> and capacity planning as complementary concerns, not something health-aware balancing alone solves.</blockquote>
+<ul><li>Health-check-aware load balancing filters the candidate instance pool to only currently-healthy instances before applying the selection algorithm, rather than selecting first and potentially failing against an unhealthy instance afterward.</li><li>This structurally eliminates avoidable request failures caused by routing to instances the balancer already had health information about.</li><li>The filtering step should recompute fresh on every selection (or on a short, bounded refresh interval), so the balancer automatically reflects both instances becoming unhealthy and instances recovering, with no special-case handling needed for either transition.</li><li>Health status itself typically comes from existing mechanisms (heartbeats, active health-check probing) already covered elsewhere; health-aware balancing is about correctly consuming that status at the selection step, not a separate health-detection mechanism of its own.</li><li>A shrinking healthy candidate pool during a partial outage concentrates more traffic on the remaining healthy instances, which health-aware balancing alone doesn&#x27;t prevent — this interacts with broader capacity planning and resilience patterns like circuit breakers.</li></ul>
+  <div class="nav"><a class="prv" href="0208-sticky-sessions-session-affinity.html"><span class="mini">← Previous</span>Sticky sessions / session affinity</a><a class="nxt" href="0210-layer-4-vs-layer-7-load-balancing.html"><span class="mini">Next →</span>Layer 4 vs Layer 7 load balancing</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t209";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
