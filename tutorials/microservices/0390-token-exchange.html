@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Token exchange" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 12. Security</div>
+  <div class="htitle">
+    <h1>"Token exchange"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Token exchange</strong> is a standardized OAuth2 grant (<a href="https://www.rfc-editor.org/rfc/rfc8693">RFC 8693</a>) that lets a service trade one security token for a *different* token — one scoped, audienced, or even actor-annotated differently — without going back to the end user to log in again. <a href="0389-token-relay-propagation-between-services.md">Token relay</a> introduced the idea informally: this topic is the actual protocol behind the &quot;exchange&quot; pattern, including the parts that matter most in production — how it represents *delegation* (a service acting *on behalf of* a user) versus *impersonation* (a service acting *as* a user), and how it lets a downstream service receive a token narrowly scoped to exactly what it needs.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for token exchange whenever a single incoming token isn&#x27;t the *right shape* for every hop it needs to travel through:</p>
+<ul><li><strong>Audience narrowing.</strong> A token issued for the gateway shouldn&#x27;t necessarily be accepted, unmodified, by a deep internal service — see the audience-confusion gotcha in <a href="0389-token-relay-propagation-between-services.md">token relay</a>. Token exchange mints a new token whose <code>aud</code> claim is exactly the next hop.</li><li><strong>Scope down-scoping.</strong> The gateway&#x27;s token might carry broad scopes (<code>orders:read orders:write payments:read</code>), but the specific downstream call only needs <code>orders:write</code>. Exchanging for a narrower token limits the blast radius if that token ever leaks.</li><li><strong>Delegation with a paper trail.</strong> When service A calls service B *because* user alice asked it to, RFC 8693 lets the new token carry both alice&#x27;s identity (<code>sub</code>) *and* an <code>act</code> (actor) claim recording that service A performed the exchange — &quot;acting for alice.&quot; This is different from just impersonating alice with no record of who initiated the call.</li><li><strong>Crossing trust domains.</strong> A token minted by one authorization server sometimes needs to be exchanged for a token trusted by a different authorization server — e.g., a partner&#x27;s token exchanged for an internal one after a federation handshake.</li></ul>
+<p>You don&#x27;t need full token exchange for a small system where every service already trusts the same tokens with the same audience — direct forwarding is fine there. It becomes necessary once you have narrowly-scoped downstream services, multiple trust boundaries, or a compliance requirement to record delegation chains.</p>
+<h2>3. Core concept</h2>
+<p>Think of a passport-controlled diplomatic reception with multiple rooms, each requiring a *different* pass. You arrive with a valid entry passport (the original token). At the front desk, instead of using that same passport to walk into every room, you exchange it at each doorway for a room-specific badge — the badge still says whose passport it was issued against, but it&#x27;s stamped only for that room, and expires when you leave. If you lose a badge, only that one room is exposed — not the whole reception.</p>
+<p>RFC 8693 formalizes this exchange as an OAuth2 grant:</p>
+<pre><code>grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&amp;subject_token=&lt;token being exchanged&gt;
+&amp;subject_token_type=urn:ietf:params:oauth:token-type:access_token
+&amp;audience=&lt;target service&gt;
+&amp;scope=&lt;optionally narrower scope&gt;
+&amp;actor_token=&lt;optional: the calling service&#x27;s own token&gt;
+&amp;actor_token_type=urn:ietf:params:oauth:token-type:access_token</code></pre>
+<p>Two claims matter most in the response token:</p>
+<ol><li><strong><code>sub</code></strong> — stays the original subject (e.g., <code>alice</code>). This is what keeps identity intact across the exchange, exactly as in <a href="0389-token-relay-propagation-between-services.md">token relay</a>.</li><li><strong><code>act</code></strong> — an optional nested claim identifying who is *acting on behalf of* <code>sub</code>. When service <code>order-service</code> exchanges alice&#x27;s token to call <code>inventory-service</code>, the new token can carry <code>act: {&quot;sub&quot;: &quot;order-service&quot;}</code>, recording explicitly &quot;order-service, acting for alice&quot; — a delegation chain, not silent impersonation.</li></ol>
+<p>An authorization server exposes this as a <code>/token</code> endpoint (the same endpoint used for other <a href="0387-oauth2-grant-types-flows-auth-code-client-credentials-etc.md">OAuth2 grant types</a>), and only trusted internal clients are normally allowed to call it — an attacker who can freely mint exchanged tokens defeats the whole point.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Order service presents alice's broad token to the authorization server's token-exchange endpoint and receives back a narrower token scoped to inventory-service, with an actor claim recording the delegation" font-family="sans-serif">
+  <rect x="20" y="20" width="150" height="50" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="95" y="40" fill="#e6edf3" font-size="10" text-anchor="middle">Token: sub=alice</text>
+  <text x="95" y="55" fill="#8b949e" font-size="9" text-anchor="middle">aud=gateway, scope=broad</text>
+
+  <rect x="230" y="90" width="180" height="70" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="320" y="112" fill="#e6edf3" font-size="11" text-anchor="middle">Authorization Server</text>
+  <text x="320" y="128" fill="#8b949e" font-size="9" text-anchor="middle">POST /token</text>
+  <text x="320" y="143" fill="#8b949e" font-size="9" text-anchor="middle">grant_type=token-exchange</text>
+
+  <rect x="470" y="20" width="150" height="60" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="545" y="40" fill="#e6edf3" font-size="10" text-anchor="middle">New token: sub=alice</text>
+  <text x="545" y="55" fill="#e6edf3" font-size="9" text-anchor="middle">act.sub=order-service</text>
+  <text x="545" y="70" fill="#8b949e" font-size="9" text-anchor="middle">aud=inventory-service</text>
+
+  <rect x="230" y="200" width="180" height="40" rx="8" fill="#1c2430" stroke="#f0883e"/>
+  <text x="320" y="225" fill="#e6edf3" font-size="10" text-anchor="middle">order-service (caller)</text>
+
+  <line x1="170" y1="45" x2="230" y2="110" stroke="#79c0ff" marker-end="url(#tx1)"/>
+  <text x="180" y="80" fill="#79c0ff" font-size="8">present as subject_token</text>
+  <line x1="320" y1="200" x2="320" y2="160" stroke="#f0883e" marker-end="url(#tx1)"/>
+  <text x="345" y="180" fill="#f0883e" font-size="8">calls exchange</text>
+  <line x1="410" y1="115" x2="470" y2="55" stroke="#6db33f" marker-end="url(#tx1)"/>
+  <text x="440" y="90" fill="#6db33f" font-size="8">exchanged token</text>
+  <defs>
+    <marker id="tx1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+</svg>
+<p>order-service presents alice&#x27;s broad token as the subject_token and its own credentials as the actor; the authorization server returns a narrower token that preserves alice&#x27;s identity while recording who is acting on her behalf.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order-approval flow. order-service needs to call a downstream approval-service, but only for the specific action alice requested, and with a record that order-service — not alice directly — made the call. We build up from a naive re-use of the original token to a full RFC 8693-style exchange with delegation tracking.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NaiveTokenReuse.java -- order-service simply re-uses alice&#x27;s ORIGINAL,
+// broadly-scoped token when calling approval-service. No exchange, no narrowing,
+// no record of WHICH internal service actually made the call.
+public class NaiveTokenReuse {
+    record Token(String sub, String aud, String scope) {}
+
+    static Token gatewayToken(String user) {
+        return new Token(user, &quot;gateway&quot;, &quot;orders:read orders:write payments:read approvals:write&quot;);
+    }
+
+    static String approvalServiceHandles(Token token) {
+        return &quot;ApprovalService approved action for &#x27;&quot; + token.sub()
+                + &quot;&#x27; using a token scoped for &#x27;&quot; + token.aud() + &quot;&#x27; with scopes [&quot; + token.scope() + &quot;]&quot;;
+    }
+
+    public static void main(String[] args) {
+        Token aliceToken = gatewayToken(&quot;alice&quot;);
+        System.out.println(approvalServiceHandles(aliceToken));
+        System.out.println(&quot;Problem: this same broad token would ALSO work against payments and orders endpoints.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NaiveTokenReuse.java</code></p>
+<p><code>approvalServiceHandles</code> accepts alice&#x27;s original token as-is. It works, but the token still carries <code>payments:read</code> and <code>orders:write</code> scopes it doesn&#x27;t need for approvals — if this token leaked from approval-service&#x27;s logs, it would grant far more than approvals access. There&#x27;s also no record that <code>order-service</code>, specifically, is the one that triggered the call.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: BasicTokenExchange.java -- order-service now calls a simulated
+// token-exchange endpoint before calling approval-service, receiving a
+// NARROWER token scoped ONLY to what approval-service needs.
+import java.util.*;
+
+public class BasicTokenExchange {
+    record Token(String sub, String aud, String scope) {}
+
+    static final Map&lt;String, String&gt; TARGET_SCOPE = Map.of(
+            &quot;approval-service&quot;, &quot;approvals:write&quot;
+    );
+
+    // Simulated POST /token with grant_type=token-exchange.
+    static Token exchange(Token subjectToken, String targetAudience) {
+        String narrowScope = TARGET_SCOPE.get(targetAudience);
+        if (narrowScope == null) throw new IllegalArgumentException(&quot;no exchange policy for &quot; + targetAudience);
+        return new Token(subjectToken.sub(), targetAudience, narrowScope);
+    }
+
+    static String approvalServiceHandles(Token token) {
+        if (!&quot;approval-service&quot;.equals(token.aud())) return &quot;REJECTED: wrong audience&quot;;
+        if (!token.scope().equals(&quot;approvals:write&quot;)) return &quot;REJECTED: unexpected scope &quot; + token.scope();
+        return &quot;ApprovalService approved action for &#x27;&quot; + token.sub() + &quot;&#x27; with narrowly-scoped token&quot;;
+    }
+
+    public static void main(String[] args) {
+        Token aliceToken = new Token(&quot;alice&quot;, &quot;gateway&quot;, &quot;orders:read orders:write payments:read approvals:write&quot;);
+        Token exchanged = exchange(aliceToken, &quot;approval-service&quot;);
+        System.out.println(&quot;Exchanged token: aud=&quot; + exchanged.aud() + &quot;, scope=&quot; + exchanged.scope());
+        System.out.println(approvalServiceHandles(exchanged));
+    }
+}</code></pre>
+<p>How to run: <code>java BasicTokenExchange.java</code></p>
+<p><code>exchange</code> looks up the exact scope approval-service is allowed to receive and mints a brand-new token carrying only that scope, still crediting <code>alice</code> as the subject. <code>approvalServiceHandles</code> now strictly checks both audience and scope, and the exchanged token satisfies both — but note the exchanged token still doesn&#x27;t record *which* internal service performed the exchange; if <code>order-service</code>&#x27;s credentials were ever stolen, we&#x27;d have no way to distinguish its exchanges from any other trusted caller&#x27;s.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: DelegatedTokenExchange.java -- full RFC 8693-style exchange: the
+// exchanged token carries BOTH the original subject (&#x27;sub&#x27;) AND an actor
+// claim (&#x27;act&#x27;) recording exactly which internal service performed the
+// exchange -- true delegation, not silent impersonation. Also rejects
+// exchange requests from services with no exchange policy (least privilege).
+import java.util.*;
+
+public class DelegatedTokenExchange {
+    record Actor(String sub) {}
+    record Token(String sub, String aud, String scope, Actor act) {
+        boolean hasDelegation() { return act != null; }
+    }
+
+    // Policy: which callers may exchange for which targets, and with what scope.
+    record ExchangePolicy(String callerService, String targetAudience, String allowedScope) {}
+
+    static final List&lt;ExchangePolicy&gt; POLICIES = List.of(
+            new ExchangePolicy(&quot;order-service&quot;, &quot;approval-service&quot;, &quot;approvals:write&quot;),
+            new ExchangePolicy(&quot;order-service&quot;, &quot;inventory-service&quot;, &quot;inventory:reserve&quot;)
+            // notice: no policy for &quot;recommendation-service&quot; -&gt; approval-service
+    );
+
+    static Token exchange(Token subjectToken, String callerService, String targetAudience) {
+        ExchangePolicy policy = POLICIES.stream()
+                .filter(p -&gt; p.callerService().equals(callerService) &amp;&amp; p.targetAudience().equals(targetAudience))
+                .findFirst()
+                .orElseThrow(() -&gt; new SecurityException(
+                        &quot;no exchange policy allows &#x27;&quot; + callerService + &quot;&#x27; to obtain a token for &#x27;&quot; + targetAudience + &quot;&#x27;&quot;));
+        // sub is preserved; act records who actually performed the exchange.
+        return new Token(subjectToken.sub(), targetAudience, policy.allowedScope(), new Actor(callerService));
+    }
+
+    static String approvalServiceHandles(Token token) {
+        if (!&quot;approval-service&quot;.equals(token.aud())) return &quot;REJECTED: wrong audience&quot;;
+        if (!token.hasDelegation()) return &quot;REJECTED: no actor claim -- cannot audit who initiated this&quot;;
+        return &quot;ApprovalService approved action for &#x27;&quot; + token.sub()
+                + &quot;&#x27;, delegated via &#x27;&quot; + token.act().sub() + &quot;&#x27; (fully auditable)&quot;;
+    }
+
+    public static void main(String[] args) {
+        Token aliceToken = new Token(&quot;alice&quot;, &quot;gateway&quot;, &quot;orders:read orders:write payments:read approvals:write&quot;, null);
+
+        // Legitimate: order-service exchanges alice&#x27;s token for an approval-service-scoped token.
+        Token exchanged = exchange(aliceToken, &quot;order-service&quot;, &quot;approval-service&quot;);
+        System.out.println(&quot;Exchanged: sub=&quot; + exchanged.sub() + &quot;, aud=&quot; + exchanged.aud()
+                + &quot;, scope=&quot; + exchanged.scope() + &quot;, act.sub=&quot; + exchanged.act().sub());
+        System.out.println(approvalServiceHandles(exchanged));
+
+        // Attack attempt: a compromised, unrelated service tries to exchange for the SAME target.
+        try {
+            exchange(aliceToken, &quot;recommendation-service&quot;, &quot;approval-service&quot;);
+        } catch (SecurityException e) {
+            System.out.println(&quot;Blocked: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java DelegatedTokenExchange.java</code></p>
+<p><code>POLICIES</code> acts as a stand-in for the authorization server&#x27;s exchange rules: only <code>order-service</code> is permitted to exchange alice&#x27;s token for <code>approval-service</code> or <code>inventory-service</code> audiences, and each exchange has its own allowed scope. <code>exchange</code> looks up the caller against these policies *before* minting anything — a caller with no matching policy gets a <code>SecurityException</code>, exactly the outcome for the attack attempt from <code>recommendation-service</code>. The successful exchange builds a token with <code>act.sub = &quot;order-service&quot;</code>, giving <code>approvalServiceHandles</code> (and any audit log reading this token) a complete, verifiable delegation chain: alice asked, order-service acted on her behalf, approval-service granted it.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>DelegatedTokenExchange.main</code> in order. <strong>First</strong>, <code>aliceToken</code> is constructed directly (standing in for a token the gateway already issued after authenticating alice), with broad scopes and <code>act = null</code>.</p>
+<p><strong>Next</strong>, <code>exchange(aliceToken, &quot;order-service&quot;, &quot;approval-service&quot;)</code> runs. The <code>POLICIES</code> list is searched for an entry where <code>callerService</code> equals <code>&quot;order-service&quot;</code> and <code>targetAudience</code> equals <code>&quot;approval-service&quot;</code> — the first <code>ExchangePolicy</code> matches, giving <code>allowedScope = &quot;approvals:write&quot;</code>. A new <code>Token</code> is built: <code>sub</code> copied unchanged as <code>&quot;alice&quot;</code>, <code>aud</code> set to <code>&quot;approval-service&quot;</code>, <code>scope</code> set to the policy&#x27;s narrow value, and <code>act</code> set to <code>new Actor(&quot;order-service&quot;)</code>.</p>
+<p><strong>Then</strong>, <code>approvalServiceHandles(exchanged)</code> runs. <code>token.aud()</code> equals <code>&quot;approval-service&quot;</code> — audience check passes. <code>token.hasDelegation()</code> is <code>true</code> because <code>act</code> is non-null — the auditability check passes. The method returns a success string naming both <code>alice</code> (the subject) and <code>order-service</code> (the actor).</p>
+<p><strong>Finally</strong>, the attack attempt calls <code>exchange(aliceToken, &quot;recommendation-service&quot;, &quot;approval-service&quot;)</code>. The stream filter finds no <code>ExchangePolicy</code> where <code>callerService</code> equals <code>&quot;recommendation-service&quot;</code>, so <code>findFirst()</code> returns empty and <code>orElseThrow</code> fires a <code>SecurityException</code> — caught and printed, demonstrating the exchange endpoint itself enforces which services may act as delegates for which targets.</p>
+<pre><code>Exchanged: sub=alice, aud=approval-service, scope=approvals:write, act.sub=order-service
+ApprovalService approved action for &#x27;alice&#x27;, delegated via &#x27;order-service&#x27; (fully auditable)
+Blocked: no exchange policy allows &#x27;recommendation-service&#x27; to obtain a token for &#x27;approval-service&#x27;</code></pre>
+<p>Sample HTTP request/response for the real exchange call:</p>
+<pre><code>POST /token HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic &lt;order-service-client-credentials&gt;
+
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&amp;subject_token=&lt;alice&#x27;s original access token&gt;
+&amp;subject_token_type=urn:ietf:params:oauth:token-type:access_token
+&amp;audience=approval-service
+&amp;scope=approvals:write
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  &quot;access_token&quot;: &quot;&lt;new token&gt;&quot;,
+  &quot;issued_token_type&quot;: &quot;urn:ietf:params:oauth:token-type:access_token&quot;,
+  &quot;token_type&quot;: &quot;Bearer&quot;,
+  &quot;expires_in&quot;: 300
+}</code></pre>
+<p>Decoded, the new token&#x27;s payload carries <code>&quot;sub&quot;: &quot;alice&quot;</code>, <code>&quot;aud&quot;: &quot;approval-service&quot;</code>, <code>&quot;scope&quot;: &quot;approvals:write&quot;</code>, and <code>&quot;act&quot;: {&quot;sub&quot;: &quot;order-service&quot;}</code>.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>It&#x27;s tempting to let *any* authenticated internal service call the token-exchange endpoint for *any* target audience — that turns token exchange into a universal privilege-escalation tool instead of a narrowing one. Always pair token exchange with an explicit policy of which callers may exchange for which audiences and scopes, exactly like <code>POLICIES</code> in Level 3; without it, a compromised low-value service could mint itself a perfectly valid, narrowly-scoped token for a high-value target simply by asking.</blockquote>
+<ul><li>Token exchange (RFC 8693) preserves the original subject (<code>sub</code>) while minting a new token with the correct audience and, ideally, a narrower scope for each downstream hop.</li><li>The <code>act</code> (actor) claim distinguishes *delegation* (&quot;order-service, acting for alice&quot;) from silent impersonation, and gives audit logs a real chain of custody.</li><li>Down-scoping on exchange limits the blast radius of a leaked downstream token — it can only do what that one hop needed, not everything the original token could do.</li><li>Only trusted, explicitly-authorized services should be able to call the exchange endpoint at all — treat it as sensitive infrastructure, not a generic utility.</li><li>This builds directly on <a href="0389-token-relay-propagation-between-services.md">token relay / propagation</a> and feeds into <a href="0391-service-to-service-authentication.md">service-to-service authentication</a>, which covers how the *caller itself* (not just the token) proves its identity when requesting an exchange.</li></ul>
+  <div class="nav"><a class="prv" href="0389-token-relay-propagation-between-services.html"><span class="mini">← Previous</span>Token relay / propagation between services</a><a class="nxt" href="0391-service-to-service-authentication.html"><span class="mini">Next →</span>Service-to-service authentication</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t390";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

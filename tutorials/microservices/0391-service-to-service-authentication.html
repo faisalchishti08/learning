@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Service-to-service authentication" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 12. Security</div>
+  <div class="htitle">
+    <h1>"Service-to-service authentication"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Service-to-service authentication</strong> is how one service proves *its own identity* to another service, independent of any end user involved in the request. It answers a different question than <a href="0389-token-relay-propagation-between-services.md">token relay</a> or <a href="0390-token-exchange.md">token exchange</a>: those are about carrying a *user&#x27;s* identity through a call chain, while this is about the *calling service itself* proving &quot;I really am order-service, not an impostor&quot; before the callee does any work at all — including for purely internal, user-agnostic calls like a nightly batch job or a health check between services.</p>
+<h2>2. Why &amp; when</h2>
+<p>You need service-to-service authentication for exactly the reason laid out in <a href="0378-microservices-security-challenges-larger-attack-surface.md">microservices security challenges</a>: once a call crosses the network, &quot;it came from inside our cluster&quot; is not proof of anything. You need it whenever:</p>
+<ul><li><strong>A service accepts calls from other services</strong>, whether or not those calls carry a user token — a background reconciliation job, a metrics scraper, or an internal admin tool calling a service directly all still need to prove *who* they are.</li><li><strong>You want least-privilege internal access.</strong> Even if service B trusts *some* callers, it shouldn&#x27;t automatically trust *every* service in the mesh; service-to-service authentication is what lets B check &quot;is this specific caller, <code>payment-service</code>, actually allowed to call me?&quot;</li><li><strong>You&#x27;re building any zero-trust internal network</strong> (see <a href="0380-zero-trust-networking.md">zero-trust networking</a>) — the whole premise of zero trust is that network location proves nothing, so every hop needs its own credential check.</li></ul>
+<p>The main options in practice, roughly from simplest to most robust:</p>
+<ol><li><strong>Shared static secrets</strong> — a pre-shared API key or password every service knows. Simple, but a single leak compromises every caller using it, and rotation means touching every service simultaneously.</li><li><strong>Signed JWTs (client credentials)</strong> — each service authenticates to an authorization server using the <a href="0387-oauth2-grant-types-flows-auth-code-client-credentials-etc.md">OAuth2 client-credentials grant</a> and receives a short-lived JWT identifying itself as the subject, which it presents on every call.</li><li><strong>Mutual TLS (mTLS)</strong> — both sides present X.509 certificates during the TLS handshake itself, so identity is verified at the transport layer before any application data is even exchanged; covered in depth in <a href="0392-mutual-tls-mtls.md">mutual TLS (mTLS)</a>.</li><li><strong>API keys</strong> — a simpler, often less secure relative of shared secrets, more common for third-party integrations than internal service calls; see <a href="0393-api-keys.md">API keys</a>.</li></ol>
+<h2>3. Core concept</h2>
+<p>Picture a building where employees badge into every internal room, not just the front door — the building doesn&#x27;t ask &quot;are you inside the building?&quot; (network location), it asks &quot;does *your specific badge* open *this specific door*?&quot; every single time. Service-to-service authentication is the internal badge system: every service carries a credential that identifies it specifically, and every service that receives a call checks that credential before doing anything, regardless of which network segment the call arrived from.</p>
+<p>Two properties separate a good service-to-service auth scheme from a weak one:</p>
+<ol><li><strong>Verifiable identity, not just a shared password.</strong> A JWT signed by a trusted authorization server, or an mTLS certificate signed by a trusted CA, lets the callee cryptographically verify *which* service is calling — a shared static secret only proves &quot;someone who knows the secret&quot; is calling, which is much weaker once that secret inevitably ends up in more places than intended (config files, logs, a compromised service).</li><li><strong>Short-lived, rotatable credentials.</strong> A JWT from client-credentials typically expires in minutes; an mTLS certificate can be rotated on a schedule. A leaked long-lived shared secret stays dangerous until someone notices and manually rotates it everywhere it&#x27;s used — see <a href="0394-secrets-management-rotation.md">secrets management &amp; rotation</a>.</li></ol>
+<p>Crucially, service-to-service authentication and <a href="0389-token-relay-propagation-between-services.md">token relay</a> are complementary, not competing: a call can (and often should) carry *both* — a service identity token proving &quot;this call really came from order-service&quot; *and* a relayed or exchanged user token proving &quot;and it&#x27;s acting on behalf of alice.&quot; Losing either one loses real information: without the service identity, you can&#x27;t enforce which services may call which; without the user identity, you can&#x27;t enforce per-user rules downstream.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Payment service presents its own client-credentials JWT to inventory service, which verifies the signature and checks the caller identity against an allow-list before processing the call" font-family="sans-serif">
+  <rect x="20" y="30" width="140" height="50" rx="8" fill="#1c2430" stroke="#f0883e"/>
+  <text x="90" y="50" fill="#e6edf3" font-size="10" text-anchor="middle">payment-service</text>
+  <text x="90" y="65" fill="#8b949e" font-size="9" text-anchor="middle">holds its own client id/secret</text>
+
+  <rect x="230" y="30" width="160" height="50" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="310" y="50" fill="#e6edf3" font-size="10" text-anchor="middle">Authorization Server</text>
+  <text x="310" y="65" fill="#8b949e" font-size="9" text-anchor="middle">client_credentials grant</text>
+
+  <rect x="450" y="30" width="150" height="50" rx="8" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="525" y="50" fill="#e6edf3" font-size="10" text-anchor="middle">service JWT</text>
+  <text x="525" y="65" fill="#8b949e" font-size="9" text-anchor="middle">sub=payment-service</text>
+
+  <rect x="230" y="150" width="200" height="60" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="330" y="172" fill="#e6edf3" font-size="10" text-anchor="middle">inventory-service</text>
+  <text x="330" y="188" fill="#8b949e" font-size="9" text-anchor="middle">verifies signature +</text>
+  <text x="330" y="200" fill="#8b949e" font-size="9" text-anchor="middle">checks allow-list</text>
+
+  <line x1="160" y1="55" x2="230" y2="55" stroke="#8b949e" marker-end="url(#s2s)"/>
+  <line x1="390" y1="55" x2="450" y2="55" stroke="#8b949e" marker-end="url(#s2s)"/>
+  <line x1="90" y1="80" x2="330" y2="150" stroke="#f0883e" stroke-dasharray="3,2" marker-end="url(#s2s)"/>
+  <text x="180" y="120" fill="#f0883e" font-size="9">call + service JWT</text>
+  <defs>
+    <marker id="s2s" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+</svg>
+<p>payment-service obtains a short-lived JWT identifying itself from the authorization server, then presents that JWT on its call to inventory-service, which verifies both the signature and that this specific caller is allowed to call it.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: inventory-service is being called by other internal services to reserve stock. We start with a wide-open endpoint (no caller verification at all), add a shared-secret check, then move to per-service signed credentials verified against an explicit allow-list of which callers may call which operations.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NoServiceAuth.java -- inventory-service accepts calls from ANY caller,
+// trusting network location alone. Any process that can reach it can reserve stock.
+public class NoServiceAuth {
+    static String reserveStock(String sku, int qty, String callerName) {
+        return &quot;Reserved &quot; + qty + &quot; of &quot; + sku + &quot; -- call accepted from &#x27;&quot; + callerName
+                + &quot;&#x27; with NO verification of that identity&quot;;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(reserveStock(&quot;sku-42&quot;, 5, &quot;payment-service&quot;));
+        // An attacker who compromised an unrelated, low-value service gets identical access.
+        System.out.println(reserveStock(&quot;sku-42&quot;, 999, &quot;compromised-newsletter-service&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java NoServiceAuth.java</code></p>
+<p><code>reserveStock</code> takes <code>callerName</code> purely as a label to print — it never checks whether the caller actually *is* who it claims. The forged call from <code>compromised-newsletter-service</code> succeeds identically to the legitimate one, reserving an arbitrary quantity of stock.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SharedSecretAuth.java -- every internal service now presents a
+// SHARED secret on every call. Better than nothing, but every caller uses
+// the SAME credential, so it doesn&#x27;t distinguish WHICH service is calling,
+// and a single leak compromises every legitimate caller at once.
+import java.util.*;
+
+public class SharedSecretAuth {
+    static final String SHARED_INTERNAL_SECRET = &quot;internal-network-secret-2024&quot;;
+
+    static String reserveStock(String sku, int qty, String callerName, String presentedSecret) {
+        if (!SHARED_INTERNAL_SECRET.equals(presentedSecret)) {
+            return &quot;REJECTED: invalid shared secret from &#x27;&quot; + callerName + &quot;&#x27;&quot;;
+        }
+        return &quot;Reserved &quot; + qty + &quot; of &quot; + sku + &quot; -- accepted from &#x27;&quot; + callerName + &quot;&#x27; (shared secret matched)&quot;;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(reserveStock(&quot;sku-42&quot;, 5, &quot;payment-service&quot;, &quot;internal-network-secret-2024&quot;));
+        // If the secret ever leaks (logged, checked into a repo, found in a compromised container),
+        // ANY caller who has it -- legitimate or not -- passes this exact same check.
+        System.out.println(reserveStock(&quot;sku-42&quot;, 999, &quot;compromised-newsletter-service&quot;, &quot;internal-network-secret-2024&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java SharedSecretAuth.java</code></p>
+<p><code>reserveStock</code> now rejects any call missing the correct secret — a real improvement over Level 1. But notice both calls present the *same* secret and both succeed: the check can&#x27;t tell <code>payment-service</code> apart from <code>compromised-newsletter-service</code> if both happen to know the shared value, and there&#x27;s no way to revoke just one caller&#x27;s access without rotating the secret for every legitimate caller too.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: PerServiceCredentialAuth.java -- each service authenticates with its
+// OWN client-credentials-issued token (simulated), and inventory-service checks
+// BOTH that the token is validly signed AND that this specific caller is on the
+// allow-list for the operation being requested -- least-privilege, per-caller access.
+import java.util.*;
+
+public class PerServiceCredentialAuth {
+    record ServiceToken(String issuer, String subject, String signature) {
+        boolean signatureValid() {
+            // Stand-in for real signature verification (e.g. RSA/EC signature check against the AS&#x27;s public key).
+            return signature.equals(&quot;valid-sig-for-&quot; + subject);
+        }
+    }
+
+    // Authorization server (simulated): issues a token identifying the calling service.
+    static ServiceToken authServerIssuesToken(String clientId, String clientSecret) {
+        if (!(&quot;secret-for-&quot; + clientId).equals(clientSecret)) {
+            throw new SecurityException(&quot;invalid client credentials for &quot; + clientId);
+        }
+        return new ServiceToken(&quot;auth-server&quot;, clientId, &quot;valid-sig-for-&quot; + clientId);
+    }
+
+    // Per-operation allow-list: which service identities may call reserveStock.
+    static final Set&lt;String&gt; ALLOWED_TO_RESERVE = Set.of(&quot;payment-service&quot;, &quot;order-service&quot;);
+
+    static String reserveStock(String sku, int qty, ServiceToken token) {
+        if (!token.signatureValid()) {
+            return &quot;REJECTED: invalid or forged token signature&quot;;
+        }
+        if (!ALLOWED_TO_RESERVE.contains(token.subject())) {
+            return &quot;REJECTED: &#x27;&quot; + token.subject() + &quot;&#x27; is not authorized to reserve stock&quot;;
+        }
+        return &quot;Reserved &quot; + qty + &quot; of &quot; + sku + &quot; -- verified caller &#x27;&quot; + token.subject() + &quot;&#x27;, authorized for this operation&quot;;
+    }
+
+    public static void main(String[] args) {
+        // Legitimate: payment-service authenticates and gets its own signed token.
+        ServiceToken paymentToken = authServerIssuesToken(&quot;payment-service&quot;, &quot;secret-for-payment-service&quot;);
+        System.out.println(reserveStock(&quot;sku-42&quot;, 5, paymentToken));
+
+        // A DIFFERENT legitimate service, but one never granted reserveStock access.
+        ServiceToken newsletterToken = authServerIssuesToken(&quot;newsletter-service&quot;, &quot;secret-for-newsletter-service&quot;);
+        System.out.println(reserveStock(&quot;sku-42&quot;, 5, newsletterToken));
+
+        // An attacker who forges a token claiming to be payment-service, but without the real signature.
+        ServiceToken forged = new ServiceToken(&quot;auth-server&quot;, &quot;payment-service&quot;, &quot;forged-signature&quot;);
+        System.out.println(reserveStock(&quot;sku-42&quot;, 999, forged));
+    }
+}</code></pre>
+<p>How to run: <code>java PerServiceCredentialAuth.java</code></p>
+<p><code>authServerIssuesToken</code> models the <a href="0387-oauth2-grant-types-flows-auth-code-client-credentials-etc.md">OAuth2 client-credentials grant</a>: each service authenticates with its *own* <code>clientId</code>/<code>clientSecret</code> pair and gets back a token whose <code>subject</code> is its own identity, signed in a way only the real authorization server can produce. <code>reserveStock</code> performs two independent checks: first, is the signature genuine (<code>signatureValid</code>), and second, is this specific subject on the <code>ALLOWED_TO_RESERVE</code> allow-list. <code>payment-service</code> passes both. <code>newsletter-service</code> authenticates successfully (it has valid credentials) but is still rejected because it was never granted this specific permission — a real caller with the wrong authorization, not a forgery. The forged token fails signature verification outright, regardless of which identity it claims.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>PerServiceCredentialAuth.main</code> in order. <strong>First</strong>, <code>authServerIssuesToken(&quot;payment-service&quot;, &quot;secret-for-payment-service&quot;)</code> checks that the provided secret matches <code>&quot;secret-for-payment-service&quot;</code> — it does, so a <code>ServiceToken</code> is returned with <code>subject = &quot;payment-service&quot;</code> and <code>signature = &quot;valid-sig-for-payment-service&quot;</code>.</p>
+<p><strong>Next</strong>, <code>reserveStock(&quot;sku-42&quot;, 5, paymentToken)</code> runs. <code>token.signatureValid()</code> recomputes <code>&quot;valid-sig-for-&quot; + subject</code> and compares it to the stored signature — they match, so this check passes. <code>ALLOWED_TO_RESERVE.contains(&quot;payment-service&quot;)</code> is <code>true</code> — this check passes too. The reservation succeeds and is printed.</p>
+<p><strong>Then</strong>, <code>authServerIssuesToken(&quot;newsletter-service&quot;, &quot;secret-for-newsletter-service&quot;)</code> succeeds identically at the authentication step — <code>newsletter-service</code> really does hold valid credentials for *itself*. But when <code>reserveStock</code> is called with this token, <code>signatureValid()</code> passes (it&#x27;s a genuine token), while <code>ALLOWED_TO_RESERVE.contains(&quot;newsletter-service&quot;)</code> is <code>false</code> — this service was authenticated, but never *authorized* for this specific operation, so the call is rejected. This distinguishes <a href="0381-authentication-vs-authorization.md">authentication from authorization</a>: proving who you are is not the same as being allowed to do a given thing.</p>
+<p><strong>Finally</strong>, the forged token — claiming <code>subject = &quot;payment-service&quot;</code> but with <code>signature = &quot;forged-signature&quot;</code> — fails at <code>signatureValid()</code> immediately, before the allow-list is even consulted, because <code>&quot;forged-signature&quot;</code> does not equal <code>&quot;valid-sig-for-payment-service&quot;</code>.</p>
+<pre><code>Reserved 5 of sku-42 -- verified caller &#x27;payment-service&#x27;, authorized for this operation
+REJECTED: &#x27;newsletter-service&#x27; is not authorized to reserve stock
+REJECTED: invalid or forged token signature</code></pre>
+<p>Sample HTTP shape for the real client-credentials exchange and the subsequent service call:</p>
+<pre><code>POST /token HTTP/1.1
+Authorization: Basic cGF5bWVudC1zZXJ2aWNlOnNlY3JldA==
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&amp;scope=inventory:reserve
+
+HTTP/1.1 200 OK
+{&quot;access_token&quot;: &quot;&lt;JWT with sub=payment-service&gt;&quot;, &quot;expires_in&quot;: 300}
+
+POST /inventory/reserve HTTP/1.1
+Authorization: Bearer &lt;JWT with sub=payment-service&gt;
+
+{&quot;sku&quot;: &quot;sku-42&quot;, &quot;qty&quot;: 5}</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A shared static secret (Level 2) is often adopted as a &quot;quick win&quot; and then never removed, because it works and rotating it means coordinating every service at once. The real cost shows up later: it can&#x27;t express least privilege (every holder of the secret gets identical access), it can&#x27;t be revoked for one caller without breaking all of them, and once it leaks — into a log line, a config dump, a compromised container&#x27;s environment — every service using it is compromised simultaneously.</blockquote>
+<ul><li>Service-to-service authentication proves *which service* is calling, independent of any end-user token — necessary even for purely internal, user-agnostic calls.</li><li>Prefer per-service, short-lived, verifiable credentials (signed JWTs from <a href="0387-oauth2-grant-types-flows-auth-code-client-credentials-etc.md">client-credentials</a>, or <a href="0392-mutual-tls-mtls.md">mutual TLS</a> certificates) over shared static secrets — they support least privilege, revocation, and rotation without a fire drill.</li><li>Authentication and authorization are separate checks: a service can genuinely prove its identity and still be denied a specific operation, exactly like <code>newsletter-service</code> in Level 3.</li><li>Service identity and user identity are complementary, not competing — combine service-to-service authentication with <a href="0389-token-relay-propagation-between-services.md">token relay / exchange</a> so downstream services know both *which service* and *on whose behalf* a call is being made.</li><li>This whole approach only pays off within a broader <a href="0380-zero-trust-networking.md">zero-trust networking</a> posture — verifying identity on every hop, not just at the network edge.</li></ul>
+  <div class="nav"><a class="prv" href="0390-token-exchange.html"><span class="mini">← Previous</span>Token exchange</a><a class="nxt" href="0392-mutual-tls-mtls.html"><span class="mini">Next →</span>Mutual TLS (mTLS)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t391";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

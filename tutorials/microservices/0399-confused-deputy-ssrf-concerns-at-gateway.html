@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Confused deputy / SSRF concerns at the gateway" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 12. Security</div>
+  <div class="htitle">
+    <h1>"Confused deputy / SSRF concerns at the gateway"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>confused deputy</strong> is a program that has more privilege than the party asking it to act, and can be tricked into misusing that privilege on the attacker&#x27;s behalf. <strong>Server-Side Request Forgery (SSRF)</strong> is the most common concrete instance of this in web APIs: a server-side component makes an outbound HTTP request to a URL that&#x27;s fully or partially controlled by the caller, and an attacker supplies a URL pointing at something the *server* can reach but the *attacker* couldn&#x27;t reach directly — an internal admin panel, a cloud metadata endpoint, or a service with no external exposure at all. The <a href="0382-edge-authentication-at-the-gateway.md">API gateway</a>, sitting at the trust boundary between the public internet and the internal network, is a particularly high-value confused-deputy target, because it typically *does* have network access to everything behind it.</p>
+<h2>2. Why &amp; when</h2>
+<p>This matters specifically because of what makes a gateway powerful in the first place: it&#x27;s trusted, network-privileged, and reachable from outside — exactly the combination a confused-deputy attack needs.</p>
+<ul><li><strong>Any feature that fetches a URL supplied by the caller is a potential SSRF vector</strong> — webhook registration, &quot;import from URL,&quot; avatar-by-URL, PDF-generation-from-URL, and proxy or gateway routing features are the classic culprits.</li><li><strong>The gateway&#x27;s network position makes it uniquely dangerous to trick.</strong> A public user has no direct route to an internal-only service; but if the gateway can be convinced to make a request *for* them, the gateway&#x27;s own network access becomes theirs — this is the &quot;deputy&quot; being confused into acting beyond the caller&#x27;s actual privilege.</li><li><strong>Cloud environments add a specific, severe instance:</strong> cloud provider metadata endpoints (commonly <code>169.254.169.254</code>) often serve instance credentials with no authentication required *from the instance itself* — an SSRF vulnerability that lets an attacker point a server at this address can exfiltrate the server&#x27;s own cloud credentials.</li><li><strong>This is explicitly item API7 on the <a href="0398-owasp-api-security-top-10.md">OWASP API Security Top 10</a></strong> precisely because it&#x27;s common, severe, and easy to introduce accidentally in any feature involving &quot;fetch this URL for me.&quot;</li></ul>
+<p>You need to think about this any time a service — especially the gateway — makes an outbound network call whose destination is influenced, directly or indirectly, by data from an external caller.</p>
+<h2>3. Core concept</h2>
+<p>Think of a hotel concierge (the deputy) who has a master key and will fetch anything from any room in the building on a guest&#x27;s behalf, as a courtesy. A legitimate guest asks the concierge to bring something from the gift shop — fine, that&#x27;s within the intended use. But if the concierge doesn&#x27;t check *where* it&#x27;s fetching from, an attacker can ask &quot;please bring me whatever is in the manager&#x27;s office safe&quot; — a room the guest could never have entered themselves, but the concierge, using its own privileged master key, walks right in and hands it over. The concierge was tricked into using *its own* privilege on the guest&#x27;s behalf, for a request the guest was never authorized to make directly. That&#x27;s the confused deputy problem, and SSRF is exactly this pattern applied to network requests.</p>
+<p>The defense has several layers, each closing a different gap:</p>
+<ol><li><strong>Never let user input directly become a raw destination URL/host</strong> for a server-side fetch. If the feature must support user-influenced destinations, resolve against an explicit allow-list of permitted hosts or domains, not a deny-list (deny-lists are trivially bypassed with redirects, alternate IP encodings, or DNS tricks).</li><li><strong>Block requests to internal/private IP ranges by default</strong> at the network layer (egress filtering) — <code>127.0.0.0/8</code>, <code>10.0.0.0/8</code>, <code>169.254.0.0/16</code> (cloud metadata), and other RFC 1918 ranges — so even a URL that slips past application-layer validation still can&#x27;t reach internal infrastructure.</li><li><strong>Validate after DNS resolution, not just the string.</strong> A hostname that looks external (<code>legit-looking-domain.com</code>) can still resolve to an internal IP via attacker-controlled DNS — checking the *string* is not enough; the *resolved address actually being connected to* must be checked too.</li><li><strong>Follow redirects carefully, or not at all.</strong> A URL that passes validation can issue an HTTP redirect to an internal address; either disable following redirects for user-supplied-URL fetches, or re-validate the destination after each hop.</li><li><strong>Least-privilege network segmentation</strong> limits the blast radius even if a request does get through — a gateway that genuinely cannot reach a sensitive internal service at the network level is safe from being tricked into reaching it, regardless of any application bug.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An attacker supplies a webhook URL pointing at an internal admin service; the gateway, which has network access the attacker lacks directly, is tricked into fetching it on the attacker's behalf unless the destination is validated" font-family="sans-serif">
+  <rect x="20" y="90" width="120" height="50" rx="8" fill="#1c2430" stroke="#f85149"/>
+  <text x="80" y="112" fill="#e6edf3" font-size="10" text-anchor="middle">Attacker</text>
+  <text x="80" y="127" fill="#8b949e" font-size="8" text-anchor="middle">no direct network route</text>
+
+  <rect x="220" y="90" width="160" height="60" rx="8" fill="#1c2430" stroke="#f0883e"/>
+  <text x="300" y="112" fill="#e6edf3" font-size="10" text-anchor="middle">Gateway (the "deputy")</text>
+  <text x="300" y="128" fill="#8b949e" font-size="9" text-anchor="middle">has internal network access</text>
+  <text x="300" y="142" fill="#8b949e" font-size="8" text-anchor="middle">webhookUrl=http://10.0.0.5/admin</text>
+
+  <rect x="460" y="30" width="150" height="50" rx="8" fill="#1c2430" stroke="#f85149"/>
+  <text x="535" y="50" fill="#f85149" font-size="10" text-anchor="middle">Internal admin service</text>
+  <text x="535" y="65" fill="#8b949e" font-size="8" text-anchor="middle">not reachable from internet</text>
+
+  <rect x="460" y="150" width="150" height="60" rx="8" fill="#1c2430" stroke="#6db33f"/>
+  <text x="535" y="172" fill="#6db33f" font-size="10" text-anchor="middle">Allow-list check</text>
+  <text x="535" y="188" fill="#8b949e" font-size="8" text-anchor="middle">host not on allow-list</text>
+  <text x="535" y="202" fill="#6db33f" font-size="8" text-anchor="middle">-&gt; request BLOCKED</text>
+
+  <line x1="140" y1="115" x2="220" y2="115" stroke="#8b949e" marker-end="url(#ssrf)"/>
+  <text x="180" y="105" fill="#8b949e" font-size="8" text-anchor="middle">supplies URL</text>
+  <line x1="300" y1="90" x2="460" y2="60" stroke="#f85149" stroke-dasharray="3,2" marker-end="url(#ssrf)"/>
+  <text x="380" y="65" fill="#f85149" font-size="8">without validation: fetched!</text>
+  <line x1="300" y1="150" x2="460" y2="175" stroke="#6db33f" marker-end="url(#ssrf)"/>
+  <defs>
+    <marker id="ssrf" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+</svg>
+<p>The attacker has no direct route to the internal admin service, but the gateway does — an unvalidated fetch turns the gateway into a confused deputy that reaches it on the attacker&#x27;s behalf.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a webhook-registration feature where the gateway fetches a URL supplied by the user to verify it&#x27;s reachable. We start with a completely open fetch, add naive deny-list filtering (and show how it&#x27;s bypassed), then implement a proper allow-list plus post-DNS-resolution IP validation.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: OpenSsrfVector.java -- the gateway fetches WHATEVER URL the caller
+// supplies, with no validation at all. Any internal address the gateway can
+// reach, the caller can now reach too, indirectly.
+public class OpenSsrfVector {
+    // Simulates an outbound fetch -- in reality an HTTP client call.
+    static String fetchUrl(String url) {
+        return &quot;Gateway fetched: &quot; + url + &quot; (whatever is there, the caller now effectively sees)&quot;;
+    }
+
+    static String registerWebhook(String userSuppliedUrl) {
+        return fetchUrl(userSuppliedUrl);
+    }
+
+    public static void main(String[] args) {
+        System.out.println(registerWebhook(&quot;https://partner.example.com/webhook-receiver&quot;));
+        // An attacker supplies an INTERNAL address instead -- the gateway fetches it just the same.
+        System.out.println(registerWebhook(&quot;http://10.0.0.5/admin/delete-all-users&quot;));
+        System.out.println(registerWebhook(&quot;http://169.254.169.254/latest/meta-data/iam/security-credentials/&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java OpenSsrfVector.java</code></p>
+<p><code>registerWebhook</code> passes the caller-supplied URL straight to <code>fetchUrl</code> with no checks. The legitimate partner URL and the two malicious ones — an internal admin endpoint and the cloud metadata service — are all fetched identically. The gateway has become a confused deputy: it&#x27;s using its own network access to reach destinations the caller could never reach directly.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: NaiveDenyList.java -- a DENY-LIST blocks a few obviously-bad patterns,
+// but deny-lists are inherently incomplete: they only stop what someone
+// already thought to block, and are easy to bypass with encoding tricks or
+// alternate representations of the same address.
+import java.util.*;
+
+public class NaiveDenyList {
+    static final List&lt;String&gt; BLOCKED_SUBSTRINGS = List.of(&quot;10.0.0&quot;, &quot;169.254&quot;, &quot;localhost&quot;, &quot;127.0.0.1&quot;);
+
+    static boolean looksBlocked(String url) {
+        return BLOCKED_SUBSTRINGS.stream().anyMatch(url::contains);
+    }
+
+    static String registerWebhook(String userSuppliedUrl) {
+        if (looksBlocked(userSuppliedUrl)) {
+            return &quot;BLOCKED: &#x27;&quot; + userSuppliedUrl + &quot;&#x27; matches a denied pattern&quot;;
+        }
+        return &quot;Gateway fetched: &quot; + userSuppliedUrl;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(registerWebhook(&quot;http://10.0.0.5/admin&quot;)); // correctly blocked
+        // Bypass 1: decimal IP notation for 127.0.0.1 -- doesn&#x27;t contain the blocked STRING &quot;127.0.0.1&quot;.
+        System.out.println(registerWebhook(&quot;http://2130706433/admin&quot;));
+        // Bypass 2: a DNS name the attacker controls, resolving to an internal IP -- the STRING looks fine.
+        System.out.println(registerWebhook(&quot;http://attacker-controlled-dns.example.com/admin&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java NaiveDenyList.java</code></p>
+<p><code>looksBlocked</code> only catches URLs whose *text* literally contains one of the blocked substrings. The first call is correctly blocked. But <code>2130706433</code> is the decimal representation of <code>127.0.0.1</code> — a valid way to encode that IP address that most HTTP clients will happily resolve, and it contains none of the blocked substrings, so it sails through. Worse, a hostname an attacker controls the DNS for can be pointed at any internal IP *after* this string check runs — the string itself never reveals where the name will actually resolve. Deny-lists fail because they check the wrong thing: the surface text, not the actual network destination.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: AllowListWithResolvedIpCheck.java -- an ALLOW-LIST of permitted hosts,
+// PLUS a check on the ACTUALLY-RESOLVED IP address (not just the hostname
+// string) against private/internal ranges -- closing both the deny-list gap
+// and the DNS-rebinding-style bypass.
+import java.net.*;
+import java.util.*;
+import java.util.regex.*;
+
+public class AllowListWithResolvedIpCheck {
+    static final Set&lt;String&gt; ALLOWED_HOSTS = Set.of(&quot;partner.example.com&quot;, &quot;webhooks.trusted-vendor.com&quot;);
+
+    // Simulates DNS resolution -- in a real system this is an actual lookup.
+    static final Map&lt;String, String&gt; SIMULATED_DNS = Map.of(
+            &quot;partner.example.com&quot;, &quot;203.0.113.10&quot;,           // legitimate external IP
+            &quot;attacker-controlled-dns.example.com&quot;, &quot;10.0.0.5&quot; // attacker&#x27;s domain resolves INTERNALLY
+    );
+
+    static boolean isPrivateOrReservedIp(String ip) {
+        // Stand-in for real RFC 1918 / loopback / link-local range checks.
+        return ip.startsWith(&quot;10.&quot;) || ip.startsWith(&quot;127.&quot;) || ip.startsWith(&quot;169.254.&quot;)
+                || ip.startsWith(&quot;172.16.&quot;) || ip.startsWith(&quot;192.168.&quot;);
+    }
+
+    static String extractHost(String url) {
+        Matcher m = Pattern.compile(&quot;https?://([^/]+)&quot;).matcher(url);
+        return m.find() ? m.group(1) : null;
+    }
+
+    static String registerWebhook(String userSuppliedUrl) {
+        String host = extractHost(userSuppliedUrl);
+        if (host == null) return &quot;REJECTED: could not parse URL&quot;;
+
+        // Step 1: allow-list check on the HOSTNAME.
+        if (!ALLOWED_HOSTS.contains(host)) {
+            return &quot;REJECTED: host &#x27;&quot; + host + &quot;&#x27; is not on the allow-list&quot;;
+        }
+
+        // Step 2: resolve DNS and check the ACTUAL IP, not just the name.
+        String resolvedIp = SIMULATED_DNS.getOrDefault(host, &quot;0.0.0.0&quot;);
+        if (isPrivateOrReservedIp(resolvedIp)) {
+            return &quot;REJECTED: host &#x27;&quot; + host + &quot;&#x27; resolved to internal/private IP &quot; + resolvedIp + &quot; -- likely DNS rebinding attempt&quot;;
+        }
+
+        return &quot;Gateway fetched: &quot; + userSuppliedUrl + &quot; (resolved to &quot; + resolvedIp + &quot;, verified external)&quot;;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(registerWebhook(&quot;https://partner.example.com/webhook-receiver&quot;)); // allowed + resolves externally
+        System.out.println(registerWebhook(&quot;http://10.0.0.5/admin&quot;));                         // not on allow-list at all
+        // Even though this domain LOOKS like it might not be blocked by name, it&#x27;s not on the allow-list either --
+        // and even if it somehow were, its resolved IP would catch it.
+        System.out.println(registerWebhook(&quot;http://attacker-controlled-dns.example.com/admin&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java AllowListWithResolvedIpCheck.java</code></p>
+<p><code>registerWebhook</code> now performs two independent checks. First, <code>ALLOWED_HOSTS.contains(host)</code> — an allow-list, not a deny-list, so only explicitly-trusted hostnames pass at all, regardless of what other tricks a URL might use. Second, even for an allowed hostname, <code>SIMULATED_DNS</code> resolution is checked against <code>isPrivateOrReservedIp</code> — verifying the *actual network destination*, not just the string that was typed. The legitimate partner URL passes both checks. The raw internal IP is rejected immediately at the allow-list stage — it was never going to be an allowed host. The attacker-controlled DNS name is also rejected at the allow-list stage (it isn&#x27;t <code>partner.example.com</code> or <code>webhooks.trusted-vendor.com</code>), and would be caught by the resolved-IP check even in the hypothetical where an attacker somehow got a lookalike name onto the allow-list, since it resolves to <code>10.0.0.5</code>.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>AllowListWithResolvedIpCheck.main</code> for the third call, <code>registerWebhook(&quot;http://attacker-controlled-dns.example.com/admin&quot;)</code>. <strong>First</strong>, <code>extractHost</code> runs its regex against the URL and captures <code>&quot;attacker-controlled-dns.example.com&quot;</code> as <code>host</code>.</p>
+<p><strong>Next</strong>, <code>ALLOWED_HOSTS.contains(&quot;attacker-controlled-dns.example.com&quot;)</code> is checked. <code>ALLOWED_HOSTS</code> contains only <code>&quot;partner.example.com&quot;</code> and <code>&quot;webhooks.trusted-vendor.com&quot;</code> — this hostname is not among them, so the condition is <code>true</code> (not on allow-list), and the method returns immediately: <code>&quot;REJECTED: host &#x27;attacker-controlled-dns.example.com&#x27; is not on the allow-list&quot;</code>. The DNS resolution step never even runs for this call, because the allow-list check already caught it — a cheap check rejecting the request before any network resolution is attempted.</p>
+<p><strong>Then, for contrast</strong>, walk the *first* call, <code>registerWebhook(&quot;https://partner.example.com/webhook-receiver&quot;)</code>. <code>host</code> becomes <code>&quot;partner.example.com&quot;</code>, which *is* in <code>ALLOWED_HOSTS</code>, so the first check passes. <code>SIMULATED_DNS.getOrDefault(&quot;partner.example.com&quot;, &quot;0.0.0.0&quot;)</code> returns <code>&quot;203.0.113.10&quot;</code> — a public IP address. <code>isPrivateOrReservedIp(&quot;203.0.113.10&quot;)</code> checks the four private-range prefixes; none match, so it returns <code>false</code>. Both checks pass, and the fetch proceeds.</p>
+<p><strong>Finally</strong>, consider what would happen if <code>ALLOWED_HOSTS</code> had, hypothetically, been misconfigured to include <code>&quot;attacker-controlled-dns.example.com&quot;</code> (simulating a case where an allow-list itself is too permissive, or a partner&#x27;s own domain gets compromised and repointed): the allow-list check would pass, but <code>SIMULATED_DNS.getOrDefault(...)</code> would return <code>&quot;10.0.0.5&quot;</code>, and <code>isPrivateOrReservedIp(&quot;10.0.0.5&quot;)</code> — matching the <code>&quot;10.&quot;</code> prefix — would return <code>true</code>, causing rejection at the second check instead. This is exactly why both layers matter: the allow-list catches most attacks cheaply, and the resolved-IP check catches the case where a trusted-looking name still points somewhere it shouldn&#x27;t.</p>
+<pre><code>Gateway fetched: https://partner.example.com/webhook-receiver (resolved to 203.0.113.10, verified external)
+REJECTED: host &#x27;10.0.0.5&#x27; is not on the allow-list
+REJECTED: host &#x27;attacker-controlled-dns.example.com&#x27; is not on the allow-list</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Checking a URL&#x27;s hostname string is not the same as checking where a request will actually go. DNS rebinding attacks specifically exploit this gap: a hostname can pass validation at check-time and then resolve to a different (internal) IP by the time the actual connection is made, if the attacker controls the DNS record and changes it between the check and the fetch. Real defenses re-resolve and re-check the IP at connection time, or route outbound fetches through a proxy that enforces network-layer egress rules independent of application logic.</blockquote>
+<ul><li>A confused deputy is any privileged component tricked into using its own access on an unprivileged caller&#x27;s behalf; SSRF is the network-request instance of this pattern, and the gateway is a prime target because of its network position.</li><li>Deny-lists for SSRF protection are fundamentally incomplete — alternate IP encodings, redirects, and attacker-controlled DNS all bypass string-based blocking; use an allow-list instead.</li><li>Validate the *resolved* destination, not just the URL string — a hostname that looks external can still resolve to an internal address.</li><li>Cloud metadata endpoints are a especially high-value SSRF target, since they often serve credentials with no additional authentication from the requesting instance itself.</li><li>This is <a href="0398-owasp-api-security-top-10.md">OWASP API Security Top 10</a> item API7, and defense-in-depth here means combining application-layer allow-listing with network-layer egress filtering, consistent with the broader <a href="0379-defense-in-depth.md">defense in depth</a> principle running through this whole section.</li></ul>
+  <div class="nav"><a class="prv" href="0398-owasp-api-security-top-10.html"><span class="mini">← Previous</span>OWASP API Security Top 10</a><a class="nxt" href="0400-spring-security-core-filters-authentication-authorization.html"><span class="mini">Next →</span>Spring Security core (filters, authentication, authorization)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t399";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
