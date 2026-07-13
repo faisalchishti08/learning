@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Transactional outbox via Spring + debezium / CDC" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 4. Asynchronous & Event-Driven Communication</div>
+  <div class="htitle">
+    <h1>"Transactional outbox via Spring + debezium / CDC"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The transactional outbox pattern writes an event to an &quot;outbox&quot; table in the *same* local database transaction as the business data change it describes, guaranteeing the two either both commit or both roll back together; a separate mechanism — commonly Debezium, a change data capture (CDC) tool reading the database&#x27;s own transaction log — then reliably publishes each outbox row as a real message to a broker, asynchronously and independently of the original transaction.</p>
+<h2>2. Why &amp; when</h2>
+<p>Publishing a message to a broker and committing a database change are two genuinely separate operations against two separate systems, and doing them as two independent steps (commit the database change, then separately call the broker) creates an unavoidable gap: a crash between the two leaves either a database change with no corresponding event ever published, or — if the ordering is reversed — a published event whose corresponding database change never actually committed. The transactional outbox closes this gap by making the *only* externally-observable write an ordinary row in an ordinary database table, committed atomically with the business data using the database&#x27;s own transaction guarantees — no distributed transaction across two different systems is needed, because the &quot;event&quot; is just another local database write.</p>
+<p>Reach for this pattern whenever a service needs to reliably publish an event that must never disagree with a local database change it&#x27;s derived from — order placement triggering an <code>OrderPlaced</code> event, payment capture triggering a <code>PaymentCaptured</code> event — which is essentially any event-driven microservice with its own database. It is unnecessary for services with no local database of record, or for events that don&#x27;t need to correspond precisely to a committed local state change.</p>
+<h2>3. Core concept</h2>
+<p>A single local database transaction writes both the business entity change and a corresponding row in an outbox table; a CDC tool like Debezium tails the database&#x27;s transaction log (not the application, and not a second network call) and publishes each new outbox row to the broker as it&#x27;s committed, guaranteeing at-least-once delivery of exactly the events that were genuinely, durably committed.</p>
+<pre><code class="lang-java">@Transactional // ONE local transaction covers BOTH writes
+void placeOrder(Order order) {
+    orderRepository.save(order);                              // business data write
+    outboxRepository.save(new OutboxEvent(&quot;OrderPlaced&quot;, order.toJson())); // event write, SAME transaction
+} // if this transaction commits, BOTH rows exist; if it rolls back, NEITHER does -- no gap possible
+
+// separately, entirely outside the application: Debezium tails the DB&#x27;s transaction log
+// and publishes each committed outbox row to Kafka, reliably, asynchronously</code></pre>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A single local transaction writes both the order row and an outbox event row atomically; Debezium, reading the database's transaction log independently, picks up the committed outbox row and publishes it to Kafka -- no distributed transaction between the database and broker is ever needed">
+  <rect x="20" y="20" width="260" height="90" rx="8" fill="none" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="150" y="40" fill="#8b949e" font-size="8" font-family="sans-serif">ONE local transaction</text>
+  <rect x="35" y="55" width="100" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="85" y="76" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">orders table</text>
+  <rect x="150" y="55" width="115" height="35" rx="4" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="207" y="76" fill="#e6edf3" font-size="7.5" text-anchor="middle" font-family="sans-serif">outbox table</text>
+
+  <rect x="330" y="55" width="140" height="40" rx="5" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,2"/>
+  <text x="400" y="80" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Debezium (tails txn log)</text>
+
+  <rect x="510" y="55" width="110" height="40" rx="5" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="565" y="80" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Kafka</text>
+
+  <line x1="280" y1="75" x2="328" y2="75" stroke="#8b949e" marker-end="url(#arr37)"/>
+  <line x1="470" y1="75" x2="508" y2="75" stroke="#8b949e" marker-end="url(#arr37)"/>
+  <text x="400" y="150" fill="#8b949e" font-size="7.5" text-anchor="middle" font-family="sans-serif">the ONLY cross-system write is an ordinary, atomic, local database transaction</text>
+
+  <defs>
+    <marker id="arr37" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Both table writes commit or roll back together; CDC bridges the gap to the broker entirely outside the original transaction.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an order-placement flow that starts by publishing to a broker as a separate step after a database commit (demonstrating the exact gap the outbox pattern closes, including a simulated crash), switches to the transactional outbox pattern with both writes in one atomic transaction, and finally adds a simulated CDC poller that reliably publishes committed outbox rows independently of the original request, proving the two concerns are genuinely decoupled.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: SeparateCommitAndPublish.java -- database commit and broker publish as
+// TWO independent steps; a crash between them creates a permanent gap.
+import java.util.*;
+
+public class SeparateCommitAndPublish {
+    static List&lt;String&gt; ordersTable = new ArrayList&lt;&gt;(); // stands in for the database
+    static List&lt;String&gt; publishedToBroker = new ArrayList&lt;&gt;();
+
+    static void placeOrder(String orderData, boolean simulateCrashBeforePublish) {
+        ordersTable.add(orderData); // STEP 1: commit to the database -- this succeeds
+        System.out.println(&quot;Order committed to database: &quot; + orderData);
+
+        if (simulateCrashBeforePublish) {
+            System.out.println(&quot;*** CRASH before the broker publish call ever happens ***&quot;);
+            return; // the process dies here -- publishedToBroker.add(...) below NEVER runs
+        }
+        publishedToBroker.add(orderData); // STEP 2: a SEPARATE network call to the broker
+        System.out.println(&quot;Event published to broker: &quot; + orderData);
+    }
+
+    public static void main(String[] args) {
+        placeOrder(&quot;OrderPlaced:42&quot;, true); // crash simulated
+        System.out.println(&quot;Orders table: &quot; + ordersTable);
+        System.out.println(&quot;Broker received: &quot; + publishedToBroker);
+        System.out.println(&quot;BUG: order 42 is DURABLY committed, but NO downstream service will EVER know it happened.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac SeparateCommitAndPublish.java &amp;&amp; java SeparateCommitAndPublish</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Order committed to database: OrderPlaced:42
+*** CRASH before the broker publish call ever happens ***
+Orders table: [OrderPlaced:42]
+Broker received: []
+BUG: order 42 is DURABLY committed, but NO downstream service will EVER know it happened.</code></pre>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: TransactionalOutbox.java -- BOTH the order row and an outbox event row
+// written in ONE atomic transaction; the crash point from Level 1 can no longer create a gap.
+import java.util.*;
+
+public class TransactionalOutbox {
+    static class Database {
+        List&lt;String&gt; ordersTable = new ArrayList&lt;&gt;();
+        List&lt;String&gt; outboxTable = new ArrayList&lt;&gt;();
+
+        // simulates a SINGLE local transaction covering BOTH writes -- atomic: all or nothing
+        void placeOrderTransactionally(String orderData, String outboxEvent, boolean simulateCrashMidTransaction) {
+            List&lt;String&gt; pendingOrders = new ArrayList&lt;&gt;(ordersTable);
+            List&lt;String&gt; pendingOutbox = new ArrayList&lt;&gt;(outboxTable);
+            pendingOrders.add(orderData);
+            pendingOutbox.add(outboxEvent);
+
+            if (simulateCrashMidTransaction) {
+                System.out.println(&quot;*** CRASH mid-transaction -- NEITHER write is committed (atomic rollback) ***&quot;);
+                return; // neither ordersTable nor outboxTable is updated -- the transaction never committed
+            }
+            // COMMIT: both changes become visible together
+            ordersTable = pendingOrders;
+            outboxTable = pendingOutbox;
+            System.out.println(&quot;Transaction committed: order row AND outbox row, BOTH present together.&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        Database db = new Database();
+        db.placeOrderTransactionally(&quot;OrderPlaced:42&quot;, &quot;outbox:OrderPlaced:42&quot;, false); // succeeds
+
+        System.out.println(&quot;Orders table: &quot; + db.ordersTable);
+        System.out.println(&quot;Outbox table: &quot; + db.outboxTable);
+        System.out.println(&quot;The outbox row&#x27;s mere EXISTENCE is now durable proof the order was committed -- no separate broker call was needed to establish that fact.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac TransactionalOutbox.java &amp;&amp; java TransactionalOutbox</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Transaction committed: order row AND outbox row, BOTH present together.
+Orders table: [OrderPlaced:42]
+Outbox table: [outbox:OrderPlaced:42]
+The outbox row&#x27;s mere EXISTENCE is now durable proof the order was committed -- no separate broker call was needed to establish that fact.</code></pre>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: CdcPollerPublishesIndependently.java -- a simulated CDC poller (standing in
+// for Debezium) reliably publishes committed outbox rows to a broker, ENTIRELY
+// independent of the original request that created them -- proving the decoupling.
+import java.util.*;
+
+public class CdcPollerPublishesIndependently {
+    static class Database {
+        List&lt;String&gt; ordersTable = new ArrayList&lt;&gt;();
+        List&lt;String&gt; outboxTable = new ArrayList&lt;&gt;(); // Debezium tails changes to THIS table
+
+        void placeOrderTransactionally(String orderData, String outboxEvent) {
+            ordersTable.add(orderData);
+            outboxTable.add(outboxEvent); // ONE transaction, both writes -- as in Level 2
+            System.out.println(&quot;Transaction committed: &quot; + orderData);
+        }
+    }
+
+    // simulates Debezium: periodically polls for NEW outbox rows and publishes them,
+    // COMPLETELY independent of the original HTTP request/transaction that created them
+    static class CdcPoller {
+        int lastPublishedIndex = 0;
+        List&lt;String&gt; publishedToBroker = new ArrayList&lt;&gt;();
+
+        void poll(Database db) {
+            while (lastPublishedIndex &lt; db.outboxTable.size()) {
+                String event = db.outboxTable.get(lastPublishedIndex);
+                publishedToBroker.add(event);
+                System.out.println(&quot;[CDC poller] published to broker: &quot; + event);
+                lastPublishedIndex++;
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        Database db = new Database();
+        CdcPoller cdcPoller = new CdcPoller();
+
+        // the ORIGINAL request commits and returns to its caller WITHOUT waiting for any broker publish
+        db.placeOrderTransactionally(&quot;OrderPlaced:42&quot;, &quot;outbox:OrderPlaced:42&quot;);
+        System.out.println(&quot;Original request finished -- caller received a response. Broker has NOT been touched yet.&quot;);
+
+        // SEPARATELY, and later, the CDC poller notices the new outbox row and publishes it
+        System.out.println(&quot;--- some time later, independently ---&quot;);
+        cdcPoller.poll(db);
+
+        // a SECOND order arrives; the poller picks up ONLY the new row, not a re-publish of the first
+        db.placeOrderTransactionally(&quot;OrderPlaced:43&quot;, &quot;outbox:OrderPlaced:43&quot;);
+        cdcPoller.poll(db);
+
+        System.out.println(&quot;Broker ultimately received: &quot; + cdcPoller.publishedToBroker);
+        System.out.println(&quot;The original request&#x27;s latency was NEVER coupled to broker availability or publish latency.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>javac CdcPollerPublishesIndependently.java &amp;&amp; java CdcPollerPublishesIndependently</code> (JDK 17+).</p>
+<p>Expected output:</p>
+<pre><code>Transaction committed: OrderPlaced:42
+Original request finished -- caller received a response. Broker has NOT been touched yet.
+--- some time later, independently ---
+[CDC poller] published to broker: outbox:OrderPlaced:42
+Transaction committed: OrderPlaced:43
+[CDC poller] published to broker: outbox:OrderPlaced:43
+Broker ultimately received: [outbox:OrderPlaced:42, outbox:OrderPlaced:43]</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1</strong> — <code>placeOrder</code> performs the database write and the broker publish as two sequential, entirely independent operations; the simulated crash between them leaves <code>ordersTable</code> containing the order but <code>publishedToBroker</code> permanently empty — a real, unrecoverable gap.</li><li><strong>Level 2, atomicity via a single local transaction</strong> — <code>placeOrderTransactionally</code> builds both <code>pendingOrders</code> and <code>pendingOutbox</code> before committing either; the simulated mid-transaction crash discards *both* pending lists without ever updating the real <code>ordersTable</code> or <code>outboxTable</code>, meaning there is no possible crash point that leaves one written without the other.</li><li><strong>Level 2, the outbox row as durable proof</strong> — once a transaction *does* commit successfully, <code>outboxTable</code> contains a row that, by construction, could only exist if the corresponding order row was also committed in that same transaction — this durable co-existence is what later lets a separate process trust the outbox table completely.</li><li><strong>Level 3, the CDC poller as a wholly separate concern</strong> — <code>CdcPoller.poll</code> reads from <code>db.outboxTable</code> using its own tracked <code>lastPublishedIndex</code>, entirely independent of whatever code path originally called <code>placeOrderTransactionally</code>; nothing in <code>placeOrderTransactionally</code> calls or waits on <code>CdcPoller</code> at all.</li><li><strong>Level 3, the request completing without waiting on the broker</strong> — the printed line <code>&quot;Original request finished -- caller received a response. Broker has NOT been touched yet.&quot;</code> appears immediately after the transaction commits and before <code>cdcPoller.poll</code> is ever called, directly demonstrating that the original caller&#x27;s latency was determined solely by the local database transaction, not by any broker round-trip.</li><li><strong>Level 3, the poller catching up later, and only on new rows</strong> — the first <code>cdcPoller.poll(db)</code> call publishes exactly the one outbox row that existed at that point; after a second order is placed, the second <code>poll</code> call publishes only the *new* row (tracked via <code>lastPublishedIndex</code>), never re-publishing the first one — mirroring how Debezium tracks its own position in the database&#x27;s transaction log and only emits genuinely new committed changes.</li><li><strong>Level 3, the overall guarantee demonstrated</strong> — by the end, <code>cdcPoller.publishedToBroker</code> contains both events, published reliably and in the order they were committed, despite the original requests never having made a single direct call to any broker — the atomicity guarantee from Level 2 plus the independent, reliable CDC publishing from Level 3 together close the exact gap Level 1 exposed, without ever requiring a distributed transaction spanning the database and the broker.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the outbox table needs its own cleanup strategy — rows accumulate forever unless something (a scheduled job, or Debezium&#x27;s own configuration) deletes or archives already-published rows, and an unbounded outbox table eventually becomes its own storage and query-performance problem, quietly undermining the pattern&#x27;s operational simplicity if left unmanaged.</blockquote>
+<ul><li>The transactional outbox pattern writes an event to an outbox table in the same local database transaction as the business data change it describes, using the database&#x27;s own atomicity guarantee instead of a distributed transaction across the database and a broker.</li><li>A CDC tool like Debezium, reading the database&#x27;s transaction log directly, reliably publishes committed outbox rows to a broker entirely independently of the original request that created them.</li><li>This closes the gap that a naive &quot;commit, then separately call the broker&quot; approach leaves open: a crash between those two steps can no longer create a database change with no corresponding published event.</li><li>The original request&#x27;s latency is decoupled from broker availability or publish latency, since the request only needs the local database transaction to succeed, not a network round-trip to the broker.</li><li>The outbox table needs a deliberate cleanup or archival strategy; without one, it grows without bound and becomes its own operational liability over time.</li></ul>
+  <div class="nav"><a class="prv" href="0155-spring-cloud-bus-for-broadcasting-events-across-instances.html"><span class="mini">← Previous</span>Spring Cloud Bus for broadcasting events across instances</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t156";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
