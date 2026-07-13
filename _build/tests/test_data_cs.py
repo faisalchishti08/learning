@@ -90,5 +90,31 @@ class TestSystemDesign(unittest.TestCase):
         n = len(topics.enumerate_topics(self.sd()))
         self.assertGreaterEqual(n, 450)
 
+class TestDataStructures(unittest.TestCase):
+    def ds(self):
+        return by_stem()["data-structures"]
+
+    def test_has_16_sections(self):
+        self.assertEqual(len(self.ds()["sections"]), 16)
+
+    def test_expected_tags_present(self):
+        tags = [s["tag"] for s in self.ds()["sections"]]
+        for t in ("foundations", "arrays", "linked-lists", "hashing", "trees",
+                  "heaps", "tries", "graphs", "union-find", "jcf"):
+            self.assertIn(t, tags)
+
+    def test_java_implementation_group_common(self):
+        # most structure sections carry a Java-implementation group
+        hits = 0
+        for s in self.ds()["sections"]:
+            if any("Java" in g["g"] for g in s["groups"]):
+                hits += 1
+        self.assertGreaterEqual(hits, 8)
+
+    def test_total_topic_count_floor(self):
+        n = len(topics.enumerate_topics(self.ds()))
+        self.assertGreaterEqual(n, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

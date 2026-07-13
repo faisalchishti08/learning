@@ -463,7 +463,345 @@ DATA_STRUCTURES = {
     "subtitle": "Every core data-structure concept in Java — arrays, lists, stacks, queues, "
                 "hashing, trees, heaps, tries, graphs, advanced/range structures, union-find, "
                 "and the Java Collections Framework — with operations, complexity & JDK classes.",
-    "sections": [],
+    "sections": [
+
+    {"name": "1. Foundations", "tag": "foundations", "groups": [
+        {"g": "Complexity Analysis", "items": [
+            "Abstract data type vs data structure",
+            "Big-O, Big-Theta, Big-Omega notation",
+            "Best / average / worst case analysis",
+            "Amortized analysis (dynamic-array doubling)",
+            "Time vs space tradeoffs",
+            "Common growth rates (constant to factorial)",
+            "Recursion, the call stack & stack depth",
+            "Recursive vs iterative tradeoffs",
+            "In-place vs auxiliary-space algorithms",
+        ]},
+        {"g": "Java Memory Model Basics", "items": [
+            "Primitives vs references",
+            "Stack vs heap allocation",
+            "Autoboxing / unboxing & its cost",
+            "Arrays as objects in the JVM",
+            "equals() & hashCode() contract",
+        ]},
+    ]},
+
+    {"name": "2. Arrays & Dynamic Arrays", "tag": "arrays", "groups": [
+        {"g": "Concept", "items": [
+            "Static (fixed-size) arrays",
+            "Multi-dimensional & jagged arrays",
+            "Contiguous memory & cache locality",
+        ]},
+        {"g": "Operations & Complexity", "items": [
+            "Random access by index (O(1))",
+            "Insert / delete shifting cost",
+            "Array resizing & amortized append",
+            "Two-pointer & sliding-window on arrays",
+            "Prefix-sum & difference arrays",
+            "In-place rotation & reversal",
+            "Kadane's maximum-subarray technique",
+            "Binary search on a sorted array",
+        ]},
+        {"g": "Java implementation", "items": [
+            "Java array syntax & initialization",
+            "java.util.ArrayList internals (backing array, capacity)",
+            "Arrays utility class (sort, fill, copyOf, binarySearch)",
+            "System.arraycopy & array copying",
+            "2D matrix traversal & rotation",
+            "Converting between arrays and collections",
+        ]},
+    ]},
+
+    {"name": "3. Strings", "tag": "strings", "groups": [
+        {"g": "Concept", "items": [
+            "String as a character sequence",
+            "String immutability in Java",
+            "String pool & interning",
+            "char[] vs String",
+        ]},
+        {"g": "Operations & Complexity", "items": [
+            "Concatenation cost & why StringBuilder",
+            "Substring, indexOf & searching",
+            "Character encoding (UTF-8 / UTF-16)",
+            "Anagram & frequency-count problems",
+            "Palindrome checking",
+            "Pattern matching (naive, KMP, Rabin-Karp overview)",
+        ]},
+        {"g": "Java implementation", "items": [
+            "StringBuilder vs StringBuffer",
+            "String methods (split, replace, chars)",
+            "Comparing strings (equals vs ==)",
+        ]},
+    ]},
+
+    {"name": "4. Linked Lists", "tag": "linked-lists", "groups": [
+        {"g": "Concept", "items": [
+            "Singly linked list",
+            "Doubly linked list",
+            "Circular linked list",
+            "Sentinel / dummy nodes",
+        ]},
+        {"g": "Operations & Complexity", "items": [
+            "Insert at head / tail / middle",
+            "Delete by node & by value",
+            "Traversal of a linked list",
+            "Reverse a linked list (iterative & recursive)",
+            "Cycle detection (Floyd's tortoise & hare)",
+            "Find middle & nth-from-end",
+            "Merge two sorted linked lists",
+            "Detect intersection of two lists",
+            "Check a linked-list palindrome",
+            "Copy a list with random pointers",
+        ]},
+        {"g": "Java implementation", "items": [
+            "java.util.LinkedList (List + Deque)",
+            "Building a custom Node class",
+            "LinkedList vs ArrayList tradeoffs",
+        ]},
+    ]},
+
+    {"name": "5. Stacks", "tag": "stacks", "groups": [
+        {"g": "Concept", "items": [
+            "LIFO semantics",
+            "Array-backed vs linked stack",
+        ]},
+        {"g": "Operations & Applications", "items": [
+            "push / pop / peek (O(1))",
+            "Balanced-parentheses & expression parsing",
+            "Infix / postfix / prefix evaluation",
+            "Undo/redo & the call stack",
+            "Monotonic stack technique",
+            "Next-greater-element problems",
+        ]},
+        {"g": "Java implementation", "items": [
+            "ArrayDeque as a stack (preferred)",
+            "Legacy java.util.Stack & why to avoid it",
+        ]},
+    ]},
+
+    {"name": "6. Queues & Deques", "tag": "queues", "groups": [
+        {"g": "Concept", "items": [
+            "FIFO semantics",
+            "Double-ended queue (deque)",
+            "Circular buffer / ring buffer",
+            "Priority queue concept",
+            "Monotonic queue technique",
+        ]},
+        {"g": "Operations & Complexity", "items": [
+            "enqueue / dequeue / peek",
+            "offer / poll vs add / remove semantics",
+            "Sliding-window maximum with a deque",
+            "BFS level-order using a queue",
+        ]},
+        {"g": "Java implementation", "items": [
+            "ArrayDeque as queue & deque",
+            "Queue & Deque interfaces",
+            "java.util.PriorityQueue (binary heap)",
+            "BlockingQueue implementations (overview)",
+        ]},
+    ]},
+
+    {"name": "7. Hashing", "tag": "hashing", "groups": [
+        {"g": "Concept", "items": [
+            "Hash functions & desirable properties",
+            "Load factor & rehashing",
+            "Collision resolution: separate chaining",
+            "Collision resolution: open addressing (linear/quadratic/double)",
+        ]},
+        {"g": "Operations & Complexity", "items": [
+            "Average O(1) insert/lookup/delete",
+            "Worst-case degradation & mitigation",
+        ]},
+        {"g": "Java implementation", "items": [
+            "HashMap internals (buckets, treeify at 8)",
+            "HashSet & LinkedHashMap ordering",
+            "hashCode/equals for correct keys",
+            "IdentityHashMap & WeakHashMap (overview)",
+            "EnumMap & EnumSet",
+            "Frequency maps & grouping (computeIfAbsent / merge)",
+        ]},
+    ]},
+
+    {"name": "8. Trees", "tag": "trees", "groups": [
+        {"g": "Concept", "items": [
+            "Tree terminology (root, height, depth, leaf)",
+            "Binary tree & binary search tree (BST)",
+            "Complete / full / perfect / balanced trees",
+            "N-ary & general trees",
+        ]},
+        {"g": "Traversal & Operations", "items": [
+            "In-order / pre-order / post-order traversal",
+            "Level-order (BFS) traversal",
+            "BST insert / search / delete",
+            "BST successor & predecessor",
+            "Validate a BST",
+            "Lowest common ancestor (LCA)",
+            "Tree height, depth & diameter",
+            "Path-sum & root-to-leaf problems",
+            "Serialize & deserialize a tree",
+        ]},
+        {"g": "Balanced Trees", "items": [
+            "AVL trees & rotations",
+            "Red-black trees",
+            "Why balancing matters (skew to O(n))",
+        ]},
+        {"g": "Java implementation", "items": [
+            "TreeMap & TreeSet (red-black backed)",
+            "NavigableMap / NavigableSet operations",
+        ]},
+    ]},
+
+    {"name": "9. Heaps / Priority Queues", "tag": "heaps", "groups": [
+        {"g": "Concept", "items": [
+            "Binary heap (min-heap & max-heap)",
+            "Heap property & array representation",
+            "d-ary heaps (overview)",
+        ]},
+        {"g": "Operations & Complexity", "items": [
+            "insert & sift-up",
+            "extract-min/max & sift-down",
+            "build-heap in O(n)",
+            "Heap sort",
+        ]},
+        {"g": "Java implementation", "items": [
+            "PriorityQueue with a Comparator",
+            "Top-K elements with a heap",
+            "Merge K sorted lists with a heap",
+            "Running median with two heaps",
+        ]},
+    ]},
+
+    {"name": "10. Tries", "tag": "tries", "groups": [
+        {"g": "Concept", "items": [
+            "Prefix tree (trie) structure",
+            "Compressed trie / radix tree",
+            "Ternary search tree",
+        ]},
+        {"g": "Operations & Applications", "items": [
+            "Insert / search / startsWith",
+            "Autocomplete & prefix queries",
+            "Spell-check & dictionary lookup",
+        ]},
+        {"g": "Java implementation", "items": [
+            "Trie node with a children map/array",
+            "Word search & wildcard matching on a trie",
+            "Memory tradeoffs (array vs HashMap children)",
+        ]},
+    ]},
+
+    {"name": "11. Graphs", "tag": "graphs", "groups": [
+        {"g": "Concept", "items": [
+            "Directed vs undirected graphs",
+            "Weighted vs unweighted graphs",
+            "Cyclic vs acyclic (DAG)",
+            "Connectivity & components",
+            "Degree, path & cycle",
+        ]},
+        {"g": "Representation", "items": [
+            "Adjacency list",
+            "Adjacency matrix",
+            "Edge list",
+            "Modeling a graph in Java (Map<V, List<V>>)",
+        ]},
+        {"g": "Traversal & Operations", "items": [
+            "Breadth-first search (BFS)",
+            "Depth-first search (DFS)",
+            "Topological sort",
+            "Shortest path overview (Dijkstra / Bellman-Ford)",
+            "Minimum spanning tree overview (Kruskal / Prim)",
+            "Connected components & flood fill",
+            "Cycle detection (directed & undirected)",
+            "Bipartite check (graph coloring)",
+        ]},
+    ]},
+
+    {"name": "12. Advanced Trees & Range Structures", "tag": "advanced-trees", "groups": [
+        {"g": "Range Structures", "items": [
+            "Segment tree (range query & update)",
+            "Fenwick tree / Binary Indexed Tree (BIT)",
+            "Interval tree",
+            "Sparse table (static range queries)",
+            "Lazy propagation in segment trees",
+            "Range-sum & range-min/max queries",
+        ]},
+        {"g": "Disk & Spatial", "items": [
+            "B-tree & B+-tree (database indexes)",
+            "Suffix tree & suffix array",
+            "k-d tree (spatial partitioning)",
+            "Quadtree & geohashing (spatial indexing)",
+        ]},
+    ]},
+
+    {"name": "13. Disjoint Set / Union-Find", "tag": "union-find", "groups": [
+        {"g": "Concept", "items": [
+            "Disjoint-set data structure",
+            "find & union operations",
+        ]},
+        {"g": "Optimizations & Uses", "items": [
+            "Union by rank / size",
+            "Path compression",
+            "Near-constant amortized complexity (inverse Ackermann)",
+            "Applications (connectivity, Kruskal's MST, cycle detection)",
+            "Number of islands / connected components with union-find",
+            "Weighted union-find & accounts merge",
+        ]},
+    ]},
+
+    {"name": "14. Probabilistic & Specialized", "tag": "probabilistic", "groups": [
+        {"g": "Probabilistic", "items": [
+            "Skip list",
+            "Bloom filter (false positives)",
+            "Count-min sketch (overview)",
+        ]},
+        {"g": "Caching Structures", "items": [
+            "LRU cache (HashMap + doubly linked list)",
+            "LFU cache (overview)",
+            "LinkedHashMap access-order for LRU",
+        ]},
+        {"g": "Specialized", "items": [
+            "HyperLogLog for cardinality estimation",
+            "Fenwick vs segment tree tradeoffs",
+            "Disjoint interval / ordered set tricks",
+        ]},
+    ]},
+
+    {"name": "15. Java Collections Framework", "tag": "jcf", "groups": [
+        {"g": "Interfaces", "items": [
+            "Collection hierarchy (Collection/List/Set/Queue/Map)",
+            "List implementations (ArrayList, LinkedList, Vector)",
+            "Set implementations (HashSet, LinkedHashSet, TreeSet)",
+            "Map implementations (HashMap, LinkedHashMap, TreeMap)",
+            "Queue/Deque implementations",
+        ]},
+        {"g": "Behaviors", "items": [
+            "Iterator & ListIterator",
+            "Comparable vs Comparator",
+            "Collections utility methods (sort, binarySearch, unmodifiable)",
+            "Fail-fast vs fail-safe iterators",
+            "Immutable / unmodifiable collections",
+            "Arrays.asList & List.of factory methods",
+            "Sorting with Comparator chains (thenComparing)",
+        ]},
+        {"g": "Concurrency", "items": [
+            "ConcurrentHashMap",
+            "CopyOnWriteArrayList",
+            "Concurrent queues (overview)",
+        ]},
+    ]},
+
+    {"name": "16. Complexity Cheat-Sheet & Selection", "tag": "cheatsheet", "groups": [
+        {"g": "Reference", "items": [
+            "Time/space complexity table across structures",
+            "Choosing a structure by access pattern",
+            "Ordered vs unordered structure tradeoffs",
+            "Array vs linked structure memory tradeoffs",
+            "When to use a heap vs a balanced tree",
+            "When to use a trie vs a hash map",
+            "Common pitfalls & anti-patterns",
+        ]},
+    ]},
+
+    ],
 }
 
 LEETCODE = {
