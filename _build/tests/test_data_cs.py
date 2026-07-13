@@ -116,5 +116,34 @@ class TestDataStructures(unittest.TestCase):
         self.assertGreaterEqual(n, 200)
 
 
+class TestLeetCode(unittest.TestCase):
+    def lc(self):
+        return by_stem()["leetcode-patterns"]
+
+    def test_min_pattern_count(self):
+        self.assertGreaterEqual(len(self.lc()["sections"]), 35)
+
+    def test_expected_tags_present(self):
+        tags = [s["tag"] for s in self.lc()["sections"]]
+        for t in ("two-pointers", "sliding-window", "backtracking",
+                  "dp-01-knapsack", "topo-sort", "trie"):
+            self.assertIn(t, tags)
+
+    def test_each_pattern_has_concept_group_and_problems(self):
+        for s in self.lc()["sections"]:
+            names = [g["g"].lower() for g in s["groups"]]
+            self.assertTrue(any("pattern" in n or "when" in n for n in names),
+                            "%s missing concept group" % s["tag"])
+            problem_items = sum(len(g["items"]) for g in s["groups"]
+                                if "pattern" not in g["g"].lower()
+                                and "when" not in g["g"].lower())
+            self.assertGreaterEqual(problem_items, 8, "%s < 8 problems" % s["tag"])
+
+    def test_total_problem_count_floor(self):
+        # Curated, duplicate-free set across 36 patterns (concept items + named problems).
+        n = len(topics.enumerate_topics(self.lc()))
+        self.assertGreaterEqual(n, 620)
+
+
 if __name__ == "__main__":
     unittest.main()
