@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Spring Boot graceful shutdown for rolling deploys" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 14. Deployment, Containers & Orchestration</div>
+  <div class="htitle">
+    <h1>"Spring Boot graceful shutdown for rolling deploys"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Graceful shutdown</strong> is Spring Boot&#x27;s built-in behavior (<code>server.shutdown=graceful</code>) where, on receiving a termination signal, the embedded web server <strong>stops accepting new requests immediately but keeps running until in-flight requests finish</strong> — up to a configurable grace period — rather than killing every request instantly the moment the process is told to stop. This turns an abrupt process termination into a clean, orderly wind-down.</p>
+<h2>2. Why &amp; when</h2>
+<p>You enable graceful shutdown on any service that gets restarted as part of normal operations — which, under a <a href="0450-rolling-deployment.md">rolling deployment</a>, is constantly:</p>
+<ul><li><strong>Every deploy kills and restarts instances.</strong> Without graceful shutdown, any request in flight at the exact moment a container receives its termination signal gets abruptly cut off — the client sees a connection reset or an incomplete response, even though nothing was actually wrong with the request itself.</li><li><strong>Rolling deployments happen far more often than crashes.</strong> A crash is rare and somewhat expected to be disruptive; a routine deploy happens regularly and should be invisible to users — graceful shutdown is what makes routine restarts non-disruptive.</li><li><strong>Kubernetes&#x27; own termination sequence assumes graceful handling.</strong> Kubernetes sends <code>SIGTERM</code>, waits up to <code>terminationGracePeriodSeconds</code>, and only then sends <code>SIGKILL</code> if the process hasn&#x27;t exited — that grace window exists specifically so an application *can* finish in-flight work before being forcibly killed, but only if the application actually uses it.</li><li><strong>You want this enabled on every production service</strong>, essentially without exception — it&#x27;s a small, standard configuration change with a direct, meaningful reduction in user-visible errors during deploys.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a shop&#x27;s closing procedure: when closing time arrives, the door is locked (no new customers let in) but the staff finishes serving whoever is already inside, rather than instantly kicking every customer out mid-transaction the second the clock strikes closing time. The shop still closes — it just closes in an orderly way that doesn&#x27;t leave anyone with a half-finished purchase.</p>
+<p>Concretely:</p>
+<ol><li><strong>A termination signal arrives</strong> (<code>SIGTERM</code>, sent by Kubernetes when it decides to terminate a Pod, e.g. during a rolling deployment).</li><li><strong>The server immediately stops accepting new connections/requests</strong> — anything arriving after this point is rejected or, more precisely, never routed to this instance at all once it&#x27;s removed from the load balancer&#x27;s routable set.</li><li><strong>Requests already in progress are allowed to complete normally</strong>, running to their natural finish rather than being interrupted mid-execution.</li><li><strong>A grace period bounds how long this wind-down can take</strong> (<code>spring.lifecycle.timeout-per-shutdown-phase</code>, and Kubernetes&#x27; own <code>terminationGracePeriodSeconds</code>) — if in-flight requests haven&#x27;t finished by the deadline, the process is forcibly terminated anyway, so one slow request can&#x27;t hang a deploy indefinitely.</li><li><strong>Once every in-flight request completes (or the grace period expires), the process exits cleanly</strong>, and Kubernetes proceeds with the rest of its rolling deployment sequence.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="On SIGTERM, the server stops accepting new requests immediately but lets in-flight requests finish within a grace period before the process exits">
+  <line x1="40" y1="110" x2="620" y2="110" stroke="#8b949e" stroke-width="1.5"/>
+  <circle cx="60" cy="110" r="5" fill="#f85149"/>
+  <text x="60" y="90" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">SIGTERM received</text>
+
+  <rect x="90" y="130" width="150" height="40" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="165" y="154" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">stop accepting NEW requests</text>
+
+  <rect x="260" y="60" width="200" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="360" y="84" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">in-flight requests finish normally</text>
+
+  <circle cx="600" cy="110" r="5" fill="#6db33f"/>
+  <text x="600" y="90" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">process exits cleanly</text>
+
+  <text x="330" y="190" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">grace period bounds the wait -- SIGKILL forces exit if it's exceeded</text>
+</svg>
+<p>New requests stop immediately at <code>SIGTERM</code>; in-flight requests get to finish within the grace period before the process actually exits.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an in-memory request server simulating graceful shutdown behavior. We start with a basic immediate-shutdown baseline (the problem graceful shutdown fixes), extend it to accept-no-new/finish-in-flight behavior, then handle the hard case: a request that runs longer than the grace period, which must be forcibly cut off rather than hanging the shutdown indefinitely.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: AbruptShutdownBaseline.java -- models the PROBLEM graceful
+// shutdown solves: a request IN FLIGHT when shutdown is triggered gets
+// abruptly killed, with no chance to finish.
+import java.util.concurrent.*;
+
+public class AbruptShutdownBaseline {
+    public static void main(String[] args) throws InterruptedException {
+        ExecutorService server = Executors.newFixedThreadPool(4);
+
+        server.submit(() -&gt; {
+            System.out.println(&quot;[request] started processing order-42, will take 200ms&quot;);
+            try { Thread.sleep(200); } catch (InterruptedException e) {
+                System.out.println(&quot;[request] INTERRUPTED mid-processing -- client gets a broken response&quot;);
+                return;
+            }
+            System.out.println(&quot;[request] finished processing order-42 successfully&quot;);
+        });
+
+        Thread.sleep(50); // the request has only just started
+        System.out.println(&quot;[shutdown] SIGTERM received -- shutting down ABRUPTLY, right now&quot;);
+        server.shutdownNow(); // forcibly interrupts every running task immediately
+        server.awaitTermination(1, TimeUnit.SECONDS);
+        System.out.println(&quot;[shutdown] process exited&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java AbruptShutdownBaseline.java</code></p>
+<p><code>server.shutdownNow()</code> is called only 50ms into a request that needs 200ms to finish, and it forcibly interrupts every running task immediately — the submitted task&#x27;s <code>Thread.sleep(200)</code> throws <code>InterruptedException</code> well before it would have completed naturally, and the &quot;INTERRUPTED mid-processing&quot; branch runs instead of the successful-completion line, modeling exactly the abrupt cutoff graceful shutdown exists to prevent.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: GracefulShutdownBasic.java -- the SAME server, now with GRACEFUL
+// shutdown: stop accepting NEW requests immediately, but let the
+// IN-FLIGHT request finish normally before the process exits.
+import java.util.concurrent.*;
+
+public class GracefulShutdownBasic {
+    static volatile boolean acceptingNewRequests = true;
+
+    static void submitIfAccepting(ExecutorService server, String requestId, int durationMs) {
+        if (!acceptingNewRequests) {
+            System.out.println(&quot;[server] REJECTING &quot; + requestId + &quot; -- no longer accepting new requests&quot;);
+            return;
+        }
+        server.submit(() -&gt; {
+            System.out.println(&quot;[request] started processing &quot; + requestId + &quot;, will take &quot; + durationMs + &quot;ms&quot;);
+            try { Thread.sleep(durationMs); } catch (InterruptedException ignored) {}
+            System.out.println(&quot;[request] finished processing &quot; + requestId + &quot; successfully&quot;);
+        });
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        ExecutorService server = Executors.newFixedThreadPool(4);
+
+        submitIfAccepting(server, &quot;order-42&quot;, 200);
+        Thread.sleep(50); // request is in flight
+
+        System.out.println(&quot;[shutdown] SIGTERM received -- stop accepting NEW requests, let in-flight finish&quot;);
+        acceptingNewRequests = false;
+        submitIfAccepting(server, &quot;order-99&quot;, 100); // arrives AFTER shutdown began -- rejected
+
+        server.shutdown(); // graceful: lets already-submitted tasks run to completion
+        server.awaitTermination(2, TimeUnit.SECONDS);
+        System.out.println(&quot;[shutdown] process exited, in-flight work completed cleanly&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java GracefulShutdownBasic.java</code></p>
+<p><code>acceptingNewRequests</code> flips to <code>false</code> the moment shutdown begins, and <code>submitIfAccepting</code> checks that flag before ever calling <code>server.submit</code> — <code>order-99</code>&#x27;s attempt, arriving after the flag flips, is rejected outright and never runs. <code>order-42</code>, already submitted before shutdown began, is untouched by the flag check entirely; <code>server.shutdown()</code> (not <code>shutdownNow()</code>) lets already-queued and already-running tasks finish naturally, so <code>order-42</code> completes successfully despite shutdown having already started.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: GracefulShutdownWithGracePeriod.java -- the SAME graceful
+// shutdown, now handling the PRODUCTION-FLAVORED hard case: an in-flight
+// request that takes LONGER than the configured grace period. It must be
+// forcibly cut off once the deadline passes -- otherwise one slow or
+// stuck request could hang the entire deploy indefinitely, which is
+// exactly the scenario terminationGracePeriodSeconds exists to bound.
+import java.util.concurrent.*;
+
+public class GracefulShutdownWithGracePeriod {
+    static volatile boolean acceptingNewRequests = true;
+
+    static void submitIfAccepting(ExecutorService server, String requestId, int durationMs) {
+        if (!acceptingNewRequests) {
+            System.out.println(&quot;[server] REJECTING &quot; + requestId + &quot; -- no longer accepting new requests&quot;);
+            return;
+        }
+        server.submit(() -&gt; {
+            System.out.println(&quot;[request] started processing &quot; + requestId + &quot;, will take &quot; + durationMs + &quot;ms&quot;);
+            try {
+                Thread.sleep(durationMs);
+                System.out.println(&quot;[request] finished processing &quot; + requestId + &quot; successfully&quot;);
+            } catch (InterruptedException e) {
+                System.out.println(&quot;[request] &quot; + requestId + &quot; FORCIBLY CUT OFF -- exceeded grace period&quot;);
+            }
+        });
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        ExecutorService server = Executors.newFixedThreadPool(4);
+        int gracePeriodMs = 150; // like a short terminationGracePeriodSeconds, for a runnable demo
+
+        submitIfAccepting(server, &quot;order-fast&quot;, 50);   // will finish well within the grace period
+        submitIfAccepting(server, &quot;order-slow&quot;, 500);  // will NOT finish in time
+        Thread.sleep(20); // both requests are now in flight
+
+        System.out.println(&quot;[shutdown] SIGTERM received -- grace period is &quot; + gracePeriodMs + &quot;ms&quot;);
+        acceptingNewRequests = false;
+        server.shutdown(); // stop accepting new work, let in-flight work attempt to finish
+
+        boolean finishedInTime = server.awaitTermination(gracePeriodMs, TimeUnit.MILLISECONDS);
+        if (!finishedInTime) {
+            System.out.println(&quot;[shutdown] grace period expired -- forcibly terminating remaining work&quot;);
+            server.shutdownNow(); // the equivalent of Kubernetes escalating from SIGTERM to SIGKILL
+        }
+        System.out.println(&quot;[shutdown] process exited (finished gracefully: &quot; + finishedInTime + &quot;)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java GracefulShutdownWithGracePeriod.java</code></p>
+<p><code>order-fast</code> (50ms) and <code>order-slow</code> (500ms) are both submitted before shutdown begins, and <code>server.shutdown()</code> politely asks both to finish. <code>server.awaitTermination(gracePeriodMs, ...)</code> waits up to <code>150ms</code> — enough for <code>order-fast</code> to complete naturally, but not enough for <code>order-slow</code>, which is still running when the deadline passes. <code>awaitTermination</code> returns <code>false</code> in that case, triggering <code>server.shutdownNow()</code>, which forcibly interrupts <code>order-slow</code>&#x27;s still-running task — its <code>catch (InterruptedException e)</code> branch runs instead of its success line, exactly mirroring Kubernetes escalating from a polite <code>SIGTERM</code> to a forceful <code>SIGKILL</code> once <code>terminationGracePeriodSeconds</code> has elapsed.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>GracefulShutdownWithGracePeriod.main</code> in order. <strong>First</strong>, <code>order-fast</code> and <code>order-slow</code> are both submitted to the pool while <code>acceptingNewRequests</code> is still <code>true</code>, so both pass the check in <code>submitIfAccepting</code> and begin running concurrently on the thread pool.</p>
+<p><strong>Next</strong>, after a brief <code>20ms</code> sleep to let both tasks actually start, the shutdown sequence begins: <code>acceptingNewRequests</code> is set to <code>false</code>, and <code>server.shutdown()</code> is called — this stops the pool from accepting *new* submissions but does not interrupt the two tasks already running.</p>
+<p><strong>Then</strong>, <code>server.awaitTermination(150, TimeUnit.MILLISECONDS)</code> blocks for up to 150ms, during which <code>order-fast</code>&#x27;s 50ms sleep completes well within the window — its &quot;finished processing&quot; line prints, and that task&#x27;s thread exits normally, contributing to (but not by itself satisfying) full pool termination.</p>
+<p><strong>After that</strong>, <code>order-slow</code>&#x27;s 500ms sleep is nowhere near finished when the 150ms deadline arrives, so <code>awaitTermination</code> returns <code>false</code> — the grace period genuinely expired with real work still in flight. The <code>if (!finishedInTime)</code> branch runs, printing the escalation message and calling <code>server.shutdownNow()</code>.</p>
+<p><strong>Finally</strong>, <code>shutdownNow()</code> interrupts every still-running task — <code>order-slow</code>&#x27;s <code>Thread.sleep(500)</code> throws <code>InterruptedException</code>, its <code>catch</code> block runs and prints the forcibly-cut-off message instead of a success line, and <code>main</code> prints the final exit line showing <code>finished gracefully: false</code>, honestly reporting that the grace period was exceeded rather than silently pretending the shutdown was clean.</p>
+<pre><code>[request] started processing order-fast, will take 50ms
+[request] started processing order-slow, will take 500ms
+[shutdown] SIGTERM received -- grace period is 150ms
+[request] finished processing order-fast successfully
+[shutdown] grace period expired -- forcibly terminating remaining work
+[request] order-slow FORCIBLY CUT OFF -- exceeded grace period
+[shutdown] process exited (finished gracefully: false)</code></pre>
+<p>(The two &quot;started processing&quot; lines can print in either order, since both tasks are submitted to the pool almost simultaneously and their thread scheduling isn&#x27;t guaranteed — but <code>order-fast</code> always finishes and <code>order-slow</code> is always the one forcibly cut off, regardless of print order.)</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A grace period set too short for your slowest realistic request means every deploy forcibly cuts off legitimate, still-processing work — set <code>terminationGracePeriodSeconds</code> (and Spring&#x27;s matching shutdown timeout) generously enough to cover your genuine worst-case request duration, not just the typical case.</blockquote>
+<ul><li>Graceful shutdown only helps if the *load balancer* also removes the instance from routing before, or at the same time as, the server stops accepting requests — otherwise new requests can still be routed to an instance that&#x27;s mid-shutdown and rejecting them.</li><li>This pairs directly with <a href="0473-spring-boot-actuator-liveness-readiness-probes-for-kubernete.md">readiness probes</a>: a well-behaved shutdown sequence often flips readiness to &quot;not ready&quot; first, giving Kubernetes a moment to stop routing new traffic before the <code>SIGTERM</code>-driven in-flight drain even begins.</li><li><code>server.shutdown()</code> versus <code>server.shutdownNow()</code> in the Java concurrency API is a direct, useful mental model for the same distinction Kubernetes makes between <code>SIGTERM</code> (graceful) and <code>SIGKILL</code> (forced) — one lets existing work finish, the other cuts it off immediately.</li><li>Long-running requests (large file uploads, long-polling connections) deserve special consideration — a grace period tuned for typical fast API calls may be far too short for these, and might need a different draining strategy entirely.</li><li>Test graceful shutdown deliberately, not just assume it works — send a request, trigger a shutdown mid-request, and confirm the client actually receives a complete, successful response rather than a connection error.</li></ul>
+  <div class="nav"><a class="prv" href="0474-spring-cloud-kubernetes-integration.html"><span class="mini">← Previous</span>Spring Cloud Kubernetes integration</a><a class="nxt" href="0476-spring-boot-configuration-via-env-vars-configmaps.html"><span class="mini">Next →</span>Spring Boot configuration via env vars / ConfigMaps</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t475";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

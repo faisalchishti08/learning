@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Spring Boot Actuator liveness/readiness probes for Kubernetes" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 14. Deployment, Containers & Orchestration</div>
+  <div class="htitle">
+    <h1>"Spring Boot Actuator liveness/readiness probes for Kubernetes"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Spring Boot <strong>Actuator</strong> exposes two distinct health endpoints — <code>/actuator/health/liveness</code> and <code>/actuator/health/readiness</code> — designed to answer two different questions Kubernetes asks about a running Pod. <strong>Liveness</strong> answers &quot;is this process alive and functioning, or should it be restarted?&quot; <strong>Readiness</strong> answers &quot;can this instance currently handle traffic, or should it be temporarily removed from the routable pool?&quot; Kubernetes polls each endpoint separately and takes different action depending on which one fails.</p>
+<h2>2. Why &amp; when</h2>
+<p>You configure both probes, and keep their logic genuinely distinct, because conflating &quot;alive&quot; and &quot;ready&quot; causes two very different, very real failure modes:</p>
+<ul><li><strong>A deadlocked or wedged process needs restarting, not just removal from traffic.</strong> If liveness fails, Kubernetes kills and restarts the container — the right response to a process that&#x27;s technically running but permanently stuck.</li><li><strong>A temporarily-overloaded or dependency-starved instance needs traffic paused, not a restart.</strong> If a database connection pool is briefly exhausted, restarting the process doesn&#x27;t fix that and just adds startup churn — readiness failing simply removes the Pod from the load balancer&#x27;s routable set until it recovers on its own.</li><li><strong>Using the same check for both endpoints causes cascading, unnecessary restarts.</strong> If a temporary database outage makes an instance fail its *liveness* check (because it was really only meant to signal &quot;not ready right now&quot;), Kubernetes restarts every affected Pod — which does nothing to bring the database back and just adds thrashing on top of an already-degraded situation.</li><li><strong>You configure both, correctly separated, on every Spring Boot service deployed to Kubernetes</strong> — this is standard, expected configuration for any production Kubernetes deployment, not an advanced or optional feature.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a restaurant kitchen: &quot;is the kitchen on fire&quot; (liveness — if true, evacuate and rebuild) is a completely different question from &quot;is the kitchen currently able to take a new order&quot; (readiness — if no, the host simply stops seating new customers at that kitchen&#x27;s tables until it catches up, no rebuilding required). Confusing the two means either burning down a kitchen that was just temporarily backed up, or leaving customers being seated at a kitchen that&#x27;s genuinely on fire.</p>
+<p>Concretely:</p>
+<ol><li><strong>Liveness checks internal application health that only a restart can fix</strong> — deadlocks, unrecoverable internal state, a genuinely crashed application thread. Spring Boot&#x27;s liveness state is typically simple: the application context started successfully and hasn&#x27;t entered a broken state.</li><li><strong>Readiness checks whether the instance can currently serve requests successfully</strong> — often including whether its downstream dependencies (a database, a required upstream service) are currently reachable.</li><li><strong>Kubernetes polls each endpoint on its own schedule</strong>, defined in the Pod spec&#x27;s <code>livenessProbe</code> and <code>readinessProbe</code> configuration (path, interval, failure threshold).</li><li><strong>A failing liveness probe triggers a container restart.</strong> A failing readiness probe removes the Pod from a Service&#x27;s routable endpoints, without touching the container&#x27;s running process at all — it stays running, just temporarily out of rotation.</li><li><strong>Readiness recovering automatically re-adds the Pod to the routable set</strong> the next time the probe succeeds — no restart needed, no manual intervention, the instance simply rejoins traffic once it&#x27;s actually able to handle it again.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kubernetes polls liveness and readiness separately: a failing liveness probe restarts the container, a failing readiness probe only removes it from traffic">
+  <rect x="20" y="20" width="280" height="90" rx="8" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+  <text x="160" y="45" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">liveness probe fails</text>
+  <text x="160" y="65" fill="#f85149" font-size="9" text-anchor="middle" font-family="sans-serif">"process is stuck, unrecoverable"</text>
+  <text x="160" y="85" fill="#f85149" font-size="9" text-anchor="middle" font-family="sans-serif">-&gt; Kubernetes RESTARTS the container</text>
+
+  <rect x="360" y="20" width="280" height="90" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="500" y="45" fill="#e6edf3" font-size="11" text-anchor="middle" font-family="sans-serif">readiness probe fails</text>
+  <text x="500" y="65" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">"temporarily can't serve traffic"</text>
+  <text x="500" y="85" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">-&gt; Kubernetes REMOVES Pod from traffic only</text>
+
+  <text x="330" y="170" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">the SAME running Pod behaves completely differently depending on WHICH probe failed</text>
+
+</svg>
+<p>Liveness and readiness answer different questions and drive different Kubernetes actions on the same Pod.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a health-monitoring loop simulating Kubernetes polling both probes for a service. We start with a basic distinct-probe check, extend it to show a readiness failure that only affects traffic routing, then handle the hard case: a temporary database outage that must fail readiness (pausing traffic) without ever failing liveness (avoiding an unnecessary, unhelpful restart).</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ProbesBasic.java -- models TWO distinct probes for one service,
+// checked independently, each answering a DIFFERENT question.
+public class ProbesBasic {
+    static boolean checkLiveness() {
+        System.out.println(&quot;[probe] liveness: application context started, no deadlock detected&quot;);
+        return true;
+    }
+
+    static boolean checkReadiness() {
+        System.out.println(&quot;[probe] readiness: dependencies reachable, ready for traffic&quot;);
+        return true;
+    }
+
+    public static void main(String[] args) {
+        boolean alive = checkLiveness();
+        boolean ready = checkReadiness();
+        System.out.println(&quot;[kubernetes] liveness=&quot; + alive + &quot; (restart if false), readiness=&quot; + ready + &quot; (route traffic if true)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ProbesBasic.java</code></p>
+<p><code>checkLiveness</code> and <code>checkReadiness</code> are two entirely separate methods, called independently and never sharing logic — mirroring the two genuinely different endpoints Kubernetes polls, <code>/actuator/health/liveness</code> and <code>/actuator/health/readiness</code>.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ProbesReadinessOnly.java -- the SAME two probes, now showing a
+// READINESS-only failure: the application is alive and healthy, but
+// temporarily can&#x27;t serve traffic (e.g. still warming up a cache) --
+// liveness stays TRUE throughout, so no restart happens.
+public class ProbesReadinessOnly {
+    static boolean applicationStarted = true; // never becomes false in this scenario
+    static boolean cacheWarmedUp = false; // starts false, becomes true after warm-up completes
+
+    static boolean checkLiveness() {
+        boolean alive = applicationStarted;
+        System.out.println(&quot;[probe] liveness: &quot; + (alive ? &quot;OK -- process running normally&quot; : &quot;FAILED&quot;));
+        return alive;
+    }
+
+    static boolean checkReadiness() {
+        boolean ready = applicationStarted &amp;&amp; cacheWarmedUp;
+        System.out.println(&quot;[probe] readiness: &quot; + (ready ? &quot;OK -- ready for traffic&quot; : &quot;NOT READY -- cache still warming up&quot;));
+        return ready;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;--- poll 1: just started, cache not warm yet ---&quot;);
+        checkLiveness();
+        checkReadiness();
+
+        System.out.println();
+        System.out.println(&quot;--- cache finishes warming up ---&quot;);
+        cacheWarmedUp = true;
+
+        System.out.println();
+        System.out.println(&quot;--- poll 2: cache is now warm ---&quot;);
+        checkLiveness();
+        checkReadiness();
+    }
+}</code></pre>
+<p>How to run: <code>java ProbesReadinessOnly.java</code></p>
+<p><code>applicationStarted</code> never changes across this whole run, so <code>checkLiveness</code> returns <code>true</code> on both polls — no restart would ever be triggered. <code>checkReadiness</code>, by contrast, depends on <code>cacheWarmedUp</code>, which starts <code>false</code> and only becomes <code>true</code> between poll 1 and poll 2 — so readiness genuinely transitions from <code>false</code> to <code>true</code> while liveness stays constant throughout, demonstrating the two signals evolving completely independently.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ProbesDbOutageIsolated.java -- the SAME two independent probes,
+// now handling the PRODUCTION-FLAVORED hard case: a TEMPORARY DATABASE
+// OUTAGE. Readiness MUST fail (the app genuinely can&#x27;t serve DB-backed
+// requests), but liveness MUST stay healthy throughout -- restarting the
+// application process does nothing to fix a database that&#x27;s down, and
+// would just add restart churn on top of an already-degraded system.
+public class ProbesDbOutageIsolated {
+    static boolean applicationProcessHealthy = true; // the JVM itself is fine the whole time
+    static boolean databaseReachable = true;
+
+    static boolean checkLiveness() {
+        // Liveness deliberately does NOT depend on the database --
+        // a down database is not a reason to restart a perfectly healthy process.
+        boolean alive = applicationProcessHealthy;
+        System.out.println(&quot;[probe] liveness: &quot; + (alive ? &quot;OK&quot; : &quot;FAILED (would trigger restart)&quot;));
+        return alive;
+    }
+
+    static boolean checkReadiness() {
+        // Readiness DOES depend on the database -- traffic shouldn&#x27;t be routed
+        // to an instance that can&#x27;t actually serve DB-backed requests.
+        boolean ready = applicationProcessHealthy &amp;&amp; databaseReachable;
+        System.out.println(&quot;[probe] readiness: &quot; + (ready ? &quot;OK&quot; : &quot;NOT READY (removed from traffic, no restart)&quot;));
+        return ready;
+    }
+
+    static void simulatePoll(int pollNumber) {
+        System.out.println(&quot;--- poll &quot; + pollNumber + &quot; ---&quot;);
+        boolean alive = checkLiveness();
+        boolean ready = checkReadiness();
+        if (!alive) {
+            System.out.println(&quot;[kubernetes] RESTARTING container&quot;);
+        } else if (!ready) {
+            System.out.println(&quot;[kubernetes] Pod removed from Service endpoints, container left running untouched&quot;);
+        } else {
+            System.out.println(&quot;[kubernetes] Pod healthy and receiving traffic normally&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        simulatePoll(1); // everything healthy
+
+        System.out.println();
+        System.out.println(&quot;[incident] database goes down&quot;);
+        databaseReachable = false;
+        simulatePoll(2); // db down: readiness fails, liveness stays fine
+
+        System.out.println();
+        System.out.println(&quot;[incident] database comes back up&quot;);
+        databaseReachable = true;
+        simulatePoll(3); // recovered: readiness passes again, with NO restart ever having happened
+    }
+}</code></pre>
+<p>How to run: <code>java ProbesDbOutageIsolated.java</code></p>
+<p><code>checkLiveness</code>&#x27;s condition, <code>applicationProcessHealthy</code>, never references <code>databaseReachable</code> at all — by design, a database outage can never fail liveness in this code, no matter what happens to <code>databaseReachable</code>. <code>checkReadiness</code>&#x27;s condition explicitly includes <code>databaseReachable</code>, so it fails the moment the simulated outage sets that flag to <code>false</code>, and <code>simulatePoll</code>&#x27;s <code>if (!alive) ... else if (!ready) ...</code> branch correctly routes to the &quot;removed from traffic, no restart&quot; outcome rather than the restart outcome, because <code>alive</code> stayed <code>true</code> throughout the entire incident.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>ProbesDbOutageIsolated.main</code> in order. <strong>First</strong>, <code>simulatePoll(1)</code> runs with both flags <code>true</code>: <code>checkLiveness</code> returns <code>true</code>, <code>checkReadiness</code> returns <code>true</code>, and <code>simulatePoll</code>&#x27;s branching lands on the final <code>else</code>, printing that the Pod is healthy and receiving traffic normally.</p>
+<p><strong>Next</strong>, the simulated incident sets <code>databaseReachable = false</code>, with <code>applicationProcessHealthy</code> left completely untouched.</p>
+<p><strong>Then</strong>, <code>simulatePoll(2)</code> runs: <code>checkLiveness</code> reads only <code>applicationProcessHealthy</code>, which is still <code>true</code>, so it prints &quot;OK&quot; and returns <code>true</code>. <code>checkReadiness</code> reads <code>applicationProcessHealthy &amp;&amp; databaseReachable</code>, which is <code>true &amp;&amp; false</code>, evaluating to <code>false</code> — it prints &quot;NOT READY&quot; and returns <code>false</code>. Back in <code>simulatePoll</code>, <code>alive</code> is <code>true</code> so the <code>if (!alive)</code> branch is skipped entirely; <code>ready</code> is <code>false</code> so the <code>else if (!ready)</code> branch runs, printing that the Pod is removed from Service endpoints with the container left running untouched — no restart happens anywhere in this path.</p>
+<p><strong>After that</strong>, the incident resolves: <code>databaseReachable = true</code> is set back.</p>
+<p><strong>Finally</strong>, <code>simulatePoll(3)</code> runs with both flags <code>true</code> again: both checks pass, and <code>simulatePoll</code> lands back on the healthy-traffic branch — the Pod automatically rejoins traffic the moment readiness recovers, with no restart having occurred at any point across the entire three-poll sequence, despite a real, full database outage happening in the middle of it.</p>
+<pre><code>--- poll 1 ---
+[probe] liveness: OK
+[probe] readiness: OK
+[kubernetes] Pod healthy and receiving traffic normally
+
+[incident] database goes down
+--- poll 2 ---
+[probe] liveness: OK
+[probe] readiness: NOT READY (removed from traffic, no restart)
+[kubernetes] Pod removed from Service endpoints, container left running untouched
+
+[incident] database comes back up
+--- poll 3 ---
+[probe] liveness: OK
+[probe] readiness: OK
+[kubernetes] Pod healthy and receiving traffic normally</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Wiring a downstream dependency check (database, external API) into the *liveness* endpoint instead of readiness is one of the most common and damaging Kubernetes misconfigurations — it turns a temporary, external outage into a cluster-wide restart storm of every affected Pod, adding restart churn on top of an outage that a restart can&#x27;t fix and that would have resolved on its own.</blockquote>
+<ul><li>Spring Boot Actuator&#x27;s health groups make this separation explicit and configurable — <code>management.endpoint.health.probes.enabled=true</code> exposes the dedicated liveness and readiness groups, and you control exactly which health indicators feed into each.</li><li>Liveness should generally check very little — mostly &quot;is the application context up and not deadlocked&quot; — precisely because a liveness failure is a blunt, disruptive instrument (a full restart).</li><li>Readiness is the right place for anything that reflects &quot;can I currently serve requests correctly&quot; — dependency reachability, a warm-up flag, a circuit breaker&#x27;s open/closed state.</li><li>Watch for restart loops as a diagnostic signal: if a service keeps restarting during a downstream outage rather than just dropping out of traffic and recovering cleanly, that&#x27;s a strong sign a dependency check has been wired into liveness by mistake.</li></ul>
+  <div class="nav"><a class="prv" href="0472-spring-boot-graalvm-native-images-aot-for-fast-startup-low-m.html"><span class="mini">← Previous</span>Spring Boot GraalVM native images (AOT) for fast startup / low memory</a><a class="nxt" href="0474-spring-cloud-kubernetes-integration.html"><span class="mini">Next →</span>Spring Cloud Kubernetes integration</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t473";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
