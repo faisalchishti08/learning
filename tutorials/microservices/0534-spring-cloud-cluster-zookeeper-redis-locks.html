@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Spring Cloud Cluster / ZooKeeper / Redis locks" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 16. Cross-Cutting Concerns & Patterns</div>
+  <div class="htitle">
+    <h1>"Spring Cloud Cluster / ZooKeeper / Redis locks"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Spring Cloud Cluster</strong> was an earlier, now-largely-superseded project that provided a common abstraction for distributed locks and leader election across multiple backing stores (ZooKeeper, Redis, Hazelcast) — much of its functionality has since moved into or been mirrored by <a href="0533-spring-integration-leader-election-locks.md">Spring Integration&#x27;s <code>LockRegistry</code> and leader-election support</a>, plus store-specific modules like <code>spring-integration-zookeeper</code> and Spring Data Redis&#x27;s own <code>RedisLockRegistry</code>. Regardless of which specific library surface you use, the underlying idea is the same: a <strong>ZooKeeper</strong>-backed lock leans on ZooKeeper&#x27;s native ephemeral, sequential znodes to implement correct distributed mutual exclusion, while a <strong>Redis</strong>-backed lock builds mutual exclusion out of atomic Redis commands (<code>SET key value NX PX ttl</code>) plus a time-to-live safety net.</p>
+<h2>2. Why &amp; when</h2>
+<p>You choose between ZooKeeper-backed and Redis-backed locks based on what&#x27;s already in your infrastructure and how strict your correctness requirements are:</p>
+<ul><li><strong>ZooKeeper is purpose-built for coordination.</strong> Its data model (ephemeral znodes tied to a client session, sequential ordering, watches for change notification) was designed specifically to implement correct distributed locks and leader election, and its consensus protocol (ZAB) gives strong consistency guarantees — if you already run ZooKeeper (common in Kafka-based or Hadoop-ecosystem deployments), it&#x27;s a natural, battle-tested choice for locking too.</li><li><strong>Redis is far more commonly already present</strong> in a typical microservices stack (as a cache, if nothing else), so a Redis-backed lock avoids introducing an entirely new piece of infrastructure just for locking — at the cost of Redis&#x27;s locking guarantees being somewhat weaker in edge cases (particularly around clock drift and failover) than ZooKeeper&#x27;s, unless you adopt more involved algorithms like Redlock, which itself has documented correctness caveats under network partitions.</li><li><strong>The core mechanism differs in an important way</strong>: ZooKeeper&#x27;s ephemeral znodes are tied to the client&#x27;s *session* — if a client crashes or its network connection to ZooKeeper drops, the session (and its ephemeral znode) is cleaned up automatically and promptly by ZooKeeper itself, releasing the lock. A basic Redis lock instead relies on a <strong>time-to-live (TTL)</strong> on the lock key — if the holder crashes, the lock isn&#x27;t released until the TTL expires, meaning there&#x27;s an unavoidable window where the lock appears held even though its holder is gone.</li><li><strong>Choose ZooKeeper when correctness under failure is paramount</strong> and you can afford to operate it; choose Redis when it&#x27;s already part of your stack and the TTL-based failure window (typically seconds) is an acceptable trade-off for your use case.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of two different ways a shared meeting room might be locked. A ZooKeeper-style lock is like a smart badge reader tied to your live presence — if you leave the building (your connection drops), the system detects your badge going out of range almost immediately and the room is marked free again automatically. A Redis-style lock is more like a physical timer you set on the door when you enter — &quot;reserved for the next 30 minutes&quot; — which correctly keeps others out while you&#x27;re using the room, but if you leave early or collapse inside, nobody else can use the room until that timer actually runs out, because nothing is actively watching whether you&#x27;re still really there.</p>
+<p>Concretely:</p>
+<ol><li><strong>ZooKeeper locks use ephemeral, sequential znodes</strong>: each client wanting the lock creates a sequentially-numbered ephemeral node under a shared path; the client whose node has the lowest sequence number holds the lock, and everyone else watches the node just ahead of them in sequence, waking up only when that specific node is deleted (released or the holder&#x27;s session expired) — an efficient, event-driven wait rather than polling.</li><li><strong>Redis locks use an atomic <code>SET key uniqueValue NX PX ttl</code> command</strong>: <code>NX</code> means &quot;only set if the key doesn&#x27;t already exist&quot; (atomic acquire), <code>PX ttl</code> sets an expiration so the lock self-releases if never explicitly unlocked, and the unique value (often a UUID) lets the holder safely verify it&#x27;s still the rightful owner before releasing, rather than accidentally releasing a lock some other client has since acquired after this one&#x27;s TTL expired.</li><li><strong>The TTL is both Redis&#x27;s safety net and its weakness</strong>: it guarantees a crashed holder&#x27;s lock eventually releases (unlike a naive lock with no expiration at all, which could be held forever), but it also means there&#x27;s a real window between a holder crashing and the TTL expiring during which the lock is unavailable to anyone else, even though its original holder is gone.</li><li><strong>ZooKeeper&#x27;s session-based approach avoids that specific window</strong> at the cost of requiring and operating an entire additional coordination service, with its own operational complexity (an odd-numbered ensemble of nodes, careful session timeout tuning) that a Redis-based approach, often reusing infrastructure you already run, avoids.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ZooKeeper lock releases promptly when the holder's session drops; Redis lock waits out its TTL even after the holder crashes, leaving a window where the lock is held by nobody reachable">
+  <text x="150" y="20" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="bold">ZooKeeper: session-tied</text>
+  <rect x="20" y="35" width="260" height="30" rx="4" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="150" y="55" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">holder crashes -&gt; session drops</text>
+  <rect x="20" y="75" width="260" height="30" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="150" y="95" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">ZK detects fast, ephemeral node GONE</text>
+  <text x="150" y="125" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">lock free almost immediately after the crash</text>
+
+  <text x="510" y="20" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="bold">Redis: TTL-based</text>
+  <rect x="380" y="35" width="260" height="30" rx="4" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="510" y="55" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">holder crashes -&gt; key still set</text>
+  <rect x="380" y="75" width="260" height="30" rx="4" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="510" y="95" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">lock STAYS held until TTL expires</text>
+  <text x="510" y="125" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">unavoidable window: nobody can acquire it meanwhile</text>
+</svg>
+<p>ZooKeeper&#x27;s session-tied ephemeral nodes release promptly on failure; Redis&#x27;s TTL-based locks guarantee eventual release but tolerate a real gap after a crash.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: two competing instances trying to acquire a lock, one of which then crashes while holding it. We start with a plain Java model of a naive lock with no expiration (showing the &quot;stuck forever&quot; risk), extend it to a TTL-based Redis-style lock, then handle the hard case: safe release using a unique holder token, avoiding one instance accidentally releasing a lock another instance now legitimately holds.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NaiveLockNoExpiration.java -- a lock with NO expiration at all:
+// if the holder crashes before releasing, the lock is held FOREVER.
+import java.util.concurrent.atomic.AtomicBoolean;
+
+public class NaiveLockNoExpiration {
+    static AtomicBoolean lockHeld = new AtomicBoolean(false);
+
+    static boolean tryAcquire(String holder) {
+        boolean acquired = lockHeld.compareAndSet(false, true);
+        System.out.println(holder + &quot; tryAcquire -&gt; &quot; + acquired);
+        return acquired;
+    }
+
+    public static void main(String[] args) {
+        tryAcquire(&quot;instance-A&quot;); // acquires successfully
+        // instance-A now &quot;crashes&quot; -- simulated by simply never calling release()
+        boolean b = tryAcquire(&quot;instance-B&quot;); // FOREVER blocked -- no expiration mechanism exists
+        System.out.println(&quot;instance-B acquired? &quot; + b + &quot; -- STUCK until someone manually intervenes; no TTL, no session detection.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NaiveLockNoExpiration.java</code></p>
+<p><code>lockHeld</code> has no expiration mechanism whatsoever — once set to <code>true</code> by <code>instance-A</code>, nothing in this code will ever reset it if <code>instance-A</code> fails to call a release method (simulated here by simply never calling one). <code>instance-B</code>&#x27;s subsequent attempt correctly fails, but there&#x27;s no path back to a working lock without manual intervention — exactly the risk both ZooKeeper&#x27;s session-based approach and Redis&#x27;s TTL-based approach are designed to avoid.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: TtlBasedLock.java -- adds a Redis-STYLE time-to-live: the lock
+// automatically expires and becomes acquirable again, even if the
+// holder never explicitly releases it.
+import java.time.*;
+import java.util.concurrent.atomic.*;
+
+public class TtlBasedLock {
+    static AtomicReference&lt;Instant&gt; lockExpiresAt = new AtomicReference&lt;&gt;(null); // null = not held
+
+    static boolean tryAcquire(String holder, Duration ttl, Instant now) {
+        Instant currentExpiry = lockExpiresAt.get();
+        boolean expired = currentExpiry != null &amp;&amp; now.isAfter(currentExpiry);
+        if (currentExpiry == null || expired) {
+            lockExpiresAt.set(now.plus(ttl)); // acquire with a hard expiration
+            System.out.println(holder + &quot; acquired lock, expires at &quot; + lockExpiresAt.get() + (expired ? &quot; (previous holder&#x27;s TTL had expired)&quot; : &quot;&quot;));
+            return true;
+        }
+        System.out.println(holder + &quot; tryAcquire FAILED -- still held until &quot; + currentExpiry);
+        return false;
+    }
+
+    public static void main(String[] args) {
+        Instant t0 = Instant.parse(&quot;2026-01-01T00:00:00Z&quot;);
+        tryAcquire(&quot;instance-A&quot;, Duration.ofSeconds(30), t0); // acquires with a 30s TTL
+
+        // instance-A &quot;crashes&quot; -- never releases. instance-B tries again 10s later: still held.
+        tryAcquire(&quot;instance-B&quot;, Duration.ofSeconds(30), t0.plusSeconds(10));
+
+        // instance-B tries AGAIN 35s after A&#x27;s acquisition: A&#x27;s TTL has now expired
+        tryAcquire(&quot;instance-B&quot;, Duration.ofSeconds(30), t0.plusSeconds(35));
+    }
+}</code></pre>
+<p>How to run: <code>java TtlBasedLock.java</code></p>
+<p><code>lockExpiresAt</code> models Redis&#x27;s <code>PX ttl</code> behavior: a lock acquired at <code>t0</code> with a 30-second TTL is still correctly reported as held 10 seconds later (<code>instance-B</code>&#x27;s attempt at <code>t0+10s</code> fails), but by <code>t0+35s</code>, the TTL has passed, so <code>instance-B</code>&#x27;s attempt succeeds — the lock self-released purely from time passing, with no explicit action from the crashed <code>instance-A</code> required. This closes Level 1&#x27;s &quot;stuck forever&quot; risk, at the cost of a real window (up to 30 seconds here) where the lock was held by a holder that had already crashed.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: SafeReleaseWithToken.java -- adds a UNIQUE HOLDER TOKEN so a
+// lock can only be released by whoever ACTUALLY currently holds it --
+// preventing a stale release from clobbering a NEW legitimate holder.
+import java.time.*;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
+
+public class SafeReleaseWithToken {
+    record LockState(String token, Instant expiresAt) {}
+    static AtomicReference&lt;LockState&gt; state = new AtomicReference&lt;&gt;(null);
+
+    static Optional&lt;String&gt; tryAcquire(Duration ttl, Instant now) {
+        LockState current = state.get();
+        boolean expired = current != null &amp;&amp; now.isAfter(current.expiresAt());
+        if (current == null || expired) {
+            String token = UUID.randomUUID().toString(); // UNIQUE per acquisition -- this is the safety mechanism
+            state.set(new LockState(token, now.plus(ttl)));
+            return Optional.of(token);
+        }
+        return Optional.empty();
+    }
+
+    // release ONLY succeeds if the caller&#x27;s token matches the CURRENT holder&#x27;s token
+    static boolean release(String token) {
+        LockState current = state.get();
+        if (current != null &amp;&amp; current.token().equals(token)) {
+            state.compareAndSet(current, null);
+            return true;
+        }
+        return false; // this caller is NOT the current legitimate holder -- refuse to release
+    }
+
+    public static void main(String[] args) {
+        Instant t0 = Instant.parse(&quot;2026-01-01T00:00:00Z&quot;);
+
+        String tokenA = tryAcquire(Duration.ofSeconds(10), t0).orElseThrow();
+        System.out.println(&quot;instance-A acquired with token &quot; + tokenA);
+
+        // instance-A &quot;crashes&quot; here, WITHOUT calling release(tokenA)
+
+        // 15 seconds later: A&#x27;s TTL has expired, instance-B acquires with a NEW token
+        String tokenB = tryAcquire(Duration.ofSeconds(10), t0.plusSeconds(15)).orElseThrow();
+        System.out.println(&quot;instance-B acquired with DIFFERENT token &quot; + tokenB);
+
+        // instance-A, unaware it&#x27;s long dead, FINALLY gets around to calling release(tokenA) -- e.g. a delayed retry
+        boolean released = release(tokenA);
+        System.out.println(&quot;instance-A&#x27;s stale release(tokenA) succeeded? &quot; + released + &quot; -- correctly REFUSED, since tokenA != current token&quot;);
+        System.out.println(&quot;Lock still held by instance-B? &quot; + (state.get() != null));
+    }
+}</code></pre>
+<p>How to run: <code>java SafeReleaseWithToken.java</code></p>
+<p>Each acquisition gets a fresh, unique <code>token</code>; <code>release(token)</code> only actually clears the lock if the supplied token matches the *current* holder&#x27;s token exactly. When <code>instance-A</code>&#x27;s long-delayed <code>release(tokenA)</code> call finally arrives — after its TTL already expired and <code>instance-B</code> legitimately acquired the lock with a different token — the release is correctly refused, because <code>tokenA</code> no longer matches the current holder&#x27;s token (<code>tokenB</code>). Without this token check, <code>instance-A</code>&#x27;s stale release call would have incorrectly cleared <code>instance-B</code>&#x27;s legitimate, currently-active lock.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>SafeReleaseWithToken.main</code> end to end:</p>
+<ol><li><strong><code>tryAcquire(10s, t0)</code> is called.</strong> <code>state.get()</code> is <code>null</code> (unheld), so a new <code>token = tokenA</code> (a fresh UUID) is generated, and <code>state</code> is set to <code>LockState(tokenA, t0+10s)</code>. <code>instance-A</code> now holds the lock with expiration <code>t0+10s</code>.</li><li><strong><code>instance-A</code> &quot;crashes&quot;</strong> — in this simulation, simply by never calling <code>release(tokenA)</code> before the next step. This models exactly the failure scenario a TTL exists to protect against.</li><li><strong><code>tryAcquire(10s, t0+15s)</code> is called</strong> (representing <code>instance-B</code>, 15 seconds later). <code>state.get()</code> returns the still-present <code>LockState(tokenA, t0+10s)</code>; the code checks <code>now.isAfter(expiresAt)</code> — <code>t0+15s</code> is after <code>t0+10s</code>, so <code>expired = true</code>. Since <code>current != null</code> but <code>expired</code>, the acquisition proceeds: a brand-new <code>token = tokenB</code> is generated, and <code>state</code> is overwritten with <code>LockState(tokenB, t0+25s)</code>.</li><li><strong><code>release(tokenA)</code> is called</strong> — representing <code>instance-A</code> finally getting around to its (long overdue, and now meaningless) cleanup call. Inside <code>release</code>, <code>current = state.get()</code> returns <code>LockState(tokenB, ...)</code> (from step 3). The check <code>current.token().equals(token)</code> compares <code>tokenB.equals(tokenA)</code>, which is <code>false</code> — so <code>release</code> returns <code>false</code> without touching <code>state</code> at all.</li><li><strong><code>main</code> prints that the stale release was correctly refused</strong>, and confirms <code>state.get() != null</code> — the lock remains held by <code>instance-B</code>&#x27;s legitimate <code>tokenB</code>, completely unaffected by <code>instance-A</code>&#x27;s stale, out-of-order release attempt.</li></ol>
+<p>This token check is precisely what a correct Redis-based lock implementation does in practice (typically via a small Lua script executed atomically in Redis, checking the token *and* deleting the key in one atomic step) — without it, a delayed or retried release call from a former holder could silently steal the lock out from under whoever legitimately holds it now, a subtle and dangerous class of bug that&#x27;s easy to miss if you implement TTL-based locking without this safeguard.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the check-token-then-delete-key sequence in <code>release()</code> must be a single atomic operation against the real store (a Lua script in Redis, for instance) — checking the token in one round-trip and then deleting the key in a separate round-trip introduces a race window where another instance could acquire the lock *between* those two operations, letting a stale release delete a different, legitimate holder&#x27;s lock anyway.</blockquote>
+<ul><li>ZooKeeper&#x27;s ephemeral-znode-per-session model releases a crashed holder&#x27;s lock promptly, with no configurable TTL trade-off, but requires operating an entire additional coordination service.</li><li>Redis-based locks are simpler to add when Redis is already part of your infrastructure, but every lock needs a TTL for safety, and that TTL creates an unavoidable window between a holder crashing and the lock actually releasing.</li><li>A unique per-acquisition token, checked atomically before release, is essential for Redis-style locks — without it, a delayed or retried release from a former holder can incorrectly release a different, currently-legitimate holder&#x27;s lock.</li><li>Choose based on what&#x27;s already operated in your infrastructure and how much risk the TTL window poses for your specific use case — a lock protecting an idempotent, infrequent batch job can tolerate a longer TTL window than one protecting a rapidly-repeating, non-idempotent operation.</li></ul>
+  <div class="nav"><a class="prv" href="0533-spring-integration-leader-election-locks.html"><span class="mini">← Previous</span>Spring Integration leader election & locks</a><a class="nxt" href="0535-spring-webflux-reactor-for-reactive-scalability.html"><span class="mini">Next →</span>Spring WebFlux / Reactor for reactive scalability</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t534";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

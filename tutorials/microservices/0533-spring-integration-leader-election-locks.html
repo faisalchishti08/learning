@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Spring Integration leader election & locks" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 16. Cross-Cutting Concerns & Patterns</div>
+  <div class="htitle">
+    <h1>"Spring Integration leader election & locks"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Spring Integration</strong> provides a <code>LockRegistry</code> abstraction for <a href="0508-distributed-locks.md">distributed locks</a> and a <code>LeaderInitiator</code>/<code>Candidate</code> mechanism for <a href="0509-leader-election.md">leader election</a>, both backed by pluggable stores (JDBC, Redis, ZooKeeper) so that multiple instances of a horizontally-scaled service can coordinate — ensuring only one instance holds a given lock at a time, or that exactly one instance is recognized as &quot;the leader&quot; for a particular role, without each instance having to hand-roll its own coordination protocol against the underlying store.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for Spring Integration&#x27;s locking and leader election support whenever multiple instances of a service need to coordinate around a shared resource or a singleton responsibility:</p>
+<ul><li><strong>Some work must only happen on one instance at a time, even though the service is horizontally scaled.</strong> A scheduled job that reconciles inventory counts, for instance, would corrupt data or waste resources if every instance in a five-instance fleet ran it simultaneously — exactly one instance should run it per scheduled interval.</li><li><strong><code>LockRegistry</code> provides a distributed mutual-exclusion primitive</strong>: <code>lockRegistry.obtain(&quot;reconciliation-job&quot;)</code> returns a <code>Lock</code> object whose <code>tryLock()</code>/<code>lock()</code>/<code>unlock()</code> behave like <code>java.util.concurrent.locks.Lock</code>, but the mutual exclusion is enforced across the whole fleet via the shared backing store, not just within one JVM.</li><li>**Leader election is the right tool when a *role*, not just a one-off task, needs exactly one holder at a time** — one instance recognized as &quot;the leader&quot; for as long as it stays healthy, with automatic failover electing a new leader if the current one crashes or becomes unreachable, rather than repeatedly acquiring and releasing a lock for each individual unit of work.</li><li><strong>Both mechanisms exist specifically because &quot;just run it on one hardcoded instance&quot; doesn&#x27;t survive that instance failing</strong>, and &quot;let every instance race to do it&quot; risks duplicate work or corrupted shared state — coordinated, store-backed election or locking gives you exactly-one-at-a-time behavior that automatically adapts as instances come and go.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a team of firefighters where, when the alarm sounds, all five available firefighters shouldn&#x27;t all pile into the same emergency (redundant, chaotic, and potentially damaging if they interfere with each other) — but exactly one should respond, decided fairly and quickly at the moment the alarm sounds, with a clear rule for what happens if that firefighter becomes unavailable mid-response (someone else takes over). A distributed lock is like grabbing the one truck key hanging on a shared hook — whoever grabs it first drives, everyone else waits their turn for the next alarm. Leader election is more like appointing one firefighter as &quot;shift captain&quot; for the whole shift — they hold that role continuously until they&#x27;re unavailable, at which point the team automatically recognizes a new captain, rather than re-deciding captaincy for every single call.</p>
+<p>Concretely:</p>
+<ol><li><strong><code>LockRegistry.obtain(lockKey)</code> returns a distributed <code>Lock</code></strong> — calling <code>tryLock()</code> attempts to acquire mutual exclusion across every instance connected to the same backing store; only one instance&#x27;s <code>tryLock()</code> succeeds at a time for a given <code>lockKey</code>, and others either block (<code>lock()</code>) or fail fast (<code>tryLock()</code> returning <code>false</code>).</li><li><strong>A <code>LeaderInitiator</code>, backed by a <code>Candidate</code> implementation, participates in a fleet-wide election</strong> — the backing store (ZooKeeper is a common choice, given its built-in support for ephemeral, session-tied nodes) determines exactly one participant is granted leadership at a time.</li><li><strong>Leadership is tied to the leader&#x27;s liveness</strong>, typically via a session or heartbeat mechanism in the backing store — if the leader instance crashes, hangs, or loses connectivity, the backing store detects this (often via a session timeout) and triggers a new election among the remaining candidates automatically.</li><li><strong>Application code reacts to leadership events</strong> (<code>onGranted</code>, <code>onRevoked</code> callbacks on the <code>Candidate</code>) rather than polling &quot;am I the leader right now&quot; — an instance that&#x27;s granted leadership starts doing the leader-only work; an instance that has leadership revoked (or never granted) stays idle for that responsibility until it might be granted leadership later.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A distributed lock grants exclusive, one-at-a-time access to a resource across instances; leader election grants exactly one instance a continuous leader role that fails over automatically if that instance becomes unavailable">
+  <text x="150" y="20" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="bold">Distributed lock</text>
+  <rect x="20" y="35" width="80" height="34" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="60" y="56" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">instance A: HOLDS lock</text>
+  <rect x="110" y="35" width="80" height="34" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="150" y="56" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">instance B: waits</text>
+  <rect x="200" y="35" width="80" height="34" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="240" y="56" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">instance C: waits</text>
+  <text x="150" y="90" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">A releases -&gt; one of B/C acquires it next, per task</text>
+
+  <text x="510" y="20" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="bold">Leader election</text>
+  <rect x="420" y="35" width="80" height="34" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="460" y="56" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">instance A: LEADER</text>
+  <rect x="510" y="35" width="60" height="34" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="540" y="56" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">B: standby</text>
+  <rect x="580" y="35" width="60" height="34" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="610" y="56" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">C: standby</text>
+  <text x="530" y="90" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">A crashes -&gt; automatic re-election, B or C becomes leader</text>
+</svg>
+<p>A lock grants exclusive access per task; leader election grants a continuous role with automatic failover if the leader disappears.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a scheduled reconciliation job that must run on exactly one instance. We start with a plain Java model of the race condition without coordination, extend it to a simple lock-based fix, then handle the real Spring Integration <code>LockRegistry</code>/leader-election shape for both a one-off task and a continuous leader role.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UncoordinatedRace.java -- WITHOUT coordination, every instance
+// runs the &quot;scheduled job&quot; independently -- duplicated, wasted, and
+// potentially conflicting work.
+public class UncoordinatedRace {
+    static void runReconciliationJob(String instanceName) {
+        System.out.println(&quot;[&quot; + instanceName + &quot;] running reconciliation job (nobody coordinated this!)&quot;);
+    }
+
+    public static void main(String[] args) {
+        // three instances, all triggered by the SAME scheduled interval, with no coordination
+        runReconciliationJob(&quot;instance-A&quot;);
+        runReconciliationJob(&quot;instance-B&quot;);
+        runReconciliationJob(&quot;instance-C&quot;);
+        System.out.println(&quot;Problem: reconciliation ran 3 TIMES for what should have been ONE run per interval.&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java UncoordinatedRace.java</code></p>
+<p>Each &quot;instance&quot; independently runs the reconciliation job with no awareness of the others — in a real fleet, this means the same reconciliation logic executes redundantly on every instance, at best wasting resources and at worst corrupting shared state if the job isn&#x27;t safely idempotent when run concurrently by multiple instances at once.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SimpleLockCoordination.java -- a MINIMAL lock-based fix: only
+// the instance that successfully acquires the shared lock runs the job;
+// the others correctly back off.
+import java.util.concurrent.atomic.AtomicBoolean;
+
+public class SimpleLockCoordination {
+    // simulates a DISTRIBUTED lock shared across instances (a real one would be backed by Redis/JDBC/ZooKeeper)
+    static AtomicBoolean sharedLockHeld = new AtomicBoolean(false);
+
+    static boolean tryRunJob(String instanceName) {
+        if (sharedLockHeld.compareAndSet(false, true)) { // atomic acquire: only ONE instance can win this race
+            try {
+                System.out.println(&quot;[&quot; + instanceName + &quot;] acquired lock -- running reconciliation job&quot;);
+                return true;
+            } finally {
+                sharedLockHeld.set(false); // release for the NEXT scheduled interval
+            }
+        } else {
+            System.out.println(&quot;[&quot; + instanceName + &quot;] lock already held -- backing off, not running job&quot;);
+            return false;
+        }
+    }
+
+    public static void main(String[] args) {
+        tryRunJob(&quot;instance-A&quot;); // wins the race, runs, releases
+        // simulate B and C attempting AFTER A already released -- in reality this race happens concurrently
+        sharedLockHeld.set(true); // simulate A currently holding the lock mid-job
+        tryRunJob(&quot;instance-B&quot;); // correctly backs off
+        tryRunJob(&quot;instance-C&quot;); // correctly backs off
+    }
+}</code></pre>
+<p>How to run: <code>java SimpleLockCoordination.java</code></p>
+<p><code>compareAndSet(false, true)</code> models the atomic, all-or-nothing acquisition a distributed lock provides — only one caller can flip the flag from <code>false</code> to <code>true</code> at a time. In the simulated concurrent scenario, <code>instance-B</code> and <code>instance-C</code> both correctly see the lock already held and back off, rather than duplicating the work <code>instance-A</code> is already doing.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: SpringIntegrationRealShape.java -- the REAL Spring Integration
+// shapes: LockRegistry for a one-off scheduled task, and a leader-election
+// Candidate for a CONTINUOUS leader role with automatic failover.
+import org.springframework.integration.support.locks.LockRegistry;
+import org.springframework.integration.leader.Candidate;
+import org.springframework.integration.leader.Context;
+import org.springframework.integration.leader.event.OnGrantedEvent;
+import org.springframework.integration.leader.event.OnRevokedEvent;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.util.concurrent.locks.Lock;
+
+public class SpringIntegrationRealShape {
+
+    // ONE-OFF TASK, coordinated per scheduled run via a distributed lock
+    @Component
+    static class ReconciliationJob {
+        private final LockRegistry lockRegistry; // backed by JDBC, Redis, or ZooKeeper depending on configuration
+        ReconciliationJob(LockRegistry lockRegistry) { this.lockRegistry = lockRegistry; }
+
+        @Scheduled(fixedRate = 60000) // every instance&#x27;s scheduler fires this, but only one should actually run the job
+        public void reconcile() {
+            Lock lock = lockRegistry.obtain(&quot;reconciliation-job&quot;);
+            if (lock.tryLock()) {
+                try {
+                    System.out.println(&quot;Acquired lock -- running reconciliation for this interval&quot;);
+                } finally {
+                    lock.unlock(); // release immediately after this run so the NEXT interval can be acquired by anyone
+                }
+            } else {
+                System.out.println(&quot;Another instance holds the lock this interval -- skipping&quot;);
+            }
+        }
+    }
+
+    // CONTINUOUS ROLE, coordinated via leader election with automatic failover
+    @Component
+    static class PollerLeaderCandidate implements Candidate {
+        private volatile boolean isLeader = false;
+
+        @Override
+        public void onGranted(Context context) {
+            isLeader = true;
+            System.out.println(&quot;Granted leadership -- this instance now runs the continuous polling loop&quot;);
+        }
+
+        @Override
+        public void onRevoked(Context context) {
+            isLeader = false;
+            System.out.println(&quot;Leadership revoked -- this instance stops the polling loop (a new leader will be elected)&quot;);
+        }
+
+        @Override
+        public String getRole() { return &quot;message-poller&quot;; }
+
+        public boolean isLeader() { return isLeader; }
+    }
+}</code></pre>
+<p>How to run: requires <code>spring-integration-core</code> (for <code>LockRegistry</code>) plus a store-specific module such as <code>spring-integration-jdbc</code> or <code>spring-integration-redis</code> for the lock backend, and <code>spring-integration-zookeeper</code> for leader election, configured against a real backing store; run multiple instances of the same Spring Boot application pointed at the same store to observe only one instance&#x27;s <code>reconcile()</code> logging &quot;Acquired lock&quot; per interval, and only one <code>PollerLeaderCandidate</code> logging &quot;Granted leadership&quot; at a time.</p>
+<p><code>ReconciliationJob.reconcile()</code> runs on *every* instance&#x27;s own scheduler (that part is not coordinated — each JVM has its own <code>@Scheduled</code> trigger), but <code>lockRegistry.obtain(&quot;reconciliation-job&quot;).tryLock()</code> ensures only the instance that wins the shared-store-backed race actually executes the reconciliation body; every other instance&#x27;s <code>tryLock()</code> returns <code>false</code> and skips. <code>PollerLeaderCandidate</code> is different in kind: <code>onGranted</code>/<code>onRevoked</code> are called by Spring Integration&#x27;s leader-election machinery in response to the backing store&#x27;s election outcome, not per scheduled interval — this instance stays the leader continuously until leadership is explicitly revoked (typically because it crashed, hung, or lost connectivity to the store), at which point the store automatically elects a new leader among the remaining candidates.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace what happens across a three-instance fleet (A, B, C) running <code>ReconciliationJob</code>, all sharing the same <code>LockRegistry</code> backing store, when their <code>@Scheduled</code> triggers fire at approximately the same moment:</p>
+<ol><li><strong>All three instances&#x27; schedulers fire <code>reconcile()</code> at roughly the same time</strong>, since each instance runs its own independent <code>@Scheduled(fixedRate = 60000)</code> timer with no coordination between the timers themselves.</li><li><strong>Each instance calls <code>lockRegistry.obtain(&quot;reconciliation-job&quot;).tryLock()</code></strong> — this call reaches out to the shared backing store (say, a database row or a ZooKeeper znode representing the lock <code>&quot;reconciliation-job&quot;</code>). Only one of these three concurrent attempts can atomically win the underlying store&#x27;s compare-and-set (or equivalent) operation.</li><li><strong>Say Instance A&#x27;s <code>tryLock()</code> succeeds first.</strong> It proceeds into the <code>try</code> block, prints &quot;Acquired lock -- running reconciliation,&quot; and performs the reconciliation work.</li><li><strong>Instances B and C&#x27;s <code>tryLock()</code> calls both return <code>false</code></strong>, since the store correctly reports the lock is already held by A. Both print &quot;Another instance holds the lock this interval -- skipping&quot; and return immediately, without running any reconciliation logic.</li><li><strong>Instance A finishes its reconciliation work and calls <code>lock.unlock()</code></strong> in the <code>finally</code> block, releasing the lock back to the shared store.</li><li>**On the *next* scheduled interval (60 seconds later), the race repeats** — this time, any of A, B, or C could win, since the lock was fully released; there&#x27;s no guarantee the same instance wins every interval, only that exactly one instance wins each interval.</li></ol>
+<p>Now contrast with <code>PollerLeaderCandidate</code>: leadership, once granted (say, to Instance A), is *not* re-contested every 60 seconds — A remains the leader continuously, running its polling loop indefinitely, until something changes its liveness status in the backing store (a crash, a network partition, a graceful shutdown). Only at that point does the store detect A&#x27;s absence (typically via an expired session or lost ephemeral connection) and trigger a new election, at which point one of B or C receives <code>onGranted</code> and takes over the role — a fundamentally different coordination shape from the per-interval lock race above, suited to &quot;who is the leader right now&quot; rather than &quot;who gets to run this one task this time.&quot;</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a <code>tryLock()</code> that succeeds but whose holder then crashes *before* calling <code>unlock()</code> can leave the lock stuck held forever, unless the backing store supports lock expiration or lease timeouts — always verify the chosen <code>LockRegistry</code> backend (JDBC-based locks in particular) has some mechanism to release an abandoned lock, or a single crashed instance can permanently block every future scheduled run.</blockquote>
+<ul><li>Use a distributed lock (<code>LockRegistry</code>) for coordinating one-off or per-interval tasks that must run on exactly one instance at a time, re-contested fresh each time.</li><li>Use leader election (<code>Candidate</code>/<code>LeaderInitiator</code>) for a continuous role that one instance holds until it becomes unavailable, with automatic failover to a healthy remaining instance — not for tasks that should be re-decided on every run.</li><li>Both mechanisms depend entirely on the backing store&#x27;s ability to detect a holder&#x27;s failure (via lease expiration, session timeout, or heartbeat) — the coordination is only as reliable as that failure-detection mechanism.</li><li>Application code reacts to leadership events (<code>onGranted</code>/<code>onRevoked</code>) rather than polling &quot;am I the leader&quot; in a loop — structuring leader-dependent logic around these callbacks keeps the transition (both gaining and losing leadership) explicit and correctly scoped.</li></ul>
+  <div class="nav"><a class="prv" href="0532-spring-session-for-externalized-session-state.html"><span class="mini">← Previous</span>Spring Session for externalized session state</a><a class="nxt" href="0534-spring-cloud-cluster-zookeeper-redis-locks.html"><span class="mini">Next →</span>Spring Cloud Cluster / ZooKeeper / Redis locks</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t533";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
