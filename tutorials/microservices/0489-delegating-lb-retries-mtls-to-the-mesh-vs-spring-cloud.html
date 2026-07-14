@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Delegating LB/retries/mTLS to the mesh vs Spring Cloud" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 15. Service Mesh & Infrastructure</div>
+  <div class="htitle">
+    <h1>"Delegating LB/retries/mTLS to the mesh vs Spring Cloud"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This is the concrete migration decision that follows from <a href="0487-where-spring-cloud-ends-and-the-mesh-begins.md">knowing where Spring Cloud ends and the mesh begins</a>: for each of load balancing, retries, and mTLS, actually <strong>turning off</strong> the Spring Cloud mechanism and <strong>delegating</strong> that responsibility to the mesh, rather than leaving both active. This is a deliberate, auditable migration with a clear before-and-after, not a passive architectural observation.</p>
+<h2>2. Why &amp; when</h2>
+<p>You perform this migration explicitly, service by service, once a mesh is confirmed running correctly in your cluster:</p>
+<ul><li><strong>Leaving both layers active is the default if nobody acts, and it&#x27;s the worst option.</strong> Spring Cloud&#x27;s client-side load balancer, retry logic, and TLS configuration don&#x27;t disable themselves just because a mesh sidecar was injected — someone has to deliberately turn them off, or they keep running, duplicated and uncoordinated, indefinitely.</li><li><strong>Doing this migration one concern at a time, one service at a time, keeps it safe and observable.</strong> Disabling client-side load balancing, watching for issues, then disabling retries, then mTLS — rather than flipping everything at once — makes it far easier to attribute any regression to a specific, recent change.</li><li><strong>The order matters: verify the mesh is actually providing equivalent behavior before removing the Spring Cloud equivalent.</strong> Disabling application-level mTLS before confirming the mesh&#x27;s mTLS is actually enforced would leave a window of *unencrypted* traffic — the mesh capability must be proven first, in each case.</li><li><strong>You do this as a deliberate rollout across your service fleet</strong>, typically starting with a low-risk service to validate the approach before applying it broadly — not as a single big-bang change across every service simultaneously.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of decommissioning a building&#x27;s old, individually-owned generators once a reliable central power grid connection is confirmed working — you don&#x27;t rip out every generator the instant the grid cable is plugged in; you verify the grid supplies power reliably first, then decommission each generator deliberately, one at a time, watching for any issue at each step, keeping a way to fall back if something goes wrong.</p>
+<p>Concretely, the migration for each concern follows the same shape:</p>
+<ol><li><strong>Confirm the mesh capability is actually active and correctly configured</strong> for this specific service — e.g., verify mTLS is genuinely being enforced on this service&#x27;s traffic before touching anything in the application.</li><li><strong>Disable the corresponding Spring Cloud mechanism</strong> — remove or disable the client-side load balancer configuration, the retry annotations for baseline (non-business-aware) retries, or the application-level TLS configuration for internal calls.</li><li><strong>Verify behavior is unchanged (or improved) from the outside</strong> — the service should behave identically to callers, just with the underlying mechanism now provided by the mesh instead of duplicated application code.</li><li><strong>Repeat for the next concern, and then the next service</strong>, building confidence incrementally rather than making one large, hard-to-diagnose change.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A migration sequence: verify mesh capability, disable the Spring Cloud equivalent, verify behavior unchanged, repeat for the next concern">
+  <rect x="20" y="70" width="140" height="55" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="90" y="102" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">1. verify mesh capability active</text>
+
+  <rect x="190" y="70" width="140" height="55" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="260" y="102" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">2. disable Spring Cloud equivalent</text>
+
+  <rect x="360" y="70" width="140" height="55" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="430" y="102" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">3. verify behavior unchanged</text>
+
+  <rect x="530" y="70" width="110" height="55" rx="8" fill="#1c2430" stroke="#8b949e" stroke-dasharray="3,2"/>
+  <text x="585" y="102" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">repeat, next concern</text>
+
+  <line x1="160" y1="97" x2="190" y2="97" stroke="#8b949e" marker-end="url(#a1)"/>
+  <line x1="330" y1="97" x2="360" y2="97" stroke="#8b949e" marker-end="url(#a1)"/>
+  <line x1="500" y1="97" x2="530" y2="97" stroke="#8b949e" marker-end="url(#a1)"/>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Each concern migrates through the same sequence: verify, disable, verify again — one concern at a time.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a migration controller stepping a service through disabling three Spring Cloud mechanisms one at a time, verifying the mesh equivalent at each step. We start with a basic single-concern migration, extend it to all three concerns in the correct order, then handle the hard case: a verification step failing partway through, which must halt the migration for that concern rather than proceeding to disable something the mesh isn&#x27;t actually ready to replace.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: MigrateSingleConcern.java -- models migrating ONE concern
+// (client-side load balancing) from Spring Cloud to the mesh: verify the
+// mesh does it, THEN disable the Spring Cloud equivalent.
+public class MigrateSingleConcern {
+    static boolean meshLoadBalancingActive = true; // confirmed via mesh configuration inspection
+    static boolean springCloudLoadBalancerEnabled = true; // the OLD mechanism, still on
+
+    static boolean verifyMeshCapability(String capability, boolean active) {
+        System.out.println(&quot;[migration] verifying mesh provides: &quot; + capability + &quot; -- &quot; + (active ? &quot;CONFIRMED&quot; : &quot;NOT ACTIVE&quot;));
+        return active;
+    }
+
+    static void disableSpringCloudMechanism(String mechanism) {
+        springCloudLoadBalancerEnabled = false;
+        System.out.println(&quot;[migration] disabled Spring Cloud mechanism: &quot; + mechanism);
+    }
+
+    public static void main(String[] args) {
+        if (verifyMeshCapability(&quot;client-side load balancing&quot;, meshLoadBalancingActive)) {
+            disableSpringCloudMechanism(&quot;Spring Cloud LoadBalancer&quot;);
+        }
+        System.out.println(&quot;[state] springCloudLoadBalancerEnabled = &quot; + springCloudLoadBalancerEnabled);
+    }
+}</code></pre>
+<p>How to run: <code>java MigrateSingleConcern.java</code></p>
+<p><code>main</code> only calls <code>disableSpringCloudMechanism</code> *inside* the <code>if</code> guarding on <code>verifyMeshCapability</code>&#x27;s result — the Spring Cloud mechanism is never disabled unless the mesh&#x27;s equivalent capability was confirmed active first, enforcing the correct verify-then-disable order for this single concern.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: MigrateAllThreeConcerns.java -- the SAME migration pattern, now
+// EXTENDED across ALL THREE concerns (load balancing, retries, mTLS),
+// each migrated independently in the SAME verify-then-disable order.
+import java.util.*;
+
+public class MigrateAllThreeConcerns {
+    static Map&lt;String, Boolean&gt; meshCapabilities = Map.of(
+        &quot;load-balancing&quot;, true,
+        &quot;retries&quot;, true,
+        &quot;mtls&quot;, true
+    );
+
+    static Map&lt;String, Boolean&gt; springCloudMechanisms = new LinkedHashMap&lt;&gt;(Map.of(
+        &quot;load-balancing&quot;, true,
+        &quot;retries&quot;, true,
+        &quot;mtls&quot;, true
+    ));
+
+    static void migrateConcern(String concern) {
+        boolean meshReady = meshCapabilities.getOrDefault(concern, false);
+        System.out.println(&quot;[migration] &quot; + concern + &quot;: mesh capability active = &quot; + meshReady);
+        if (meshReady) {
+            springCloudMechanisms.put(concern, false);
+            System.out.println(&quot;[migration] &quot; + concern + &quot;: Spring Cloud mechanism DISABLED&quot;);
+        } else {
+            System.out.println(&quot;[migration] &quot; + concern + &quot;: SKIPPED, mesh not ready yet -- Spring Cloud mechanism stays ON&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        for (String concern : List.of(&quot;load-balancing&quot;, &quot;retries&quot;, &quot;mtls&quot;)) {
+            migrateConcern(concern);
+        }
+        System.out.println();
+        System.out.println(&quot;[final state] Spring Cloud mechanisms still enabled: &quot; + springCloudMechanisms);
+    }
+}</code></pre>
+<p>How to run: <code>java MigrateAllThreeConcerns.java</code></p>
+<p><code>migrateConcern</code> is called once per concern, independently, using the same verify-then-disable logic each time — <code>springCloudMechanisms</code> tracks each concern&#x27;s own on/off state separately, so this models three genuinely independent migration decisions rather than one all-or-nothing switch.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: MigrateWithVerificationFailure.java -- the SAME per-concern
+// migration, now handling the PRODUCTION-FLAVORED hard case: ONE
+// concern&#x27;s mesh capability is NOT actually confirmed active (mTLS isn&#x27;t
+// really enforced yet, perhaps still being rolled out). That concern&#x27;s
+// Spring Cloud mechanism MUST stay enabled -- disabling it anyway would
+// leave a genuine security gap (unencrypted traffic). The OTHER two
+// concerns, which ARE verified, must still migrate normally and
+// independently.
+import java.util.*;
+
+public class MigrateWithVerificationFailure {
+    static Map&lt;String, Boolean&gt; meshCapabilities = Map.of(
+        &quot;load-balancing&quot;, true,
+        &quot;retries&quot;, true,
+        &quot;mtls&quot;, false // NOT actually confirmed active yet -- still rolling out
+    );
+
+    static Map&lt;String, Boolean&gt; springCloudMechanisms = new LinkedHashMap&lt;&gt;();
+    static List&lt;String&gt; migrationWarnings = new ArrayList&lt;&gt;();
+
+    static void migrateConcern(String concern) {
+        springCloudMechanisms.putIfAbsent(concern, true); // starts enabled
+        boolean meshReady = meshCapabilities.getOrDefault(concern, false);
+        System.out.println(&quot;[migration] &quot; + concern + &quot;: mesh capability active = &quot; + meshReady);
+        if (meshReady) {
+            springCloudMechanisms.put(concern, false);
+            System.out.println(&quot;[migration] &quot; + concern + &quot;: Spring Cloud mechanism DISABLED, delegated to mesh&quot;);
+        } else {
+            String warning = concern + &quot;: mesh NOT confirmed ready -- Spring Cloud mechanism REMAINS ENABLED to avoid a coverage gap&quot;;
+            migrationWarnings.add(warning);
+            System.out.println(&quot;[migration] WARNING: &quot; + warning);
+        }
+    }
+
+    public static void main(String[] args) {
+        for (String concern : List.of(&quot;load-balancing&quot;, &quot;retries&quot;, &quot;mtls&quot;)) {
+            migrateConcern(concern);
+        }
+
+        System.out.println();
+        System.out.println(&quot;[final state] Spring Cloud mechanism status: &quot; + springCloudMechanisms);
+        System.out.println(&quot;[migration] outstanding warnings requiring follow-up: &quot; + migrationWarnings);
+    }
+}</code></pre>
+<p>How to run: <code>java MigrateWithVerificationFailure.java</code></p>
+<p><code>meshCapabilities</code> deliberately sets <code>&quot;mtls&quot;</code> to <code>false</code>, modeling a mesh where mTLS enforcement isn&#x27;t actually confirmed yet. When <code>migrateConcern(&quot;mtls&quot;)</code> runs, <code>meshReady</code> evaluates to <code>false</code>, so the <code>else</code> branch runs instead of disabling anything — <code>springCloudMechanisms.get(&quot;mtls&quot;)</code> stays <code>true</code> (still enabled), and a specific warning is recorded in <code>migrationWarnings</code> naming exactly which concern needs follow-up, while <code>&quot;load-balancing&quot;</code> and <code>&quot;retries&quot;</code>, both confirmed ready, migrate normally and independently in the same run.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>MigrateWithVerificationFailure.main</code> in order. <strong>First</strong>, the loop&#x27;s first iteration calls <code>migrateConcern(&quot;load-balancing&quot;)</code>. <code>springCloudMechanisms.putIfAbsent(...)</code> initializes it to <code>true</code>, and <code>meshReady</code> reads <code>true</code> from <code>meshCapabilities</code>. The <code>if (meshReady)</code> branch runs: <code>springCloudMechanisms.put(&quot;load-balancing&quot;, false)</code> disables it, and the confirmation prints.</p>
+<p><strong>Next</strong>, the second iteration calls <code>migrateConcern(&quot;retries&quot;)</code>, behaving identically — <code>meshReady</code> is <code>true</code>, so it&#x27;s disabled and delegated to the mesh, exactly like <code>load-balancing</code>.</p>
+<p><strong>Then</strong>, the third iteration calls <code>migrateConcern(&quot;mtls&quot;)</code>. This time <code>meshCapabilities.getOrDefault(&quot;mtls&quot;, false)</code> returns <code>false</code>, so <code>meshReady</code> is <code>false</code> — the <code>else</code> branch runs instead: a specific warning string is constructed, appended to <code>migrationWarnings</code>, and printed, while <code>springCloudMechanisms.put(&quot;mtls&quot;, ...)</code> is never called at all in this branch, meaning it retains the <code>true</code> value <code>putIfAbsent</code> set at the start of this same method call.</p>
+<p><strong>After that</strong>, the loop ends having processed all three concerns independently, with two migrated and one deliberately left in place.</p>
+<p><strong>Finally</strong>, <code>main</code> prints <code>springCloudMechanisms</code>, showing <code>load-balancing</code> and <code>retries</code> both <code>false</code> (delegated to the mesh) while <code>mtls</code> remains <code>true</code> (still Spring Cloud&#x27;s responsibility) — and prints <code>migrationWarnings</code>, containing exactly one entry that clearly flags <code>mtls</code> as needing follow-up before that concern can safely migrate, ensuring the security-sensitive gap doesn&#x27;t get silently missed.</p>
+<pre><code>[migration] load-balancing: mesh capability active = true
+[migration] load-balancing: Spring Cloud mechanism DISABLED, delegated to mesh
+[migration] retries: mesh capability active = true
+[migration] retries: Spring Cloud mechanism DISABLED, delegated to mesh
+[migration] mtls: mesh capability active = false
+[migration] WARNING: mtls: mesh NOT confirmed ready -- Spring Cloud mechanism REMAINS ENABLED to avoid a coverage gap
+
+[final state] Spring Cloud mechanism status: {load-balancing=false, retries=false, mtls=true}
+[migration] outstanding warnings requiring follow-up: [mtls: mesh NOT confirmed ready -- Spring Cloud mechanism REMAINS ENABLED to avoid a coverage gap]</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Disabling an application-level security mechanism (like mTLS configuration) based on an *assumption* that the mesh is already handling it, without explicit verification, can create a genuine security gap — a brief or ongoing window of unencrypted or unauthenticated traffic that&#x27;s easy to miss because everything still &quot;works&quot; from a functional standpoint.</blockquote>
+<ul><li>Migrate one concern at a time and verify the mesh&#x27;s capability is genuinely active *before* disabling the Spring Cloud equivalent — never the reverse order, and never both at once without individual verification.</li><li>Security-sensitive concerns (mTLS) deserve the most conservative migration approach — when in doubt, leave the application-level mechanism active a little longer than strictly necessary rather than risk a coverage gap, exactly as the third concern&#x27;s handling demonstrates.</li><li>Track outstanding migration warnings explicitly, as <code>migrationWarnings</code> does — a migration that silently leaves some concerns unfinished, with no visible record of what&#x27;s left, is easy to lose track of over time.</li><li>This process pairs directly with <a href="0487-where-spring-cloud-ends-and-the-mesh-begins.md">where Spring Cloud ends and the mesh begins</a> — that topic identifies *what* should move; this one is the concrete, careful *how* of actually making the move safely.</li></ul>
+  <div class="nav"><a class="prv" href="0488-running-spring-boot-services-inside-a-mesh.html"><span class="mini">← Previous</span>Running Spring Boot services inside a mesh</a><a class="nxt" href="0490-spring-cloud-kubernetes-alongside-a-mesh.html"><span class="mini">Next →</span>Spring Cloud Kubernetes alongside a mesh</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t489";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
