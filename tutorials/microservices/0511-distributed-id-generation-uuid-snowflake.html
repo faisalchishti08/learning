@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Distributed ID generation (UUID, Snowflake)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 16. Cross-Cutting Concerns & Patterns</div>
+  <div class="htitle">
+    <h1>"Distributed ID generation (UUID, Snowflake)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Distributed ID generation</strong> is how services generate unique identifiers without a single, centralized counter that would become a bottleneck and a single point of failure across many instances. <strong>UUIDs</strong> (typically version 4, randomly generated) give statistically-unique IDs with zero coordination between generators, at the cost of being large, non-sequential, and poor for database index locality. <strong>Snowflake-style IDs</strong> (popularized by Twitter) encode a timestamp, a machine/worker identifier, and a sequence number into a single 64-bit integer, giving roughly time-sortable, compact IDs while still requiring no central coordination between generators.</p>
+<h2>2. Why &amp; when</h2>
+<p>You need a distributed ID generation strategy the moment more than one instance needs to generate IDs independently, because a single auto-incrementing counter doesn&#x27;t scale across independent processes:</p>
+<ul><li><strong>A database&#x27;s own auto-increment column is a natural single point of coordination</strong>, which is exactly the kind of centralized bottleneck and single point of failure that horizontally-scaled, independently-deployable services try to avoid — every instance would need to coordinate through that one database sequence.</li><li><strong>UUIDs need zero coordination and are extremely simple to generate anywhere</strong>, at the cost of being 128 bits (versus a 64-bit Snowflake ID or a much smaller integer), being non-sequential (which can hurt database index performance, since new rows insert at random positions rather than appending), and revealing nothing about creation order from the ID alone.</li><li><strong>Snowflake-style IDs are compact and roughly sortable by creation time</strong>, which is genuinely useful for many real systems (e.g., naturally ordering records by ID without a separate timestamp column, better database index locality for sequential inserts), at the cost of needing each generator to have a unique machine/worker ID assigned to it and needing careful handling of clock behavior.</li><li><strong>You choose UUIDs for simplicity when ID size and sort order don&#x27;t matter</strong>, and Snowflake-style IDs when compactness and rough time-ordering are genuinely valuable — many systems use UUIDs by default and only reach for Snowflake-style IDs when a specific, measured need justifies the added complexity of assigning and managing worker IDs.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of UUIDs like everyone in a huge crowd independently rolling an enormous number of dice and writing down the result — the chance of two people getting the exact same combination is astronomically small, and nobody needs to coordinate with anyone else to do this. Snowflake-style IDs are more like each person having their own pre-assigned, unique badge number (the worker ID) and simply appending the current time and a running count to it — still requiring zero live coordination between people, but producing a more structured, compact, and naturally time-ordered result, precisely because each person&#x27;s slice of the ID space is disjoint from everyone else&#x27;s by construction.</p>
+<p>Concretely:</p>
+<ol><li><strong>UUID v4</strong>: 128 bits, the vast majority randomly generated — the probability of two independently-generated UUIDs colliding is so low it&#x27;s treated as effectively zero for practical purposes, requiring no coordination or configuration between generators at all.</li><li><strong>Snowflake structure</strong>: typically 41 bits for a millisecond timestamp (relative to a custom epoch), 10 bits for a machine/worker ID (supporting up to 1024 distinct generators), and 12 bits for a per-millisecond sequence number (supporting up to 4096 IDs per generator per millisecond) — all packed into a single 64-bit long.</li><li><strong>Uniqueness in Snowflake comes from the combination</strong>: two different generators (different worker IDs) can never collide, since that portion of the ID differs; the same generator, within the same millisecond, uses its sequence counter to stay unique.</li><li><strong>Clock behavior matters for Snowflake IDs</strong> — if a generator&#x27;s system clock moves backward (an NTP correction), naively continuing to generate IDs could produce a timestamp portion that&#x27;s not properly increasing, requiring explicit handling (waiting, or erroring) to avoid violating the ID&#x27;s ordering guarantee.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A Snowflake ID packs a timestamp, a worker ID, and a sequence number into 64 bits; different worker IDs make collisions across generators impossible by construction">
+  <rect x="20" y="60" width="300" height="60" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="170" y="85" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">41 bits: timestamp (ms)</text>
+  <text x="170" y="105" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">roughly time-sortable</text>
+
+  <rect x="330" y="60" width="150" height="60" rx="6" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="405" y="85" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">10 bits: worker ID</text>
+  <text x="405" y="105" fill="#f0883e" font-size="8" text-anchor="middle" font-family="sans-serif">unique per generator</text>
+
+  <rect x="490" y="60" width="150" height="60" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="565" y="85" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">12 bits: sequence</text>
+  <text x="565" y="105" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">per-ms counter</text>
+</svg>
+<p>Three fields packed into 64 bits, each contributing to uniqueness without any live coordination between generators.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: generating IDs across multiple simulated worker instances. We start with a basic UUID generation baseline, extend it to a Snowflake-style ID generator combining timestamp, worker ID, and sequence, then handle the hard case: many rapid IDs generated within the same millisecond by the same worker, which must stay unique via the sequence counter, including correctly rolling over into the next millisecond if the sequence space is exhausted.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UuidGenerationBasic.java -- models the SIMPLEST distributed ID
+// strategy: UUIDs, generated with ZERO coordination between callers.
+import java.util.*;
+
+public class UuidGenerationBasic {
+    static String generateId() {
+        return UUID.randomUUID().toString();
+    }
+
+    public static void main(String[] args) {
+        Set&lt;String&gt; generated = new HashSet&lt;&gt;();
+        for (int i = 0; i &lt; 5; i++) {
+            String id = generateId();
+            generated.add(id);
+            System.out.println(&quot;[generated] &quot; + id);
+        }
+        System.out.println(&quot;[result] &quot; + generated.size() + &quot; unique IDs out of 5 generated, zero coordination needed&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java UuidGenerationBasic.java</code></p>
+<p><code>UUID.randomUUID()</code> needs no configuration, no assigned identifier, and no coordination with any other generator anywhere — every call independently produces a statistically-unique 128-bit value, which is UUID generation&#x27;s core simplicity advantage.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SnowflakeIdBasic.java -- the SAME uniqueness goal, now via a
+// SNOWFLAKE-style generator: packing a TIMESTAMP, a WORKER ID, and a
+// SEQUENCE number into one compact, roughly TIME-SORTABLE 64-bit long.
+public class SnowflakeIdBasic {
+    static final long CUSTOM_EPOCH = 1704067200000L; // 2024-01-01, an arbitrary reference point
+    static final int WORKER_ID_BITS = 10;
+    static final int SEQUENCE_BITS = 12;
+
+    static class SnowflakeGenerator {
+        long workerId;
+        long lastTimestamp = -1;
+        long sequence = 0;
+
+        SnowflakeGenerator(long workerId) { this.workerId = workerId; }
+
+        synchronized long nextId() {
+            long timestamp = System.currentTimeMillis();
+            if (timestamp == lastTimestamp) {
+                sequence = (sequence + 1) &amp; ((1 &lt;&lt; SEQUENCE_BITS) - 1); // wraps at 4096
+            } else {
+                sequence = 0;
+            }
+            lastTimestamp = timestamp;
+
+            long timestampPart = (timestamp - CUSTOM_EPOCH) &lt;&lt; (WORKER_ID_BITS + SEQUENCE_BITS);
+            long workerPart = workerId &lt;&lt; SEQUENCE_BITS;
+            return timestampPart | workerPart | sequence;
+        }
+    }
+
+    public static void main(String[] args) {
+        SnowflakeGenerator worker1 = new SnowflakeGenerator(1);
+        SnowflakeGenerator worker7 = new SnowflakeGenerator(7);
+
+        System.out.println(&quot;[worker-1] id: &quot; + worker1.nextId());
+        System.out.println(&quot;[worker-7] id: &quot; + worker7.nextId());
+        System.out.println(&quot;[worker-1] id: &quot; + worker1.nextId() + &quot; (later, larger -- roughly time-sortable)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java SnowflakeIdBasic.java</code></p>
+<p><code>nextId</code> combines the current timestamp (shifted left to make room for the lower bits), the generator&#x27;s own <code>workerId</code> (shifted left past the sequence bits), and a per-millisecond <code>sequence</code> counter into one <code>long</code> via bitwise OR — two generators with different <code>workerId</code> values (<code>1</code> and <code>7</code>) can never produce a colliding ID, since that bit range differs between them by construction, with no live coordination required between the two generators at all.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: SnowflakeSequenceRollover.java -- the SAME generator, now
+// handling the PRODUCTION-FLAVORED hard case: MANY IDs requested RAPIDLY
+// within the SAME millisecond by the SAME worker, exhausting the
+// 12-bit sequence space (4096 values). The generator must correctly
+// detect this and ROLL OVER to the next millisecond, rather than wrapping
+// the sequence back to zero and silently producing a DUPLICATE ID.
+public class SnowflakeSequenceRollover {
+    static final long CUSTOM_EPOCH = 1704067200000L;
+    static final int WORKER_ID_BITS = 10;
+    static final int SEQUENCE_BITS = 12;
+    static final long MAX_SEQUENCE = (1L &lt;&lt; SEQUENCE_BITS) - 1; // 4095
+
+    static class SnowflakeGenerator {
+        long workerId;
+        long lastTimestamp = -1;
+        long sequence = 0;
+
+        SnowflakeGenerator(long workerId) { this.workerId = workerId; }
+
+        synchronized long nextId() {
+            long timestamp = System.currentTimeMillis();
+
+            if (timestamp == lastTimestamp) {
+                sequence = (sequence + 1) &amp; MAX_SEQUENCE;
+                if (sequence == 0) {
+                    // Sequence space EXHAUSTED for this millisecond -- must wait for the NEXT one,
+                    // rather than silently wrapping and risking a duplicate ID.
+                    System.out.println(&quot;[generator] sequence space exhausted for timestamp &quot; + timestamp + &quot; -- WAITING for next millisecond&quot;);
+                    while (timestamp &lt;= lastTimestamp) {
+                        timestamp = System.currentTimeMillis();
+                    }
+                    System.out.println(&quot;[generator] advanced to new timestamp &quot; + timestamp);
+                }
+            } else {
+                sequence = 0;
+            }
+            lastTimestamp = timestamp;
+
+            long timestampPart = (timestamp - CUSTOM_EPOCH) &lt;&lt; (WORKER_ID_BITS + SEQUENCE_BITS);
+            long workerPart = workerId &lt;&lt; SEQUENCE_BITS;
+            return timestampPart | workerPart | sequence;
+        }
+    }
+
+    public static void main(String[] args) {
+        SnowflakeGenerator generator = new SnowflakeGenerator(3);
+        java.util.Set&lt;Long&gt; generatedIds = new java.util.HashSet&lt;&gt;();
+
+        // Simulate generating more IDs than the sequence space allows within one millisecond
+        // by forcibly setting lastTimestamp and driving sequence near its max.
+        long now = System.currentTimeMillis();
+        generator.lastTimestamp = now;
+        generator.sequence = MAX_SEQUENCE - 2; // start just 2 below the limit
+
+        System.out.println(&quot;--- generating IDs right at the edge of the sequence limit ---&quot;);
+        for (int i = 0; i &lt; 5; i++) {
+            long id = generator.nextId();
+            boolean isNewId = generatedIds.add(id);
+            System.out.println(&quot;generated id=&quot; + id + &quot;, unique=&quot; + isNewId);
+        }
+
+        System.out.println();
+        System.out.println(&quot;[result] &quot; + generatedIds.size() + &quot;/5 IDs were unique -- rollover correctly PREVENTED any duplicate&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java SnowflakeSequenceRollover.java</code></p>
+<p><code>generator.sequence</code> is deliberately set to <code>MAX_SEQUENCE - 2</code>, just below its limit, and <code>lastTimestamp</code> is pinned to the current millisecond — the next few <code>nextId()</code> calls will drive <code>sequence</code> to wrap past <code>MAX_SEQUENCE</code> back to <code>0</code> via the <code>&amp; MAX_SEQUENCE</code> mask. When that wraparound to <code>0</code> is detected (<code>if (sequence == 0)</code>), the generator explicitly busy-waits in a <code>while</code> loop until <code>System.currentTimeMillis()</code> genuinely advances past <code>lastTimestamp</code>, rather than proceeding with a sequence value of <code>0</code> at the *same* millisecond it already used <code>0</code> for — which would produce an exact duplicate of an earlier ID from this same millisecond.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>SnowflakeSequenceRollover.main</code> in order. <strong>First</strong>, <code>generator.lastTimestamp</code> and <code>generator.sequence</code> are forcibly set to simulate a generator that&#x27;s already issued <code>MAX_SEQUENCE - 2</code> IDs within the current millisecond, priming the scenario for the sequence space to run out within just a few more calls.</p>
+<p><strong>Next</strong>, the loop&#x27;s first two <code>nextId()</code> calls run normally: <code>timestamp == lastTimestamp</code> is <code>true</code> (still the same millisecond), so <code>sequence</code> increments via the mask, reaching <code>MAX_SEQUENCE - 1</code> then <code>MAX_SEQUENCE</code> — neither hits the <code>sequence == 0</code> rollover condition yet, so both return distinct, valid IDs.</p>
+<p><strong>Then</strong>, the third call runs: <code>sequence = (sequence + 1) &amp; MAX_SEQUENCE</code> computes <code>(MAX_SEQUENCE + 1) &amp; MAX_SEQUENCE</code>, which wraps around to exactly <code>0</code> — the sequence space for this millisecond has been fully exhausted. The <code>if (sequence == 0)</code> check is now <code>true</code>, so the generator prints its exhaustion message and enters the <code>while (timestamp &lt;= lastTimestamp)</code> busy-wait loop, repeatedly calling <code>System.currentTimeMillis()</code> until it returns a genuinely later value.</p>
+<p><strong>After that</strong>, once real time advances to a new millisecond, the <code>while</code> loop exits, the generator prints confirmation of the new timestamp, <code>lastTimestamp</code> is updated to this new value, and the ID is constructed using <code>sequence = 0</code> — but this time, <code>0</code> at a *new*, later timestamp, which is a completely different bit pattern than <code>0</code> at the *original* timestamp, so no duplicate results.</p>
+<p><strong>Finally</strong>, the loop&#x27;s remaining calls continue from this new millisecond, and <code>main</code>&#x27;s final check confirms all five generated IDs landed in <code>generatedIds</code> as genuinely distinct values — <code>generatedIds.add(id)</code> returning <code>true</code> for every single one — demonstrating that the explicit rollover-and-wait logic correctly prevented what would otherwise have been a real, silent ID collision the moment the sequence counter wrapped back to zero within the same millisecond.</p>
+<pre><code>--- generating IDs right at the edge of the sequence limit ---
+generated id=..., unique=true
+generated id=..., unique=true
+[generator] sequence space exhausted for timestamp ... -- WAITING for next millisecond
+[generator] advanced to new timestamp ...
+generated id=..., unique=true
+generated id=..., unique=true
+generated id=..., unique=true
+
+[result] 5/5 IDs were unique -- rollover correctly PREVENTED any duplicate</code></pre>
+<p>(Exact numeric ID values vary by run since they&#x27;re timestamp-dependent, but the count of unique IDs and the rollover message are deterministic given this exact scenario.)</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A Snowflake-style generator that lets its sequence counter silently wrap back to zero *without* also advancing to a new timestamp produces a genuine, silent duplicate ID — indistinguishable from a real collision, and far more insidious than an obvious crash, since it can go unnoticed until two records with the &quot;same&quot; unique ID cause a subtle downstream bug. The explicit wait-for-next-millisecond logic is not optional correctness detail; it&#x27;s what actually delivers the uniqueness guarantee under sustained high throughput.</blockquote>
+<ul><li>Assign worker IDs carefully and durably in any real deployment — two Snowflake generators accidentally sharing the same worker ID (a configuration mistake, or a naive &quot;derive from hostname&quot; approach that collides) reintroduces exactly the collision risk the worker-ID bits exist to prevent.</li><li>Clock behavior matters for Snowflake-style generators — a system clock that jumps backward (an NTP correction) can violate the timestamp-ordering assumption; production-grade implementations typically detect and explicitly handle (wait out, or refuse to generate IDs during) backward clock jumps.</li><li>UUIDs remain the simpler, lower-risk default for most systems — reach for Snowflake-style IDs specifically when compactness (64 bits versus 128) or rough time-ordering (better database index locality for sequential inserts) is a measured, real need, not a default assumption.</li><li>Both strategies share the same underlying principle as <a href="0508-distributed-locks.md">distributed locks</a> and <a href="0509-leader-election.md">leader election</a>: achieving a correctness guarantee across independent, uncoordinated processes by construction (disjoint ID spaces, atomic compare-and-set) rather than through live, synchronous coordination between them.</li></ul>
+  <div class="nav"><a class="prv" href="0510-optimistic-vs-pessimistic-locking.html"><span class="mini">← Previous</span>Optimistic vs pessimistic locking</a><a class="nxt" href="0512-horizontal-vs-vertical-scaling.html"><span class="mini">Next →</span>Horizontal vs vertical scaling</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t511";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

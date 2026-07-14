@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Connection pool sizing" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 16. Cross-Cutting Concerns & Patterns</div>
+  <div class="htitle">
+    <h1>"Connection pool sizing"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Connection pool sizing</strong> is choosing how many reusable database (or other backend) connections a service instance keeps open and ready, rather than opening a brand-new connection for every single request. A pool that&#x27;s too small forces requests to queue and wait for a connection to free up, adding latency under load; a pool that&#x27;s too large can overwhelm the backend, or waste resources that would have been better spent elsewhere — and critically, when a service is horizontally scaled to many instances, each instance&#x27;s own pool size multiplies across the whole fleet, meaning the backend&#x27;s actual connection limit becomes a fleet-wide sizing constraint, not a per-instance one.</p>
+<h2>2. Why &amp; when</h2>
+<p>You size connection pools deliberately, and revisit that sizing whenever the service&#x27;s scale changes, because getting it wrong causes real, sometimes surprising problems in either direction:</p>
+<ul><li><strong>Opening a new database connection per request is expensive</strong> — the TCP handshake, authentication, and connection setup overhead is significant compared to just reusing an already-established connection, which is the entire reason connection pools exist in the first place.</li><li><strong>A pool that&#x27;s too small under real concurrent load means requests queue waiting for a free connection</strong>, adding latency that has nothing to do with the actual query taking long — the bottleneck is purely pool contention, not the database itself.</li><li><strong>A pool that&#x27;s too large, especially multiplied across many horizontally-scaled instances, can exceed what the backend database can actually handle.</strong> A database with a hard connection limit of 500 gets a very different outcome from 10 instances each configured for a pool of 20 (200 total, safely under the limit) versus 10 instances each configured for a pool of 100 (1000 total, wildly over the limit) — the *same* per-instance pool size decision produces wildly different fleet-wide outcomes depending purely on how many instances exist.</li><li><strong>You size pools with the whole fleet&#x27;s total connection count in mind, not just one instance in isolation</strong> — and you revisit that sizing any time your horizontal scaling (the number of instances) changes meaningfully, since the safe per-instance number changes inversely with instance count.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a small business with a shared fleet of company cars: giving each of 5 employees their own dedicated car (a small pool per person) makes sense when there are only 5 employees and 20 available parking spots — but if the company grows to 50 employees, giving each one their own dedicated car the same way would need 50 spots, potentially far more than the lot actually has. The *total* number of cars needed to keep everyone reasonably unblocked has to account for how many employees there now are — sizing &quot;per employee&quot; without considering the total headcount is exactly the mistake connection pool sizing needs to avoid.</p>
+<p>Concretely:</p>
+<ol><li><strong>A pool holds a fixed maximum number of open connections</strong>, reused across requests — a request needing a connection borrows one from the pool, uses it, and returns it for the next request to reuse, rather than opening and closing a fresh connection each time.</li><li><strong>Pool size should reflect actual concurrent database usage need</strong>, which is often much smaller than naive intuition suggests — a well-tuned pool of even a modest size can serve a surprisingly high request rate, since most queries complete quickly and connections are returned rapidly for reuse.</li><li><strong>Total fleet-wide connections = per-instance pool size × number of instances</strong> — this is the number that actually matters against the database&#x27;s connection limit, not any single instance&#x27;s pool size viewed in isolation.</li><li><strong>Autoscaling interacts directly with this math</strong> — if an autoscaler can scale a service from 5 to 50 instances under load, the pool size per instance needs to be chosen so that even the maximum expected instance count times the per-instance pool size stays safely under the database&#x27;s actual connection limit.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Per-instance pool size multiplied by instance count gives total connections against the database, which must stay under its connection limit" >
+  <rect x="20" y="20" width="180" height="50" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="110" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">pool size: 20 per instance</text>
+
+  <rect x="240" y="20" width="180" height="50" rx="6" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="330" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">x 10 instances = 200 total</text>
+
+  <rect x="460" y="20" width="180" height="50" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="550" y="50" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">database limit: 500 -- SAFE</text>
+
+  <line x1="200" y1="45" x2="240" y2="45" stroke="#8b949e" marker-end="url(#a1)"/>
+  <line x1="420" y1="45" x2="460" y2="45" stroke="#8b949e" marker-end="url(#a1)"/>
+
+  <text x="330" y="130" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">the SAME per-instance pool size at 30 instances would be 600 total -- OVER the limit</text>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Per-instance pool size times instance count is the number that matters against the database&#x27;s actual connection limit.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a fleet-aware connection pool sizing calculator. We start with a basic single-instance pool simulation showing reuse benefits, extend it to computing fleet-wide totals across multiple instances, then handle the hard case: an autoscaler scaling up under load, where the naive per-instance pool size that was safe at low instance counts becomes unsafe at high instance counts, requiring a dynamically-aware sizing decision.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ConnectionPoolBasic.java -- models a BASIC connection pool:
+// a FIXED number of reusable connections, borrowed and returned, rather
+// than opening a fresh connection per request.
+import java.util.concurrent.*;
+
+public class ConnectionPoolBasic {
+    static class ConnectionPool {
+        Semaphore availableConnections;
+        int poolSize;
+
+        ConnectionPool(int poolSize) {
+            this.poolSize = poolSize;
+            this.availableConnections = new Semaphore(poolSize);
+        }
+
+        void handleRequest(String requestId) throws InterruptedException {
+            availableConnections.acquire(); // borrow a connection, waiting if the pool is exhausted
+            try {
+                System.out.println(&quot;[pool] &quot; + requestId + &quot; borrowed a connection (available now: &quot; + availableConnections.availablePermits() + &quot;/&quot; + poolSize + &quot;)&quot;);
+                Thread.sleep(10); // simulates a quick query
+            } finally {
+                availableConnections.release(); // return it for reuse
+            }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        ConnectionPool pool = new ConnectionPool(5);
+        for (int i = 1; i &lt;= 3; i++) {
+            pool.handleRequest(&quot;request-&quot; + i);
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java ConnectionPoolBasic.java</code></p>
+<p><code>Semaphore(poolSize)</code> models the fixed-size pool — <code>acquire()</code> borrows a connection (blocking if none are available), and the <code>finally</code> block&#x27;s <code>release()</code> guarantees the connection is always returned for reuse by a later request, even if the request handling itself were to throw an exception.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: FleetWideConnectionMath.java -- the SAME per-instance pool, now
+// computing the FLEET-WIDE total across MULTIPLE instances, checked
+// against the DATABASE&#x27;s actual connection limit -- the number that
+// actually matters.
+public class FleetWideConnectionMath {
+    static int databaseConnectionLimit = 500;
+
+    static boolean isSafe(int perInstancePoolSize, int instanceCount) {
+        int totalConnections = perInstancePoolSize * instanceCount;
+        boolean safe = totalConnections &lt;= databaseConnectionLimit;
+        System.out.println(&quot;[fleet math] &quot; + perInstancePoolSize + &quot; per instance x &quot; + instanceCount
+                + &quot; instances = &quot; + totalConnections + &quot; total -- &quot; + (safe ? &quot;SAFE&quot; : &quot;EXCEEDS LIMIT of &quot; + databaseConnectionLimit));
+        return safe;
+    }
+
+    public static void main(String[] args) {
+        isSafe(20, 10);  // 200 total, well under 500
+        isSafe(20, 30);  // 600 total -- SAME per-instance size, now unsafe at higher instance count
+    }
+}</code></pre>
+<p>How to run: <code>java FleetWideConnectionMath.java</code></p>
+<p><code>isSafe</code> multiplies <code>perInstancePoolSize</code> by <code>instanceCount</code> to get the real number that matters — the *identical* <code>20</code>-per-instance pool size is perfectly safe at <code>10</code> instances (<code>200</code> total) but genuinely unsafe at <code>30</code> instances (<code>600</code> total, exceeding the <code>500</code> limit), demonstrating that a pool size decision can&#x27;t be made correctly without knowing the actual or maximum expected instance count.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: AutoscalingAwarePoolSizing.java -- the SAME fleet math, now
+// handling the PRODUCTION-FLAVORED hard case: an AUTOSCALER scaling the
+// fleet from a LOW instance count up to its CONFIGURED MAXIMUM under
+// load. The per-instance pool size must be chosen so that even the
+// autoscaler&#x27;s MAXIMUM possible instance count stays SAFE -- not just
+// whatever the CURRENT instance count happens to be.
+public class AutoscalingAwarePoolSizing {
+    static int databaseConnectionLimit = 500;
+    static int autoscalerMaxInstances = 40; // the HIGHEST instance count the autoscaler could ever reach
+    static double safetyMarginFraction = 0.8; // reserve some headroom, don&#x27;t run right up to the hard limit
+
+    static int computeSafePerInstancePoolSize() {
+        int usableLimit = (int) (databaseConnectionLimit * safetyMarginFraction);
+        int safePoolSize = usableLimit / autoscalerMaxInstances;
+        System.out.println(&quot;[sizing] usable limit (with &quot; + (int)(safetyMarginFraction * 100) + &quot;% margin): &quot; + usableLimit
+                + &quot;, divided across max &quot; + autoscalerMaxInstances + &quot; instances = &quot; + safePoolSize + &quot; per instance&quot;);
+        return safePoolSize;
+    }
+
+    static boolean checkAtScale(int perInstancePoolSize, int currentInstanceCount) {
+        int total = perInstancePoolSize * currentInstanceCount;
+        boolean safe = total &lt;= databaseConnectionLimit;
+        System.out.println(&quot;[at scale] &quot; + currentInstanceCount + &quot; instances x &quot; + perInstancePoolSize
+                + &quot; = &quot; + total + &quot; total -- &quot; + (safe ? &quot;safe&quot; : &quot;UNSAFE&quot;));
+        return safe;
+    }
+
+    public static void main(String[] args) {
+        int safePoolSize = computeSafePerInstancePoolSize();
+
+        System.out.println();
+        System.out.println(&quot;--- verifying safety across the autoscaler&#x27;s ENTIRE possible range ---&quot;);
+        checkAtScale(safePoolSize, 5);   // low load, few instances
+        checkAtScale(safePoolSize, 20);  // moderate load
+        checkAtScale(safePoolSize, autoscalerMaxInstances); // PEAK load, the autoscaler&#x27;s ceiling
+
+        System.out.println();
+        System.out.println(&quot;--- contrast: a NAIVELY chosen pool size, sized only for LOW instance counts ---&quot;);
+        int naivePoolSize = 50; // &quot;seemed fine&quot; when tested with only a few instances
+        checkAtScale(naivePoolSize, 5);   // looks fine at low scale...
+        checkAtScale(naivePoolSize, autoscalerMaxInstances); // ...but catastrophically unsafe at peak autoscale
+    }
+}</code></pre>
+<p>How to run: <code>java AutoscalingAwarePoolSizing.java</code></p>
+<p><code>computeSafePerInstancePoolSize</code> divides a safety-margined usable connection budget by <code>autoscalerMaxInstances</code> — the *maximum* the autoscaler could ever reach, not the current instance count — producing a per-instance pool size that stays safe across the *entire* autoscaling range. The contrast with <code>naivePoolSize</code> (chosen by testing only at low instance counts, where it &quot;looked fine&quot;) makes the risk concrete: <code>checkAtScale(naivePoolSize, 5)</code> reports safe, but <code>checkAtScale(naivePoolSize, autoscalerMaxInstances)</code> reports genuinely unsafe, demonstrating exactly the trap of sizing a pool based on today&#x27;s instance count rather than the autoscaler&#x27;s actual ceiling.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>AutoscalingAwarePoolSizing.main</code> in order. <strong>First</strong>, <code>computeSafePerInstancePoolSize()</code> runs: <code>usableLimit</code> is computed as <code>500 * 0.8 = 400</code> (reserving a margin rather than running right up to the hard <code>500</code> limit), and <code>safePoolSize</code> is <code>400 / 40 = 10</code> — this <code>10</code>-per-instance figure is deliberately conservative enough to remain safe even if the autoscaler reaches its full <code>40</code>-instance ceiling.</p>
+<p><strong>Next</strong>, <code>checkAtScale(safePoolSize, 5)</code> computes <code>10 * 5 = 50</code> total connections, well under <code>500</code> — safe, as expected at low scale.</p>
+<p><strong>Then</strong>, <code>checkAtScale(safePoolSize, 20)</code> computes <code>10 * 20 = 200</code> — still comfortably safe at moderate scale.</p>
+<p><strong>After that</strong>, <code>checkAtScale(safePoolSize, autoscalerMaxInstances)</code> computes <code>10 * 40 = 400</code> — right at the intended usable limit, and still safely under the actual hard <code>500</code> connection limit, exactly as <code>computeSafePerInstancePoolSize</code> was designed to guarantee even at the autoscaler&#x27;s absolute peak.</p>
+<p><strong>Finally</strong>, the contrast section runs <code>checkAtScale(naivePoolSize, 5)</code>, computing <code>50 * 5 = 250</code> — comfortably under <code>500</code>, which is exactly the kind of result that would make a <code>50</code>-per-instance pool size look perfectly reasonable if only tested at low instance counts. But <code>checkAtScale(naivePoolSize, autoscalerMaxInstances)</code> computes <code>50 * 40 = 2000</code> — wildly over the <code>500</code> hard limit, revealing that the naive sizing decision, which passed every test performed at low scale, would catastrophically overwhelm the database&#x27;s actual connection limit the moment the autoscaler legitimately scaled up to handle real peak load.</p>
+<pre><code>[sizing] usable limit (with 80% margin): 400, divided across max 40 instances = 10 per instance
+
+--- verifying safety across the autoscaler&#x27;s ENTIRE possible range ---
+[at scale] 5 instances x 10 = 50 total -- safe
+[at scale] 20 instances x 10 = 200 total -- safe
+[at scale] 40 instances x 10 = 400 total -- safe
+
+--- contrast: a NAIVELY chosen pool size, sized only for LOW instance counts ---
+[at scale] 5 instances x 50 = 250 total -- safe
+[at scale] 40 instances x 50 = 2000 total -- UNSAFE</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A connection pool size that &quot;worked fine&quot; during testing or in a low-traffic environment can be a ticking time bomb if that testing never exercised the fleet&#x27;s actual maximum autoscaled instance count — the naive <code>50</code>-per-instance size above looked completely safe at 5 instances and only revealed its danger at the autoscaler&#x27;s true ceiling, exactly the gap between &quot;tested&quot; and &quot;production peak load&quot; that causes real incidents.</blockquote>
+<ul><li>Always size per-instance connection pools against the *maximum* instance count your autoscaling configuration could ever reach, not the typical or current instance count — the whole point of an autoscaler is that instance count genuinely varies, often dramatically, under real load.</li><li>Leave a safety margin below the database&#x27;s hard connection limit (as the <code>safetyMarginFraction</code> does here) — other legitimate connections (admin tools, monitoring, batch jobs) also consume the database&#x27;s connection budget, and running your service&#x27;s pools right up against the absolute hard limit leaves no room for anything else.</li><li>This constraint interacts directly with <a href="0512-horizontal-vs-vertical-scaling.md">horizontal vs vertical scaling</a> decisions — a database connection limit is one of the concrete, practical ceilings that can make horizontal scaling of the application tier hit a real backend constraint, even though the application tier itself has no inherent scaling limit of its own.</li><li>Consider a connection-pooling proxy (like PgBouncer for PostgreSQL) between your service fleet and the database for very large fleets — it can multiplex many application-level connections down to a smaller number of actual database connections, decoupling the fleet&#x27;s instance count from the database&#x27;s connection limit far more gracefully than per-instance pool math alone can achieve.</li></ul>
+  <div class="nav"><a class="prv" href="0514-externalizing-session-state.html"><span class="mini">← Previous</span>Externalizing session state</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t515";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

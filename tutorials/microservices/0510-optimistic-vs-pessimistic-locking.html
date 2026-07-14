@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Optimistic vs pessimistic locking" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 16. Cross-Cutting Concerns & Patterns</div>
+  <div class="htitle">
+    <h1>"Optimistic vs pessimistic locking"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Pessimistic locking</strong> acquires an exclusive lock on a record *before* reading and modifying it, blocking any other concurrent operation from touching that record until the lock is released — assuming conflict is likely enough to prevent upfront. <strong>Optimistic locking</strong> assumes conflict is rare: it reads a record&#x27;s current version, makes changes, and only checks at write time whether the version has changed since the read — if it has, the write is rejected and must be retried, rather than being blocked from ever starting.</p>
+<h2>2. Why &amp; when</h2>
+<p>You choose between them based on how likely concurrent conflicting writes to the same record actually are, and how expensive blocking versus retrying is for your workload:</p>
+<ul><li><strong>Pessimistic locking avoids wasted work when conflicts are frequent.</strong> If many concurrent operations are likely to target the same record, letting them all proceed optimistically and then fail at write time wastes the work each one did before discovering the conflict — a pessimistic lock avoids that waste by preventing the conflicting work from starting in the first place.</li><li><strong>Optimistic locking avoids blocking when conflicts are rare.</strong> If most operations on a given record never actually collide with another concurrent one, pessimistic locking pays a real cost (every operation waits for a lock, even when no other operation is actually competing for it) for a problem that mostly doesn&#x27;t happen.</li><li><strong>Pessimistic locking holds a lock for the duration of the operation</strong>, including any slow steps (a network call, user think-time in an interactive flow) — a lock held across a slow step blocks every other concurrent operation for that entire duration, which can be a serious throughput problem.</li><li><strong>You default to optimistic locking for typical microservice update patterns</strong> — most single-record updates in most systems have infrequent actual contention, making optimistic locking&#x27;s lower overhead the better fit; reach for pessimistic locking specifically when contention is known to be frequent and the cost of a wasted, retried optimistic attempt is high.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of editing a shared document: pessimistic locking is like checking out the document exclusively before you start editing — nobody else can even open it until you&#x27;re done, guaranteeing no conflict but potentially leaving others waiting even if they&#x27;d have edited a completely different section. Optimistic locking is like everyone being able to open and edit their own copy freely, but when you go to save, the system checks whether anyone else saved changes since you opened your copy — if they did, your save is rejected and you need to reconcile and retry, but in the common case where nobody else touched it, your save just succeeds immediately with no waiting at all.</p>
+<p>Concretely:</p>
+<ol><li><strong>Pessimistic locking</strong>: acquire a database-level lock (<code>SELECT ... FOR UPDATE</code>) on the record before reading it; every other transaction attempting to lock the same record blocks until the lock holder commits or rolls back.</li><li><strong>Optimistic locking</strong>: read the record along with a version number (or timestamp); when writing, include a <code>WHERE version = &lt;the version you read&gt;</code> clause — if zero rows match (because someone else already updated it and bumped the version), the write affects zero rows, signaling a conflict that must be handled, typically by retrying with a fresh read.</li><li><strong>The cost tradeoff</strong>: pessimistic locking pays cost upfront (every operation, contended or not, pays for lock acquisition and potential waiting); optimistic locking pays cost only on actual conflict (a wasted read-modify cycle that must be retried), which is cheap when conflicts are genuinely rare.</li><li><strong>Retry logic is essential for optimistic locking to actually work in practice</strong> — a version-mismatch failure without a retry loop just becomes a visible error for what might be a perfectly legitimate, recoverable situation.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pessimistic locking blocks concurrent operations upfront; optimistic locking lets them proceed and only checks for conflict at write time, retrying on failure">
+  <rect x="20" y="20" width="290" height="70" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="165" y="42" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">pessimistic: lock, THEN work</text>
+  <text x="165" y="65" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">second writer BLOCKS until first releases</text>
+
+  <rect x="350" y="20" width="290" height="70" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="495" y="42" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">optimistic: work, THEN check version</text>
+  <text x="495" y="65" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">second writer's SAVE is rejected, must RETRY</text>
+</svg>
+<p>Pessimistic prevents conflicting work from starting; optimistic lets it proceed and catches conflict at save time.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: two concurrent updates to the same inventory record. We start with a basic optimistic-locking version check, extend it to a conflict being correctly detected and rejected, then handle the hard case: automatically retrying a rejected optimistic write with a fresh read, succeeding on the retry.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: OptimisticLockBasic.java -- models the CORE optimistic locking
+// mechanism: read a VERSION alongside the data, and only WRITE if the
+// version STILL matches what was read.
+import java.util.concurrent.atomic.*;
+
+public class OptimisticLockBasic {
+    static AtomicInteger stockQuantity = new AtomicInteger(100);
+    static AtomicInteger version = new AtomicInteger(1);
+
+    record ReadResult(int quantity, int versionRead) {}
+
+    static ReadResult read() {
+        return new ReadResult(stockQuantity.get(), version.get());
+    }
+
+    static boolean writeIfVersionMatches(int newQuantity, int expectedVersion) {
+        boolean matched = version.compareAndSet(expectedVersion, expectedVersion + 1);
+        if (matched) {
+            stockQuantity.set(newQuantity);
+            System.out.println(&quot;[write] SUCCESS -- version matched (&quot; + expectedVersion + &quot;), quantity now &quot; + newQuantity + &quot;, version now &quot; + version.get());
+        } else {
+            System.out.println(&quot;[write] REJECTED -- expected version &quot; + expectedVersion + &quot; but current version is &quot; + version.get());
+        }
+        return matched;
+    }
+
+    public static void main(String[] args) {
+        ReadResult read = read();
+        System.out.println(&quot;[read] quantity=&quot; + read.quantity() + &quot;, version=&quot; + read.versionRead());
+        writeIfVersionMatches(95, read.versionRead());
+    }
+}</code></pre>
+<p>How to run: <code>java OptimisticLockBasic.java</code></p>
+<p><code>writeIfVersionMatches</code> uses <code>version.compareAndSet(expectedVersion, ...)</code>, an atomic check-and-set — the write only succeeds if the current version still equals exactly what was read earlier, and it also bumps the version on success, so any *future* reader will see a version that no longer matches this now-stale read.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: OptimisticLockConflictDetected.java -- the SAME mechanism, now
+// demonstrating an ACTUAL CONFLICT: TWO readers read the same version,
+// one writes successfully (bumping the version), and the SECOND writer&#x27;s
+// attempt is correctly REJECTED because its read is now stale.
+import java.util.concurrent.atomic.*;
+
+public class OptimisticLockConflictDetected {
+    static AtomicInteger stockQuantity = new AtomicInteger(100);
+    static AtomicInteger version = new AtomicInteger(1);
+
+    record ReadResult(int quantity, int versionRead) {}
+    static ReadResult read() { return new ReadResult(stockQuantity.get(), version.get()); }
+
+    static boolean writeIfVersionMatches(int newQuantity, int expectedVersion, String writerName) {
+        boolean matched = version.compareAndSet(expectedVersion, expectedVersion + 1);
+        if (matched) {
+            stockQuantity.set(newQuantity);
+            System.out.println(&quot;[&quot; + writerName + &quot;] SUCCESS -- wrote quantity=&quot; + newQuantity);
+        } else {
+            System.out.println(&quot;[&quot; + writerName + &quot;] REJECTED -- version conflict (expected &quot; + expectedVersion + &quot;, actual &quot; + version.get() + &quot;)&quot;);
+        }
+        return matched;
+    }
+
+    public static void main(String[] args) {
+        // BOTH writers read the SAME initial state -- neither knows about the other yet.
+        ReadResult readByOrderService = read();
+        ReadResult readByWarehouseService = read();
+        System.out.println(&quot;[both] read quantity=100, version=&quot; + readByOrderService.versionRead());
+
+        // order-service writes first and succeeds, bumping the version.
+        writeIfVersionMatches(95, readByOrderService.versionRead(), &quot;order-service&quot;);
+
+        // warehouse-service, still holding its now-STALE read, tries to write too.
+        writeIfVersionMatches(90, readByWarehouseService.versionRead(), &quot;warehouse-service&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java OptimisticLockConflictDetected.java</code></p>
+<p>Both <code>readByOrderService</code> and <code>readByWarehouseService</code> capture the identical initial <code>versionRead</code> of <code>1</code>, since both read before either wrote. <code>order-service</code>&#x27;s write succeeds first, bumping <code>version</code> to <code>2</code>. <code>warehouse-service</code>&#x27;s subsequent write attempt still carries the stale <code>versionRead</code> of <code>1</code>, which no longer matches the current version of <code>2</code> — <code>compareAndSet</code> correctly fails, and the write is rejected rather than silently overwriting <code>order-service</code>&#x27;s already-committed change.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: OptimisticLockRetryLoop.java -- the SAME conflict scenario, now
+// handling the PRODUCTION-FLAVORED hard case CORRECTLY: instead of just
+// reporting the rejection as a final failure, warehouse-service RETRIES
+// with a FRESH read, correctly re-applying its intended CHANGE (a
+// relative decrement) against the NEW current state, and succeeds.
+import java.util.concurrent.atomic.*;
+
+public class OptimisticLockRetryLoop {
+    static AtomicInteger stockQuantity = new AtomicInteger(100);
+    static AtomicInteger version = new AtomicInteger(1);
+
+    record ReadResult(int quantity, int versionRead) {}
+    static ReadResult read() { return new ReadResult(stockQuantity.get(), version.get()); }
+
+    // Applies a RELATIVE change (decrement by 5) with automatic retry on conflict.
+    static void decrementWithRetry(String writerName, int decrementBy, int maxRetries) {
+        for (int attempt = 1; attempt &lt;= maxRetries; attempt++) {
+            ReadResult current = read(); // ALWAYS a FRESH read on every attempt
+            int intendedNewQuantity = current.quantity() - decrementBy;
+            boolean success = version.compareAndSet(current.versionRead(), current.versionRead() + 1);
+            if (success) {
+                stockQuantity.set(intendedNewQuantity);
+                System.out.println(&quot;[&quot; + writerName + &quot;] attempt &quot; + attempt + &quot;: SUCCESS -- decremented from &quot;
+                        + current.quantity() + &quot; to &quot; + intendedNewQuantity);
+                return;
+            }
+            System.out.println(&quot;[&quot; + writerName + &quot;] attempt &quot; + attempt + &quot;: version conflict, RETRYING with a fresh read&quot;);
+        }
+        System.out.println(&quot;[&quot; + writerName + &quot;] exhausted &quot; + maxRetries + &quot; retries -- giving up&quot;);
+    }
+
+    public static void main(String[] args) {
+        // order-service writes directly first, simulating it winning the initial race.
+        int v = version.get();
+        version.compareAndSet(v, v + 1);
+        stockQuantity.set(95);
+        System.out.println(&quot;[order-service] wrote quantity=95 directly, version now &quot; + version.get());
+
+        System.out.println();
+        System.out.println(&quot;--- warehouse-service decrements by 5, using retry-on-conflict logic ---&quot;);
+        decrementWithRetry(&quot;warehouse-service&quot;, 5, 3);
+
+        System.out.println();
+        System.out.println(&quot;[final state] quantity=&quot; + stockQuantity.get() + &quot; -- CORRECTLY based on order-service&#x27;s 95, not the stale original 100&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java OptimisticLockRetryLoop.java</code></p>
+<p><code>decrementWithRetry</code>&#x27;s loop calls <code>read()</code> fresh on *every* attempt, not just once at the start — this is the critical fix over a naive retry that would reuse the original stale read. <code>order-service</code> writes <code>95</code> directly first, bumping the version. <code>warehouse-service</code>&#x27;s first attempt reads the *current* state (<code>95</code>, the up-to-date value, not the stale <code>100</code>) and correctly computes <code>intendedNewQuantity</code> as <code>95 - 5 = 90</code>, succeeding immediately on its first real attempt in this run since no further concurrent writer interferes — but critically, its computation is always based on whatever the *fresh* read returns, ensuring correctness even if a conflict genuinely required a retry.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>OptimisticLockRetryLoop.main</code> in order. <strong>First</strong>, <code>order-service</code>&#x27;s direct write runs: <code>version.compareAndSet(v, v + 1)</code> bumps the version, and <code>stockQuantity.set(95)</code> updates the quantity directly, representing <code>order-service</code> winning an initial race and successfully committing its change.</p>
+<p><strong>Next</strong>, <code>decrementWithRetry(&quot;warehouse-service&quot;, 5, 3)</code> begins its loop with <code>attempt = 1</code>. <code>read()</code> is called fresh, capturing the *current* state — <code>quantity = 95</code> (order-service&#x27;s already-applied change) and whatever the current <code>versionRead</code> now is, *not* any earlier, now-stale value.</p>
+<p><strong>Then</strong>, <code>intendedNewQuantity</code> is computed as <code>current.quantity() - decrementBy</code>, which is <code>95 - 5 = 90</code> — this calculation is based on the fresh read, correctly building on top of <code>order-service</code>&#x27;s change rather than a stale snapshot from before it.</p>
+<p><strong>After that</strong>, <code>version.compareAndSet(current.versionRead(), current.versionRead() + 1)</code> runs. Since <code>current.versionRead()</code> was just read moments ago and nothing else has modified <code>version</code> in the meantime, this succeeds — <code>success</code> is <code>true</code>, so <code>stockQuantity.set(90)</code> applies the correctly-computed new value, and the loop returns immediately after reporting success on attempt <code>1</code>.</p>
+<p><strong>Finally</strong>, <code>main</code> prints the final quantity, <code>90</code>, explicitly noting it correctly reflects <code>warehouse-service</code>&#x27;s decrement applied on top of <code>order-service</code>&#x27;s prior write (<code>95 - 5</code>), rather than what a naive &quot;retry with the same stale read&quot; bug would have produced — recomputing from the original <code>100</code> and yielding an incorrect <code>95</code> that would have silently discarded <code>order-service</code>&#x27;s change entirely.</p>
+<pre><code>[order-service] wrote quantity=95 directly, version now 2
+
+--- warehouse-service decrements by 5, using retry-on-conflict logic ---
+[warehouse-service] attempt 1: SUCCESS -- decremented from 95 to 90
+
+[final state] quantity=90 -- CORRECTLY based on order-service&#x27;s 95, not the stale original 100</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A retry loop that reuses the *original* stale read&#x27;s data on each retry attempt — recomputing the intended new value from data captured before the conflict was even detected — silently discards whatever change the *other* writer successfully committed. Always perform a genuinely fresh read on every retry attempt, as <code>decrementWithRetry</code> does, especially for relative changes (increment/decrement) where the correct result depends on the actual current state, not the state you originally, incorrectly assumed was still current.</blockquote>
+<ul><li>Optimistic locking&#x27;s retry logic needs a bounded maximum attempt count — under genuinely high, sustained contention, an unbounded retry loop could spin indefinitely; a bounded count with a clear failure path (as <code>decrementWithRetry</code>&#x27;s <code>maxRetries</code> provides) is the safer design.</li><li>Pessimistic locking remains the better choice for known-high-contention scenarios where the wasted work of repeated optimistic conflicts and retries would exceed the cost of simply waiting for a lock upfront — measure actual contention rather than guessing.</li><li>This concept underlies <a href="0508-distributed-locks.md">distributed locks</a>&#x27; own acquisition mechanics in spirit — both rely on an atomic compare-and-set primitive to detect and reject conflicting concurrent operations, just applied at different scopes (a single record&#x27;s version versus an entire cross-instance critical section).</li><li>Absolute writes (setting a field to a fixed value regardless of its prior state) are simpler to make optimistically correct than relative changes (incrementing, decrementing) — relative changes specifically require the fresh-read-on-retry discipline shown here to avoid silently losing concurrent updates.</li></ul>
+  <div class="nav"><a class="prv" href="0509-leader-election.html"><span class="mini">← Previous</span>Leader election</a><a class="nxt" href="0511-distributed-id-generation-uuid-snowflake.html"><span class="mini">Next →</span>Distributed ID generation (UUID, Snowflake)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t510";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

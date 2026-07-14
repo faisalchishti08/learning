@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Externalizing session state" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 16. Cross-Cutting Concerns & Patterns</div>
+  <div class="htitle">
+    <h1>"Externalizing session state"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Externalizing session state</strong> means moving user session data — login status, shopping cart contents, in-progress multi-step form data — out of a service instance&#x27;s own in-process memory and into a shared, external store (typically a distributed cache like Redis, or a database) that every instance can access equally. It&#x27;s the concrete, most common application of <a href="0513-stateless-services-for-scaling.md">statelessness</a> — session data is usually the single biggest source of accidental in-memory state in a typical web application.</p>
+<h2>2. Why &amp; when</h2>
+<p>You externalize session state specifically because in-memory HTTP sessions are the most common way a service accidentally becomes stateful without anyone deciding that on purpose:</p>
+<ul><li><strong>Traditional web framework defaults often store sessions in server memory</strong>, tied to a session cookie — this is a completely reasonable default for a single-server application, but it silently breaks the moment you run more than one instance behind a load balancer, since a session created on instance A is invisible to instance B.</li><li><strong>Sticky sessions are a common but incomplete workaround.</strong> Configuring the load balancer to always route a given client back to the same instance keeps in-memory sessions technically working, but reintroduces exactly the fragility <a href="0513-stateless-services-for-scaling.md">statelessness</a> is meant to eliminate — that one instance restarting or scaling down loses every session stuck to it.</li><li><strong>Externalizing to a shared store is what actually fixes the root cause</strong>, rather than working around it — once session data lives in Redis (or similar), any instance can correctly serve any request for any session, with no dependency on which instance a client happened to hit previously.</li><li><strong>You externalize session state as one of the very first steps when converting a service to run multiple horizontally-scaled instances</strong> — it&#x27;s usually the single highest-impact change, since session data is so commonly the source of a service&#x27;s accidental statefulness.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a coat check at a large venue with multiple entrances: rather than each entrance&#x27;s coat check having its own separate rack (meaning you&#x27;d have to exit through the same entrance you came in, or lose your coat), the venue uses one shared, centralized coat check that any entrance&#x27;s staff can access — you can enter through any door and retrieve your coat through any door, because the actual storage is centralized and shared, not tied to wherever you happened to walk in.</p>
+<p>Concretely:</p>
+<ol><li><strong>A session identifier travels with each request</strong> — typically a cookie or a token — that any instance can use to look up the session&#x27;s actual data.</li><li><strong>The session&#x27;s actual data lives in a shared external store</strong> (Redis is extremely common for this specific purpose, given its speed and native support for exactly this kind of key-value session data), not in any individual instance&#x27;s memory.</li><li><strong>Reading session data on any request means looking it up from the shared store</strong> using the session identifier — an instance that&#x27;s never seen this specific client before can still correctly retrieve their session state.</li><li><strong>Writing to session data means updating the shared store</strong>, not a local in-memory structure — so the update is immediately visible to whichever instance handles the client&#x27;s *next* request, wherever that request happens to land.</li><li><strong>Session expiry is typically handled via the external store&#x27;s own TTL mechanism</strong> — Redis, for example, can automatically expire a session key after a period of inactivity, without any instance needing to run its own cleanup logic.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Instead of each instance holding its own private session store, all instances read from and write to one shared external session store, keyed by session ID">
+  <rect x="20" y="20" width="130" height="40" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="85" y="45" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">instance A</text>
+
+  <rect x="20" y="140" width="130" height="40" rx="6" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="85" y="165" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">instance B</text>
+
+  <rect x="420" y="70" width="200" height="60" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="520" y="95" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">shared session store</text>
+  <text x="520" y="113" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">e.g. Redis, keyed by session ID</text>
+
+  <line x1="150" y1="40" x2="420" y2="90" stroke="#8b949e" marker-end="url(#a1)"/>
+  <line x1="150" y1="160" x2="420" y2="110" stroke="#8b949e" marker-end="url(#a1)"/>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>Every instance reads and writes the same shared session store, rather than keeping its own private copy.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a login session tracked across requests. We start with a basic in-memory session store demonstrating the classic breakage, extend it to an externalized shared store fixing it, then handle the hard case: session expiry via TTL, correctly implemented so an idle session expires while an active one stays alive, matching a real Redis-backed session store&#x27;s typical behavior.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: InMemorySessionBroken.java -- models the CLASSIC problem:
+// session data stored in EACH instance&#x27;s OWN memory, breaking the moment
+// a client&#x27;s requests land on a DIFFERENT instance.
+import java.util.*;
+
+public class InMemorySessionBroken {
+    static class ServiceInstance {
+        String name;
+        Map&lt;String, String&gt; localSessions = new HashMap&lt;&gt;(); // sessionId -&gt; username
+
+        ServiceInstance(String name) { this.name = name; }
+
+        void login(String sessionId, String username) {
+            localSessions.put(sessionId, username);
+            System.out.println(&quot;[&quot; + name + &quot;] logged in &#x27;&quot; + username + &quot;&#x27;, session stored LOCALLY&quot;);
+        }
+
+        String getLoggedInUser(String sessionId) {
+            return localSessions.get(sessionId);
+        }
+    }
+
+    public static void main(String[] args) {
+        ServiceInstance instanceA = new ServiceInstance(&quot;instance-A&quot;);
+        ServiceInstance instanceB = new ServiceInstance(&quot;instance-B&quot;);
+
+        String sessionId = &quot;sess-abc123&quot;;
+        instanceA.login(sessionId, &quot;alice&quot;); // login request -&gt; instance A
+
+        String user = instanceB.getLoggedInUser(sessionId); // a LATER request -&gt; instance B
+        System.out.println(&quot;[result] instance-B sees logged-in user: &quot; + user + &quot; -- alice appears LOGGED OUT, even though she just logged in!&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java InMemorySessionBroken.java</code></p>
+<p><code>localSessions</code> is a plain field on each <code>ServiceInstance</code> object, entirely private to it — <code>instanceA.login</code> writes only into <code>instanceA</code>&#x27;s own map, so when <code>instanceB.getLoggedInUser</code> is called for the same session ID, it finds nothing at all, since <code>instanceB</code> never received or shares <code>instanceA</code>&#x27;s in-memory data.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: ExternalizedSessionFixed.java -- the SAME login flow, now with
+// session data EXTERNALIZED to a SHARED store -- ANY instance can
+// correctly see ANY other instance&#x27;s session writes.
+import java.util.*;
+
+public class ExternalizedSessionFixed {
+    // The SHARED, external session store -- not owned by any single instance.
+    static Map&lt;String, String&gt; sharedSessionStore = new HashMap&lt;&gt;();
+
+    static class ServiceInstance {
+        String name;
+        ServiceInstance(String name) { this.name = name; }
+
+        void login(String sessionId, String username) {
+            sharedSessionStore.put(sessionId, username);
+            System.out.println(&quot;[&quot; + name + &quot;] logged in &#x27;&quot; + username + &quot;&#x27;, session stored in SHARED store&quot;);
+        }
+
+        String getLoggedInUser(String sessionId) {
+            return sharedSessionStore.get(sessionId);
+        }
+    }
+
+    public static void main(String[] args) {
+        ServiceInstance instanceA = new ServiceInstance(&quot;instance-A&quot;);
+        ServiceInstance instanceB = new ServiceInstance(&quot;instance-B&quot;);
+
+        String sessionId = &quot;sess-abc123&quot;;
+        instanceA.login(sessionId, &quot;alice&quot;);
+
+        String user = instanceB.getLoggedInUser(sessionId);
+        System.out.println(&quot;[result] instance-B sees logged-in user: &quot; + user + &quot; -- CORRECT, alice stays logged in regardless of routing&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ExternalizedSessionFixed.java</code></p>
+<p><code>sharedSessionStore</code> is accessible identically to both <code>instanceA</code> and <code>instanceB</code> — neither one privately owns it. <code>instanceB.getLoggedInUser</code> correctly retrieves <code>&quot;alice&quot;</code>, since it&#x27;s reading from the same underlying store <code>instanceA.login</code> wrote into, entirely independent of which instance handled which request.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: ExternalizedSessionWithTtl.java -- the SAME externalized session
+// store, now handling the PRODUCTION-FLAVORED hard case: SESSION EXPIRY.
+// An IDLE session (no activity for a while) must EXPIRE automatically,
+// while an ACTIVE session (recently used) must STAY alive -- matching how
+// a real Redis-backed session store with a sliding TTL actually behaves.
+import java.util.*;
+
+public class ExternalizedSessionWithTtl {
+    record SessionData(String username, long expiresAtMs) {}
+    static Map&lt;String, SessionData&gt; sharedSessionStore = new HashMap&lt;&gt;();
+    static long sessionTtlMs = 100;
+
+    static void login(String sessionId, String username) {
+        long expiresAt = System.currentTimeMillis() + sessionTtlMs;
+        sharedSessionStore.put(sessionId, new SessionData(username, expiresAt));
+        System.out.println(&quot;[login] session &#x27;&quot; + sessionId + &quot;&#x27; created, expires in &quot; + sessionTtlMs + &quot;ms unless refreshed&quot;);
+    }
+
+    // Reading a session ALSO refreshes its TTL -- a &quot;sliding&quot; expiry, exactly like typical
+    // real session stores: activity keeps a session alive, inactivity lets it expire.
+    static String getLoggedInUserAndRefresh(String sessionId) {
+        SessionData data = sharedSessionStore.get(sessionId);
+        long now = System.currentTimeMillis();
+        if (data == null || now &gt;= data.expiresAtMs()) {
+            System.out.println(&quot;[session check] &#x27;&quot; + sessionId + &quot;&#x27; is EXPIRED or absent -- treated as logged out&quot;);
+            sharedSessionStore.remove(sessionId);
+            return null;
+        }
+        // Activity detected -- REFRESH (slide forward) the expiry.
+        sharedSessionStore.put(sessionId, new SessionData(data.username(), now + sessionTtlMs));
+        System.out.println(&quot;[session check] &#x27;&quot; + sessionId + &quot;&#x27; active -- user=&quot; + data.username() + &quot;, TTL refreshed&quot;);
+        return data.username();
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        login(&quot;sess-active&quot;, &quot;alice&quot;);
+        login(&quot;sess-idle&quot;, &quot;bob&quot;);
+
+        System.out.println();
+        System.out.println(&quot;--- &#x27;alice&#x27; stays ACTIVE, making requests every 40ms, well within the 100ms TTL ---&quot;);
+        for (int i = 0; i &lt; 3; i++) {
+            Thread.sleep(40);
+            getLoggedInUserAndRefresh(&quot;sess-active&quot;); // keeps refreshing, staying alive
+        }
+
+        System.out.println();
+        System.out.println(&quot;--- &#x27;bob&#x27; goes IDLE for 150ms, exceeding the 100ms TTL with no activity ---&quot;);
+        Thread.sleep(150);
+
+        System.out.println();
+        System.out.println(&quot;--- final check on BOTH sessions ---&quot;);
+        String aliceStatus = getLoggedInUserAndRefresh(&quot;sess-active&quot;);
+        String bobStatus = getLoggedInUserAndRefresh(&quot;sess-idle&quot;);
+        System.out.println(&quot;[result] alice: &quot; + aliceStatus + &quot; (still logged in, was active) | bob: &quot; + bobStatus + &quot; (expired, was idle)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ExternalizedSessionWithTtl.java</code></p>
+<p><code>getLoggedInUserAndRefresh</code> both checks expiry *and* refreshes the TTL on every successful access — this is a sliding-window expiry, matching how many real session stores behave. <code>&quot;sess-active&quot;</code> is accessed three times, each roughly <code>40ms</code> apart, and each access refreshes its expiry before the previous window would have run out, so it never actually expires. <code>&quot;sess-idle&quot;</code> is never accessed at all during a <code>150ms</code> gap, exceeding its <code>100ms</code> TTL with no refreshing activity, so it correctly expires by the time it&#x27;s finally checked.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>ExternalizedSessionWithTtl.main</code> in order. <strong>First</strong>, both <code>login</code> calls create sessions, each with <code>expiresAtMs</code> set to <code>100ms</code> from their respective creation times.</p>
+<p><strong>Next</strong>, the loop runs three iterations for <code>&quot;sess-active&quot;</code>, each preceded by a <code>40ms</code> sleep. On each call, <code>getLoggedInUserAndRefresh</code> finds the session present and not yet expired (since each check happens well within the most recently refreshed <code>100ms</code> window), so it takes the refresh branch: a new <code>SessionData</code> is stored with <code>expiresAtMs</code> pushed forward to <code>now + sessionTtlMs</code> — meaning <code>&quot;sess-active&quot;</code>&#x27;s deadline keeps sliding forward with each access, never actually reaching zero remaining time.</p>
+<p><strong>Then</strong>, <code>Thread.sleep(150)</code> runs, representing <code>&quot;sess-idle&quot;</code> going completely untouched for <code>150ms</code> — well past its original, never-refreshed <code>100ms</code> TTL, since <code>login(&quot;sess-idle&quot;, &quot;bob&quot;)</code> was never followed by any access at all during this window.</p>
+<p><strong>After that</strong>, the final check calls <code>getLoggedInUserAndRefresh(&quot;sess-active&quot;)</code> first: its most recent refresh (from the third loop iteration) is well within its own <code>100ms</code> window relative to now, so it&#x27;s found active, refreshed again, and returns <code>&quot;alice&quot;</code>.</p>
+<p><strong>Finally</strong>, <code>getLoggedInUserAndRefresh(&quot;sess-idle&quot;)</code> runs: <code>data.expiresAtMs()</code> reflects the original login time plus <code>100ms</code>, and <code>now</code> is well past that, since <code>150ms</code> of pure idle time has elapsed with zero refreshing activity — the <code>now &gt;= data.expiresAtMs()</code> check is <code>true</code>, so the expired branch runs, removing the entry and returning <code>null</code>. The final printed comparison shows <code>alice</code> still logged in and <code>bob</code> expired, purely as a function of activity pattern against the shared TTL mechanism, exactly mirroring how a real Redis-backed sliding-expiry session store behaves.</p>
+<pre><code>[login] session &#x27;sess-active&#x27; created, expires in 100ms unless refreshed
+[login] session &#x27;sess-idle&#x27; created, expires in 100ms unless refreshed
+
+--- &#x27;alice&#x27; stays ACTIVE, making requests every 40ms, well within the 100ms TTL ---
+[session check] &#x27;sess-active&#x27; active -- user=alice, TTL refreshed
+[session check] &#x27;sess-active&#x27; active -- user=alice, TTL refreshed
+[session check] &#x27;sess-active&#x27; active -- user=alice, TTL refreshed
+
+--- &#x27;bob&#x27; goes IDLE for 150ms, exceeding the 100ms TTL with no activity ---
+
+--- final check on BOTH sessions ---
+[session check] &#x27;sess-active&#x27; active -- user=alice, TTL refreshed
+[session check] &#x27;sess-idle&#x27; is EXPIRED or absent -- treated as logged out
+[result] alice: alice (still logged in, was active) | bob: bob (expired, was idle)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A sliding TTL, where every access refreshes the expiry, is usually the right default for user-facing sessions (an active user shouldn&#x27;t be logged out mid-use), but be deliberate about it — for session types where you specifically want a hard absolute expiry regardless of activity (a time-limited authorization token, for instance), you need a fixed expiry that doesn&#x27;t refresh, a different mechanism than what&#x27;s shown here.</blockquote>
+<ul><li>Redis is a common choice for externalized session storage specifically because of its speed (sessions are read on nearly every request, so latency matters) and its native TTL support, which handles exactly this expiry behavior without custom cleanup logic.</li><li>This is the single most common, highest-impact instance of the broader <a href="0513-stateless-services-for-scaling.md">statelessness</a> principle — most services that &quot;aren&#x27;t stateless yet&quot; are usually specifically failing on session data, making this the natural first fix.</li><li>Externalizing session data doesn&#x27;t mean giving up all local optimization — a service can still keep a short-lived <a href="0506-near-cache.md">near cache</a> of session data for performance, as long as correctness always falls back to the shared, authoritative external store, exactly like any other two-tier caching setup.</li><li>Test this specifically by simulating cross-instance routing in a staging environment — a session bug caused by in-memory storage often doesn&#x27;t surface in local development (where there&#x27;s only ever one instance) and only appears once real horizontal scaling and load balancing are in play in a genuine multi-instance deployment.</li></ul>
+  <div class="nav"><a class="prv" href="0513-stateless-services-for-scaling.html"><span class="mini">← Previous</span>Stateless services for scaling</a><a class="nxt" href="0515-connection-pool-sizing.html"><span class="mini">Next →</span>Connection pool sizing</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t514";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Near cache" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 16. Cross-Cutting Concerns & Patterns</div>
+  <div class="htitle">
+    <h1>"Near cache"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>near cache</strong> is a small, fast local cache layered directly in front of a distributed cache client — the application checks the near cache (in-process memory) first, and only falls through to the actual network call to the distributed cache on a near-cache miss. It&#x27;s the same two-tier structure as <a href="0502-local-vs-distributed-cache.md">local vs distributed cache</a>, but specifically framed around a client library&#x27;s own built-in optimization: many distributed cache clients (Hazelcast, some Redis client configurations) offer this as a built-in feature, rather than something you build by hand.</p>
+<h2>2. Why &amp; when</h2>
+<p>You enable a near cache specifically to shave the network round trip off of the hottest, most frequently-read keys in a distributed cache setup:</p>
+<ul><li><strong>Even a fast distributed cache still costs a network round trip on every access.</strong> For extremely hot keys — read thousands of times per second by a given instance — that round-trip cost adds up to real, measurable latency and network load, even against a well-performing distributed cache.</li><li><strong>A near cache captures the benefit of local caching&#x27;s speed specifically for the subset of data that&#x27;s hot enough to justify it</strong>, without requiring you to build and maintain a fully separate local-caching layer and invalidation strategy by hand.</li><li><strong>Client library support removes most of the implementation burden.</strong> Since the near cache is built into the distributed cache client itself, invalidation (when the distributed cache&#x27;s underlying value changes) is often handled automatically by the client, rather than needing hand-rolled event-based invalidation.</li><li><strong>You enable this specifically for read-heavy, hot-key workloads</strong> where the distributed cache&#x27;s own network latency is a measurable bottleneck — for cold or evenly-distributed access patterns, a near cache adds memory overhead and invalidation complexity without a meaningful corresponding speed benefit.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of keeping a small personal reference card with the phone numbers you call most often, right next to your desk, even though the complete, authoritative phone directory (the distributed cache) is also easily accessible in the next room — for the handful of numbers you call constantly, glancing at your desk card is meaningfully faster than walking to the directory every single time, while for anything not on your card, you still go check the full directory.</p>
+<p>Concretely:</p>
+<ol><li><strong>The near cache sits in the same process as the application</strong>, exactly like a local cache, but it&#x27;s specifically scoped as a fast-path optimization layered in front of a distributed cache client, not a standalone caching strategy of its own.</li><li><strong>A read first checks the near cache</strong>; on a hit, it returns immediately with no network call at all — the fastest possible path.</li><li><strong>On a near-cache miss, the client falls through to the actual distributed cache</strong>, over the network, and (typically) populates the near cache with the result before returning it, so the *next* read for that same key hits the fast local path.</li><li><strong>Invalidation is the hard part, and is often handled by the client library itself</strong>: when the underlying distributed cache entry changes, the client needs some mechanism (often a subscription to change notifications) to invalidate the corresponding near-cache entry across every connected client instance — without this, a near cache reintroduces exactly the staleness problem <a href="0502-local-vs-distributed-cache.md">local caching</a> has.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A read checks the near cache first for an instant hit; on a miss it falls through to the distributed cache over the network and populates the near cache for next time">
+  <rect x="20" y="60" width="150" height="60" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="2"/>
+  <text x="95" y="85" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">near cache</text>
+  <text x="95" y="102" fill="#79c0ff" font-size="8" text-anchor="middle" font-family="sans-serif">in-process, no network</text>
+
+  <rect x="440" y="60" width="180" height="60" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="530" y="85" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">distributed cache</text>
+  <text x="530" y="102" fill="#f0883e" font-size="8" text-anchor="middle" font-family="sans-serif">network round trip</text>
+
+  <line x1="170" y1="90" x2="440" y2="90" stroke="#8b949e" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+  <text x="300" y="80" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">only on a near-cache miss</text>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>The near cache absorbs most reads locally; only misses pay the network cost of reaching the distributed cache.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a near-cache-aware client wrapping a simulated distributed cache. We start with a basic near-cache read path measuring the speed difference, extend it to automatic population on a miss, then handle the hard case: the distributed cache&#x27;s value changing underneath, requiring an invalidation notification to correctly evict the now-stale near-cache entry across the client, not just leave it silently wrong.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: NearCacheReadPath.java -- models the CORE near-cache read path:
+// check the fast LOCAL near cache first, fall through to the SLOWER
+// distributed cache (simulated with a delay) only on a miss.
+import java.util.*;
+
+public class NearCacheReadPath {
+    static Map&lt;String, String&gt; nearCache = new HashMap&lt;&gt;();
+    static Map&lt;String, String&gt; distributedCache = new HashMap&lt;&gt;(Map.of(&quot;sku-123&quot;, &quot;in-stock&quot;));
+
+    static String distributedCacheGet(String key) throws InterruptedException {
+        Thread.sleep(20); // simulates a real network round trip
+        return distributedCache.get(key);
+    }
+
+    static String get(String key) throws InterruptedException {
+        if (nearCache.containsKey(key)) {
+            System.out.println(&quot;[near cache] HIT for &#x27;&quot; + key + &quot;&#x27; -- no network call&quot;);
+            return nearCache.get(key);
+        }
+        System.out.println(&quot;[near cache] MISS for &#x27;&quot; + key + &quot;&#x27; -- falling through to distributed cache&quot;);
+        String value = distributedCacheGet(key);
+        nearCache.put(key, value);
+        return value;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        long start1 = System.currentTimeMillis();
+        get(&quot;sku-123&quot;);
+        System.out.println(&quot;first call took ~&quot; + (System.currentTimeMillis() - start1) + &quot;ms&quot;);
+
+        long start2 = System.currentTimeMillis();
+        get(&quot;sku-123&quot;);
+        System.out.println(&quot;second call took ~&quot; + (System.currentTimeMillis() - start2) + &quot;ms&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NearCacheReadPath.java</code></p>
+<p>The first <code>get</code> call misses <code>nearCache</code>, pays the simulated <code>20ms</code> network delay inside <code>distributedCacheGet</code>, and populates <code>nearCache</code> before returning. The second call for the identical key hits <code>nearCache</code> directly, returning near-instantly — the measured timing difference between the two calls is the concrete, observable benefit a near cache provides for repeated reads of the same hot key.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: NearCacheMultipleKeys.java -- the SAME read path, now EXERCISED
+// across MULTIPLE keys with different access frequencies, showing the
+// near cache naturally absorbing the HOT key&#x27;s repeated reads while
+// COLD keys still pay the network cost every time they&#x27;re accessed.
+import java.util.*;
+
+public class NearCacheMultipleKeys {
+    static Map&lt;String, String&gt; nearCache = new HashMap&lt;&gt;();
+    static Map&lt;String, String&gt; distributedCache = new HashMap&lt;&gt;(Map.of(
+        &quot;hot-sku&quot;, &quot;in-stock&quot;, &quot;cold-sku-1&quot;, &quot;in-stock&quot;, &quot;cold-sku-2&quot;, &quot;out-of-stock&quot;
+    ));
+    static int distributedCacheCallCount = 0;
+
+    static String distributedCacheGet(String key) {
+        distributedCacheCallCount++;
+        return distributedCache.get(key);
+    }
+
+    static String get(String key) {
+        if (nearCache.containsKey(key)) return nearCache.get(key);
+        String value = distributedCacheGet(key);
+        nearCache.put(key, value);
+        return value;
+    }
+
+    public static void main(String[] args) {
+        // hot-sku is read 5 times; cold keys are read once each.
+        for (int i = 0; i &lt; 5; i++) get(&quot;hot-sku&quot;);
+        get(&quot;cold-sku-1&quot;);
+        get(&quot;cold-sku-2&quot;);
+
+        System.out.println(&quot;[stats] total reads: 7, actual distributed cache calls: &quot; + distributedCacheCallCount);
+        System.out.println(&quot;[stats] near cache absorbed &quot; + (7 - distributedCacheCallCount) + &quot; reads that would otherwise have hit the network&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java NearCacheMultipleKeys.java</code></p>
+<p><code>distributedCacheCallCount</code> only increments inside <code>distributedCacheGet</code>, which only runs on a <code>nearCache</code> miss — <code>&quot;hot-sku&quot;</code> triggers exactly one such call (its first read) despite being read five times total, while each cold key triggers exactly one call each (their only read) — the near cache naturally concentrates its benefit on whichever keys are actually accessed repeatedly, with no special configuration needed to identify &quot;hot&quot; keys in advance.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: NearCacheInvalidationOnChange.java -- the SAME near cache, now
+// handling the PRODUCTION-FLAVORED hard case: the underlying DISTRIBUTED
+// cache value CHANGES (a write happens elsewhere). Without an explicit
+// invalidation mechanism, the near cache would silently keep serving the
+// OLD value forever. This models the client library&#x27;s typical solution:
+// SUBSCRIBING to change notifications and invalidating the near-cache
+// entry the moment a relevant change is detected.
+import java.util.*;
+
+public class NearCacheInvalidationOnChange {
+    static Map&lt;String, String&gt; nearCache = new HashMap&lt;&gt;();
+    static Map&lt;String, String&gt; distributedCache = new HashMap&lt;&gt;(Map.of(&quot;sku-123&quot;, &quot;in-stock&quot;));
+    static List&lt;Runnable&gt; changeSubscribers = new ArrayList&lt;&gt;(); // simulates the client&#x27;s change-notification subscription
+
+    static String distributedCacheGet(String key) {
+        return distributedCache.get(key);
+    }
+
+    static String get(String key) {
+        if (nearCache.containsKey(key)) {
+            System.out.println(&quot;[near cache] HIT for &#x27;&quot; + key + &quot;&#x27;&quot;);
+            return nearCache.get(key);
+        }
+        System.out.println(&quot;[near cache] MISS for &#x27;&quot; + key + &quot;&#x27; -- fetching from distributed cache&quot;);
+        String value = distributedCacheGet(key);
+        nearCache.put(key, value);
+        return value;
+    }
+
+    // A write to the distributed cache ALSO notifies every subscribed near-cache client.
+    static void distributedCacheWrite(String key, String newValue) {
+        distributedCache.put(key, newValue);
+        System.out.println(&quot;[distributed cache] &#x27;&quot; + key + &quot;&#x27; updated to &#x27;&quot; + newValue + &quot;&#x27; -- notifying subscribers&quot;);
+        for (Runnable subscriber : changeSubscribers) {
+            subscriber.run();
+        }
+    }
+
+    // The near cache SUBSCRIBES to changes, so it can invalidate itself when notified.
+    static void subscribeToInvalidation(String key) {
+        changeSubscribers.add(() -&gt; {
+            if (nearCache.remove(key) != null) {
+                System.out.println(&quot;[near cache] invalidated &#x27;&quot; + key + &quot;&#x27; due to a change notification from the distributed cache&quot;);
+            }
+        });
+    }
+
+    public static void main(String[] args) {
+        subscribeToInvalidation(&quot;sku-123&quot;);
+
+        System.out.println(&quot;--- initial read, populates the near cache ---&quot;);
+        System.out.println(&quot;value: &quot; + get(&quot;sku-123&quot;));
+
+        System.out.println();
+        System.out.println(&quot;--- someone ELSE writes a new value directly to the distributed cache ---&quot;);
+        distributedCacheWrite(&quot;sku-123&quot;, &quot;out-of-stock&quot;);
+
+        System.out.println();
+        System.out.println(&quot;--- next read: near cache was invalidated, correctly falls through and gets the NEW value ---&quot;);
+        System.out.println(&quot;value: &quot; + get(&quot;sku-123&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java NearCacheInvalidationOnChange.java</code></p>
+<p><code>subscribeToInvalidation</code> registers a <code>Runnable</code> that removes the specific key from <code>nearCache</code> — this stands in for the near-cache client subscribing to the distributed cache&#x27;s change-notification mechanism. <code>distributedCacheWrite</code> iterates every subscriber and runs each one after updating the underlying value, so the moment <code>&quot;sku-123&quot;</code> changes in <code>distributedCache</code>, the corresponding <code>nearCache</code> entry is proactively removed — the next <code>get</code> call correctly finds a miss (rather than stale data) and re-fetches the genuinely current value.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>NearCacheInvalidationOnChange.main</code> in order. <strong>First</strong>, <code>subscribeToInvalidation(&quot;sku-123&quot;)</code> registers a change-handler <code>Runnable</code> for this specific key into <code>changeSubscribers</code> — at this point, <code>nearCache</code> is still empty and no invalidation has happened yet.</p>
+<p><strong>Next</strong>, the initial <code>get(&quot;sku-123&quot;)</code> call misses <code>nearCache</code>, calls <code>distributedCacheGet</code> to retrieve <code>&quot;in-stock&quot;</code>, and populates <code>nearCache</code> with that value before returning it.</p>
+<p><strong>Then</strong>, <code>distributedCacheWrite(&quot;sku-123&quot;, &quot;out-of-stock&quot;)</code> runs: it first updates <code>distributedCache</code> directly to the new value, then iterates <code>changeSubscribers</code> — the one subscriber registered earlier runs, checking <code>nearCache.remove(&quot;sku-123&quot;)</code>, which succeeds (returns non-null) since the entry was indeed present from the earlier read, so the invalidation message prints.</p>
+<p><strong>After that</strong>, <code>nearCache</code> no longer contains an entry for <code>&quot;sku-123&quot;</code> at all — it was explicitly removed by the subscriber&#x27;s callback, not by any TTL or capacity-based eviction.</p>
+<p><strong>Finally</strong>, the second <code>get(&quot;sku-123&quot;)</code> call runs: <code>nearCache.containsKey(&quot;sku-123&quot;)</code> is now <code>false</code>, since it was invalidated, so the miss branch runs again, calling <code>distributedCacheGet</code> fresh — this time it returns <code>&quot;out-of-stock&quot;</code>, the genuinely current value, which is what gets returned and re-cached, correctly avoiding what would otherwise have been silently stale data served indefinitely from the near cache.</p>
+<pre><code>--- initial read, populates the near cache ---
+[near cache] MISS for &#x27;sku-123&#x27; -- fetching from distributed cache
+value: in-stock
+
+--- someone ELSE writes a new value directly to the distributed cache ---
+[distributed cache] &#x27;sku-123&#x27; updated to &#x27;out-of-stock&#x27; -- notifying subscribers
+[near cache] invalidated &#x27;sku-123&#x27; due to a change notification from the distributed cache
+
+--- next read: near cache was invalidated, correctly falls through and gets the NEW value ---
+[near cache] MISS for &#x27;sku-123&#x27; -- fetching from distributed cache
+value: out-of-stock</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A near cache with no invalidation mechanism at all is worse than no near cache — it doesn&#x27;t just risk occasional staleness, it *guarantees* every entry becomes permanently stale the moment the underlying distributed value changes, since nothing ever tells the near cache to reconsider. Always pair a near cache with a genuine invalidation mechanism, whether client-library-provided change notifications or a short TTL as a fallback safety net.</blockquote>
+<ul><li>Near cache is specifically valuable for a small set of genuinely hot keys — sizing it too large, or applying it universally to every key regardless of access frequency, adds memory and invalidation-subscription overhead without a corresponding benefit for keys that were never accessed often enough to justify it.</li><li>Client libraries that offer near-cache support usually handle the change-notification subscription mechanism for you — verify your specific distributed cache client&#x27;s documentation for exactly how (and how reliably) it invalidates near-cache entries before relying on it for data where staleness genuinely matters.</li><li>This is architecturally the same two-tier idea as <a href="0502-local-vs-distributed-cache.md">local vs distributed cache</a>, specifically packaged as a built-in optimization within a distributed cache client rather than something assembled by hand across two separate caching systems.</li><li>Measure the actual latency benefit before adding near-cache complexity — for a distributed cache that&#x27;s already extremely fast (co-located on the same low-latency network), the marginal benefit of a near cache may be smaller than the invalidation complexity it introduces.</li></ul>
+  <div class="nav"><a class="prv" href="0505-cache-stampede-thundering-herd.html"><span class="mini">← Previous</span>Cache stampede / thundering herd</a><a class="nxt" href="0507-idempotency-keys.html"><span class="mini">Next →</span>Idempotency keys</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t506";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

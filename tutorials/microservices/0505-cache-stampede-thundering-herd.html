@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Cache stampede / thundering herd" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 16. Cross-Cutting Concerns & Patterns</div>
+  <div class="htitle">
+    <h1>"Cache stampede / thundering herd"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>cache stampede</strong> (or <strong>thundering herd</strong>) happens when a popular cache entry expires and a large burst of concurrent requests for that same key all miss the cache simultaneously — every one of them independently proceeds to hit the underlying data store or expensive computation at once, instead of just one request refreshing the cache while the rest wait for or reuse that result. What should have been one expensive operation becomes N simultaneous expensive operations, often overwhelming the very system the cache was meant to protect.</p>
+<h2>2. Why &amp; when</h2>
+<p>You need to defend against stampedes specifically for any hot cache key with meaningful concurrent traffic, because the failure mode is a direct, severe amplification of load exactly when a system is already momentarily vulnerable:</p>
+<ul><li><strong>A popular key means many concurrent requests are likely to arrive within the same short window</strong> — the more popular the cached value, the more requests are waiting on it at any given moment, and the worse a stampede against it will be when it expires.</li><li><strong>The underlying data store often can&#x27;t handle N simultaneous requests as easily as it handles 1 request every so often.</strong> A database query that&#x27;s perfectly fine run once every 60 seconds (the cache&#x27;s TTL) can be a serious problem run 500 times in the same single second, which is exactly what an unguarded stampede does.</li><li><strong>This is a self-inflicted amplification, not an external traffic spike</strong> — the load multiplication comes entirely from the cache&#x27;s own expiry mechanics interacting with concurrent request patterns, meaning it&#x27;s fully within your control to prevent.</li><li><strong>You add stampede protection specifically to hot keys where the underlying computation or query is expensive enough that N simultaneous copies would actually cause harm</strong> — for cheap-to-recompute or low-traffic keys, the protection&#x27;s own complexity may not be worth adding.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a single ticket window at a popular event, where the window closes briefly for a break (the cache entry expiring) — if everyone in line rushes every other ticket window simultaneously the moment the main window closes, all those other windows get overwhelmed at once. A better system: one person is deputized to specifically go refresh the main window&#x27;s supply while everyone else in line simply waits a moment for it to reopen, rather than everyone scattering to overload every alternative resource simultaneously.</p>
+<p>Concretely, the common mitigations:</p>
+<ol><li><strong>Locking (single-flight)</strong>: when a cache miss occurs, the first request to notice acquires a lock and proceeds to recompute the value; every other concurrent request for the same key waits on that lock and reuses the result once it&#x27;s ready, rather than each independently recomputing.</li><li><strong>Early/probabilistic expiry</strong>: refresh a cache entry slightly *before* its actual expiry, with some randomized jitter — spreading out refresh timing across many keys so they don&#x27;t all expire in the same instant, and giving one lucky early request the job of refreshing before the crowd would otherwise stampede at the exact expiry moment.</li><li><strong>Stale-while-revalidate</strong>: serve the (slightly) stale cached value to most requests while exactly one request in the background refreshes it — trading a small amount of extra staleness for completely avoiding the stampede&#x27;s load spike.</li><li><strong>Request coalescing</strong>: multiple concurrent requests for the same missing key are deliberately merged into one actual underlying call, with the single result fanned back out to every waiting caller.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Without protection, many concurrent requests on a cache miss all hit the origin simultaneously; with single-flight locking, only one request hits the origin while the rest wait and reuse its result">
+  <rect x="20" y="20" width="290" height="70" rx="8" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+  <text x="165" y="42" fill="#f85149" font-size="10" text-anchor="middle" font-family="sans-serif">unprotected: STAMPEDE</text>
+  <text x="165" y="65" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">500 concurrent requests -&gt; 500 origin calls</text>
+
+  <rect x="350" y="20" width="290" height="70" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="495" y="42" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">single-flight: PROTECTED</text>
+  <text x="495" y="65" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">500 concurrent requests -&gt; 1 origin call, 499 wait</text>
+</svg>
+<p>Single-flight locking collapses a stampede of N concurrent recomputations into exactly one.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a cache-miss handler under concurrent load. We start with a basic unprotected version demonstrating the stampede problem directly, extend it to single-flight locking that collapses concurrent misses into one computation, then handle the hard case: ensuring waiting requests correctly receive the result even if the one doing the actual work fails, rather than hanging forever.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: StampedeUnprotected.java -- models the PROBLEM: MANY concurrent
+// threads all missing the cache SIMULTANEOUSLY, each independently
+// hitting the expensive origin computation.
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class StampedeUnprotected {
+    static AtomicInteger originCallCount = new AtomicInteger(0);
+
+    static String expensiveOriginCall() {
+        originCallCount.incrementAndGet();
+        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+        return &quot;computed-value&quot;;
+    }
+
+    static String getWithoutProtection(String key) {
+        // NO locking, NO coordination -- every caller that misses just computes independently.
+        return expensiveOriginCall();
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int concurrentRequests = 20;
+        ExecutorService pool = Executors.newFixedThreadPool(concurrentRequests);
+        CountDownLatch latch = new CountDownLatch(concurrentRequests);
+
+        for (int i = 0; i &lt; concurrentRequests; i++) {
+            pool.submit(() -&gt; {
+                getWithoutProtection(&quot;popular-key&quot;);
+                latch.countDown();
+            });
+        }
+        latch.await();
+        pool.shutdown();
+
+        System.out.println(&quot;[unprotected] &quot; + concurrentRequests + &quot; concurrent requests resulted in &quot;
+                + originCallCount.get() + &quot; ACTUAL origin calls -- a full STAMPEDE&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java StampedeUnprotected.java</code></p>
+<p><code>getWithoutProtection</code> has no coordination between concurrent callers at all — every one of the 20 threads independently calls <code>expensiveOriginCall</code>, and <code>originCallCount</code> ends up equal to the full concurrency level, demonstrating the stampede in its rawest, unmitigated form.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SingleFlightBasic.java -- the SAME concurrent load, now
+// PROTECTED with single-flight locking: only ONE thread actually performs
+// the expensive computation; every OTHER concurrent caller for the SAME
+// key waits and reuses that single result.
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class SingleFlightBasic {
+    static AtomicInteger originCallCount = new AtomicInteger(0);
+    static ConcurrentHashMap&lt;String, CompletableFuture&lt;String&gt;&gt; inFlightRequests = new ConcurrentHashMap&lt;&gt;();
+
+    static String expensiveOriginCall() {
+        originCallCount.incrementAndGet();
+        try { Thread.sleep(50); } catch (InterruptedException ignored) {}
+        return &quot;computed-value&quot;;
+    }
+
+    static String getWithSingleFlight(String key) {
+        CompletableFuture&lt;String&gt; future = inFlightRequests.computeIfAbsent(key, k -&gt;
+            CompletableFuture.supplyAsync(SingleFlightBasic::expensiveOriginCall)
+        );
+        try {
+            return future.get(); // waits for the SHARED computation, whether it started it or not
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        } finally {
+            inFlightRequests.remove(key, future); // clean up once this specific computation is done
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int concurrentRequests = 20;
+        ExecutorService pool = Executors.newFixedThreadPool(concurrentRequests);
+        CountDownLatch latch = new CountDownLatch(concurrentRequests);
+
+        for (int i = 0; i &lt; concurrentRequests; i++) {
+            pool.submit(() -&gt; {
+                getWithSingleFlight(&quot;popular-key&quot;);
+                latch.countDown();
+            });
+        }
+        latch.await();
+        pool.shutdown();
+
+        System.out.println(&quot;[single-flight] &quot; + concurrentRequests + &quot; concurrent requests resulted in &quot;
+                + originCallCount.get() + &quot; ACTUAL origin call(s) -- stampede AVOIDED&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java SingleFlightBasic.java</code></p>
+<p><code>inFlightRequests.computeIfAbsent</code> is the coordination point: only the *first* thread to reach it for a given key actually creates a new <code>CompletableFuture</code> running <code>expensiveOriginCall</code>; every subsequent concurrent thread for the same key finds the already-present future and simply calls <code>.get()</code> on it, blocking until the first thread&#x27;s computation completes and reusing its exact result — <code>originCallCount</code> ends up at <code>1</code> regardless of how many concurrent callers there were.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: SingleFlightWithFailureHandling.java -- the SAME single-flight
+// coordination, now handling the PRODUCTION-FLAVORED hard case: the ONE
+// thread actually performing the computation FAILS. Every WAITING thread
+// must receive that failure too (not hang forever waiting on a future
+// that will never complete successfully), and a SUBSEQUENT request after
+// the failure must be allowed to RETRY rather than being permanently
+// stuck behind a cached failure.
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class SingleFlightWithFailureHandling {
+    static AtomicInteger originCallAttempts = new AtomicInteger(0);
+    static ConcurrentHashMap&lt;String, CompletableFuture&lt;String&gt;&gt; inFlightRequests = new ConcurrentHashMap&lt;&gt;();
+
+    // Fails on the FIRST attempt, succeeds on the SECOND -- simulates a transient origin failure.
+    static String flakyOriginCall() {
+        int attempt = originCallAttempts.incrementAndGet();
+        try { Thread.sleep(30); } catch (InterruptedException ignored) {}
+        if (attempt == 1) {
+            throw new RuntimeException(&quot;origin call failed on attempt &quot; + attempt);
+        }
+        return &quot;computed-value (attempt &quot; + attempt + &quot;)&quot;;
+    }
+
+    static String getWithSingleFlight(String key, int callerNum) {
+        CompletableFuture&lt;String&gt; future = inFlightRequests.computeIfAbsent(key, k -&gt;
+            CompletableFuture.supplyAsync(SingleFlightWithFailureHandling::flakyOriginCall)
+        );
+        try {
+            String result = future.get();
+            System.out.println(&quot;[caller &quot; + callerNum + &quot;] received: &quot; + result);
+            return result;
+        } catch (Exception e) {
+            System.out.println(&quot;[caller &quot; + callerNum + &quot;] received the SAME failure the computing thread hit: &quot; + e.getCause().getMessage());
+            return null;
+        } finally {
+            // CRITICAL: remove the future so a LATER request can retry, rather than being
+            // permanently stuck behind a cached failed future forever.
+            inFlightRequests.remove(key, future);
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        // First wave: 5 concurrent callers, all sharing the SAME in-flight (failing) computation.
+        ExecutorService pool = Executors.newFixedThreadPool(5);
+        CountDownLatch firstWaveLatch = new CountDownLatch(5);
+        for (int i = 1; i &lt;= 5; i++) {
+            int callerNum = i;
+            pool.submit(() -&gt; { getWithSingleFlight(&quot;popular-key&quot;, callerNum); firstWaveLatch.countDown(); });
+        }
+        firstWaveLatch.await();
+        pool.shutdown();
+
+        System.out.println();
+        System.out.println(&quot;--- second wave, AFTER the failure: a NEW request must be able to RETRY, not stay stuck ---&quot;);
+        String retryResult = getWithSingleFlight(&quot;popular-key&quot;, 6);
+        System.out.println(&quot;[caller 6, retry] final result: &quot; + retryResult);
+    }
+}</code></pre>
+<p>How to run: <code>java SingleFlightWithFailureHandling.java</code></p>
+<p><code>flakyOriginCall</code> deliberately throws on its first invocation. All five first-wave callers share the same <code>CompletableFuture</code>, so all five receive the identical failure via <code>future.get()</code> throwing an <code>ExecutionException</code> wrapping that <code>RuntimeException</code> — each caller&#x27;s <code>catch</code> block reports the shared failure. The <code>finally</code> block&#x27;s <code>inFlightRequests.remove(key, future)</code> runs for every caller, but critically, once the failed future is removed, the sixth caller&#x27;s later request finds no in-flight entry at all and triggers a *fresh* <code>computeIfAbsent</code> call — this time <code>flakyOriginCall</code>&#x27;s second invocation succeeds, demonstrating that a failure doesn&#x27;t permanently poison the key for all future requests.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>SingleFlightWithFailureHandling.main</code> in order. <strong>First</strong>, five threads are submitted, each calling <code>getWithSingleFlight(&quot;popular-key&quot;, callerNum)</code>. Whichever thread reaches <code>computeIfAbsent</code> first creates the shared <code>CompletableFuture</code>, running <code>flakyOriginCall</code> asynchronously; the other four find that same future already present and simply attach to it via <code>.get()</code>.</p>
+<p><strong>Next</strong>, <code>flakyOriginCall</code> runs exactly once for this whole wave (since <code>computeIfAbsent</code> guarantees single execution), and since this is <code>originCallAttempts</code>&#x27; first increment, <code>attempt == 1</code>, so it throws <code>RuntimeException(&quot;origin call failed on attempt 1&quot;)</code>.</p>
+<p><strong>Then</strong>, every one of the five waiting <code>future.get()</code> calls throws an <code>ExecutionException</code> wrapping that same original exception — each caller&#x27;s own <code>catch</code> block runs independently, printing that it received the same shared failure, and each caller&#x27;s <code>finally</code> block calls <code>inFlightRequests.remove(key, future)</code>.</p>
+<p><strong>After that</strong>, <code>remove(key, future)</code>&#x27;s two-argument form only actually removes the mapping if the currently-stored future still equals this specific <code>future</code> object — since all five callers are removing the *same* future instance for the same key, this operation is safely idempotent; after the first successful removal, subsequent calls find no matching entry left to remove, which causes no error since <code>remove</code> simply returns <code>false</code> in that case.</p>
+<p><strong>Finally</strong>, the second wave calls <code>getWithSingleFlight(&quot;popular-key&quot;, 6)</code> fresh. Since <code>inFlightRequests</code> no longer contains an entry for <code>&quot;popular-key&quot;</code> (it was removed after the failure), <code>computeIfAbsent</code> creates a brand-new <code>CompletableFuture</code>, running <code>flakyOriginCall</code> again — this time <code>originCallAttempts.incrementAndGet()</code> returns <code>2</code>, so the <code>if (attempt == 1)</code> check is <code>false</code>, and the call succeeds, returning <code>&quot;computed-value (attempt 2)&quot;</code>, which caller 6 receives successfully.</p>
+<pre><code>[caller 1] received the SAME failure the computing thread hit: origin call failed on attempt 1
+[caller 2] received the SAME failure the computing thread hit: origin call failed on attempt 1
+[caller 3] received the SAME failure the computing thread hit: origin call failed on attempt 1
+[caller 4] received the SAME failure the computing thread hit: origin call failed on attempt 1
+[caller 5] received the SAME failure the computing thread hit: origin call failed on attempt 1
+
+--- second wave, AFTER the failure: a NEW request must be able to RETRY, not stay stuck ---
+[caller 6] received: computed-value (attempt 2)
+[caller 6, retry] final result: computed-value (attempt 2)</code></pre>
+<p>(Exact ordering of the first five &quot;received&quot; lines can vary, since all five callers complete their <code>catch</code> blocks concurrently — but all five always report the identical failure message, and caller 6 always succeeds on its independent retry.)</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A single-flight implementation that forgets to remove the in-flight entry after a *failure* (only removing it after success) permanently poisons that key — every future request would keep attaching to the same, already-failed future forever, turning one transient failure into a permanent outage for that key. The <code>finally</code> block&#x27;s unconditional cleanup, run regardless of success or failure, is what prevents this.</blockquote>
+<ul><li>Single-flight locking is the most precise stampede protection — exactly one origin call regardless of concurrency — but it does mean all waiting requests experience the *same* latency as the slowest path (the actual computation), rather than being served a possibly-stale value immediately.</li><li>Stale-while-revalidate is a common complementary or alternative approach: serve the last known value immediately to every concurrent caller while exactly one background refresh runs, trading a small amount of extra staleness for zero added latency on the waiting requests.</li><li>This pattern matters most for genuinely hot keys with expensive origin computations — the coordination overhead of <code>computeIfAbsent</code> and <code>CompletableFuture</code> isn&#x27;t free, so applying it universally to every cache key, including cold ones, is unnecessary complexity for keys that were never going to stampede in the first place.</li><li>Combine this with jittered TTLs on related keys (avoiding many keys expiring at the exact same instant) as a complementary defense — single-flight protects any one key from a stampede, but staggered expiry reduces how often many different keys&#x27; stampede-protection logic all fires at once, which matters for overall system load even with per-key protection in place.</li></ul>
+  <div class="nav"><a class="prv" href="0504-ttl-eviction-policies.html"><span class="mini">← Previous</span>TTL & eviction policies</a><a class="nxt" href="0506-near-cache.html"><span class="mini">Next →</span>Near cache</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t505";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
