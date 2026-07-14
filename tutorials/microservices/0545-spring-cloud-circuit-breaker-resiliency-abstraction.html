@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Spring Cloud Circuit Breaker (resiliency abstraction)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 17. Spring Cloud Ecosystem Map</div>
+  <div class="htitle">
+    <h1>"Spring Cloud Circuit Breaker (resiliency abstraction)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Spring Cloud Circuit Breaker</strong> provides a common abstraction (<code>CircuitBreakerFactory</code>, <code>CircuitBreaker</code>) over multiple concrete circuit-breaker implementations — most commonly <strong>Resilience4j</strong> today, with Netflix Hystrix as the historical (now unmaintained) original — so application code can wrap a call to a potentially-unreliable downstream dependency in a circuit breaker without depending on any specific library&#x27;s API directly. A circuit breaker monitors call failures to a dependency and, once failures exceed a threshold, &quot;opens&quot; — short-circuiting further calls immediately with a fast failure or fallback, instead of continuing to let every caller wait out the same failing dependency&#x27;s timeout, and periodically testing whether the dependency has recovered before fully resuming normal calls.</p>
+<h2>2. Why &amp; when</h2>
+<p>You wrap a downstream call in a circuit breaker whenever that dependency can fail or degrade in ways that would otherwise cascade back to every caller:</p>
+<ul><li><strong>Without a circuit breaker, a failing or slow downstream dependency causes every caller to independently wait out the same timeout, repeatedly</strong> — if a dependency is completely down, every single call to it still takes the full timeout duration to fail, wasting time and resources on calls that were never going to succeed, and potentially exhausting the caller&#x27;s own thread pool or connection pool in the process (recreating exactly the <a href="0522-synchronous-call-chains-death-star.md">synchronous call chain</a> cascading-failure risk).</li><li><strong>A circuit breaker tracks the failure rate of calls to a dependency and, once it crosses a configured threshold, &quot;opens&quot; the circuit</strong> — subsequent calls fail immediately (or invoke a fallback) without even attempting the actual call, protecting the caller from wasting time on calls very likely to fail anyway, and reducing load on an already-struggling dependency.</li><li><strong>After a configured wait period, the circuit breaker moves to a &quot;half-open&quot; state</strong>, allowing a small number of trial calls through to test whether the dependency has recovered — if those trial calls succeed, the circuit closes again (resuming normal calls); if they still fail, it reopens and waits again.</li><li><strong>Using Spring Cloud Circuit Breaker&#x27;s abstraction, rather than Resilience4j&#x27;s API directly, means switching the underlying implementation</strong> (unlikely today, since Resilience4j is the clear standard, but historically relevant when migrating away from Hystrix) <strong>requires only a dependency and configuration change</strong>, not a rewrite of every place a circuit breaker is used.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of an electrical circuit breaker in a house, which is the literal namesake of this pattern: instead of letting a short circuit keep drawing dangerous current indefinitely (or forcing every appliance on the circuit to individually detect the fault and protect itself), the breaker trips once it detects a fault, cutting power immediately to prevent further damage. After some time, someone can attempt to reset it — if the underlying short is still there, it trips again instantly; if the fault has cleared, power resumes normally. A software circuit breaker applies the same idea to a failing downstream dependency: rather than letting every single caller independently discover and wait out the same failure, the breaker itself tracks the failure pattern and protects the wider system by failing fast once it&#x27;s clear the dependency isn&#x27;t currently working, periodically checking whether it&#x27;s safe to resume.</p>
+<p>Concretely:</p>
+<ol><li><strong>Closed state (normal operation)</strong>: calls pass through to the actual dependency; the circuit breaker tracks the rolling failure rate of these calls.</li><li><strong>Open state (triggered)</strong>: once the failure rate crosses a configured threshold within a configured window, the circuit &quot;opens&quot; — subsequent calls are immediately failed (or routed to a fallback) without attempting the real call at all, for a configured wait duration.</li><li><strong>Half-open state (testing recovery)</strong>: after the wait duration elapses, the circuit allows a limited number of trial calls through to the real dependency — if enough of these succeed, the circuit closes (resuming normal operation); if they still fail, it reopens and the wait period restarts.</li><li><strong>A fallback function</strong>, supplied alongside the protected call, defines what to return when the circuit is open (or when the call itself fails) — often a cached or default value, or a clearly-marked &quot;service temporarily unavailable&quot; response, rather than propagating the raw failure to the ultimate caller.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A circuit breaker cycles between closed (normal calls pass through), open (calls fail fast without trying), and half-open (limited trial calls test recovery) states based on observed failure rate">
+  <rect x="20" y="70" width="160" height="60" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="100" y="95" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">CLOSED</text>
+  <text x="100" y="112" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">calls pass through normally</text>
+
+  <rect x="250" y="70" width="160" height="60" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="2"/>
+  <text x="330" y="95" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">OPEN</text>
+  <text x="330" y="112" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">fail fast / fallback, no real call</text>
+
+  <rect x="480" y="70" width="160" height="60" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="2"/>
+  <text x="560" y="95" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">HALF-OPEN</text>
+  <text x="560" y="112" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">limited trial calls test recovery</text>
+
+  <line x1="180" y1="100" x2="250" y2="100" stroke="#8b949e" marker-end="url(#a10)"/>
+  <text x="215" y="90" fill="#8b949e" font-size="7" text-anchor="middle">threshold breached</text>
+  <line x1="410" y1="100" x2="480" y2="100" stroke="#8b949e" marker-end="url(#a10)"/>
+  <text x="445" y="90" fill="#8b949e" font-size="7" text-anchor="middle">wait elapses</text>
+  <path d="M 560 130 Q 330 180 100 130" stroke="#8b949e" fill="none" marker-end="url(#a10)"/>
+  <text x="330" y="175" fill="#8b949e" font-size="7" text-anchor="middle">trial calls succeed</text>
+  <defs><marker id="a10" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>The circuit cycles from closed to open once failures cross a threshold, then to half-open to test recovery, closing again if trial calls succeed.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: calling a flaky downstream pricing service. We start with a plain Java model of a basic failure-counting circuit breaker, extend it to add the half-open recovery-testing state, then show the real Spring Cloud Circuit Breaker (Resilience4j) shape with a fallback.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: BasicCircuitBreaker.java -- models the CORE idea: track recent
+// failures, and once a threshold is crossed, OPEN the circuit and fail
+// fast without even attempting the real call.
+import java.util.*;
+
+public class BasicCircuitBreaker {
+    static int failureCount = 0;
+    static final int FAILURE_THRESHOLD = 3;
+    static boolean circuitOpen = false;
+
+    static String callDependency(boolean simulateFailure) {
+        if (circuitOpen) {
+            return &quot;FAST FAIL: circuit is OPEN, not even attempting the real call&quot;;
+        }
+        if (simulateFailure) {
+            failureCount++;
+            System.out.println(&quot;Call failed (failure #&quot; + failureCount + &quot;)&quot;);
+            if (failureCount &gt;= FAILURE_THRESHOLD) {
+                circuitOpen = true;
+                System.out.println(&quot;Threshold reached -- OPENING the circuit&quot;);
+            }
+            return &quot;call failed&quot;;
+        }
+        return &quot;call succeeded&quot;;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(callDependency(true));
+        System.out.println(callDependency(true));
+        System.out.println(callDependency(true)); // 3rd failure -- circuit opens
+        System.out.println(callDependency(false)); // circuit is open -- fails fast, doesn&#x27;t even try
+    }
+}</code></pre>
+<p>How to run: <code>java BasicCircuitBreaker.java</code></p>
+<p><code>failureCount</code> accumulates with each failed call; once it reaches <code>FAILURE_THRESHOLD</code> (3), <code>circuitOpen</code> is set to <code>true</code>. The fourth call, despite <code>simulateFailure=false</code> (meaning it would have succeeded), never even attempts the real call — <code>circuitOpen</code> is checked first and the call fails fast, exactly the protective behavior a circuit breaker provides once it&#x27;s determined a dependency is unreliable.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: HalfOpenRecovery.java -- adds the HALF-OPEN state: after a wait
+// period, allow a LIMITED trial call through to test if the dependency
+// has recovered, closing the circuit again if it succeeds.
+import java.time.*;
+
+public class HalfOpenRecovery {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    static State state = State.CLOSED;
+    static int failureCount = 0;
+    static final int FAILURE_THRESHOLD = 3;
+    static Instant openedAt;
+    static final Duration WAIT_DURATION = Duration.ofSeconds(30);
+
+    static String call(boolean simulateFailure, Instant now) {
+        if (state == State.OPEN) {
+            if (Duration.between(openedAt, now).compareTo(WAIT_DURATION) &gt;= 0) {
+                state = State.HALF_OPEN; // wait elapsed -- allow ONE trial call through
+                System.out.println(&quot;Wait period elapsed -- moving to HALF_OPEN, allowing a trial call&quot;);
+            } else {
+                return &quot;FAST FAIL: still OPEN, wait period not yet elapsed&quot;;
+            }
+        }
+
+        if (simulateFailure) {
+            failureCount++;
+            if (state == State.HALF_OPEN) {
+                state = State.OPEN; openedAt = now; // trial call failed -- REOPEN
+                System.out.println(&quot;Trial call FAILED -- back to OPEN&quot;);
+            } else if (failureCount &gt;= FAILURE_THRESHOLD) {
+                state = State.OPEN; openedAt = now;
+                System.out.println(&quot;Threshold reached -- OPENING&quot;);
+            }
+            return &quot;call failed&quot;;
+        } else {
+            if (state == State.HALF_OPEN) {
+                state = State.CLOSED; failureCount = 0; // trial call SUCCEEDED -- fully recovered, CLOSE
+                System.out.println(&quot;Trial call SUCCEEDED -- circuit CLOSED, fully recovered&quot;);
+            }
+            return &quot;call succeeded&quot;;
+        }
+    }
+
+    public static void main(String[] args) {
+        Instant t0 = Instant.parse(&quot;2026-01-01T00:00:00Z&quot;);
+        call(true, t0); call(true, t0); call(true, t0); // opens after 3 failures
+        System.out.println(call(false, t0.plusSeconds(10))); // still within wait period -- fast fail
+
+        System.out.println(call(false, t0.plusSeconds(35))); // wait elapsed, trial call succeeds -- CLOSES
+        System.out.println(&quot;Final state: &quot; + state);
+    }
+}</code></pre>
+<p>How to run: <code>java HalfOpenRecovery.java</code></p>
+<p>At <code>t0+10s</code>, the wait period (30s) hasn&#x27;t elapsed, so the call fails fast without even checking <code>simulateFailure</code>. At <code>t0+35s</code>, the wait period has elapsed, so the state moves to <code>HALF_OPEN</code> and the trial call is actually attempted — since <code>simulateFailure=false</code> this time, it succeeds, and the circuit fully closes, resetting <code>failureCount</code> to 0 and resuming normal operation.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: SpringCloudCircuitBreakerRealShape.java -- the REAL Spring Cloud
+// Circuit Breaker shape (backed by Resilience4j): wrapping a downstream
+// call with a FALLBACK, using the common CircuitBreakerFactory abstraction.
+import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+
+public class SpringCloudCircuitBreakerRealShape {
+
+    @Service
+    static class PricingClient {
+        private final RestTemplate restTemplate;
+        private final CircuitBreakerFactory circuitBreakerFactory; // the SHARED abstraction, backed by Resilience4j
+
+        PricingClient(RestTemplate restTemplate, CircuitBreakerFactory circuitBreakerFactory) {
+            this.restTemplate = restTemplate;
+            this.circuitBreakerFactory = circuitBreakerFactory;
+        }
+
+        String getPrice(String item) {
+            return circuitBreakerFactory.create(&quot;pricingServiceCircuitBreaker&quot;)
+                .run(
+                    () -&gt; restTemplate.getForObject(&quot;http://pricing-service/prices/&quot; + item, String.class), // the protected call
+                    throwable -&gt; fallbackPrice(item, throwable) // invoked on failure OR when circuit is open
+                );
+        }
+
+        String fallbackPrice(String item, Throwable throwable) {
+            System.out.println(&quot;Fallback invoked for &quot; + item + &quot; -- reason: &quot; + throwable.getClass().getSimpleName());
+            return &quot;{\&quot;item\&quot;:\&quot;&quot; + item + &quot;\&quot;,\&quot;price\&quot;:\&quot;unavailable\&quot;,\&quot;fallback\&quot;:true}&quot;;
+        }
+    }
+
+    // resilience4j.circuitbreaker.instances.pricingServiceCircuitBreaker.sliding-window-size: 10
+    // resilience4j.circuitbreaker.instances.pricingServiceCircuitBreaker.failure-rate-threshold: 50
+    // resilience4j.circuitbreaker.instances.pricingServiceCircuitBreaker.wait-duration-in-open-state: 30s
+}</code></pre>
+<p>How to run: requires <code>spring-cloud-starter-circuitbreaker-resilience4j</code>; run in a Spring Boot application with the corresponding <code>resilience4j.circuitbreaker.instances.pricingServiceCircuitBreaker.*</code> properties configured, and observe <code>getPrice</code> returning the real pricing response under normal conditions, but automatically falling back to the <code>&quot;unavailable&quot;</code> response (without even attempting the real call) once the pricing service&#x27;s failure rate crosses the configured 50% threshold within the sliding window.</p>
+<p><code>circuitBreakerFactory.create(&quot;pricingServiceCircuitBreaker&quot;)</code> obtains a named circuit breaker instance (configuration for this specific name comes from <code>resilience4j.circuitbreaker.instances.pricingServiceCircuitBreaker.*</code> properties); <code>.run(supplier, fallback)</code> wraps the actual downstream call, automatically invoking <code>fallbackPrice</code> whenever the call fails *or* whenever the circuit is currently open — application code never needs to check the circuit&#x27;s state explicitly; the abstraction handles routing to the fallback transparently.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace what happens across several calls to <code>pricingClient.getPrice(&quot;widget&quot;)</code>, assuming the pricing service starts failing consistently partway through:</p>
+<ol><li><strong>Initial calls succeed normally.</strong> <code>circuitBreakerFactory.create(&quot;pricingServiceCircuitBreaker&quot;).run(...)</code> attempts the real <code>restTemplate.getForObject(...)</code> call each time, which succeeds, and the circuit breaker&#x27;s internal tracking records these as successes within its sliding window.</li><li><strong>The pricing service begins failing</strong> (say, due to an incident). Subsequent <code>getPrice</code> calls attempt the real call, which now throws an exception (a connection timeout or 5xx response) — Resilience4j&#x27;s tracking records these as failures, and <code>fallbackPrice</code> is invoked for each one, returning the <code>&quot;unavailable&quot;</code> response instead of propagating the raw exception to <code>getPrice</code>&#x27;s caller.</li><li><strong>Once the failure rate within the configured sliding window (10 calls) crosses the 50% threshold</strong>, Resilience4j opens the circuit internally. Subsequent calls to <code>getPrice</code> no longer even attempt <code>restTemplate.getForObject(...)</code> at all — <code>.run(...)</code> immediately invokes <code>fallbackPrice</code> with a <code>CallNotPermittedException</code> (Resilience4j&#x27;s specific signal that the circuit is open), skipping the real call entirely and returning the fallback response essentially instantly, rather than waiting out whatever timeout the real call would have needed.</li><li><strong>After the configured 30-second wait duration elapses</strong>, Resilience4j allows a limited number of trial calls through in a half-open state. If the pricing service has recovered by then, these trial calls succeed, and the circuit closes, resuming normal <code>getPrice</code> behavior; if the service is still failing, the circuit reopens and the wait period restarts.</li></ol>
+<p>Throughout this entire sequence, <code>PricingClient.getPrice</code>&#x27;s own code never changes or checks circuit state explicitly — the exact same <code>.run(supplier, fallback)</code> call handles every state transition (closed, open, half-open) transparently, always either returning the real result or invoking the fallback, and never leaving the caller to handle a raw, unhandled exception from the underlying HTTP call.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the fallback function itself must be reliable and fast — if <code>fallbackPrice</code> (or any fallback) performs its own slow or failure-prone operation (say, querying a different backup service), a struggling primary dependency combined with a struggling fallback can still leave the caller waiting or failing, defeating the entire purpose of the circuit breaker; fallbacks should typically be simple, local, and nearly guaranteed to succeed quickly (a cached value, a hardcoded default, or a clearly-marked unavailable response).</blockquote>
+<ul><li>A circuit breaker protects callers from repeatedly waiting out (or being harmed by) a downstream dependency that&#x27;s currently failing, by tracking failure rate and short-circuiting to a fallback once a threshold is crossed.</li><li>The three states (closed, open, half-open) let the system recover automatically: trial calls in the half-open state test whether the dependency has healed, without requiring every caller to keep hammering a still-broken dependency indefinitely.</li><li>Spring Cloud Circuit Breaker&#x27;s <code>CircuitBreakerFactory</code> abstraction decouples application code from the specific underlying implementation (Resilience4j today) — the same benefit the <a href="0539-spring-cloud-commons-shared-abstractions.md">Spring Cloud Commons</a> interfaces provide for discovery and load balancing.</li><li>Keep fallback logic simple, fast, and reliable — a fallback that can itself fail or hang undermines the protection a circuit breaker is meant to provide.</li></ul>
+  <div class="nav"><a class="prv" href="0544-spring-cloud-loadbalancer-client-side-lb.html"><span class="mini">← Previous</span>Spring Cloud LoadBalancer (client-side LB)</a><a class="nxt" href="0546-spring-cloud-openfeign-declarative-clients.html"><span class="mini">Next →</span>Spring Cloud OpenFeign (declarative clients)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t545";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
