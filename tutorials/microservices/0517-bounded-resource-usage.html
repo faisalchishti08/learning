@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Bounded resource usage" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 16. Cross-Cutting Concerns & Patterns</div>
+  <div class="htitle">
+    <h1>"Bounded resource usage"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Bounded resource usage</strong> means every queue, thread pool, connection pool, and in-memory buffer in a service has an explicit, finite maximum size, instead of being allowed to grow without limit. When a bound is reached, the service makes a deliberate choice — reject new work, apply backpressure, or shed load — rather than letting memory or threads grow until the process runs out of resources and crashes or grinds to a halt. It&#x27;s the discipline of designing for &quot;what happens when this fills up&quot; as a first-class case, not an afterthought.</p>
+<h2>2. Why &amp; when</h2>
+<p>You bound resources deliberately because unbounded ones fail in the worst possible way — slowly, then all at once, usually under the exact peak load when failing gracefully matters most:</p>
+<ul><li><strong>An unbounded queue in front of a slow consumer just grows.</strong> If producers add work faster than a consumer can drain it, an unbounded queue absorbs the difference silently, using more and more memory, until the process runs out of heap and crashes — taking down whatever *was* being processed along with whatever was waiting.</li><li><strong>A bounded queue turns that same overload into an explicit, immediate decision</strong>: once full, either the producer blocks (backpressure) or new work is rejected outright (load shedding) — both are worse for the specific request that gets rejected, but far better for the service&#x27;s overall survival and its ability to keep serving everything already accepted.</li><li><strong>This applies to every unbounded resource, not just queues</strong> — thread pools that spawn a new thread per request under load, in-memory caches with no eviction, buffers that grow to hold an entire unbounded response — all fail the same way: fine under normal load, catastrophic exactly when load spikes.</li><li><strong>You choose the bound based on what &quot;failing&quot; should look like</strong> — a bounded queue with a fast-reject policy fails fast and cheaply; a bounded queue with a blocking-producer policy applies backpressure upstream instead, which is preferable when the caller can usefully slow down.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a restaurant&#x27;s kitchen with a physical order rail that can hold at most 20 tickets. If the rail could grow infinitely, the kitchen would happily accept every order coming in during a rush, building up hundreds of pending tickets that will all eventually go out cold and late, or never at all once the kitchen simply can&#x27;t function anymore. A rail capped at 20 forces an explicit decision once it&#x27;s full: the host stops seating new tables (backpressure) or tells arriving customers &quot;kitchen&#x27;s at capacity, try back in 10 minutes&quot; (load shedding) — either way the kitchen keeps functioning for the 20 tickets it already committed to, instead of collapsing under an unbounded backlog.</p>
+<p>Concretely:</p>
+<ol><li><strong>Every resource that can grow under load needs an explicit maximum</strong>: queue depth, thread pool size, connection pool size, cache entry count, request body size.</li><li><strong>Reaching the bound triggers a deliberate policy</strong>, decided in advance: reject-immediately (fail fast, cheap), block-the-producer (backpressure, propagates the slowdown upstream), or evict-oldest (bounded cache).</li><li><strong>The choice of policy depends on what&#x27;s acceptable to lose or delay</strong> — rejecting a request outright is appropriate when the caller can retry; blocking a producer thread is appropriate when propagating slowness upstream is safer than silently queuing unboundedly.</li><li><strong>Bounding resources trades &quot;rare total failure&quot; for &quot;frequent partial failure&quot;</strong> — some requests get rejected or delayed under peak load, but the service as a whole keeps running and recovers once load subsides, instead of crashing and needing a restart.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Unbounded queue grows without limit under overload until the process runs out of memory; bounded queue rejects or blocks once full, keeping the service alive">
+  <text x="150" y="24" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="bold">Unbounded queue</text>
+  <rect x="20" y="40" width="260" height="34" rx="4" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="150" y="61" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">queue: 50,000 items and growing...</text>
+  <rect x="20" y="84" width="260" height="34" rx="4" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="150" y="105" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">heap exhausted -- process crashes</text>
+  <text x="150" y="140" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">everything, including work already accepted, is lost</text>
+
+  <text x="510" y="24" fill="#e6edf3" font-size="12" text-anchor="middle" font-family="sans-serif" font-weight="bold">Bounded queue</text>
+  <rect x="380" y="40" width="260" height="34" rx="4" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="510" y="61" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">queue: 500/500 -- FULL</text>
+  <rect x="380" y="84" width="260" height="34" rx="4" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="510" y="105" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">new work: rejected (503) or producer blocks</text>
+  <text x="510" y="140" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">the 500 already accepted keep processing normally</text>
+</svg>
+<p>An unbounded queue fails catastrophically once memory runs out; a bounded queue fails one request at a time and keeps running.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a task-processing service accepting work faster than it can process it. We start with an unbounded queue that silently grows, extend it to a bounded queue that rejects work once full, then handle the hard case: a bounded queue with a configurable policy (reject-fast vs. block-with-timeout) so callers can choose the right failure mode for their situation.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: UnboundedQueueDemo.java -- an UNBOUNDED queue: producers can
+// add work forever, with no limit, regardless of how fast it&#x27;s consumed.
+import java.util.concurrent.*;
+
+public class UnboundedQueueDemo {
+    public static void main(String[] args) throws InterruptedException {
+        LinkedBlockingQueue&lt;String&gt; queue = new LinkedBlockingQueue&lt;&gt;(); // no capacity given = unbounded
+        for (int i = 1; i &lt;= 5; i++) {
+            queue.put(&quot;task-&quot; + i); // always succeeds, no matter how full the queue gets
+        }
+        System.out.println(&quot;Queue size: &quot; + queue.size() + &quot; (would keep growing under real overload, unbounded)&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java UnboundedQueueDemo.java</code></p>
+<p><code>new LinkedBlockingQueue&lt;&gt;()</code> with no capacity argument has no maximum size — <code>put()</code> always succeeds immediately. Under real load where producers outpace the consumer, this queue would grow without any limit, silently consuming memory until the process runs out.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: BoundedQueueDemo.java -- a BOUNDED queue: capacity is capped,
+// and adding to a full queue fails immediately instead of growing.
+import java.util.concurrent.*;
+
+public class BoundedQueueDemo {
+    public static void main(String[] args) {
+        ArrayBlockingQueue&lt;String&gt; queue = new ArrayBlockingQueue&lt;&gt;(3); // hard cap of 3
+        for (int i = 1; i &lt;= 5; i++) {
+            boolean accepted = queue.offer(&quot;task-&quot; + i); // non-blocking: fails instead of waiting or growing
+            System.out.println(&quot;task-&quot; + i + &quot; -&gt; &quot; + (accepted ? &quot;accepted (queue size=&quot; + queue.size() + &quot;)&quot; : &quot;REJECTED, queue full&quot;));
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java BoundedQueueDemo.java</code></p>
+<p><code>ArrayBlockingQueue&lt;&gt;(3)</code> has a fixed capacity of 3. <code>offer()</code> (unlike <code>put()</code>) never blocks or grows the queue — it returns <code>false</code> immediately once full. Tasks 1-3 are accepted; tasks 4 and 5 are explicitly rejected, which is the deliberate, visible failure this pattern is designed to produce instead of silent unbounded growth.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: PolicyBoundedQueue.java -- a bounded queue with a CONFIGURABLE
+// policy: reject-fast for latency-sensitive callers, or block-with-timeout
+// (backpressure) for callers that can tolerate a bounded wait.
+import java.util.concurrent.*;
+
+public class PolicyBoundedQueue {
+    enum Policy { REJECT_FAST, BLOCK_WITH_TIMEOUT }
+
+    static boolean submit(ArrayBlockingQueue&lt;String&gt; queue, String task, Policy policy) throws InterruptedException {
+        switch (policy) {
+            case REJECT_FAST:
+                return queue.offer(task); // fails immediately if full -- for callers who&#x27;d rather retry elsewhere
+            case BLOCK_WITH_TIMEOUT:
+                return queue.offer(task, 200, TimeUnit.MILLISECONDS); // waits up to 200ms for room, THEN gives up
+            default:
+                throw new IllegalArgumentException();
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        ArrayBlockingQueue&lt;String&gt; queue = new ArrayBlockingQueue&lt;&gt;(2);
+        queue.put(&quot;existing-1&quot;);
+        queue.put(&quot;existing-2&quot;); // queue is now full: 2/2
+
+        // A latency-sensitive caller: fail immediately rather than wait.
+        boolean fastResult = submit(queue, &quot;urgent-task&quot;, Policy.REJECT_FAST);
+        System.out.println(&quot;REJECT_FAST on full queue -&gt; accepted=&quot; + fastResult + &quot; (returned instantly)&quot;);
+
+        // A tolerant caller: willing to wait briefly for a consumer to free a slot.
+        ExecutorService consumer = Executors.newSingleThreadExecutor();
+        consumer.submit(() -&gt; {
+            try {
+                Thread.sleep(100); // consumer drains one item after 100ms
+                queue.take();
+                System.out.println(&quot;[consumer] drained one item, freeing a slot&quot;);
+            } catch (InterruptedException ignored) {}
+        });
+
+        long start = System.currentTimeMillis();
+        boolean blockResult = submit(queue, &quot;tolerant-task&quot;, Policy.BLOCK_WITH_TIMEOUT);
+        System.out.println(&quot;BLOCK_WITH_TIMEOUT -&gt; accepted=&quot; + blockResult + &quot; after &quot; + (System.currentTimeMillis() - start) + &quot;ms (waited for consumer to free a slot)&quot;);
+        consumer.shutdown();
+    }
+}</code></pre>
+<p>How to run: <code>java PolicyBoundedQueue.java</code></p>
+<p><code>REJECT_FAST</code> uses <code>offer(task)</code> with no wait — it fails the instant the queue is full, appropriate when the caller would rather get an immediate error and retry elsewhere than sit waiting. <code>BLOCK_WITH_TIMEOUT</code> uses <code>offer(task, 200, MILLISECONDS)</code>, which waits up to 200ms for a slot to open before giving up — appropriate when applying backpressure to the caller (making it wait briefly) is preferable to an instant rejection. In the demo, the consumer thread frees a slot after 100ms, so the tolerant submission succeeds at roughly the 100ms mark, well inside its 200ms budget — demonstrating the bound is still enforced (it would have failed at 200ms if the consumer never freed a slot), just with a grace period the fast policy doesn&#x27;t get.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>PolicyBoundedQueue.main</code> end to end:</p>
+<ol><li><strong>The queue is created with capacity 2</strong>, and two <code>put()</code> calls fill it completely (<code>existing-1</code>, <code>existing-2</code>) — the queue is now at its hard bound, 2/2.</li><li><strong><code>submit(queue, &quot;urgent-task&quot;, REJECT_FAST)</code> is called.</strong> Internally this calls <code>queue.offer(&quot;urgent-task&quot;)</code> with no wait argument. Because the queue is full, <code>offer</code> returns <code>false</code> immediately — no blocking, no growth. The caller sees <code>accepted=false</code> in effectively zero time, and can immediately decide to retry elsewhere, return an error to *its* caller, or shed the request.</li><li><strong>A single-threaded consumer executor is started</strong>, scheduled to sleep 100ms and then call <code>queue.take()</code>, which removes one item (<code>existing-1</code>) and logs that it drained a slot.</li><li><strong>Concurrently, <code>submit(queue, &quot;tolerant-task&quot;, BLOCK_WITH_TIMEOUT)</code> is called.</strong> Internally this calls <code>queue.offer(&quot;tolerant-task&quot;, 200, MILLISECONDS)</code>. Because the queue is still full at this instant, the calling thread blocks — but only up to 200ms.</li><li><strong>At roughly the 100ms mark, the consumer&#x27;s <code>take()</code> fires</strong>, removing <code>existing-1</code> and freeing one slot in the queue.</li><li><strong>The blocked <code>offer(...)</code> call, which has been waiting since roughly time zero, notices the freed slot and succeeds</strong> — it inserts <code>tolerant-task</code> and returns <code>true</code>, roughly 100ms after it started waiting, well under its 200ms ceiling.</li><li><strong><code>main</code> prints the elapsed time</strong> for the blocking call, demonstrating it resolved via the consumer&#x27;s drain rather than via timing out.</li></ol>
+<p>The key structural contrast: <code>REJECT_FAST</code> converts overload into an instant, cheap failure signal the caller can act on immediately; <code>BLOCK_WITH_TIMEOUT</code> converts overload into a bounded wait that resolves successfully if the system recovers capacity in time, and only fails if it doesn&#x27;t — both are deliberate, bounded outcomes, and neither lets the queue itself grow past its cap of 2.</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a bounded queue with an unbounded *timeout* on the blocking path (or a <code>put()</code> instead of a time-bounded <code>offer()</code>) isn&#x27;t actually bounded in the way that matters — the caller thread can now hang indefinitely waiting for room, which just moves the unbounded-growth problem from &quot;queue memory&quot; to &quot;blocked caller threads,&quot; another resource that can now be exhausted instead.</blockquote>
+<ul><li>Every queue, pool, and buffer needs an explicit maximum size — &quot;it&#x27;ll be fine most of the time&quot; is exactly the load profile that unbounded resources fail under, at the worst possible moment.</li><li>Choose the overload policy deliberately: reject-fast for latency-sensitive callers who can retry elsewhere, block-with-timeout (backpressure) for callers who can tolerate a bounded wait.</li><li>A bound only truly bounds the system if every step of the fallback path is also bounded — an unbounded wait on a &quot;bounded&quot; queue just relocates the problem.</li><li>Bounding resources trades rare, catastrophic total failure for frequent, cheap partial failure (rejected requests) — a trade that&#x27;s almost always worth making for service survivability under peak load.</li></ul>
+  <div class="nav"><a class="prv" href="0516-asynchronous-reactive-for-throughput.html"><span class="mini">← Previous</span>Asynchronous & reactive for throughput</a><a class="nxt" href="0518-auto-scaling-triggers-cpu-latency-queue-depth.html"><span class="mini">Next →</span>Auto-scaling triggers (CPU, latency, queue depth)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t517";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
