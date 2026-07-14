@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Data plane vs control plane" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 15. Service Mesh & Infrastructure</div>
+  <div class="htitle">
+    <h1>"Data plane vs control plane"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>data plane</strong> is the collection of <a href="0479-sidecar-proxy-envoy.md">sidecar proxies</a> that actually handle every request — the component sitting in the direct path of every service-to-service call, applying routing, retries, and mTLS to real traffic in real time. The <strong>control plane</strong> is the separate, centralized component that configures the data plane — computing routing rules, security policies, and certificates, and pushing that configuration out to every proxy — but never touches application traffic itself.</p>
+<h2>2. Why &amp; when</h2>
+<p>You need to understand this split because it explains both a mesh&#x27;s power and its most common source of confusion during an incident:</p>
+<ul><li><strong>Separating &quot;what handles traffic&quot; from &quot;what decides how traffic should be handled&quot; lets each scale and fail independently.</strong> The data plane must be fast and low-latency, since it sits on the critical path of every request; the control plane can be slower and less latency-sensitive, since it&#x27;s only pushing configuration updates periodically, not handling live traffic itself.</li><li><strong>A control plane outage should not mean a data plane outage.</strong> Proxies typically cache their last-received configuration and keep operating on it even if they temporarily lose contact with the control plane — meaning existing traffic keeps flowing correctly even during a control-plane hiccup, though *new* configuration changes won&#x27;t propagate until it recovers.</li><li><strong>Debugging requires knowing which plane a problem is actually in.</strong> &quot;Traffic isn&#x27;t routing correctly&quot; could mean a data-plane proxy is misbehaving, or it could mean the control plane pushed the wrong configuration to it — these are different failures requiring different fixes, and conflating them wastes debugging time.</li><li><strong>You need this mental model as soon as you&#x27;re operating any real service mesh</strong> — <a href="0486-istio-linkerd-overview.md">Istio</a>, Linkerd, and virtually every mesh implementation share this exact architectural split, even though the specific component names differ.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of an air traffic control system: the actual airplanes (the data plane) are what physically carry passengers and cargo along their routes in real time, while air traffic control (the control plane) decides the routes, altitudes, and clearances every plane should follow, communicating those instructions to the planes — but control doesn&#x27;t fly the planes itself, and a plane already in the air with valid clearance keeps flying safely for a while even if it briefly loses radio contact.</p>
+<p>Concretely:</p>
+<ol><li><strong>The control plane computes desired configuration</strong> — which services can talk to which, what retry policy applies to a given route, what certificates are valid — typically derived from higher-level configuration (mesh policy objects, Kubernetes resources) that an operator declares.</li><li><strong>The control plane pushes that configuration out to every proxy in the data plane</strong>, usually over a dedicated configuration protocol (Envoy&#x27;s proxies, for example, use the xDS API to receive configuration updates from a control plane like Istio&#x27;s <code>istiod</code>).</li><li><strong>Each data-plane proxy receives and caches its configuration locally</strong>, applying it to every request it actually handles — routing decisions, retry attempts, TLS handshakes all happen inside the proxy, using the configuration it was last given.</li><li><strong>Live traffic flows entirely through the data plane</strong> — the control plane is never in the request path; a service-to-service call never has to &quot;ask&quot; the control plane anything in real time.</li><li><strong>Configuration changes propagate asynchronously</strong> — an operator updates a policy, the control plane recomputes the relevant configuration, and pushes it to the affected proxies, which then start applying the new behavior on their next requests, with some propagation delay between &quot;the policy changed&quot; and &quot;every proxy is enforcing it.&quot;</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The control plane pushes configuration to data-plane proxies, but never sits in the path of actual request traffic, which flows directly between proxies" >
+  <rect x="240" y="20" width="180" height="50" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="330" y="50" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">control plane</text>
+
+  <rect x="40" y="130" width="160" height="60" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="120" y="155" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">proxy A</text>
+  <text x="120" y="172" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">data plane</text>
+
+  <rect x="460" y="130" width="160" height="60" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="540" y="155" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">proxy B</text>
+  <text x="540" y="172" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">data plane</text>
+
+  <line x1="290" y1="70" x2="150" y2="130" stroke="#8b949e" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+  <text x="185" y="100" fill="#8b949e" font-size="8" font-family="sans-serif">config push</text>
+  <line x1="370" y1="70" x2="510" y2="130" stroke="#8b949e" stroke-dasharray="3,2" marker-end="url(#a1)"/>
+  <text x="460" y="100" fill="#8b949e" font-size="8" font-family="sans-serif">config push</text>
+
+  <line x1="200" y1="160" x2="460" y2="160" stroke="#6db33f" stroke-width="2" marker-end="url(#a2)"/>
+  <text x="330" y="150" fill="#6db33f" font-size="9" text-anchor="middle" font-family="sans-serif">actual request traffic -- control plane NOT in this path</text>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/></marker>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>The control plane pushes configuration to proxies asynchronously; actual request traffic flows proxy-to-proxy, never through the control plane.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a simulated control plane pushing routing configuration to proxies that then handle live traffic independently. We start with a basic config-push-then-handle-traffic sequence, extend it to show traffic continuing to flow correctly using cached config, then handle the hard case: the control plane being temporarily unreachable, where the data plane must keep serving traffic on its last-known-good configuration rather than failing.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: ControlPlaneConfigPush.java -- models a control plane pushing
+// routing configuration to a proxy, which then uses THAT configuration to
+// handle live traffic -- two clearly separate steps.
+import java.util.*;
+
+public class ControlPlaneConfigPush {
+    static class Proxy {
+        Map&lt;String, String&gt; routingConfig = new HashMap&lt;&gt;();
+
+        void receiveConfig(Map&lt;String, String&gt; config) {
+            routingConfig = config;
+            System.out.println(&quot;[proxy] received config from control plane: &quot; + config);
+        }
+
+        String handleRequest(String serviceName) {
+            String target = routingConfig.get(serviceName);
+            System.out.println(&quot;[proxy] routing request for &#x27;&quot; + serviceName + &quot;&#x27; to &quot; + target + &quot; (using locally cached config)&quot;);
+            return target;
+        }
+    }
+
+    public static void main(String[] args) {
+        Proxy proxy = new Proxy();
+
+        System.out.println(&quot;[control plane] computing and pushing routing configuration&quot;);
+        proxy.receiveConfig(Map.of(&quot;inventory-service&quot;, &quot;inventory-v2&quot;));
+
+        proxy.handleRequest(&quot;inventory-service&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java ControlPlaneConfigPush.java</code></p>
+<p><code>receiveConfig</code> and <code>handleRequest</code> are entirely separate method calls — the control plane&#x27;s push (<code>receiveConfig</code>) happens once, and <code>handleRequest</code> afterward only ever reads from <code>routingConfig</code>, the proxy&#x27;s own local copy, never reaching back out to anything resembling a control plane while actually handling a request.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: DataPlaneUsesCachedConfig.java -- the SAME push-then-serve model,
+// now handling MULTIPLE requests over time using the SAME cached config,
+// with the control plane pushing an UPDATE partway through -- showing
+// configuration changes take effect only from the next request onward.
+import java.util.*;
+
+public class DataPlaneUsesCachedConfig {
+    static class Proxy {
+        Map&lt;String, String&gt; routingConfig = new HashMap&lt;&gt;();
+
+        void receiveConfig(Map&lt;String, String&gt; config) {
+            routingConfig = config;
+            System.out.println(&quot;[proxy] config updated: &quot; + config);
+        }
+
+        String handleRequest(String requestId, String serviceName) {
+            String target = routingConfig.get(serviceName);
+            System.out.println(&quot;[proxy] request &quot; + requestId + &quot; for &#x27;&quot; + serviceName + &quot;&#x27; -&gt; &quot; + target);
+            return target;
+        }
+    }
+
+    public static void main(String[] args) {
+        Proxy proxy = new Proxy();
+        proxy.receiveConfig(Map.of(&quot;inventory-service&quot;, &quot;inventory-v1&quot;));
+
+        proxy.handleRequest(&quot;req-1&quot;, &quot;inventory-service&quot;);
+        proxy.handleRequest(&quot;req-2&quot;, &quot;inventory-service&quot;);
+
+        System.out.println();
+        System.out.println(&quot;[control plane] operator updates the routing policy -- pushing new config&quot;);
+        proxy.receiveConfig(Map.of(&quot;inventory-service&quot;, &quot;inventory-v2&quot;));
+
+        proxy.handleRequest(&quot;req-3&quot;, &quot;inventory-service&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java DataPlaneUsesCachedConfig.java</code></p>
+<p><code>req-1</code> and <code>req-2</code> are both routed to <code>inventory-v1</code>, using the config pushed before either request arrived. Only after <code>receiveConfig</code> is called a second time does <code>routingConfig</code> change — <code>req-3</code>, arriving after that push, is routed to <code>inventory-v2</code>. No request ever waits on or queries the control plane directly; each simply reads whatever <code>routingConfig</code> currently holds at the moment it&#x27;s handled.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: DataPlaneSurvivesControlPlaneOutage.java -- the SAME
+// push-then-serve model, now handling the PRODUCTION-FLAVORED hard case:
+// the CONTROL PLANE becomes temporarily UNREACHABLE. The data plane MUST
+// keep serving live traffic correctly using its LAST KNOWN GOOD
+// configuration -- a control plane outage should never mean the data
+// plane stops handling requests, only that NEW config changes can&#x27;t
+// propagate until it recovers.
+import java.util.*;
+
+public class DataPlaneSurvivesControlPlaneOutage {
+    static class ControlPlane {
+        boolean reachable = true;
+        Map&lt;String, String&gt; latestConfig = new HashMap&lt;&gt;();
+
+        Map&lt;String, String&gt; pushConfigIfReachable(Map&lt;String, String&gt; newConfig) {
+            if (!reachable) {
+                System.out.println(&quot;[control plane] UNREACHABLE -- cannot push config right now&quot;);
+                return null;
+            }
+            latestConfig = newConfig;
+            System.out.println(&quot;[control plane] pushed config: &quot; + newConfig);
+            return newConfig;
+        }
+    }
+
+    static class Proxy {
+        Map&lt;String, String&gt; routingConfig = new HashMap&lt;&gt;(); // last-known-good, cached locally
+
+        void tryReceiveConfig(ControlPlane controlPlane, Map&lt;String, String&gt; desiredConfig) {
+            Map&lt;String, String&gt; pushed = controlPlane.pushConfigIfReachable(desiredConfig);
+            if (pushed != null) {
+                routingConfig = pushed;
+                System.out.println(&quot;[proxy] config updated from control plane&quot;);
+            } else {
+                System.out.println(&quot;[proxy] control plane unreachable -- CONTINUING with last-known-good config: &quot; + routingConfig);
+            }
+        }
+
+        String handleRequest(String requestId, String serviceName) {
+            String target = routingConfig.get(serviceName);
+            System.out.println(&quot;[proxy] request &quot; + requestId + &quot; for &#x27;&quot; + serviceName + &quot;&#x27; -&gt; &quot; + target + &quot; (data plane unaffected by control plane state)&quot;);
+            return target;
+        }
+    }
+
+    public static void main(String[] args) {
+        ControlPlane controlPlane = new ControlPlane();
+        Proxy proxy = new Proxy();
+
+        proxy.tryReceiveConfig(controlPlane, Map.of(&quot;inventory-service&quot;, &quot;inventory-v1&quot;));
+        proxy.handleRequest(&quot;req-1&quot;, &quot;inventory-service&quot;);
+
+        System.out.println();
+        System.out.println(&quot;[incident] control plane becomes unreachable&quot;);
+        controlPlane.reachable = false;
+
+        System.out.println(&quot;[control plane] operator tries to push an update during the outage&quot;);
+        proxy.tryReceiveConfig(controlPlane, Map.of(&quot;inventory-service&quot;, &quot;inventory-v2&quot;));
+
+        System.out.println();
+        System.out.println(&quot;--- live traffic continues to be served correctly during the control plane outage ---&quot;);
+        proxy.handleRequest(&quot;req-2&quot;, &quot;inventory-service&quot;);
+        proxy.handleRequest(&quot;req-3&quot;, &quot;inventory-service&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java DataPlaneSurvivesControlPlaneOutage.java</code></p>
+<p><code>tryReceiveConfig</code> calls <code>controlPlane.pushConfigIfReachable</code>, which returns <code>null</code> once <code>reachable</code> is set to <code>false</code> — the <code>if (pushed != null)</code> check then routes to the <code>else</code> branch, explicitly keeping <code>routingConfig</code> unchanged and logging that the proxy is continuing on its last-known-good state. Crucially, <code>handleRequest</code> never checks <code>controlPlane.reachable</code> at all — it only ever reads <code>routingConfig</code>, so <code>req-2</code> and <code>req-3</code>, both handled during the simulated outage, are routed exactly as correctly as <code>req-1</code> was before the outage began.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>DataPlaneSurvivesControlPlaneOutage.main</code> in order. <strong>First</strong>, <code>proxy.tryReceiveConfig(controlPlane, Map.of(&quot;inventory-service&quot;, &quot;inventory-v1&quot;))</code> runs while <code>controlPlane.reachable</code> is still <code>true</code> — <code>pushConfigIfReachable</code> returns the config, <code>routingConfig</code> is updated to <code>inventory-v1</code>, and <code>req-1</code> is handled correctly using it.</p>
+<p><strong>Next</strong>, the simulated incident sets <code>controlPlane.reachable = false</code>, representing a real network partition or control-plane crash — nothing about the proxy&#x27;s own state changes at this point.</p>
+<p><strong>Then</strong>, the operator&#x27;s attempted update calls <code>tryReceiveConfig</code> again, this time with <code>inventory-v2</code> as the desired config. Inside <code>pushConfigIfReachable</code>, the <code>if (!reachable)</code> check is now <code>true</code>, so it prints the unreachable message and returns <code>null</code> without touching <code>latestConfig</code>. Back in <code>tryReceiveConfig</code>, <code>pushed</code> is <code>null</code>, so the <code>else</code> branch runs: <code>routingConfig</code> is explicitly left unchanged, still holding <code>inventory-v1</code>, and the proxy logs that it&#x27;s continuing on its last-known-good state.</p>
+<p><strong>After that</strong>, <code>req-2</code> and <code>req-3</code> both call <code>handleRequest</code>, which reads <code>routingConfig.get(&quot;inventory-service&quot;)</code> exactly as it did for <code>req-1</code> — since <code>routingConfig</code> was never actually updated during the outage, both requests are routed to <code>inventory-v1</code>, correctly and without any error, exception, or degraded behavior.</p>
+<p><strong>Finally</strong>, the program ends having demonstrated that a complete control-plane outage, spanning an attempted (and failed) configuration push, had zero impact on the data plane&#x27;s ability to keep serving live traffic — the *new* <code>inventory-v2</code> policy simply never took effect, which is the one and only consequence of the outage.</p>
+<pre><code>[control plane] pushed config: {inventory-service=inventory-v1}
+[proxy] config updated from control plane
+[proxy] request req-1 for &#x27;inventory-service&#x27; -&gt; inventory-v1 (data plane unaffected by control plane state)
+
+[incident] control plane becomes unreachable
+[control plane] operator tries to push an update during the outage
+[control plane] UNREACHABLE -- cannot push config right now
+[proxy] control plane unreachable -- CONTINUING with last-known-good config: {inventory-service=inventory-v1}
+
+--- live traffic continues to be served correctly during the control plane outage ---
+[proxy] request req-2 for &#x27;inventory-service&#x27; -&gt; inventory-v1 (data plane unaffected by control plane state)
+[proxy] request req-3 for &#x27;inventory-service&#x27; -&gt; inventory-v1 (data plane unaffected by control plane state)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>During a control-plane outage, it&#x27;s easy to panic about &quot;the mesh being down&quot; when actually only *configuration propagation* is down — live traffic is very likely still flowing correctly on cached configuration. Confirm which plane is actually affected before assuming an incident is worse than it is.</blockquote>
+<ul><li>The data plane&#x27;s resilience to control-plane outages is a deliberate design property of virtually every real mesh implementation, not an accident — proxies are built to operate safely on stale-but-valid configuration rather than failing open or closed the instant they lose contact.</li><li>Configuration propagation delay is real and worth monitoring — &quot;I updated the policy&quot; and &quot;every proxy is enforcing the new policy&quot; are two different points in time, with a gap between them that matters during incident response or a security-sensitive change.</li><li><a href="0479-sidecar-proxy-envoy.md">Sidecar proxies</a> are the data plane&#x27;s concrete implementation — understanding this split is what makes sense of why a proxy restart, not a control-plane restart, is usually the right response to a single misbehaving service&#x27;s traffic handling.</li><li>When debugging mesh behavior, separate the two questions clearly: &quot;is the configuration that was pushed correct?&quot; (a control-plane question) versus &quot;is the proxy applying its received configuration correctly?&quot; (a data-plane question) — conflating them wastes debugging time chasing the wrong component.</li><li>This is not unique to service meshes — Kubernetes itself has the same split (the API server and controllers as the control plane, kubelet and running Pods as the data plane), and the same reasoning about independent failure and cached state applies there too.</li></ul>
+  <div class="nav"><a class="prv" href="0477-service-mesh-definition.html"><span class="mini">← Previous</span>Service mesh definition</a><a class="nxt" href="0479-sidecar-proxy-envoy.html"><span class="mini">Next →</span>Sidecar proxy (Envoy)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t478";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

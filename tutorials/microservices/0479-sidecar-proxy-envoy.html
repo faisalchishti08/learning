@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Sidecar proxy (Envoy)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 15. Service Mesh & Infrastructure</div>
+  <div class="htitle">
+    <h1>"Sidecar proxy (Envoy)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>sidecar proxy</strong> is a small network proxy process deployed alongside every application instance — in Kubernetes, as a second container inside the same Pod — through which all of that instance&#x27;s inbound and outbound traffic is transparently routed. <strong>Envoy</strong> is the most widely used proxy for this role (it&#x27;s the data-plane proxy underlying <a href="0486-istio-linkerd-overview.md">Istio</a> and several other meshes), chosen for its rich, dynamically-configurable feature set: retries, circuit breaking, load balancing, mTLS termination, and detailed telemetry, all without the application knowing it&#x27;s there.</p>
+<h2>2. Why &amp; when</h2>
+<p>You deploy a sidecar proxy specifically to intercept traffic at the network layer, transparently, without any application-level integration:</p>
+<ul><li><strong>A proxy running as a separate process (or library) elsewhere requires the application to know it exists and route through it explicitly.</strong> A true sidecar, by contrast, uses network-level traffic redirection (<code>iptables</code> rules, in many Kubernetes-based meshes) so the application&#x27;s normal outbound calls are captured automatically, with zero code changes.</li><li><strong>Colocating the proxy in the same Pod keeps the extra network hop cheap.</strong> Communication between the application container and its sidecar happens over <code>localhost</code>, which is fast and reliable — the proxy adds functionality without adding meaningful network latency to that first hop.</li><li><strong>Per-instance deployment means per-instance failure isolation.</strong> One Pod&#x27;s sidecar crashing or misbehaving doesn&#x27;t directly affect any other Pod&#x27;s proxy — each instance&#x27;s mesh behavior is independently scoped to that instance.</li><li><strong>You use this specifically as the data-plane mechanism of a service mesh</strong>, established as soon as you adopt one — it&#x27;s the concrete &quot;how&quot; behind the abstract <a href="0478-data-plane-vs-control-plane.md">data plane</a> concept.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of airport security screening: every passenger (every network packet) passes through a checkpoint (the sidecar proxy) positioned right at their own gate, before continuing to their destination — the checkpoint doesn&#x27;t require the passenger to do anything special, it&#x27;s simply positioned in their path, checking and, if needed, redirecting them, entirely transparently to their travel plans.</p>
+<p>Concretely:</p>
+<ol><li><strong>The sidecar (Envoy) is deployed as a second container in the same Pod</strong> as the application container, sharing the Pod&#x27;s network namespace.</li><li><strong>Traffic redirection rules route the application&#x27;s outbound and inbound traffic through the sidecar</strong> — the application makes a normal call to a service name, and network-level rules transparently send that traffic to the local proxy first, rather than directly out.</li><li><strong>The proxy applies its configured behavior</strong> — load balancing across the destination&#x27;s healthy instances, retrying on failure, terminating or originating mTLS, and recording telemetry about the call.</li><li><strong>The proxy forwards the (possibly retried, possibly load-balanced) request to the destination&#x27;s own sidecar</strong>, which applies its own inbound handling before finally passing the request to the actual destination application.</li><li><strong>The application, on both ends, never directly touches the network for mesh-managed traffic</strong> — it makes and receives what look like completely ordinary local calls, with all the proxy-layer behavior happening invisibly around it.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An application container and its sidecar proxy share a Pod; the application's traffic is transparently redirected through the local sidecar before leaving the Pod">
+  <rect x="20" y="20" width="280" height="150" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="160" y="42" fill="#6db33f" font-size="10" text-anchor="middle" font-family="sans-serif">Pod</text>
+
+  <rect x="40" y="60" width="110" height="55" rx="6" fill="#141a22" stroke="#79c0ff"/>
+  <text x="95" y="90" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">app container</text>
+
+  <rect x="170" y="60" width="110" height="55" rx="6" fill="#141a22" stroke="#f0883e"/>
+  <text x="225" y="83" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">Envoy</text>
+  <text x="225" y="98" fill="#f0883e" font-size="8" text-anchor="middle" font-family="sans-serif">sidecar proxy</text>
+
+  <line x1="150" y1="87" x2="170" y2="87" stroke="#8b949e" marker-end="url(#a1)"/>
+  <text x="160" y="80" fill="#8b949e" font-size="7" font-family="sans-serif">localhost</text>
+
+  <line x1="300" y1="87" x2="420" y2="87" stroke="#8b949e" stroke-width="2" marker-end="url(#a1)"/>
+  <text x="360" y="75" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">to destination's sidecar</text>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/></marker>
+  </defs>
+</svg>
+<p>The application container&#x27;s outbound traffic is redirected to the local Envoy sidecar over <code>localhost</code> before leaving the Pod.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: an application making a call that gets transparently intercepted by a local sidecar. We start with a basic transparent redirect, extend it to the sidecar applying load balancing across multiple destination instances, then handle the hard case: the sidecar detecting an unhealthy destination instance and excluding it from load balancing, without the calling application ever knowing.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: SidecarRedirectBasic.java -- models an application making a
+// NORMAL call, transparently REDIRECTED through a local sidecar proxy --
+// the application code never explicitly references the proxy at all.
+public class SidecarRedirectBasic {
+    static class EnvoySidecar {
+        String forward(String destination, String request) {
+            System.out.println(&quot;[envoy sidecar] intercepted outbound call to &#x27;&quot; + destination + &quot;&#x27;, forwarding&quot;);
+            return &quot;response from &quot; + destination;
+        }
+    }
+
+    // Simulates network-level redirection: ALL app traffic passes through the local sidecar.
+    static EnvoySidecar localSidecar = new EnvoySidecar();
+
+    static String appMakeCall(String destination, String request) {
+        // The app calls what LOOKS like the destination directly...
+        System.out.println(&quot;[app] calling &#x27;&quot; + destination + &quot;&#x27; normally&quot;);
+        // ...but network rules actually route it through the local sidecar first.
+        return localSidecar.forward(destination, request);
+    }
+
+    public static void main(String[] args) {
+        String response = appMakeCall(&quot;inventory-service&quot;, &quot;check-stock&quot;);
+        System.out.println(&quot;[app] received: &quot; + response);
+    }
+}</code></pre>
+<p>How to run: <code>java SidecarRedirectBasic.java</code></p>
+<p><code>appMakeCall</code> represents the application&#x27;s own code, which never references <code>localSidecar</code> by name in a real system — here it&#x27;s shown explicitly for clarity, but the comment marks where real traffic redirection (<code>iptables</code> rules) would make this happen transparently, with the application&#x27;s code looking identical to a direct call.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: SidecarLoadBalancing.java -- the SAME redirect model, now with
+// the sidecar applying LOAD BALANCING across MULTIPLE destination
+// instances -- a capability entirely invisible to the calling application.
+import java.util.*;
+
+public class SidecarLoadBalancing {
+    static class EnvoySidecar {
+        List&lt;String&gt; knownInstances = List.of(&quot;inventory-pod-1&quot;, &quot;inventory-pod-2&quot;, &quot;inventory-pod-3&quot;);
+        int roundRobinIndex = 0;
+
+        String forward(String destination, String request) {
+            String targetInstance = knownInstances.get(roundRobinIndex % knownInstances.size());
+            roundRobinIndex++;
+            System.out.println(&quot;[envoy sidecar] load-balanced &#x27;&quot; + destination + &quot;&#x27; call to instance: &quot; + targetInstance);
+            return &quot;response from &quot; + targetInstance;
+        }
+    }
+
+    static EnvoySidecar localSidecar = new EnvoySidecar();
+
+    static String appMakeCall(String destination) {
+        return localSidecar.forward(destination, &quot;check-stock&quot;);
+    }
+
+    public static void main(String[] args) {
+        for (int i = 1; i &lt;= 4; i++) {
+            System.out.println(&quot;[app] call &quot; + i);
+            String response = appMakeCall(&quot;inventory-service&quot;);
+            System.out.println(&quot;[app] received: &quot; + response);
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java SidecarLoadBalancing.java</code></p>
+<p><code>appMakeCall</code> is called identically four times with the same <code>&quot;inventory-service&quot;</code> argument — the application never picks a specific instance. <code>forward</code>&#x27;s internal <code>roundRobinIndex</code> cycles through <code>knownInstances</code>, so the four calls land on <code>inventory-pod-1</code>, <code>inventory-pod-2</code>, <code>inventory-pod-3</code>, and back to <code>inventory-pod-1</code> — load-balancing logic entirely owned and executed by the sidecar, never by the application.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: SidecarHealthAwareLoadBalancing.java -- the SAME load-balancing
+// sidecar, now handling the PRODUCTION-FLAVORED hard case: ONE known
+// instance becomes UNHEALTHY (failing its own health checks). The sidecar
+// must EXCLUDE it from load balancing automatically, routing calls only
+// to healthy instances -- with the calling application completely
+// unaware any instance ever had a problem.
+import java.util.*;
+
+public class SidecarHealthAwareLoadBalancing {
+    static class EnvoySidecar {
+        Map&lt;String, Boolean&gt; instanceHealth = new LinkedHashMap&lt;&gt;();
+        int roundRobinIndex = 0;
+
+        EnvoySidecar() {
+            instanceHealth.put(&quot;inventory-pod-1&quot;, true);
+            instanceHealth.put(&quot;inventory-pod-2&quot;, true);
+            instanceHealth.put(&quot;inventory-pod-3&quot;, true);
+        }
+
+        void markUnhealthy(String instance) {
+            instanceHealth.put(instance, false);
+            System.out.println(&quot;[envoy sidecar] health check failed for &quot; + instance + &quot; -- excluding from load balancing&quot;);
+        }
+
+        String forward(String destination) {
+            List&lt;String&gt; healthyInstances = new ArrayList&lt;&gt;();
+            for (Map.Entry&lt;String, Boolean&gt; entry : instanceHealth.entrySet()) {
+                if (entry.getValue()) healthyInstances.add(entry.getKey());
+            }
+            if (healthyInstances.isEmpty()) {
+                throw new RuntimeException(&quot;no healthy instances available for &quot; + destination);
+            }
+            String targetInstance = healthyInstances.get(roundRobinIndex % healthyInstances.size());
+            roundRobinIndex++;
+            System.out.println(&quot;[envoy sidecar] routed &#x27;&quot; + destination + &quot;&#x27; call to healthy instance: &quot; + targetInstance);
+            return &quot;response from &quot; + targetInstance;
+        }
+    }
+
+    static EnvoySidecar localSidecar = new EnvoySidecar();
+
+    static String appMakeCall(String destination) {
+        return localSidecar.forward(destination);
+    }
+
+    public static void main(String[] args) {
+        appMakeCall(&quot;inventory-service&quot;);
+        appMakeCall(&quot;inventory-service&quot;);
+
+        System.out.println();
+        System.out.println(&quot;[incident] inventory-pod-2 starts failing health checks&quot;);
+        localSidecar.markUnhealthy(&quot;inventory-pod-2&quot;);
+
+        System.out.println();
+        System.out.println(&quot;--- app keeps calling normally, unaware of the unhealthy instance ---&quot;);
+        for (int i = 1; i &lt;= 4; i++) {
+            appMakeCall(&quot;inventory-service&quot;);
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java SidecarHealthAwareLoadBalancing.java</code></p>
+<p><code>forward</code> rebuilds <code>healthyInstances</code> from <code>instanceHealth</code> on every call, filtering out anything marked <code>false</code>. After <code>markUnhealthy(&quot;inventory-pod-2&quot;)</code> runs, every subsequent call to <code>forward</code> only ever selects from the two remaining healthy instances — <code>inventory-pod-2</code> never appears in any routed call again, and <code>appMakeCall</code>, representing the application&#x27;s own code, is completely unchanged and unaware across the entire sequence.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>SidecarHealthAwareLoadBalancing.main</code> in order. <strong>First</strong>, two calls to <code>appMakeCall</code> run while all three instances are healthy — <code>forward</code>&#x27;s <code>healthyInstances</code> list contains all three, and round-robin selection picks <code>inventory-pod-1</code> then <code>inventory-pod-2</code>.</p>
+<p><strong>Next</strong>, <code>markUnhealthy(&quot;inventory-pod-2&quot;)</code> runs, setting <code>instanceHealth.put(&quot;inventory-pod-2&quot;, false)</code> and printing the exclusion message — this is the only state change in the entire program; <code>appMakeCall</code> and <code>forward</code>&#x27;s code are never modified.</p>
+<p><strong>Then</strong>, the loop of four more calls begins. On each call, <code>forward</code> rebuilds <code>healthyInstances</code> fresh from <code>instanceHealth</code>, which now only includes <code>inventory-pod-1</code> and <code>inventory-pod-3</code> — <code>inventory-pod-2</code> is filtered out by the <code>if (entry.getValue())</code> check every single time, since its stored value is now <code>false</code>.</p>
+<p><strong>After that</strong>, <code>roundRobinIndex % healthyInstances.size()</code> cycles through just the two remaining healthy instances across the four calls, alternating between <code>inventory-pod-1</code> and <code>inventory-pod-3</code> — <code>inventory-pod-2</code> never appears as a selected target again, anywhere in the output.</p>
+<p><strong>Finally</strong>, the program completes having routed every post-incident call correctly and automatically around the unhealthy instance, with <code>appMakeCall</code>&#x27;s own code never once referencing health status, instance names, or any awareness that anything had changed.</p>
+<pre><code>[envoy sidecar] routed &#x27;inventory-service&#x27; call to healthy instance: inventory-pod-1
+[envoy sidecar] routed &#x27;inventory-service&#x27; call to healthy instance: inventory-pod-2
+
+[incident] inventory-pod-2 starts failing health checks
+[envoy sidecar] health check failed for inventory-pod-2 -- excluding from load balancing
+
+--- app keeps calling normally, unaware of the unhealthy instance ---
+[envoy sidecar] routed &#x27;inventory-service&#x27; call to healthy instance: inventory-pod-3
+[envoy sidecar] routed &#x27;inventory-service&#x27; call to healthy instance: inventory-pod-1
+[envoy sidecar] routed &#x27;inventory-service&#x27; call to healthy instance: inventory-pod-3
+[envoy sidecar] routed &#x27;inventory-service&#x27; call to healthy instance: inventory-pod-1</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A sidecar proxy adds a real, measurable amount of resource overhead per Pod — CPU, memory, and a small amount of latency for every hop through it — multiplied across every single Pod in the mesh. This is a genuine cost of the sidecar model, not a rounding error, and it&#x27;s part of what a mesh adoption decision needs to weigh honestly.</blockquote>
+<ul><li>Envoy&#x27;s popularity as a sidecar comes from its dynamic configuration API (xDS) — it can receive and apply new routing, health, and security configuration from a <a href="0478-data-plane-vs-control-plane.md">control plane</a> without restarting, which is essential for a mesh that needs to react to changing conditions quickly.</li><li>The <code>localhost</code> hop between an application container and its sidecar is fast, but it&#x27;s still a real hop — for extremely latency-sensitive paths, this overhead is worth measuring rather than assuming is negligible.</li><li>Health-aware load balancing (Level 3) happening entirely inside the proxy is a direct illustration of the mesh&#x27;s core value: this exact logic would otherwise need to be written, tested, and maintained inside every single calling application&#x27;s own code.</li><li>Sidecars are deployed per-instance, not shared — this gives strong failure isolation (one Pod&#x27;s proxy issue doesn&#x27;t cascade to another Pod) at the cost of running one proxy process per application instance, rather than one shared proxy for a whole node.</li><li>When traffic behaves unexpectedly in a mesh, checking the sidecar&#x27;s own logs and configuration (not just the application&#x27;s) is usually the faster path to a root cause, since so much of the actual traffic-handling logic lives in the proxy rather than the application.</li></ul>
+  <div class="nav"><a class="prv" href="0478-data-plane-vs-control-plane.html"><span class="mini">← Previous</span>Data plane vs control plane</a><a class="nxt" href="0480-traffic-management-routing-splitting-mirroring.html"><span class="mini">Next →</span>Traffic management (routing, splitting, mirroring)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t479";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

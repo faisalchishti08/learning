@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Mesh-level resiliency (retries, timeouts, circuit breaking)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 15. Service Mesh & Infrastructure</div>
+  <div class="htitle">
+    <h1>"Mesh-level resiliency (retries, timeouts, circuit breaking)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Mesh-level resiliency</strong> means retries, timeouts, and circuit breaking are configured and enforced entirely inside the <a href="0479-sidecar-proxy-envoy.md">sidecar proxies</a> of a service mesh, rather than written into each application&#x27;s own code. An operator declares policy (retry up to 3 times, timeout after 2 seconds, open the circuit after 5 consecutive failures) once, centrally, and every proxy in the mesh applies it uniformly to the traffic it handles — regardless of what language or framework the calling and called services happen to be written in.</p>
+<h2>2. Why &amp; when</h2>
+<p>You push resiliency into the mesh specifically when you want it applied consistently across a polyglot fleet without duplicating the logic in every service:</p>
+<ul><li><strong>Application-level resiliency libraries only cover applications written in that library&#x27;s language.</strong> A Java service can use <a href="0484-service-mesh-vs-library-based-resiliency-resilience4j.md">Resilience4j</a>; a Python or Go service calling the same downstream dependency needs its own separate implementation — a mesh applies the identical policy regardless of the caller&#x27;s language.</li><li><strong>Centralized policy means centralized, auditable configuration.</strong> &quot;What&#x27;s our retry policy for calls to <code>payment-service</code>?&quot; has one authoritative answer, configured once, rather than potentially many different, drifted answers scattered across every calling service&#x27;s own code.</li><li><strong>Changing a resiliency policy shouldn&#x27;t require redeploying every calling application.</strong> Updating a timeout or retry count at the mesh level takes effect the moment the <a href="0478-data-plane-vs-control-plane.md">control plane</a> pushes the new configuration — no application code change, no rebuild, no redeploy needed.</li><li><strong>You use this as the default resiliency layer once a mesh is adopted</strong> — application-level resiliency libraries still have a role for concerns that need application-specific knowledge (like a business-logic-aware fallback value), but the baseline network resiliency belongs at the mesh layer.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a building-wide fire suppression system versus every individual office having its own separate fire extinguisher policy: the building-wide system applies the same detection and response standard everywhere, configured and maintained centrally, regardless of what each individual office does or doesn&#x27;t have set up on its own. Mesh-level resiliency is that building-wide system for network failures.</p>
+<p>Concretely:</p>
+<ol><li><strong>Retries</strong>: a proxy configured to retry a failed call automatically re-attempts it (up to a configured maximum), typically only for specific conditions (a 503 response, a connection failure) rather than blindly retrying every kind of failure.</li><li><strong>Timeouts</strong>: a proxy configured with a per-call timeout aborts a request that&#x27;s taking too long, returning an error to the caller rather than waiting indefinitely — protecting the caller from a slow or hung downstream dependency.</li><li><strong>Circuit breaking</strong>: a proxy tracking a destination&#x27;s recent failure rate can &quot;open the circuit&quot; — stop sending it new requests entirely for a cooldown period — once failures cross a threshold, protecting both the struggling destination (giving it room to recover) and the caller (failing fast instead of piling up slow, doomed requests).</li><li><strong>All three are configured declaratively, per-route</strong>, meaning different destinations or even different paths to the same destination can have different resiliency policies, tuned to their specific characteristics.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A proxy applies retries on failure, a timeout bound on duration, and opens a circuit breaker after sustained failures, all configured centrally" >
+  <rect x="20" y="20" width="180" height="55" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="110" y="42" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">retry</text>
+  <text x="110" y="58" fill="#79c0ff" font-size="9" text-anchor="middle" font-family="sans-serif">up to 3x on failure</text>
+
+  <rect x="240" y="20" width="180" height="55" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="330" y="42" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">timeout</text>
+  <text x="330" y="58" fill="#f0883e" font-size="9" text-anchor="middle" font-family="sans-serif">abort after 2s</text>
+
+  <rect x="460" y="20" width="180" height="55" rx="8" fill="#1c2430" stroke="#f85149" stroke-width="1.5"/>
+  <text x="550" y="42" fill="#e6edf3" font-size="10" text-anchor="middle" font-family="sans-serif">circuit breaker</text>
+  <text x="550" y="58" fill="#f85149" font-size="9" text-anchor="middle" font-family="sans-serif">open after 5 fails</text>
+
+  <text x="330" y="140" fill="#8b949e" font-size="10" text-anchor="middle" font-family="sans-serif">all three configured once, centrally, and enforced by every proxy uniformly, regardless of caller language</text>
+</svg>
+<p>Three distinct resiliency mechanisms, each configured centrally and enforced entirely inside the proxy layer.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a proxy applying all three mesh-level resiliency mechanisms to calls toward a downstream dependency. We start with basic retry-on-failure, extend it to a bounded timeout, then handle the hard case: a circuit breaker opening after sustained failures and rejecting calls immediately, without even attempting them, until a cooldown passes.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: MeshRetryBasic.java -- models the proxy RETRYING a failed call
+// automatically, entirely OUTSIDE the calling application&#x27;s own code.
+public class MeshRetryBasic {
+    static int attemptCount = 0;
+
+    static String realDownstreamCall() {
+        attemptCount++;
+        if (attemptCount &lt; 2) {
+            throw new RuntimeException(&quot;transient failure&quot;);
+        }
+        return &quot;success&quot;;
+    }
+
+    static String proxyCallWithRetry(int maxRetries) {
+        for (int attempt = 1; attempt &lt;= maxRetries; attempt++) {
+            try {
+                String result = realDownstreamCall();
+                System.out.println(&quot;[proxy] succeeded on attempt &quot; + attempt);
+                return result;
+            } catch (RuntimeException e) {
+                System.out.println(&quot;[proxy] attempt &quot; + attempt + &quot; failed, retrying (configured policy: retry up to &quot; + maxRetries + &quot;)&quot;);
+            }
+        }
+        throw new RuntimeException(&quot;retries exhausted&quot;);
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;[app] making a normal call -- unaware of any retry policy&quot;);
+        String result = proxyCallWithRetry(3);
+        System.out.println(&quot;[app] received: &quot; + result);
+    }
+}</code></pre>
+<p>How to run: <code>java MeshRetryBasic.java</code></p>
+<p><code>proxyCallWithRetry</code> retries <code>realDownstreamCall</code> internally, up to <code>maxRetries</code> times — the application&#x27;s own code (represented by <code>main</code>) calls it exactly once and never sees the intermediate failure, exactly like a real Envoy proxy configured with a retry policy absorbing transient failures before the calling application ever notices anything went wrong.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: MeshTimeoutBasic.java -- the SAME retrying proxy, now EXTENDED
+// with a TIMEOUT bound -- a call that takes too long is aborted, rather
+// than the caller waiting indefinitely for a slow downstream dependency.
+public class MeshTimeoutBasic {
+    static String slowDownstreamCall(long simulatedDurationMs) throws InterruptedException {
+        Thread.sleep(simulatedDurationMs);
+        return &quot;success after &quot; + simulatedDurationMs + &quot;ms&quot;;
+    }
+
+    static String proxyCallWithTimeout(long timeoutMs, long callDurationMs) {
+        long start = System.currentTimeMillis();
+        try {
+            if (callDurationMs &gt; timeoutMs) {
+                // Simulates the proxy aborting once the timeout is exceeded,
+                // rather than actually waiting the full slow duration.
+                Thread.sleep(timeoutMs);
+                throw new RuntimeException(&quot;call exceeded configured timeout of &quot; + timeoutMs + &quot;ms -- ABORTED&quot;);
+            }
+            return slowDownstreamCall(callDurationMs);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(&quot;interrupted&quot;, e);
+        } finally {
+            System.out.println(&quot;[proxy] call bounded at &quot; + (System.currentTimeMillis() - start) + &quot;ms elapsed&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;--- case 1: fast call, well within timeout ---&quot;);
+        System.out.println(&quot;[app] received: &quot; + proxyCallWithTimeout(500, 50));
+
+        System.out.println();
+        System.out.println(&quot;--- case 2: slow call, exceeds timeout ---&quot;);
+        try {
+            proxyCallWithTimeout(200, 5000);
+        } catch (RuntimeException e) {
+            System.out.println(&quot;[app] received error: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java MeshTimeoutBasic.java</code></p>
+<p><code>proxyCallWithTimeout</code> compares the simulated call duration against the configured <code>timeoutMs</code> before deciding whether to let it run to completion or abort it early — case 1&#x27;s 50ms call is well under its 500ms timeout and completes normally, while case 2&#x27;s 5000ms call would take far longer than its 200ms timeout, so the proxy aborts after only <code>timeoutMs</code> has elapsed rather than the caller ever waiting the full 5 seconds.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: MeshCircuitBreaker.java -- the SAME resiliency proxy, now
+// handling the PRODUCTION-FLAVORED hard case: a CIRCUIT BREAKER opening
+// after SUSTAINED failures. Once open, the proxy REJECTS calls
+// IMMEDIATELY, without even attempting them -- protecting a struggling
+// downstream from a pile of doomed requests, and failing the caller fast
+// instead of slow. After a cooldown, the breaker allows a trial call
+// through to test recovery.
+public class MeshCircuitBreaker {
+    enum CircuitState { CLOSED, OPEN, HALF_OPEN }
+
+    static CircuitState state = CircuitState.CLOSED;
+    static int consecutiveFailures = 0;
+    static final int FAILURE_THRESHOLD = 3;
+    static boolean downstreamHealthy = false; // starts broken
+
+    static String realDownstreamCall() {
+        if (!downstreamHealthy) {
+            throw new RuntimeException(&quot;downstream is down&quot;);
+        }
+        return &quot;success&quot;;
+    }
+
+    static String proxyCallWithCircuitBreaker() {
+        if (state == CircuitState.OPEN) {
+            System.out.println(&quot;[proxy] circuit OPEN -- REJECTING immediately, not even attempting the call&quot;);
+            throw new RuntimeException(&quot;circuit breaker open, failing fast&quot;);
+        }
+        try {
+            String result = realDownstreamCall();
+            consecutiveFailures = 0;
+            if (state == CircuitState.HALF_OPEN) {
+                state = CircuitState.CLOSED;
+                System.out.println(&quot;[proxy] trial call succeeded -- circuit CLOSED, resuming normal traffic&quot;);
+            } else {
+                System.out.println(&quot;[proxy] call succeeded&quot;);
+            }
+            return result;
+        } catch (RuntimeException e) {
+            consecutiveFailures++;
+            System.out.println(&quot;[proxy] call failed (&quot; + consecutiveFailures + &quot;/&quot; + FAILURE_THRESHOLD + &quot; consecutive failures)&quot;);
+            if (consecutiveFailures &gt;= FAILURE_THRESHOLD) {
+                state = CircuitState.OPEN;
+                System.out.println(&quot;[proxy] threshold reached -- circuit OPENED, further calls rejected immediately&quot;);
+            }
+            throw e;
+        }
+    }
+
+    public static void main(String[] args) {
+        for (int i = 1; i &lt;= 5; i++) {
+            System.out.println(&quot;--- call &quot; + i + &quot; ---&quot;);
+            try {
+                proxyCallWithCircuitBreaker();
+            } catch (RuntimeException e) {
+                System.out.println(&quot;[app] received error: &quot; + e.getMessage());
+            }
+        }
+
+        System.out.println();
+        System.out.println(&quot;[recovery] downstream comes back healthy, cooldown elapses -- breaker allows a trial call&quot;);
+        downstreamHealthy = true;
+        state = CircuitState.HALF_OPEN;
+        try {
+            System.out.println(&quot;[app] received: &quot; + proxyCallWithCircuitBreaker());
+        } catch (RuntimeException e) {
+            System.out.println(&quot;[app] received error: &quot; + e.getMessage());
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java MeshCircuitBreaker.java</code></p>
+<p><code>consecutiveFailures</code> accumulates across calls while <code>downstreamHealthy</code> is <code>false</code>, and once it reaches <code>FAILURE_THRESHOLD</code>, <code>state</code> flips to <code>OPEN</code> — every subsequent call to <code>proxyCallWithCircuitBreaker</code> then hits the <code>if (state == CircuitState.OPEN)</code> check first and returns immediately with a rejection, never even calling <code>realDownstreamCall</code>. Only after the simulated recovery sets <code>downstreamHealthy = true</code> and manually transitions <code>state</code> to <code>HALF_OPEN</code> does a trial call get attempted again — succeeding this time, and closing the circuit back to normal operation.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>MeshCircuitBreaker.main</code> in order. <strong>First</strong>, calls 1 through 3 each hit <code>proxyCallWithCircuitBreaker</code> while <code>state</code> is still <code>CLOSED</code>. Each one calls <code>realDownstreamCall</code>, which throws since <code>downstreamHealthy</code> is <code>false</code> — each catch increments <code>consecutiveFailures</code>, reaching <code>1</code>, <code>2</code>, then <code>3</code> across the three calls, and on the third, <code>consecutiveFailures &gt;= FAILURE_THRESHOLD</code> becomes <code>true</code>, flipping <code>state</code> to <code>OPEN</code>.</p>
+<p><strong>Next</strong>, call 4 hits <code>proxyCallWithCircuitBreaker</code> again, but this time the very first check, <code>if (state == CircuitState.OPEN)</code>, is <code>true</code> — it prints the rejection message and throws immediately, without <code>realDownstreamCall</code> ever being invoked at all for this call.</p>
+<p><strong>Then</strong>, call 5 behaves identically to call 4 — the circuit is still <code>OPEN</code>, so it&#x27;s rejected instantly, with <code>consecutiveFailures</code> no longer even being touched, since the whole <code>try</code> block is skipped entirely once the circuit is open.</p>
+<p><strong>After that</strong>, the simulated recovery sets <code>downstreamHealthy = true</code> and manually sets <code>state = CircuitState.HALF_OPEN</code> — representing a real circuit breaker&#x27;s cooldown timer expiring and allowing exactly one trial call through to test whether the downstream has actually recovered.</p>
+<p><strong>Finally</strong>, the trial call runs <code>proxyCallWithCircuitBreaker</code> once more: <code>state</code> is <code>HALF_OPEN</code>, not <code>OPEN</code>, so the rejection branch is skipped and <code>realDownstreamCall</code> actually executes — since <code>downstreamHealthy</code> is now <code>true</code>, it succeeds, <code>consecutiveFailures</code> resets to <code>0</code>, and because <code>state</code> was <code>HALF_OPEN</code>, the success branch specifically transitions it back to <code>CLOSED</code>, printing confirmation that normal traffic has resumed.</p>
+<pre><code>--- call 1 ---
+[proxy] call failed (1/3 consecutive failures)
+[app] received error: downstream is down
+--- call 2 ---
+[proxy] call failed (2/3 consecutive failures)
+[app] received error: downstream is down
+--- call 3 ---
+[proxy] call failed (3/3 consecutive failures)
+[proxy] threshold reached -- circuit OPENED, further calls rejected immediately
+[app] received error: downstream is down
+--- call 4 ---
+[proxy] circuit OPEN -- REJECTING immediately, not even attempting the call
+[app] received error: circuit breaker open, failing fast
+--- call 5 ---
+[proxy] circuit OPEN -- REJECTING immediately, not even attempting the call
+[app] received error: circuit breaker open, failing fast
+
+[recovery] downstream comes back healthy, cooldown elapses -- breaker allows a trial call
+[proxy] trial call succeeded -- circuit CLOSED, resuming normal traffic
+[app] received: success</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Retrying every kind of failure indiscriminately — including failures caused by the *caller&#x27;s own* malformed request, not a transient downstream issue — wastes resources retrying something that will never succeed. Configure retries to trigger only on genuinely retryable conditions (timeouts, connection failures, specific 5xx codes), never on 4xx client errors.</blockquote>
+<ul><li>Retries, timeouts, and circuit breaking are complementary, not redundant — timeouts bound how long any single attempt can take, retries handle transient failures, and circuit breaking protects against sustained failures that retrying alone would just keep hammering.</li><li>Circuit breaking&#x27;s fail-fast behavior protects two parties at once: the struggling downstream (no pile of doomed requests adding to its load) and the caller (an instant, clear failure instead of a long wait for something that was going to fail anyway).</li><li>Mesh-level resiliency doesn&#x27;t eliminate the need for application-level thinking entirely — a circuit breaker rejecting a call still needs the calling application to have a sensible response to that rejection (a cached fallback, a graceful error to the end user).</li><li>Compare this against <a href="0484-service-mesh-vs-library-based-resiliency-resilience4j.md">library-based resiliency</a> for your specific system — the mesh approach shines in polyglot environments with many services sharing policy; a single-language system might reasonably prefer the tighter integration a language-specific library offers.</li></ul>
+  <div class="nav"><a class="prv" href="0480-traffic-management-routing-splitting-mirroring.html"><span class="mini">← Previous</span>Traffic management (routing, splitting, mirroring)</a><a class="nxt" href="0482-mesh-level-mtls-security.html"><span class="mini">Next →</span>Mesh-level mTLS & security</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t481";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

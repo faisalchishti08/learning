@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Service mesh vs library-based resiliency (Resilience4j)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 15. Service Mesh & Infrastructure</div>
+  <div class="htitle">
+    <h1>"Service mesh vs library-based resiliency (Resilience4j)"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Library-based resiliency</strong> means retries, timeouts, and circuit breaking are implemented inside the application process itself, using a language-specific library like <strong>Resilience4j</strong> for Java — versus <strong>mesh-based resiliency</strong>, where the exact same concerns are handled entirely outside the application, in the <a href="0479-sidecar-proxy-envoy.md">sidecar proxy</a>. Both solve the same problems; the real question is *where the logic lives* and what tradeoffs that placement brings.</p>
+<h2>2. Why &amp; when</h2>
+<p>You choose between these two approaches — or use both together — based on what each is genuinely better at:</p>
+<ul><li><strong>Library-based resiliency has access to application context a proxy never sees.</strong> Resilience4j&#x27;s circuit breaker can trigger a fallback method that returns a specific cached business value, or a <code>CompletableFuture</code> with fully typed application semantics — a mesh proxy only sees bytes over the network and can retry or fail, but has no concept of &quot;the right default order status to return.&quot;</li><li><strong>Mesh-based resiliency applies uniformly across a polyglot system with zero per-service code.</strong> A Java, Python, and Go service calling the same downstream dependency all get the identical retry and circuit-breaking policy for free — Resilience4j only helps the Java service, and even then, only if that team remembered to configure it correctly.</li><li><strong>Library-based resiliency is simpler to adopt for a small, single-language system not yet running a mesh.</strong> Adding Resilience4j to a Spring Boot service is a dependency and some annotations; adopting a full service mesh is meaningfully more infrastructure to run and understand.</li><li><strong>Using both together is common and often the right answer at scale</strong>: mesh-level policy as a uniform baseline safety net across every service, with library-level resiliency layered on top for the specific calls where application-aware fallback behavior genuinely matters.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a car with both anti-lock brakes built into the vehicle itself (mesh-level: works the same regardless of who&#x27;s driving, applied uniformly) and a skilled driver who also knows when to ease off the accelerator on a specific icy patch they can see ahead (application-level: contextual judgment the car&#x27;s built-in system can&#x27;t have). Neither replaces the other — the built-in system provides a uniform baseline; the driver&#x27;s own judgment handles situations that need specific, contextual knowledge.</p>
+<p>Concretely, the two approaches differ in where the same logical mechanism (retry, timeout, circuit breaker) actually executes:</p>
+<ol><li><strong>Library-based (Resilience4j)</strong>: the calling application&#x27;s own process wraps a downstream call with <code>@Retry</code>, <code>@CircuitBreaker</code>, or <code>@TimeLimiter</code> annotations (or their programmatic equivalents) — the retry loop, the circuit state, and any fallback method all execute as normal Java code, inside the same JVM as the rest of the application.</li><li><strong>Mesh-based</strong>: the calling application makes a plain call; the retry loop, circuit state, and rejection logic all execute inside the sidecar proxy — a completely separate process, unaware of anything about the application&#x27;s business logic beyond the raw request and response.</li><li><strong>Fallback behavior is the clearest differentiator.</strong> A library&#x27;s circuit breaker can call a specific fallback method returning meaningful business data; a mesh&#x27;s circuit breaker can only return a generic error — it has no way to know or construct an application-appropriate fallback value.</li><li><strong>Configuration ownership differs too.</strong> Library-based policy lives in that one application&#x27;s own codebase and config, changed via a code deploy; mesh-based policy lives in central mesh configuration, changed via the <a href="0478-data-plane-vs-control-plane.md">control plane</a>, with no application redeploy needed.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Library-based resiliency runs inside the application process with access to business context; mesh-based resiliency runs in a separate sidecar proxy process with only network-level visibility">
+  <rect x="20" y="20" width="290" height="140" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="165" y="42" fill="#79c0ff" font-size="10" text-anchor="middle" font-family="sans-serif">library-based (Resilience4j)</text>
+  <text x="165" y="70" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">runs INSIDE the application process</text>
+  <text x="165" y="90" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">can call a typed fallback method</text>
+  <text x="165" y="110" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">one language, one codebase</text>
+
+  <rect x="350" y="20" width="290" height="140" rx="8" fill="#1c2430" stroke="#f0883e" stroke-width="1.5"/>
+  <text x="495" y="42" fill="#f0883e" font-size="10" text-anchor="middle" font-family="sans-serif">mesh-based (sidecar proxy)</text>
+  <text x="495" y="70" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">runs in a SEPARATE proxy process</text>
+  <text x="495" y="90" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">only returns a generic error</text>
+  <text x="495" y="110" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">every language, one policy</text>
+</svg>
+<p>The same mechanisms, applied at two different layers, with different context and different reach.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: the same downstream failure handled two ways — once with a mesh-style generic rejection, once with a library-style application-aware fallback. We start with the mesh-style version, extend it to the library-style version with a meaningful fallback value, then handle the hard case: combining both layers, where the mesh&#x27;s circuit breaker opens first and the application-level fallback still produces a sensible result despite never even attempting the call itself.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: MeshStyleGenericFailure.java -- models MESH-based circuit
+// breaking: when the circuit is open, the proxy can ONLY return a
+// generic error -- it has no concept of application-specific fallback data.
+public class MeshStyleGenericFailure {
+    static boolean circuitOpen = true; // simulates: threshold already crossed
+
+    static String proxyCall(String request) {
+        if (circuitOpen) {
+            // The PROXY has no idea what a sensible business fallback would be --
+            // it can only report failure generically.
+            throw new RuntimeException(&quot;circuit breaker open -- generic failure, no application context available&quot;);
+        }
+        return &quot;real response&quot;;
+    }
+
+    public static void main(String[] args) {
+        try {
+            proxyCall(&quot;check-stock sku-123&quot;);
+        } catch (RuntimeException e) {
+            System.out.println(&quot;[app] received generic mesh-level error: &quot; + e.getMessage());
+            System.out.println(&quot;[app] has to decide for itself what to show the user -- the mesh gave it nothing useful&quot;);
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java MeshStyleGenericFailure.java</code></p>
+<p><code>proxyCall</code>, standing in for the sidecar proxy, can only throw a generic exception when its circuit is open — it has no business logic, no cache of prior known-good values, no concept of what a reasonable fallback response for this particular endpoint would look like. The calling application is left to figure out its own response to this bare failure.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: LibraryStyleFallback.java -- the SAME circuit-open scenario, now
+// handled by APPLICATION-LEVEL (Resilience4j-style) logic that DOES have
+// business context -- it returns a MEANINGFUL fallback value, not just a
+// generic error.
+public class LibraryStyleFallback {
+    static boolean circuitOpen = true;
+
+    static String realDownstreamCall(String sku) {
+        if (circuitOpen) {
+            throw new RuntimeException(&quot;circuit breaker open&quot;);
+        }
+        return &quot;in-stock: &quot; + sku;
+    }
+
+    // The APPLICATION&#x27;s own fallback, with real business knowledge.
+    static String checkStockWithFallback(String sku) {
+        try {
+            return realDownstreamCall(sku);
+        } catch (RuntimeException e) {
+            System.out.println(&quot;[app circuit breaker] call failed, invoking application-aware fallback&quot;);
+            // The application KNOWS a sensible default: assume caution, show as unavailable
+            // rather than falsely claiming stock, and it can log this to a business metric.
+            return &quot;stock-status-unknown: showing as temporarily unavailable (cautious business default)&quot;;
+        }
+    }
+
+    public static void main(String[] args) {
+        String result = checkStockWithFallback(&quot;sku-123&quot;);
+        System.out.println(&quot;[app] &quot; + result);
+    }
+}</code></pre>
+<p>How to run: <code>java LibraryStyleFallback.java</code></p>
+<p><code>checkStockWithFallback</code> runs entirely inside the application, so its <code>catch</code> block can return a specifically-chosen, business-meaningful fallback string — &quot;showing as temporarily unavailable&quot; is a deliberate business decision (favor caution over falsely claiming an item is in stock) that only the application, not a generic proxy, could reasonably make.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: CombinedMeshAndLibrary.java -- the SAME failure, now handling the
+// PRODUCTION-FLAVORED hard case: BOTH layers used TOGETHER. The MESH&#x27;s
+// circuit breaker opens first (uniform, applies regardless of language),
+// and the APPLICATION&#x27;s own resiliency layer catches the mesh&#x27;s generic
+// rejection and converts it into a meaningful business fallback -- the
+// two layers COMPOSE rather than duplicate each other&#x27;s work.
+public class CombinedMeshAndLibrary {
+    static boolean meshCircuitOpen = true; // the MESH&#x27;s circuit breaker state
+
+    // Layer 1: the MESH -- generic, uniform, applies to every language.
+    static String meshProxyCall(String sku) {
+        if (meshCircuitOpen) {
+            throw new RuntimeException(&quot;MESH circuit breaker open -- rejecting before even attempting the network call&quot;);
+        }
+        return &quot;in-stock: &quot; + sku;
+    }
+
+    // Layer 2: the APPLICATION -- wraps the mesh call, adds business-aware fallback.
+    static String checkStockWithFallback(String sku) {
+        try {
+            String result = meshProxyCall(sku);
+            System.out.println(&quot;[app] mesh call succeeded: &quot; + result);
+            return result;
+        } catch (RuntimeException meshError) {
+            System.out.println(&quot;[app resiliency layer] caught mesh-level rejection: &quot; + meshError.getMessage());
+            System.out.println(&quot;[app resiliency layer] applying business-aware fallback -- mesh never even reached the network&quot;);
+            return &quot;stock-status-unknown: showing as temporarily unavailable (cautious business default)&quot;;
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;--- request 1: mesh circuit is open ---&quot;);
+        System.out.println(&quot;[app] final result: &quot; + checkStockWithFallback(&quot;sku-123&quot;));
+
+        System.out.println();
+        System.out.println(&quot;[recovery] mesh circuit closes -- downstream is healthy again&quot;);
+        meshCircuitOpen = false;
+
+        System.out.println();
+        System.out.println(&quot;--- request 2: mesh circuit is now closed ---&quot;);
+        System.out.println(&quot;[app] final result: &quot; + checkStockWithFallback(&quot;sku-456&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java CombinedMeshAndLibrary.java</code></p>
+<p><code>checkStockWithFallback</code> (the application layer) calls <code>meshProxyCall</code> (standing in for the mesh sidecar) inside a <code>try</code> block. For request 1, <code>meshCircuitOpen</code> is <code>true</code>, so <code>meshProxyCall</code> throws its generic, mesh-level exception immediately — the application layer&#x27;s <code>catch</code> block receives that generic rejection and converts it into the same business-meaningful fallback from Level 2. For request 2, after <code>meshCircuitOpen</code> is set to <code>false</code> (simulating the mesh&#x27;s circuit closing on recovery), <code>meshProxyCall</code> succeeds and returns real data, which <code>checkStockWithFallback</code> simply passes through unchanged — the two layers compose cleanly, with the mesh handling the uniform network-level decision and the application handling the business-meaningful response either way.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>CombinedMeshAndLibrary.main</code> in order. <strong>First</strong>, request 1 calls <code>checkStockWithFallback(&quot;sku-123&quot;)</code>, which enters its <code>try</code> block and calls <code>meshProxyCall(&quot;sku-123&quot;)</code>. Since <code>meshCircuitOpen</code> is <code>true</code>, <code>meshProxyCall</code> throws immediately — critically, this happens *before* any real network call would occur, exactly matching how a mesh circuit breaker fails fast without even attempting the downstream request.</p>
+<p><strong>Next</strong>, the <code>catch (RuntimeException meshError)</code> block in <code>checkStockWithFallback</code> receives that exception. It prints two messages: one acknowledging the mesh-level rejection was caught, and one noting this is where the application layer takes over to provide business-appropriate behavior. It returns the cautious fallback string.</p>
+<p><strong>Then</strong>, <code>main</code> prints that fallback as <code>request 1</code>&#x27;s final result — the two layers have composed correctly: the mesh made the fast, uniform &quot;don&#x27;t even try&quot; decision, and the application layer turned that generic rejection into a specific, sensible business response.</p>
+<p><strong>After that</strong>, the simulated recovery sets <code>meshCircuitOpen = false</code>, representing the mesh&#x27;s own circuit breaker closing after the downstream dependency recovers — a decision made entirely at the mesh layer, with no change to the application&#x27;s <code>checkStockWithFallback</code> code at all.</p>
+<p><strong>Finally</strong>, request 2 calls <code>checkStockWithFallback(&quot;sku-456&quot;)</code> again — the exact same code path as before. This time <code>meshProxyCall</code> doesn&#x27;t throw, since <code>meshCircuitOpen</code> is <code>false</code>, so it returns real data directly; the <code>try</code> block&#x27;s success path runs, printing confirmation and returning that real result unchanged, with the <code>catch</code> block never executing at all for this second request.</p>
+<pre><code>--- request 1: mesh circuit is open ---
+[app resiliency layer] caught mesh-level rejection: MESH circuit breaker open -- rejecting before even attempting the network call
+[app resiliency layer] applying business-aware fallback -- mesh never even reached the network
+[app] final result: stock-status-unknown: showing as temporarily unavailable (cautious business default)
+
+[recovery] mesh circuit closes -- downstream is healthy again
+
+--- request 2: mesh circuit is now closed ---
+[app] mesh call succeeded: in-stock: sku-456
+[app] final result: in-stock: sku-456</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Implementing the identical retry or circuit-breaking policy at both the mesh layer and the application layer, uncoordinated, can compound into far more total retries than intended — a mesh retrying 3 times, wrapping an application that also retries 3 times, could turn one logical failure into 9 actual downstream attempts. When using both layers, be deliberate about which layer owns which specific behavior.</blockquote>
+<ul><li>A sensible split of responsibility: let the mesh own the uniform, network-level baseline (timeouts, basic circuit breaking, retries on clearly transient network failures) and let the application own business-aware fallback behavior and any retry logic that depends on understanding *what* failed, not just *that* it failed.</li><li><a href="0481-mesh-level-resiliency-retries-timeouts-circuit-breaking.md">Mesh-level resiliency</a> shines specifically because of its reach across every language in a fleet — that&#x27;s the strongest argument for it over a language-specific library when the fleet genuinely is polyglot.</li><li>Resilience4j and similar libraries shine specifically because of their access to application context — typed fallback values, business metrics tied to specific failure reasons, integration with the application&#x27;s own caching layer — none of which a generic proxy can ever provide.</li><li>Don&#x27;t treat this as an either/or decision to agonize over — many mature systems run both, deliberately, with each layer handling the part it&#x27;s genuinely better suited for.</li></ul>
+  <div class="nav"><a class="prv" href="0483-mesh-level-observability-telemetry.html"><span class="mini">← Previous</span>Mesh-level observability (telemetry)</a><a class="nxt" href="0485-ingress-egress-gateways.html"><span class="mini">Next →</span>Ingress & egress gateways</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t484";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Running Spring Boot services inside a mesh" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../microservices.html">Microservices</a> › 15. Service Mesh & Infrastructure</div>
+  <div class="htitle">
+    <h1>"Running Spring Boot services inside a mesh"</h1>
+    <a class="back" href="../../microservices.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Running a Spring Boot service inside a service mesh means the application&#x27;s container is deployed with a <a href="0479-sidecar-proxy-envoy.md">sidecar proxy</a> injected into the same Pod, and several Spring Boot-specific behaviors need to be checked for compatibility with that setup — <a href="0475-spring-boot-graceful-shutdown-for-rolling-deploys.md">graceful shutdown</a> ordering relative to the sidecar&#x27;s own lifecycle, <a href="0473-spring-boot-actuator-liveness-readiness-probes-for-kubernete.md">health probe</a> configuration accounting for the sidecar&#x27;s presence, and port configuration so the sidecar can correctly intercept the application&#x27;s traffic. None of this requires application code changes, but it does require deliberate Pod-level configuration.</p>
+<h2>2. Why &amp; when</h2>
+<p>You need to think through these specifics whenever a Spring Boot service is deployed into a mesh-enabled Kubernetes cluster, because the sidecar&#x27;s presence introduces real ordering and configuration concerns:</p>
+<ul><li><strong>Sidecar startup and shutdown ordering can break the application if not handled correctly.</strong> If the application container starts before its sidecar is ready to intercept traffic, early outbound calls can fail; if the sidecar shuts down before the application finishes its own <a href="0475-spring-boot-graceful-shutdown-for-rolling-deploys.md">graceful shutdown</a> drain, in-flight requests can fail at the very last moment of an otherwise-clean shutdown.</li><li><strong>Health probes need to account for the sidecar, not just the application.</strong> A readiness probe hitting the application directly might report &quot;ready&quot; before the sidecar has actually finished establishing its own connections and is ready to route traffic correctly — Kubernetes&#x27; native sidecar container support (or careful probe configuration) addresses this.</li><li><strong>The mesh needs to actually be able to intercept the application&#x27;s traffic</strong>, which depends on the application listening on expected ports and not doing anything unusual (like binding directly to a specific IP that bypasses the redirection rules) that would let traffic slip past the sidecar.</li><li><strong>You address these specifics once, as part of onboarding a service onto the mesh</strong> — they&#x27;re a one-time Pod/deployment configuration concern, not something that needs revisiting on every code change afterward.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a stage performance where a spotlight operator (the sidecar) needs to be in position and ready *before* the performer (the application) walks on stage, and needs to stay in position until the performer has fully exited *after* their final bow — if the spotlight arrives late or leaves early, the performance looks broken from the audience&#x27;s perspective, even though the performer themselves did nothing wrong.</p>
+<p>Concretely, the specific coordination points:</p>
+<ol><li><strong>Startup ordering</strong>: newer Kubernetes versions support native &quot;sidecar containers&quot; (an <code>initContainers</code> entry marked to run for the Pod&#x27;s whole lifetime) that guarantee the sidecar starts and becomes ready *before* the application container starts — avoiding a window where the application is up but its outbound calls fail because the sidecar isn&#x27;t ready yet.</li><li><strong>Shutdown ordering</strong>: the sidecar must remain active until the application&#x27;s own <a href="0475-spring-boot-graceful-shutdown-for-rolling-deploys.md">graceful shutdown</a> drain completes — if the sidecar exits first, in-flight requests the application is still trying to finish (or receive) lose their network path entirely.</li><li><strong>Health probe configuration</strong>: readiness probes should generally reflect the *combined* readiness of the application and its ability to actually communicate through the mesh, not just the application process being up in isolation.</li><li><strong>Port and traffic interception</strong>: the application should listen on standard, expected ports so the mesh&#x27;s traffic redirection rules correctly capture its inbound and outbound calls — application code generally doesn&#x27;t need changes here, but non-standard networking choices can break mesh interception.</li></ol>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 660 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A correct Pod lifecycle: the sidecar starts before the app, and stays running until the app's graceful shutdown drain fully completes" >
+  <line x1="40" y1="100" x2="620" y2="100" stroke="#8b949e" stroke-width="1.5"/>
+
+  <rect x="60" y="30" width="220" height="40" rx="6" fill="#1c2430" stroke="#f0883e"/>
+  <text x="170" y="55" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">sidecar: starts and becomes ready FIRST</text>
+
+  <rect x="300" y="130" width="220" height="40" rx="6" fill="#1c2430" stroke="#79c0ff"/>
+  <text x="410" y="155" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">app container: starts AFTER sidecar ready</text>
+
+  <rect x="60" y="130" width="200" height="40" rx="6" fill="#1c2430" stroke="#6db33f"/>
+  <text x="160" y="155" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">sidecar stays up during app's graceful drain</text>
+
+  <text x="330" y="190" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">sidecar: up first, down last -- brackets the application's own lifecycle</text>
+</svg>
+<p>The sidecar&#x27;s lifecycle brackets the application&#x27;s own — up before it starts, still up while it drains on shutdown.</p>
+<h2>5. Runnable example</h2>
+<p>Scenario: a Pod lifecycle coordinator managing sidecar-then-app startup and app-then-sidecar shutdown ordering. We start with a basic incorrect ordering (the problem), extend it to correct startup sequencing, then handle the hard case: correct shutdown sequencing where the sidecar must outlive the application&#x27;s own graceful drain.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// File: WrongStartupOrder.java -- models the PROBLEM: the application
+// container starting BEFORE its sidecar is ready, causing early outbound
+// calls to fail because there&#x27;s nothing yet to intercept and route them.
+public class WrongStartupOrder {
+    static boolean sidecarReady = false;
+
+    static void startAppContainer() {
+        System.out.println(&quot;[app container] starting immediately, not waiting for sidecar&quot;);
+        // App tries an outbound call right at startup.
+        if (!sidecarReady) {
+            System.out.println(&quot;[app container] FAILED: outbound call has no sidecar to route through yet&quot;);
+        } else {
+            System.out.println(&quot;[app container] outbound call succeeded via sidecar&quot;);
+        }
+    }
+
+    static void startSidecar() {
+        System.out.println(&quot;[sidecar] starting...&quot;);
+        sidecarReady = true;
+        System.out.println(&quot;[sidecar] ready&quot;);
+    }
+
+    public static void main(String[] args) {
+        // WRONG order: app starts before sidecar is even asked to start.
+        startAppContainer();
+        startSidecar();
+    }
+}</code></pre>
+<p>How to run: <code>java WrongStartupOrder.java</code></p>
+<p><code>startAppContainer</code> runs and checks <code>sidecarReady</code> before <code>startSidecar</code> has even been called — <code>sidecarReady</code> is still <code>false</code> at that point, so the application&#x27;s simulated outbound call fails, directly modeling the real-world failure mode of an application container starting before its sidecar is ready to route traffic.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// File: CorrectStartupOrder.java -- the SAME lifecycle, now with CORRECT
+// ordering: the sidecar starts and becomes ready FIRST, and the app
+// container only starts AFTER that -- exactly like Kubernetes&#x27; native
+// sidecar container support guarantees.
+public class CorrectStartupOrder {
+    static boolean sidecarReady = false;
+
+    static void startSidecar() {
+        System.out.println(&quot;[sidecar] starting...&quot;);
+        sidecarReady = true;
+        System.out.println(&quot;[sidecar] ready -- can now intercept and route traffic&quot;);
+    }
+
+    static void startAppContainer() {
+        if (!sidecarReady) {
+            throw new IllegalStateException(&quot;app container must not start before the sidecar is ready&quot;);
+        }
+        System.out.println(&quot;[app container] starting -- sidecar already ready&quot;);
+        System.out.println(&quot;[app container] outbound call succeeded via sidecar&quot;);
+    }
+
+    public static void main(String[] args) {
+        // CORRECT order: sidecar first, app container only after it&#x27;s confirmed ready.
+        startSidecar();
+        startAppContainer();
+    }
+}</code></pre>
+<p>How to run: <code>java CorrectStartupOrder.java</code></p>
+<p><code>startAppContainer</code> now begins with a defensive check — <code>if (!sidecarReady) throw ...</code> — that would catch the wrong-order bug immediately if it ever recurred. <code>main</code> calls <code>startSidecar()</code> first, setting <code>sidecarReady = true</code>, and only then calls <code>startAppContainer()</code>, which passes its own check and proceeds to a successful simulated outbound call, correctly modeling Kubernetes&#x27; native sidecar container ordering guarantee.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// File: CorrectShutdownOrder.java -- the SAME correctly-ordered startup,
+// now handling the PRODUCTION-FLAVORED hard case: SHUTDOWN ordering. The
+// sidecar must stay running until the app&#x27;s OWN graceful shutdown drain
+// (in-flight requests finishing) has FULLY completed -- if the sidecar
+// exits first, in-flight requests lose their network path mid-drain,
+// even though the app itself was shutting down correctly.
+import java.util.concurrent.*;
+
+public class CorrectShutdownOrder {
+    static volatile boolean sidecarRunning = false;
+
+    static void startSidecar() {
+        sidecarRunning = true;
+        System.out.println(&quot;[sidecar] started and ready&quot;);
+    }
+
+    static void stopSidecar() {
+        sidecarRunning = false;
+        System.out.println(&quot;[sidecar] stopped&quot;);
+    }
+
+    // Simulates the app&#x27;s graceful shutdown drain: an in-flight request finishing.
+    static void appGracefulShutdownDrain(ExecutorService inFlightRequests) throws InterruptedException {
+        System.out.println(&quot;[app] SIGTERM received -- draining in-flight requests before exiting&quot;);
+        inFlightRequests.shutdown();
+        boolean finished = inFlightRequests.awaitTermination(300, TimeUnit.MILLISECONDS);
+        System.out.println(&quot;[app] drain complete: &quot; + finished);
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        startSidecar();
+
+        ExecutorService inFlightRequests = Executors.newFixedThreadPool(2);
+        inFlightRequests.submit(() -&gt; {
+            System.out.println(&quot;[app] handling in-flight request, needs the sidecar to send its response&quot;);
+            try { Thread.sleep(150); } catch (InterruptedException ignored) {}
+            if (!sidecarRunning) {
+                System.out.println(&quot;[app] FAILED to send response -- sidecar already stopped mid-drain!&quot;);
+            } else {
+                System.out.println(&quot;[app] response sent successfully via sidecar&quot;);
+            }
+        });
+
+        Thread.sleep(20); // let the in-flight request actually start
+        System.out.println(&quot;[shutdown sequence] SIGTERM arrives for the Pod&quot;);
+
+        // CORRECT order: app drains FIRST, sidecar is stopped only AFTER the drain completes.
+        appGracefulShutdownDrain(inFlightRequests);
+        stopSidecar();
+
+        System.out.println(&quot;[shutdown sequence] Pod fully terminated, in the correct order&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java CorrectShutdownOrder.java</code></p>
+<p><code>appGracefulShutdownDrain</code> is called and fully completes — including <code>awaitTermination</code> blocking until the in-flight request&#x27;s thread finishes — *before* <code>stopSidecar()</code> is ever called. The in-flight request&#x27;s own logic checks <code>sidecarRunning</code> partway through its simulated work; because <code>stopSidecar()</code> hasn&#x27;t run yet at that point, <code>sidecarRunning</code> is still <code>true</code>, so the response is reported as sent successfully, exactly matching the guarantee that the sidecar must outlive the application&#x27;s own graceful drain.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace <code>CorrectShutdownOrder.main</code> in order. <strong>First</strong>, <code>startSidecar()</code> runs, setting <code>sidecarRunning = true</code>. Then a thread pool is created and one task is submitted, representing an in-flight request the application is actively handling — this task begins running concurrently, sleeping <code>150ms</code> to simulate real work, and it will check <code>sidecarRunning</code> right after that sleep completes.</p>
+<p><strong>Next</strong>, after a brief <code>20ms</code> pause to let that task actually start, the simulated <code>SIGTERM</code> arrives, and <code>appGracefulShutdownDrain(inFlightRequests)</code> is called. Inside it, <code>inFlightRequests.shutdown()</code> stops the pool from accepting *new* tasks (there are none pending anyway), and <code>awaitTermination(300, TimeUnit.MILLISECONDS)</code> blocks, waiting for the already-running in-flight task to finish.</p>
+<p><strong>Then</strong>, at around the <code>150ms</code> mark (well within the <code>300ms</code> await window), the in-flight task&#x27;s sleep completes, and it checks <code>sidecarRunning</code>. Since <code>stopSidecar()</code> has not been called yet — the program is still inside <code>appGracefulShutdownDrain</code>, which hasn&#x27;t returned — <code>sidecarRunning</code> is still <code>true</code>, so the task prints the success message.</p>
+<p><strong>After that</strong>, <code>awaitTermination</code> returns <code>true</code> (the pool terminated within the deadline), <code>appGracefulShutdownDrain</code> prints its completion message, and the method returns control back to <code>main</code>.</p>
+<p><strong>Finally</strong>, only now, after the drain has fully and successfully completed, does <code>main</code> call <code>stopSidecar()</code>, setting <code>sidecarRunning = false</code> — by this point, no in-flight work depends on the sidecar being up anymore, so stopping it here causes no problem at all, and the final termination message confirms the whole sequence completed in the correct order.</p>
+<pre><code>[sidecar] started and ready
+[app] handling in-flight request, needs the sidecar to send its response
+[shutdown sequence] SIGTERM arrives for the Pod
+[app] SIGTERM received -- draining in-flight requests before exiting
+[app] response sent successfully via sidecar
+[app] drain complete: true
+[sidecar] stopped
+[shutdown sequence] Pod fully terminated, in the correct order</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Sidecars stopping before the application finishes draining is a well-known, historically common failure mode in mesh-enabled Kubernetes deployments — it produces exactly the kind of last-second, hard-to-reproduce request failures that are miserable to debug, because the application&#x27;s own shutdown logic looks completely correct in isolation and the actual cause is a Pod-level ordering problem, not application code.</blockquote>
+<ul><li>Kubernetes&#x27; native sidecar container support (an <code>initContainers</code> entry with <code>restartPolicy: Always</code>) directly solves the startup-ordering half of this problem — check whether your cluster&#x27;s Kubernetes version and mesh support it before reaching for older, more manual workarounds.</li><li>The shutdown-ordering half often needs explicit attention even with native sidecar support — confirm your specific mesh&#x27;s sidecar honors <code>preStop</code> hooks or an equivalent mechanism to delay its own termination until the application signals its drain is complete.</li><li>None of this requires changing the Spring Boot application&#x27;s own business logic — it&#x27;s entirely Pod-level and deployment-level configuration, which is exactly why it&#x27;s easy to overlook when a team is focused on application code.</li><li>Test this specific ordering deliberately during mesh onboarding — trigger a rolling deployment under real (or realistic simulated) load and confirm zero request failures occur during the transition, rather than assuming correct configuration based on reading documentation alone.</li></ul>
+  <div class="nav"><a class="prv" href="0487-where-spring-cloud-ends-and-the-mesh-begins.html"><span class="mini">← Previous</span>Where Spring Cloud ends and the mesh begins</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:microservices.html", ID = "t488";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
