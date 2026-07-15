@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Distributed locks (LockRegistry)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-integration.html">Spring Integration</a> › 2. Java DSL & Configuration</div>
+  <div class="htitle">
+    <h1>"Distributed locks (LockRegistry)"</h1>
+    <a class="back" href="../../spring-integration.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>LockRegistry</code> is Spring Integration&#x27;s abstraction for obtaining named, mutual-exclusion locks that work correctly *across multiple application instances*, not just within one JVM&#x27;s threads. A plain Java <code>ReentrantLock</code> only coordinates threads within a single process; <code>LockRegistry</code> implementations (<code>JdbcLockRegistry</code>, <code>RedisLockRegistry</code>, <code>ZookeeperLockRegistry</code>) coordinate across every instance of a clustered application talking to the same shared backend, so that &quot;only one instance at a time is doing X&quot; can actually be guaranteed cluster-wide, not just process-wide.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for <code>LockRegistry</code> specifically when correctness depends on true mutual exclusion across a clustered, multi-instance application:</p>
+<ul><li><strong>Multiple application instances could otherwise race on the same resource</strong> — a poller-driven endpoint (card 0035) polling a shared external resource, where two instances polling simultaneously would both grab and process the same item, causing duplicate work — a distributed lock ensures only one instance&#x27;s poll actually proceeds at a time for a given resource key.</li><li><strong>An <code>Aggregator</code> (card 0025) or <code>Delayer</code> (card 0028) release decision needs to happen exactly once</strong>, even though multiple clustered instances share the same persistent <code>MessageStore</code> (card 0046) and could all simultaneously notice a group is ready to release — a lock around the release decision ensures only one instance actually performs it.</li><li><strong>You want the same mutual-exclusion guarantee <code>synchronized</code>/<code>ReentrantLock</code> gives within one process, but need it to hold across process boundaries</strong> — <code>LockRegistry</code> is deliberately API-compatible with <code>java.util.concurrent.locks.Lock</code>, so code already familiar with single-JVM locking patterns translates directly.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of <code>LockRegistry</code> like a physical key to a shared warehouse that multiple branch offices (application instances) all need access to, versus each branch office having its own separate, disconnected lock on its own local supply closet (<code>ReentrantLock</code>, per-JVM). A local lock only prevents two people *within the same branch* from entering its closet simultaneously; it does nothing to stop a completely different branch office from walking into the *same shared warehouse* at the same moment. A single, shared physical key — one that only one branch can be holding at any given time, enforced by something external to any individual branch — is what a <code>LockRegistry</code> provides.</p>
+<pre><code class="lang-java">@Bean
+public LockRegistry lockRegistry(DataSource dataSource) {
+    return new JdbcLockRegistry(new DefaultLockRepository(dataSource));
+}
+
+public void processSharedResource(String resourceId) {
+    Lock lock = lockRegistry.obtain(&quot;resource-&quot; + resourceId);
+    if (lock.tryLock()) {
+        try {
+            // only ONE instance across the entire cluster is inside this block for this resourceId
+            doWork(resourceId);
+        } finally {
+            lock.unlock();
+        }
+    } else {
+        System.out.println(&quot;Another instance already holds the lock for &quot; + resourceId);
+    }
+}</code></pre>
+<p>The <code>Lock</code> interface itself is the exact same <code>java.util.concurrent.locks.Lock</code> type used for local, single-JVM locking — <code>LockRegistry</code> is what makes <code>tryLock()</code>/<code>unlock()</code> on that interface actually coordinate across a shared backend, rather than a plain in-JVM <code>ReentrantLock</code>.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Multiple application instances each obtain a lock by the same key from a shared LockRegistry backend; only one instance's tryLock succeeds at a time, coordinated across process boundaries" >
+  <rect x="20" y="20" width="140" height="40" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="90" y="44" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">instance A</text>
+
+  <rect x="20" y="130" width="140" height="40" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="90" y="154" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">instance B</text>
+
+  <line x1="160" y1="40" x2="240" y2="90" stroke="#6db33f" stroke-width="1.5" marker-end="url(#lr1)"/>
+  <line x1="160" y1="150" x2="240" y2="100" stroke="#8b949e" stroke-width="1.5" marker-end="url(#lr1)"/>
+
+  <rect x="250" y="70" width="150" height="50" rx="8" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="325" y="92" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">shared backend</text>
+  <text x="325" y="108" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">(DB / Redis / ZK)</text>
+
+  <text x="500" y="60" fill="#6db33f" font-size="8" text-anchor="middle" font-family="sans-serif">A: tryLock() SUCCEEDS</text>
+  <text x="500" y="130" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">B: tryLock() FAILS (A holds it)</text>
+
+  <defs>
+    <marker id="lr1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>The shared backend, not either instance&#x27;s own memory, is what enforces that only one instance can hold a given lock key at a time.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: a shared resource that multiple clustered instances might otherwise process concurrently, starting with demonstrating the race condition a purely local lock fails to prevent across instances, then a shared-backend simulation actually preventing it, and finally lock contention with a timeout.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// LocalLockFailsAcrossInstancesDemo.java
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.*;
+
+public class LocalLockFailsAcrossInstancesDemo {
+    public static void main(String[] args) throws InterruptedException {
+        // TWO SEPARATE ReentrantLock instances, standing in for two SEPARATE application instances —
+        // each JVM/process would have its OWN local lock, with no coordination between them at all
+        ReentrantLock instanceALock = new ReentrantLock();
+        ReentrantLock instanceBLock = new ReentrantLock();
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch bothStarted = new CountDownLatch(2);
+
+        Runnable instanceAWork = () -&gt; {
+            instanceALock.lock(); // only prevents OTHER THREADS WITHIN instance A — does NOT see instance B at all
+            try {
+                bothStarted.countDown();
+                System.out.println(&quot;[Instance A] entered critical section (its OWN local lock says it&#x27;s safe)&quot;);
+                Thread.sleep(200);
+            } catch (InterruptedException ignored) {} finally { instanceALock.unlock(); }
+        };
+        Runnable instanceBWork = () -&gt; {
+            instanceBLock.lock(); // a COMPLETELY DIFFERENT lock object — no relationship to instanceALock whatsoever
+            try {
+                bothStarted.countDown();
+                System.out.println(&quot;[Instance B] ALSO entered critical section (its OWN, DIFFERENT local lock)&quot;);
+                Thread.sleep(200);
+            } catch (InterruptedException ignored) {} finally { instanceBLock.unlock(); }
+        };
+
+        pool.submit(instanceAWork);
+        pool.submit(instanceBWork);
+        bothStarted.await();
+        System.out.println(&quot;BOTH instances were inside the &#x27;critical section&#x27; SIMULTANEOUSLY — local locks provided NO cross-instance protection&quot;);
+        pool.shutdown();
+    }
+}</code></pre>
+<p>How to run: <code>java LocalLockFailsAcrossInstancesDemo.java</code>. Expected output: both <code>[Instance A]</code> and <code>[Instance B]</code> &quot;entered critical section&quot; lines print essentially together, followed by <code>BOTH instances were inside the &#x27;critical section&#x27; SIMULTANEOUSLY...</code> — exactly the race condition a plain per-process <code>ReentrantLock</code> cannot prevent, since each instance&#x27;s lock has no idea the other instance (or its lock) even exists.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>A shared backend (simulated here with a <code>ConcurrentHashMap</code> standing in for a database row or Redis key that both &quot;instances&quot; actually contend on) correctly prevents the same race — only one instance&#x27;s <code>tryLock()</code> succeeds at a time for a given key, exactly as <code>LockRegistry</code> provides in a real clustered application.</p>
+<pre><code class="lang-java">// SharedBackendLockDemo.java
+import java.util.concurrent.*;
+
+public class SharedBackendLockDemo {
+    // stands in for a LockRegistry&#x27;s shared backend (a DB table, a Redis key) — genuinely SHARED, not per-instance
+    static ConcurrentHashMap&lt;String, String&gt; sharedLockBackend = new ConcurrentHashMap&lt;&gt;();
+
+    static boolean tryLock(String key, String holderId) {
+        return sharedLockBackend.putIfAbsent(key, holderId) == null; // atomic: succeeds only if unheld
+    }
+
+    static void unlock(String key, String holderId) {
+        sharedLockBackend.remove(key, holderId);
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch done = new CountDownLatch(2);
+        String lockKey = &quot;resource-42&quot;;
+
+        Runnable instanceAWork = () -&gt; {
+            if (tryLock(lockKey, &quot;instance-A&quot;)) {
+                try {
+                    System.out.println(&quot;[Instance A] acquired the SHARED lock, processing resource-42&quot;);
+                    Thread.sleep(300);
+                } catch (InterruptedException ignored) {} finally { unlock(lockKey, &quot;instance-A&quot;); done.countDown(); }
+            } else {
+                System.out.println(&quot;[Instance A] could NOT acquire lock — another instance holds it&quot;);
+                done.countDown();
+            }
+        };
+        Runnable instanceBWork = () -&gt; {
+            try { Thread.sleep(50); } catch (InterruptedException ignored) {} // slight delay so A gets there first
+            if (tryLock(lockKey, &quot;instance-B&quot;)) {
+                System.out.println(&quot;[Instance B] acquired the SHARED lock, processing resource-42&quot;);
+            } else {
+                System.out.println(&quot;[Instance B] could NOT acquire lock — Instance A already holds it&quot;);
+            }
+            done.countDown();
+        };
+
+        pool.submit(instanceAWork);
+        pool.submit(instanceBWork);
+        done.await();
+        pool.shutdown();
+    }
+}</code></pre>
+<p>How to run: <code>java SharedBackendLockDemo.java</code>. Expected output: <code>[Instance A] acquired the SHARED lock, processing resource-42</code> then <code>[Instance B] could NOT acquire lock — Instance A already holds it</code> — because both &quot;instances&quot; contend on the *same* shared backend entry (rather than each having its own separate lock, as in Level 1), true mutual exclusion is achieved: only one instance is ever actually processing <code>resource-42</code> at a time.</p>
+<h3>Level 3 — Advanced</h3>
+<p>A <code>tryLock</code> with a timeout, waiting a bounded amount of time for a currently-held lock to become available rather than failing immediately — mirroring <code>Lock.tryLock(timeout, unit)</code>&#x27;s real behavior, useful when a brief wait is acceptable but indefinite blocking isn&#x27;t.</p>
+<pre><code class="lang-java">// TimedLockContentionDemo.java
+import java.util.concurrent.*;
+import java.util.concurrent.locks.*;
+
+public class TimedLockContentionDemo {
+    // a ReentrantLock here stands in for the Lock instance LockRegistry.obtain(key) would return,
+    // since the real cross-process coordination requires an actual shared backend to demonstrate live
+    static ReentrantLock sharedResourceLock = new ReentrantLock();
+
+    public static void main(String[] args) throws InterruptedException {
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch done = new CountDownLatch(2);
+
+        pool.submit(() -&gt; {
+            sharedResourceLock.lock();
+            try {
+                System.out.println(&quot;[Instance A] holding lock for 500ms&quot;);
+                Thread.sleep(500);
+            } catch (InterruptedException ignored) {} finally {
+                sharedResourceLock.unlock();
+                System.out.println(&quot;[Instance A] released lock&quot;);
+                done.countDown();
+            }
+        });
+
+        pool.submit(() -&gt; {
+            try { Thread.sleep(50); } catch (InterruptedException ignored) {} // let A grab it first
+            System.out.println(&quot;[Instance B] attempting tryLock with 1000ms timeout...&quot;);
+            try {
+                boolean acquired = sharedResourceLock.tryLock(1000, TimeUnit.MILLISECONDS);
+                if (acquired) {
+                    System.out.println(&quot;[Instance B] acquired lock AFTER waiting for A to release it&quot;);
+                    sharedResourceLock.unlock();
+                } else {
+                    System.out.println(&quot;[Instance B] gave up after 1000ms timeout&quot;);
+                }
+            } catch (InterruptedException ignored) {} finally { done.countDown(); }
+        });
+
+        done.await();
+        pool.shutdown();
+    }
+}</code></pre>
+<p>How to run: <code>java TimedLockContentionDemo.java</code>. Expected output: <code>[Instance A] holding lock for 500ms</code>, <code>[Instance B] attempting tryLock with 1000ms timeout...</code>, then (after ~450ms of actual waiting) <code>[Instance A] released lock</code> followed immediately by <code>[Instance B] acquired lock AFTER waiting for A to release it</code> — Instance B&#x27;s bounded wait (1000ms) was long enough to actually receive the lock once Instance A released it (after ~500ms total), rather than either failing immediately or blocking forever.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>TimedLockContentionDemo</code> in execution order:</p>
+<ol><li>The first pooled task immediately calls <code>sharedResourceLock.lock()</code>, acquiring it (nothing else holds it yet), prints confirmation, and sleeps 500ms to simulate doing real work while holding the lock.</li><li>The second pooled task sleeps 50ms first (ensuring the first task gets there first for a deterministic demonstration), then calls <code>sharedResourceLock.tryLock(1000, TimeUnit.MILLISECONDS)</code> — this is a *bounded* wait, unlike a plain <code>lock()</code> call, which would block indefinitely.</li><li>Because the first task is still holding the lock at this point (it&#x27;s only about 50ms into its 500ms hold), <code>tryLock</code> cannot acquire immediately — it begins waiting, up to its 1000ms budget, for the lock to become available.</li><li>At roughly the 500ms mark, the first task&#x27;s <code>finally</code> block runs, calling <code>sharedResourceLock.unlock()</code> and printing its release confirmation — this is the moment the lock actually becomes available for another holder.</li><li>The second task&#x27;s still-waiting <code>tryLock</code> call — which had been blocked since roughly the 50ms mark, well within its 1000ms budget — immediately notices the lock is now free and acquires it, returning <code>true</code>.</li><li>Because the second task&#x27;s timeout (1000ms) comfortably exceeded the actual wait required (roughly 450ms, from when it started waiting to when the first task released the lock), it successfully acquired the lock rather than timing out — had the first task instead held the lock for, say, 1200ms, the second task&#x27;s <code>tryLock</code> would have returned <code>false</code> after its own 1000ms budget elapsed, exactly the bounded-wait behavior a distributed lock&#x27;s <code>tryLock(timeout, unit)</code> provides for coordinating clustered instances without any risk of indefinite blocking.</li></ol>
+<pre><code>t=0ms:    Instance A: lock() SUCCEEDS, holds for 500ms
+t=50ms:   Instance B: tryLock(1000ms) called -&gt; lock is HELD -&gt; B starts WAITING
+t=500ms:  Instance A: unlock() -&gt; lock becomes available
+t=500ms:  Instance B: tryLock() SUCCEEDS (had waited ~450ms, well within its 1000ms budget)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A held distributed lock whose owning instance crashes (or is killed) before calling <code>unlock()</code> can leave the lock permanently held, blocking every other instance from ever acquiring it again — unless the specific <code>LockRegistry</code> implementation supports lock expiration/leasing (many do, via a TTL on the underlying backend entry). Always verify whether the chosen <code>LockRegistry</code> implementation handles this &quot;lock holder died without releasing&quot; scenario, and prefer implementations (or explicit lease configuration) that do, especially for any lock guarding a resource that must never become permanently stuck.</blockquote>
+<ul><li><code>LockRegistry</code> provides named, mutual-exclusion locks that coordinate correctly across multiple application instances via a shared external backend (JDBC, Redis, Zookeeper), unlike a plain per-process <code>ReentrantLock</code>, which only coordinates threads within one JVM.</li><li>Use it whenever correctness depends on true cluster-wide mutual exclusion — a shared external resource, a coordinated release decision on a shared <code>MessageStore</code> (card 0046), or any &quot;only one instance should do this at a time&quot; requirement.</li><li><code>LockRegistry</code>&#x27;s obtained <code>Lock</code> objects implement the standard <code>java.util.concurrent.locks.Lock</code> interface, so <code>tryLock()</code>, <code>tryLock(timeout, unit)</code>, and <code>unlock()</code> behave familiarly, just coordinated across process boundaries via the shared backend.</li><li>A bounded <code>tryLock(timeout, unit)</code> call is generally preferable to an unbounded <code>lock()</code> call in distributed settings, since it avoids indefinite blocking if the lock is held longer than expected or never released at all.</li><li>Verify the chosen <code>LockRegistry</code> implementation&#x27;s behavior when a lock holder crashes without releasing — implementations with lock expiration/leasing avoid a crashed instance permanently blocking every other instance from ever acquiring that lock again.</li></ul>
+  <div class="nav"><a class="prv" href="0047-metadata-store-idempotent-receiver.html"><span class="mini">← Previous</span>Metadata store / idempotent receiver</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-integration.html", ID = "t48";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

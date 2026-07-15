@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Metadata store / idempotent receiver" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-integration.html">Spring Integration</a> › 2. Java DSL & Configuration</div>
+  <div class="htitle">
+    <h1>"Metadata store / idempotent receiver"</h1>
+    <a class="back" href="../../spring-integration.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <code>MetadataStore</code> is a simple, pluggable key-value persistence abstraction (<code>ConcurrentMetadataStore</code>/<code>SimpleMetadataStore</code> in-memory by default, with JDBC, MongoDB, Redis, and Zookeeper-backed alternatives) used to remember small facts across restarts — most commonly, which message IDs (or business keys) have already been processed. An idempotent receiver is the pattern built on top of it: an endpoint (often implemented as a <code>Filter</code>, card 0022, or an <code>IdempotentReceiverInterceptor</code>) that checks a <code>MetadataStore</code> before processing a message, skipping anything it recognizes as already handled, so that a message delivered more than once (a common reality with many messaging transports&#x27; at-least-once delivery guarantees) is only ever *processed* once.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for a <code>MetadataStore</code>-backed idempotent receiver specifically when duplicate message delivery is a real possibility and processing the same message twice would be harmful:</p>
+<ul><li><strong>The messaging transport only guarantees at-least-once delivery</strong> (many JMS, Kafka, and cloud queue configurations) — a network hiccup or consumer restart can cause the same message to be redelivered; without an idempotency check, &quot;charge the customer&#x27;s card&quot; or &quot;ship the order&quot; could happen twice for what was logically one event.</li><li><strong>You want that de-duplication to survive application restarts</strong>, not just catch duplicates arriving within one process&#x27;s uptime — a purely in-memory &quot;have I seen this ID&quot; set would forget everything on restart, exactly the same durability gap <code>SimpleMessageStore</code> has (card 0046); a persistent <code>MetadataStore</code> avoids that.</li><li><strong>The idempotency check needs to be a lightweight, dedicated lookup</strong> — a <code>MetadataStore</code> is intentionally a much simpler abstraction than a full <code>MessageStore</code>: it stores small key-value facts (has this ID been seen?), not entire buffered message bodies, making it cheap to check on every single incoming message.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a <code>MetadataStore</code>-backed idempotent receiver like a wedding&#x27;s guest check-in table with a physical guest list. Each arriving guest&#x27;s name is checked against the list before they&#x27;re let in; if their name is already checked off, they&#x27;re recognized as having already been let in (perhaps they walked out and came back in through a different door) and aren&#x27;t seated a second time, taking up a duplicate seat. The guest list itself is small — just names and a checkbox, not each guest&#x27;s entire life story — which is exactly why checking it at the door is fast enough to do for every single arrival.</p>
+<pre><code class="lang-java">@Bean
+public MetadataStore metadataStore() {
+    return new SimpleMetadataStore(); // or JdbcMetadataStore for a durable, restart-surviving version
+}
+
+@Filter(inputChannel = &quot;orders&quot;, outputChannel = &quot;newOrders&quot;)
+public boolean isNewOrder(Message&lt;Order&gt; message) {
+    String messageId = message.getHeaders().getId().toString();
+    if (metadataStore.get(messageId) != null) {
+        return false; // ALREADY seen this exact message — skip it, don&#x27;t process twice
+    }
+    metadataStore.put(messageId, Instant.now().toString());
+    return true;
+}</code></pre>
+<p>The filter&#x27;s condition is a single fast lookup against the metadata store — messages recognized as already-processed are simply dropped, exactly like any other <code>Filter</code> (card 0022) rejection, just based on &quot;have I seen this before&quot; rather than a business-rule condition.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Idempotent receiver checks each incoming message's ID against a MetadataStore; a new ID is recorded and forwarded, a duplicate ID is recognized and dropped" >
+  <rect x="20" y="60" width="130" height="50" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="2"/>
+  <text x="85" y="88" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">incoming message</text>
+
+  <line x1="150" y1="85" x2="210" y2="85" stroke="#6db33f" stroke-width="2" marker-end="url(#mdc1)"/>
+
+  <rect x="220" y="60" width="180" height="50" rx="8" fill="#1c2430" stroke="#79c0ff" stroke-width="2"/>
+  <text x="310" y="82" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">check MetadataStore</text>
+  <text x="310" y="98" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">has this ID been seen?</text>
+
+  <line x1="400" y1="75" x2="460" y2="35" stroke="#6db33f" stroke-width="1.5" marker-end="url(#mdc2)"/>
+  <text x="440" y="25" fill="#6db33f" font-size="7" text-anchor="middle" font-family="sans-serif">new -&gt; record + forward</text>
+
+  <line x1="400" y1="95" x2="460" y2="140" stroke="#8b949e" stroke-width="1.5" marker-end="url(#mdc2)"/>
+  <text x="440" y="155" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">duplicate -&gt; DROP</text>
+
+  <rect x="470" y="10" width="140" height="35" rx="5" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="540" y="32" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">newOrders channel</text>
+
+  <defs>
+    <marker id="mdc1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+    <marker id="mdc2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6db33f"/></marker>
+  </defs>
+</svg>
+<p>A single fast key lookup decides, per message, whether it&#x27;s genuinely new or a duplicate already handled.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: an order-processing endpoint receiving occasionally-duplicated messages from an at-least-once transport, starting with a basic idempotent filter, then persisting that check across a simulated restart, and finally a business-key-based (not just message-ID-based) idempotency check for a more realistic duplicate scenario.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// BasicIdempotentReceiverDemo.java
+import org.springframework.integration.channel.DirectChannel;
+import org.springframework.messaging.support.MessageBuilder;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
+
+public class BasicIdempotentReceiverDemo {
+    record Order(String id) {}
+
+    public static void main(String[] args) {
+        Map&lt;String, String&gt; metadataStore = new ConcurrentHashMap&lt;&gt;(); // stand-in for SimpleMetadataStore
+        DirectChannel orders = new DirectChannel();
+        DirectChannel newOrders = new DirectChannel();
+        newOrders.subscribe(m -&gt; System.out.println(&quot;Processing (genuinely new): &quot; + m.getPayload()));
+
+        // what an idempotent-receiver Filter does for you:
+        orders.subscribe(m -&gt; {
+            String messageId = m.getHeaders().getId().toString();
+            if (metadataStore.putIfAbsent(messageId, &quot;seen&quot;) != null) {
+                System.out.println(&quot;DUPLICATE detected, skipping: &quot; + m.getPayload());
+            } else {
+                newOrders.send(m);
+            }
+        });
+
+        var duplicateMessage = MessageBuilder.withPayload(new Order(&quot;ORD-1&quot;)).build();
+        orders.send(duplicateMessage);        // first delivery
+        orders.send(duplicateMessage);        // SAME message object redelivered (simulating at-least-once)
+    }
+}</code></pre>
+<p>How to run: <code>java BasicIdempotentReceiverDemo.java</code>. Expected output: <code>Processing (genuinely new): Order[id=ORD-1]</code> then <code>DUPLICATE detected, skipping: Order[id=ORD-1]</code> — the exact same message, redelivered a second time (its ID unchanged, since it&#x27;s literally the same <code>Message</code> object), was recognized and skipped rather than processed twice.</p>
+<h3>Level 2 — Intermediate</h3>
+<p>Using a file-backed metadata store (standing in for a real <code>JdbcMetadataStore</code>) shows the check surviving a simulated application restart — a message redelivered *after* the restart is still correctly recognized as a duplicate, something a purely in-memory metadata store could never do.</p>
+<pre><code class="lang-java">// PersistentMetadataStoreDemo.java
+import java.io.*;
+import java.util.*;
+
+public class PersistentMetadataStoreDemo {
+    static boolean checkAndRecord(File storeFile, String messageId) throws IOException {
+        Set&lt;String&gt; seen = readSeenIds(storeFile);
+        boolean isDuplicate = seen.contains(messageId);
+        if (!isDuplicate) {
+            seen.add(messageId);
+            try (PrintWriter out = new PrintWriter(new FileWriter(storeFile))) {
+                seen.forEach(out::println);
+            }
+        }
+        return isDuplicate;
+    }
+
+    static Set&lt;String&gt; readSeenIds(File storeFile) throws IOException {
+        if (!storeFile.exists()) return new HashSet&lt;&gt;();
+        Set&lt;String&gt; ids = new HashSet&lt;&gt;();
+        try (BufferedReader in = new BufferedReader(new FileReader(storeFile))) {
+            String line;
+            while ((line = in.readLine()) != null) ids.add(line);
+        }
+        return ids;
+    }
+
+    public static void main(String[] args) throws IOException {
+        File storeFile = File.createTempFile(&quot;metadata-store-demo&quot;, &quot;.dat&quot;);
+        storeFile.deleteOnExit();
+
+        System.out.println(&quot;First delivery, duplicate=&quot; + checkAndRecord(storeFile, &quot;msg-ORD-1&quot;));
+
+        // simulate a full application restart: nothing but the file survives
+        System.out.println(&quot;--- simulated restart ---&quot;);
+        System.out.println(&quot;Redelivery AFTER restart, duplicate=&quot; + checkAndRecord(storeFile, &quot;msg-ORD-1&quot;));
+    }
+}</code></pre>
+<p>How to run: <code>java PersistentMetadataStoreDemo.java</code>. Expected output: <code>First delivery, duplicate=false</code>, <code>--- simulated restart ---</code>, then <code>Redelivery AFTER restart, duplicate=true</code> — even across the simulated restart (a fresh read from the durable file, with no in-memory state carried over), the second delivery of the same message ID was still correctly recognized as a duplicate.</p>
+<h3>Level 3 — Advanced</h3>
+<p>A more realistic idempotency check often uses a stable *business key* (an order ID from the payload) rather than the transport-generated message ID, since two genuinely distinct message deliveries (different message IDs) can still represent the same logical business event — shown here alongside a TTL-style cleanup to prevent the metadata store from growing forever.</p>
+<pre><code class="lang-java">// BusinessKeyIdempotencyDemo.java
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
+import java.time.Instant;
+import java.time.Duration;
+
+public class BusinessKeyIdempotencyDemo {
+    record Order(String id, double amount) {}
+
+    static Map&lt;String, Instant&gt; metadataStore = new ConcurrentHashMap&lt;&gt;();
+    static Duration retentionWindow = Duration.ofMinutes(30); // don&#x27;t keep entries forever
+
+    static boolean isDuplicateByBusinessKey(Order order) {
+        String businessKey = &quot;order-&quot; + order.id(); // the STABLE business identity, not a transport message ID
+        Instant now = Instant.now();
+        Instant existing = metadataStore.get(businessKey);
+        if (existing != null &amp;&amp; Duration.between(existing, now).compareTo(retentionWindow) &lt; 0) {
+            return true; // seen recently — genuine duplicate by business meaning
+        }
+        metadataStore.put(businessKey, now);
+        return false;
+    }
+
+    public static void main(String[] args) {
+        // two DIFFERENT transport-level messages (different message IDs, if this were real),
+        // but the SAME business order — e.g. delivered via two different retries with new envelope IDs
+        Order delivery1 = new Order(&quot;ORD-1&quot;, 199.99);
+        Order delivery2 = new Order(&quot;ORD-1&quot;, 199.99); // same order ID, a genuinely separate delivery/message
+
+        System.out.println(&quot;Delivery 1, duplicate by business key=&quot; + isDuplicateByBusinessKey(delivery1));
+        System.out.println(&quot;Delivery 2, duplicate by business key=&quot; + isDuplicateByBusinessKey(delivery2));
+
+        Order differentOrder = new Order(&quot;ORD-2&quot;, 50.0);
+        System.out.println(&quot;A genuinely different order, duplicate=&quot; + isDuplicateByBusinessKey(differentOrder));
+    }
+}</code></pre>
+<p>How to run: <code>java BusinessKeyIdempotencyDemo.java</code>. Expected output: <code>Delivery 1, duplicate by business key=false</code>, <code>Delivery 2, duplicate by business key=true</code>, then <code>A genuinely different order, duplicate=false</code> — even though <code>delivery1</code> and <code>delivery2</code> would be entirely separate <code>Message</code> objects with separate transport-level IDs in a real system, the business-key check correctly recognized them as the same logical order, while a genuinely different order was correctly treated as new.</p>
+<h2>6. Walkthrough</h2>
+<p>Tracing <code>BusinessKeyIdempotencyDemo</code> in execution order:</p>
+<ol><li><code>isDuplicateByBusinessKey(delivery1)</code> computes <code>businessKey = &quot;order-ORD-1&quot;</code>, checks <code>metadataStore.get(...)</code> — nothing is present yet, so <code>existing</code> is <code>null</code>, and the method records the current timestamp under that key before returning <code>false</code> (not a duplicate).</li><li><code>isDuplicateByBusinessKey(delivery2)</code> computes the *same* <code>businessKey</code>, <code>&quot;order-ORD-1&quot;</code>, since <code>delivery2</code> carries the same order ID — even though, in a real system, <code>delivery2</code> would have arrived as a completely separate message with its own distinct transport-level ID.</li><li>This time, <code>metadataStore.get(&quot;order-ORD-1&quot;)</code> finds the timestamp recorded in step 1; <code>Duration.between(existing, now)</code> is well within the 30-minute retention window, so the method returns <code>true</code> — correctly identifying this as a duplicate by business meaning, regardless of transport-level message identity.</li><li><code>isDuplicateByBusinessKey(differentOrder)</code> computes <code>businessKey = &quot;order-ORD-2&quot;</code> — a key that has never been seen before — so <code>existing</code> is <code>null</code>, and this order is correctly recognized as genuinely new.</li><li>The <code>retentionWindow</code> check (<code>Duration.between(...).compareTo(retentionWindow) &lt; 0</code>) is what prevents the metadata store from growing forever with permanently-retained entries: an entry older than 30 minutes would no longer count as &quot;recently seen,&quot; allowing (in a real system with cleanup) that key to eventually be evicted or reused.</li><li>This business-key approach is strictly more robust for real-world idempotency than a pure message-ID check (as in Level 1) precisely because message IDs are transport-level identifiers that change on every redelivery attempt, while a business key (an order ID, a payment reference) represents the actual logical event the system cares about not processing twice.</li></ol>
+<pre><code>delivery1 (order-ORD-1) -&gt; businessKey lookup: not found -&gt; record timestamp -&gt; NOT duplicate
+delivery2 (order-ORD-1) -&gt; businessKey lookup: FOUND (within retention window) -&gt; DUPLICATE
+differentOrder (order-ORD-2) -&gt; businessKey lookup: not found -&gt; record timestamp -&gt; NOT duplicate</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>A metadata store with no retention/eviction policy grows without bound as long as the application keeps receiving new unique keys — exactly the same unbounded-growth risk <code>QueueChannel</code> (card 0010) and <code>Aggregator</code> (card 0025) carry without their own bounds or timeouts. Always pair an idempotent receiver&#x27;s metadata store with either a TTL-based eviction policy (as shown in Level 3) or periodic cleanup, especially for high-volume systems where the set of distinct business keys grows continuously over the application&#x27;s lifetime.</blockquote>
+<ul><li>A <code>MetadataStore</code> is a lightweight, pluggable key-value persistence abstraction, most commonly used to remember which messages (or business events) have already been processed.</li><li>An idempotent receiver checks a <code>MetadataStore</code> before processing each incoming message, skipping anything already recognized — protecting against duplicate processing from at-least-once delivery transports.</li><li>A persistent <code>MetadataStore</code> implementation (JDBC, MongoDB, Redis, Zookeeper) makes that de-duplication survive application restarts, unlike a purely in-memory check that would forget everything on restart.</li><li>Prefer checking a stable business key (an order ID, a payment reference) over a raw transport-level message ID when possible — the same logical event can arrive as genuinely different messages with different transport IDs across retries.</li><li>Always pair a metadata store with a retention/eviction policy (TTL-based or otherwise) to prevent unbounded growth as the set of distinct keys accumulates over the application&#x27;s lifetime.</li></ul>
+  <div class="nav"><a class="prv" href="0046-message-store-in-memory-jdbc-mongodb-redis.html"><span class="mini">← Previous</span>Message store (in-memory, JDBC, MongoDB, Redis)</a><a class="nxt" href="0048-distributed-locks-lockregistry.html"><span class="mini">Next →</span>Distributed locks (LockRegistry)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-integration.html", ID = "t47";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
