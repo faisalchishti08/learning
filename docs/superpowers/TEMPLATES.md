@@ -139,15 +139,24 @@ solution with correct complexity.
   line, and why the brute-force approach is slower.
 - **Part 4 — Diagram:** visualise the technique in action — two pointers moving toward
   each other, a window sliding, a recursion tree. Use `<svg>` or an ASCII frame.
-- **Part 5 — Runnable example (Java):** ONE concrete problem, solved at 3 levels — this
-  is the natural brute-force → optimal → hardened progression:
-  - **Level 1 — Basic (brute force):** the obvious solution. State its complexity
-    (usually O(n^2) or worse). This shows *why* we need the pattern.
+- **Part 5 — Runnable example (Java):** ONE concrete problem, solved at 3 levels — the
+  natural brute-force → optimal → hardened progression. **Explain each algorithm, do not
+  just paste code.** For every level: describe the approach in plain words first, show the
+  runnable Java, then explain how it works and give its Big-O time and space.
+  - **Level 1 — Basic (brute force):** the obvious solution (try every pair/combination).
+    Explain the idea, then state its complexity (usually O(n^2) or worse). Show *why* it is
+    wasteful — what work it repeats.
+  - **KEY INSIGHT (write this between Level 1 and Level 2):** one short paragraph naming the
+    single realisation that removes the wasted work — the reason the optimal approach is
+    allowed to skip work (e.g. "the array is sorted, so we never need to look back"). This
+    is the most important explanation on the page.
   - **Level 2 — Intermediate (the pattern):** the optimal solution using the pattern.
-    State the improved complexity (e.g. O(n)).
+    Explain how it applies the key insight, then state the improved complexity (e.g. O(n)).
   - **Level 3 — Advanced (hardened / follow-up):** handle edge cases (empty input,
-    duplicates, overflow) or a common follow-up variant of the problem.
-  Each level is a runnable `main` that prints the result for a sample input.
+    duplicates, overflow) or a common follow-up variant, and explain what changed and why.
+  For a named problem, use the real LeetCode method signature (e.g.
+  `public int[] twoSum(int[] nums, int target)`) plus a small `main` that calls it with a
+  sample input and prints the result, so it runs with `java File.java`.
 - **Part 6 — Walkthrough:** **dry-run the optimal solution on one concrete input** as a
   trace table — one row per step, showing the pointers/window/variables changing:
 
