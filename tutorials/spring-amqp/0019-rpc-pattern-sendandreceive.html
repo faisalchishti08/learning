@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"RPC pattern (sendAndReceive)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-amqp.html">Spring AMQP</a> › 2. Sending & Receiving</div>
+  <div class="htitle">
+    <h1>"RPC pattern (sendAndReceive)"</h1>
+    <a class="back" href="../../spring-amqp.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>RabbitTemplate.sendAndReceive</code> (and its object-converting counterpart <code>convertSendAndReceive</code>, already introduced briefly in card 0007) implements a full request/reply RPC pattern over AMQP: the template publishes a request message with a <code>replyTo</code> property set and a correlation ID attached, then blocks the calling thread until a reply carrying that same correlation ID arrives on the specified reply destination, or until a configured timeout elapses. This card looks at the pattern in more depth — what actually has to happen on the responding side for this to work, and the trade-offs of layering synchronous RPC semantics onto an inherently asynchronous protocol.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for the RPC pattern specifically when a caller genuinely cannot proceed without a response, and a synchronous call is the natural fit for the interaction:</p>
+<ul><li><strong>A calculation or lookup needs to happen in a separate service, and the caller has no useful work to do until the answer arrives</strong> — a price quote calculation, an inventory check — these are naturally synchronous interactions even though the underlying transport is a message broker rather than a direct HTTP call.</li><li><strong>The responding side is decoupled from the caller by design (different team, different deployment, different scaling profile), but the interaction itself is still fundamentally synchronous</strong> — using AMQP as the transport rather than HTTP might be chosen for its existing infrastructure, but the request/reply *shape* of the interaction doesn&#x27;t change based on the transport.</li><li><strong>Avoid this pattern when a response isn&#x27;t actually needed before the caller can proceed</strong> — for pure fire-and-forget events (an order was created, a status changed), a plain <code>convertAndSend</code> with no expectation of a reply is simpler, faster, and doesn&#x27;t tie up a thread waiting.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of <code>sendAndReceive</code> like making a phone call and staying on hold rather than sending a message and going about your day — you (the caller) can&#x27;t do anything else productive until the person on the other end (the responder) picks up and gives you an answer, and you&#x27;ll eventually hang up in frustration (timeout) if no one answers within a reasonable time. This is meaningfully different from dropping a note in someone&#x27;s mailbox and continuing with your day regardless of when (or whether) they eventually reply — that&#x27;s what plain, non-blocking publishing looks like instead.</p>
+<pre><code class="lang-java">// Caller side: blocks until a reply arrives or the timeout elapses.
+public PriceQuote getQuote(QuoteRequest request) {
+    return (PriceQuote) rabbitTemplate.convertSendAndReceive(
+        &quot;pricing.exchange&quot;, &quot;quote.request&quot;, request);
+}
+
+// Responder side: a listener that returns a value is automatically treated as the reply.
+@RabbitListener(queues = &quot;quoteRequestQueue&quot;)
+public PriceQuote handleQuoteRequest(QuoteRequest request) {
+    double price = pricingEngine.calculate(request);
+    return new PriceQuote(request.getItemId(), price); // this return value becomes the RPC reply
+}</code></pre>
+<p>The responder&#x27;s <code>@RabbitListener</code> method simply returns a value; Spring AMQP&#x27;s listener infrastructure handles publishing that return value back to the caller&#x27;s <code>replyTo</code> destination with the matching correlation ID automatically.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="sendAndReceive publishes a request with replyTo and a correlation ID, blocks the calling thread, and a responder's listener method's return value is automatically published back to that reply destination with the matching correlation ID" >
+  <rect x="20" y="20" width="180" height="45" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="110" y="47" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Caller (blocks)</text>
+
+  <line x1="200" y1="42" x2="270" y2="42" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a18)"/>
+  <text x="235" y="32" fill="#6db33f" font-size="7" text-anchor="middle" font-family="sans-serif">request + replyTo + corrId</text>
+
+  <rect x="270" y="20" width="180" height="45" rx="6" fill="#0d1117" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="360" y="47" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">@RabbitListener</text>
+
+  <line x1="270" y1="60" x2="200" y2="100" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#a18)"/>
+  <text x="235" y="90" fill="#79c0ff" font-size="7" text-anchor="middle" font-family="sans-serif">return value auto-published</text>
+  <text x="235" y="105" fill="#79c0ff" font-size="7" text-anchor="middle" font-family="sans-serif">to replyTo, with corrId</text>
+
+  <rect x="20" y="105" width="180" height="40" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="110" y="130" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">reply arrives -&gt; unblocks</text>
+</svg>
+<p>The listener&#x27;s plain return value becomes the RPC reply automatically — no manual reply-publishing code needed.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: a price-quote RPC where the caller blocks for the responder&#x27;s answer, simulated with a <code>CompletableFuture</code> standing in for the blocking request/reply round trip (no real RabbitMQ broker needed to demonstrate the synchronous-call-over-async-transport pattern), starting with a basic successful round trip, then adding a timeout for when no reply arrives in time, then adding a scenario with a responder that itself needs to call a slow downstream dependency, showing how that latency directly becomes the caller&#x27;s own wait time.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// RpcPatternDemo.java
+import java.util.concurrent.*;
+
+public class RpcPatternDemo {
+    record QuoteRequest(String itemId, int quantity) {}
+    record PriceQuote(String itemId, double totalPrice) {}
+
+    // Stand-in for the responder: a listener method whose return value becomes the reply.
+    static PriceQuote handleQuoteRequest(QuoteRequest request) {
+        return new PriceQuote(request.itemId(), request.quantity() * 9.99);
+    }
+
+    // Stand-in for RabbitTemplate.convertSendAndReceive: blocks until the &quot;reply&quot; is available.
+    static PriceQuote sendAndReceive(QuoteRequest request) throws Exception {
+        CompletableFuture&lt;PriceQuote&gt; future = CompletableFuture.supplyAsync(() -&gt; handleQuoteRequest(request));
+        return future.get(1, TimeUnit.SECONDS);
+    }
+
+    public static void main(String[] args) throws Exception {
+        PriceQuote quote = sendAndReceive(new QuoteRequest(&quot;WIDGET-1&quot;, 3));
+        System.out.println(&quot;Received quote: &quot; + quote);
+    }
+}</code></pre>
+<p>How to run: <code>java RpcPatternDemo.java</code>. Expected output: <code>Received quote: PriceQuote[itemId=WIDGET-1, totalPrice=29.97]</code> — the caller blocks briefly and receives the responder&#x27;s return value as its RPC reply.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// RpcPatternDemo.java
+import java.util.concurrent.*;
+
+public class RpcPatternDemo {
+    record QuoteRequest(String itemId, int quantity) {}
+    record PriceQuote(String itemId, double totalPrice) {}
+
+    static PriceQuote handleQuoteRequest(QuoteRequest request, long simulatedDelayMillis) throws InterruptedException {
+        Thread.sleep(simulatedDelayMillis);
+        return new PriceQuote(request.itemId(), request.quantity() * 9.99);
+    }
+
+    // Real-world concern: the responder can be slow, unreachable, or the reply lost -- the
+    // caller must not block forever; a configured timeout is essential for RPC-style calls.
+    static PriceQuote sendAndReceiveWithTimeout(QuoteRequest request, long responderDelayMillis, long timeoutMillis)
+            throws Exception {
+        CompletableFuture&lt;PriceQuote&gt; future = CompletableFuture.supplyAsync(() -&gt; {
+            try {
+                return handleQuoteRequest(request, responderDelayMillis);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        try {
+            return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException ex) {
+            System.out.println(&quot;RPC call timed out after &quot; + timeoutMillis + &quot;ms, no reply received&quot;);
+            return null;
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        PriceQuote fastQuote = sendAndReceiveWithTimeout(new QuoteRequest(&quot;WIDGET-1&quot;, 3), 100, 500);
+        System.out.println(&quot;Fast responder result: &quot; + fastQuote);
+
+        PriceQuote slowQuote = sendAndReceiveWithTimeout(new QuoteRequest(&quot;WIDGET-2&quot;, 1), 800, 300);
+        System.out.println(&quot;Slow responder result: &quot; + slowQuote);
+    }
+}</code></pre>
+<p>How to run: <code>java RpcPatternDemo.java</code>. Expected output: the fast responder returns its quote well within the timeout, printing <code>Fast responder result: PriceQuote[...]</code>; the slow responder (800ms delay against a 300ms timeout) triggers the timeout message and <code>Slow responder result: null</code> — the caller correctly giving up rather than waiting indefinitely for a reply that&#x27;s taking too long.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// RpcPatternDemo.java
+import java.util.concurrent.*;
+
+public class RpcPatternDemo {
+    record QuoteRequest(String itemId, int quantity) {}
+    record PriceQuote(String itemId, double totalPrice) {}
+
+    // Production concern: a responder&#x27;s own latency (calling a slow downstream inventory or
+    // tax-calculation service) becomes DIRECTLY the caller&#x27;s wait time in an RPC pattern --
+    // there is no way to decouple the two once synchronous request/reply is chosen.
+    static PriceQuote handleQuoteRequest(QuoteRequest request, long downstreamCallDelayMillis) throws InterruptedException {
+        System.out.println(&quot;  Responder calling downstream pricing engine (will take &quot; + downstreamCallDelayMillis + &quot;ms)...&quot;);
+        Thread.sleep(downstreamCallDelayMillis);
+        return new PriceQuote(request.itemId(), request.quantity() * 9.99);
+    }
+
+    static PriceQuote sendAndReceiveWithTimeout(QuoteRequest request, long downstreamDelayMillis, long timeoutMillis)
+            throws Exception {
+        long start = System.currentTimeMillis();
+        CompletableFuture&lt;PriceQuote&gt; future = CompletableFuture.supplyAsync(() -&gt; {
+            try {
+                return handleQuoteRequest(request, downstreamDelayMillis);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        });
+        try {
+            PriceQuote result = future.get(timeoutMillis, TimeUnit.MILLISECONDS);
+            System.out.println(&quot;Caller waited &quot; + (System.currentTimeMillis() - start) + &quot;ms for the reply&quot;);
+            return result;
+        } catch (TimeoutException ex) {
+            System.out.println(&quot;Caller gave up after &quot; + timeoutMillis + &quot;ms timeout&quot;);
+            return null;
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        // If the responder&#x27;s downstream dependency (a tax/inventory service) is itself slow,
+        // that latency is transmitted directly to the RPC caller -- no amount of caller-side
+        // configuration changes that fundamental coupling, only the timeout used to bound it.
+        sendAndReceiveWithTimeout(new QuoteRequest(&quot;WIDGET-1&quot;, 3), 250, 1000);
+    }
+}</code></pre>
+<p>How to run: <code>java RpcPatternDemo.java</code>. Expected output: <code>Responder calling downstream pricing engine (will take 250ms)...</code> followed by <code>Caller waited ~250ms for the reply</code> — demonstrating that the responder&#x27;s own internal latency (its call to a further downstream dependency) is transmitted directly and unavoidably to the caller&#x27;s wait time, since the entire point of the RPC pattern is that the caller blocks until the full round trip, including whatever the responder itself has to do, completes.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace a full RPC round trip from caller to responder and back.</p>
+<ol><li><strong>Request published with reply metadata</strong>: <code>convertSendAndReceive</code> publishes the request message with two crucial pieces of metadata attached: a <code>replyTo</code> property (naming the destination the reply should go to) and a correlation ID (uniquely identifying this specific request).</li><li><strong>Caller blocks</strong>: the calling thread pauses, waiting for a reply message matching this correlation ID to arrive on the <code>replyTo</code> destination, up to the configured timeout.</li><li><strong>Responder receives the request</strong>: a <code>@RabbitListener</code>-annotated method (or an equivalent listener) on the responding side receives the request message as it would any other message, with no special code needed to recognize it as an RPC request specifically.</li><li><strong>Responder computes and returns</strong>: the listener method performs whatever work is needed (in the example, calling a pricing engine, possibly itself involving a call to a further downstream service) and returns a plain Java object — Spring AMQP&#x27;s listener infrastructure recognizes this non-void return value and automatically publishes it as a reply to the <code>replyTo</code> destination named in the incoming request, tagged with the same correlation ID.</li><li><strong>Reply arrives, caller unblocks</strong>: <code>RabbitTemplate</code>&#x27;s internal reply-listening mechanism recognizes the incoming reply&#x27;s correlation ID, matches it to the waiting caller, and returns the deserialized reply object from the blocked <code>convertSendAndReceive</code> call.</li><li><strong>Timeout as the escape hatch</strong>: if no reply arrives within the configured timeout — because the responder is down, overloaded, or the reply itself was lost — the call returns (typically <code>null</code>, or throws, depending on configuration) rather than blocking the caller&#x27;s thread indefinitely.</li></ol>
+<pre><code>caller: convertSendAndReceive(request)
+  -&gt; publish request [replyTo=tempQueue, correlationId=corr-X]
+    -&gt; caller BLOCKS, waiting on tempQueue for corr-X
+      -&gt; [responder] @RabbitListener receives request
+        -&gt; computes result (possibly calling further downstream services -- their latency adds directly here)
+          -&gt; return value auto-published to replyTo, tagged corr-X
+            -&gt; caller&#x27;s wait matches corr-X -&gt; unblocks, returns result
+               (or: timeout elapses first -&gt; caller gives up, returns null/throws)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> because the RPC pattern&#x27;s caller blocks for the full round trip, any latency anywhere in the responder&#x27;s processing chain — including calls the responder itself makes to further downstream services — is transmitted directly and unavoidably to the caller&#x27;s wait time; there is no way to &quot;speed up&quot; this coupling from the caller&#x27;s side beyond configuring an appropriate timeout, since the fundamental trade-off of choosing synchronous RPC is accepting the full chain&#x27;s latency as your own.</blockquote>
+<ul><li>Reach for <code>sendAndReceive</code>/<code>convertSendAndReceive</code> specifically when the interaction is genuinely synchronous in nature — the caller has no useful work to do until the answer arrives — not as a default way to communicate between services over AMQP.</li><li>A responding <code>@RabbitListener</code> method&#x27;s plain return value becoming the automatic RPC reply is a significant convenience — no manual <code>replyTo</code>/correlation-ID handling is needed on the responder&#x27;s side at all, Spring AMQP&#x27;s listener infrastructure manages the entire reply mechanism transparently.</li><li>Always configure a sensible timeout on the caller&#x27;s side — an RPC call with no timeout (or an unreasonably long one) risks tying up calling threads indefinitely if the responder becomes unavailable or overloaded.</li><li>For high-throughput RPC scenarios, direct reply-to (card 0020) avoids the overhead of creating a dedicated temporary reply queue per request, making it the more efficient mechanism underlying <code>sendAndReceive</code> in modern Spring AMQP versions by default.</li></ul>
+  <div class="nav"><a class="prv" href="0018-batching-batchingrabbittemplate.html"><span class="mini">← Previous</span>Batching (BatchingRabbitTemplate)</a><a class="nxt" href="0020-direct-reply-to.html"><span class="mini">Next →</span>Direct reply-to</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-amqp.html", ID = "t19";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

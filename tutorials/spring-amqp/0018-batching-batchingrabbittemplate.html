@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Batching (BatchingRabbitTemplate)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-amqp.html">Spring AMQP</a> › 2. Sending & Receiving</div>
+  <div class="htitle">
+    <h1>"Batching (BatchingRabbitTemplate)"</h1>
+    <a class="back" href="../../spring-amqp.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>BatchingRabbitTemplate</code> wraps a regular <code>RabbitTemplate</code> and accumulates individual <code>send</code>/<code>convertAndSend</code> calls into an internal buffer, flushing them as a single physical AMQP message (containing multiple logical messages concatenated together per a configurable <code>BatchingStrategy</code>) once a size threshold, a message count threshold, or a timeout is reached — whichever comes first. On the consuming side, a batch-aware listener container (or a <code>BatchMessageListener</code>) unpacks that single physical message back into its individual logical messages before handing them to application code.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for batching specifically when per-message publishing overhead becomes a genuine throughput bottleneck:</p>
+<ul><li><strong>Publishing a very high volume of small, similarly-structured messages</strong> — sensor readings, log lines, or high-frequency metric events each carry a fixed per-message overhead (network round trip, broker bookkeeping); batching several logical messages into one physical send amortizes that overhead across all of them.</li><li><strong>Network round-trip latency, not message processing itself, is the actual bottleneck</strong> — if the constraining factor is how many separate publish calls can go out per second rather than raw data volume, reducing the number of physical sends (while keeping the same total logical message count) directly increases achievable throughput.</li><li><strong>Do not reach for batching by default</strong> — it adds latency (messages wait in the buffer for the batch to fill or the timeout to elapse) and complexity (consumers must be batch-aware); apply it specifically where profiling shows per-message publish overhead is the actual constraint, not preemptively.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of unbatched publishing as a delivery van making a separate trip for every single small package, one at a time — reliable, but the van&#x27;s own travel time between trips dominates when packages are numerous and individually small. Batching is like waiting until either the van is reasonably full or a maximum wait time has passed, then making one trip carrying many packages at once — the per-trip overhead (the van&#x27;s travel time) is now amortized across many packages instead of paid once per package, at the cost of the first package in a van having to wait for the others before the trip actually happens.</p>
+<pre><code class="lang-java">@Bean
+public BatchingRabbitTemplate batchingRabbitTemplate(ConnectionFactory connectionFactory) {
+    BatchingStrategy batchingStrategy = new SimpleBatchingStrategy(
+        50,          // batch up to 50 messages
+        4096,        // or 4KB total size, whichever limit hits first
+        5000);       // or after 5 seconds, whichever comes first
+
+    TaskScheduler scheduler = new ThreadPoolTaskScheduler();
+    ((ThreadPoolTaskScheduler) scheduler).initialize();
+
+    return new BatchingRabbitTemplate(connectionFactory, batchingStrategy, scheduler);
+}
+
+// Application code calls convertAndSend exactly as with a normal RabbitTemplate --
+// the batching happens transparently underneath.
+batchingRabbitTemplate.convertAndSend(&quot;metrics.exchange&quot;, &quot;metric.reading&quot;, reading);</code></pre>
+<p>Each individual <code>convertAndSend</code> call looks identical to non-batched usage; the accumulation and eventual flush into one physical message happen entirely inside the template.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Without batching, each logical message is a separate physical send with its own overhead; with batching, several logical messages accumulate in a buffer and are flushed as one physical message once a size, count, or time threshold is reached" >
+  <text x="160" y="14" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Unbatched</text>
+  <rect x="20" y="30" width="60" height="30" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="50" y="50" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">send 1</text>
+  <rect x="90" y="30" width="60" height="30" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="120" y="50" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">send 2</text>
+  <rect x="160" y="30" width="60" height="30" rx="4" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="190" y="50" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="sans-serif">send 3</text>
+  <text x="120" y="80" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">3 physical sends, 3x round-trip overhead</text>
+
+  <text x="480" y="14" fill="#8b949e" font-size="9" text-anchor="middle" font-family="sans-serif">Batched</text>
+  <rect x="340" y="30" width="280" height="30" rx="4" fill="#0d1117" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="480" y="50" fill="#e6edf3" font-size="7" text-anchor="middle" font-family="monospace">[msg1][msg2][msg3] -- one physical send</text>
+  <text x="480" y="80" fill="#79c0ff" font-size="7" text-anchor="middle" font-family="sans-serif">1 physical send, overhead paid once</text>
+</svg>
+<p>Round-trip overhead is amortized across every message in the batch, at the cost of the buffering delay.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: batching high-frequency sensor readings before publishing, simulated with a plain in-memory buffer standing in for <code>BatchingRabbitTemplate</code>&#x27;s accumulate-and-flush logic (no real RabbitMQ broker or scheduler needed to demonstrate the threshold-based flush behavior), starting with a basic count-based flush, then adding a size-based flush as an alternative trigger, then adding a timeout-based flush to ensure a partially-filled batch doesn&#x27;t wait indefinitely.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// BatchingDemo.java
+import java.util.*;
+
+public class BatchingDemo {
+    static List&lt;String&gt; buffer = new ArrayList&lt;&gt;();
+    static int maxBatchSize = 3;
+
+    // Stand-in for BatchingRabbitTemplate.convertAndSend: accumulates until the count threshold hits.
+    static void convertAndSend(String payload) {
+        buffer.add(payload);
+        if (buffer.size() &gt;= maxBatchSize) {
+            flush();
+        }
+    }
+
+    static void flush() {
+        System.out.println(&quot;Flushing batch of &quot; + buffer.size() + &quot; messages as ONE physical send: &quot; + buffer);
+        buffer.clear();
+    }
+
+    public static void main(String[] args) {
+        convertAndSend(&quot;reading-1&quot;);
+        convertAndSend(&quot;reading-2&quot;);
+        convertAndSend(&quot;reading-3&quot;); // triggers the flush
+    }
+}</code></pre>
+<p>How to run: <code>java BatchingDemo.java</code>. Expected output: <code>Flushing batch of 3 messages as ONE physical send: [reading-1, reading-2, reading-3]</code> — three logical messages accumulated and sent as a single physical operation once the count threshold was reached.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// BatchingDemo.java
+import java.util.*;
+
+public class BatchingDemo {
+    static List&lt;String&gt; buffer = new ArrayList&lt;&gt;();
+    static int maxBatchSize = 5;
+    static int maxTotalBytes = 30;
+
+    // Real-world concern: batching should flush on whichever threshold is hit FIRST -- count OR
+    // total size -- since a batch of few-but-large messages needs the same protection against
+    // an unboundedly large single physical send as a batch of many-but-small ones.
+    static void convertAndSend(String payload) {
+        buffer.add(payload);
+        int totalBytes = buffer.stream().mapToInt(String::length).sum();
+        if (buffer.size() &gt;= maxBatchSize || totalBytes &gt;= maxTotalBytes) {
+            flush(totalBytes &gt;= maxTotalBytes ? &quot;size threshold&quot; : &quot;count threshold&quot;);
+        }
+    }
+
+    static void flush(String reason) {
+        System.out.println(&quot;Flushing batch of &quot; + buffer.size() + &quot; messages (&quot; + reason + &quot;): &quot; + buffer);
+        buffer.clear();
+    }
+
+    public static void main(String[] args) {
+        convertAndSend(&quot;short-1&quot;);
+        convertAndSend(&quot;short-2&quot;);
+        convertAndSend(&quot;this-is-a-much-longer-reading-payload&quot;); // pushes total size over threshold
+    }
+}</code></pre>
+<p>How to run: <code>java BatchingDemo.java</code>. Expected output: <code>Flushing batch of 3 messages (size threshold): [short-1, short-2, this-is-a-much-longer-reading-payload]</code> — the flush triggered by the accumulated byte size crossing its threshold before the count threshold was ever reached, demonstrating the &quot;whichever comes first&quot; behavior between the two limits.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// BatchingDemo.java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class BatchingDemo {
+    static List&lt;String&gt; buffer = new ArrayList&lt;&gt;();
+    static int maxBatchSize = 10;
+    static int maxTotalBytes = 1000;
+    static ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    static ScheduledFuture&lt;?&gt; pendingTimeoutFlush;
+
+    // Production concern: a batch that never fills up (low traffic period) must still flush
+    // eventually -- otherwise the first message in an under-filled batch could wait
+    // indefinitely, which defeats the purpose for latency-sensitive data. A timeout guarantees
+    // a maximum wait even when volume is too low to naturally trigger a count/size flush.
+    static synchronized void convertAndSend(String payload) {
+        buffer.add(payload);
+        int totalBytes = buffer.stream().mapToInt(String::length).sum();
+
+        if (buffer.size() &gt;= maxBatchSize || totalBytes &gt;= maxTotalBytes) {
+            if (pendingTimeoutFlush != null) pendingTimeoutFlush.cancel(false);
+            flush(&quot;count/size threshold&quot;);
+            return;
+        }
+
+        if (pendingTimeoutFlush == null || pendingTimeoutFlush.isDone()) {
+            pendingTimeoutFlush = scheduler.schedule(() -&gt; flush(&quot;timeout, batch never filled&quot;), 300, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    static synchronized void flush(String reason) {
+        if (buffer.isEmpty()) return;
+        System.out.println(&quot;Flushing batch of &quot; + buffer.size() + &quot; messages (&quot; + reason + &quot;): &quot; + buffer);
+        buffer.clear();
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        convertAndSend(&quot;reading-1&quot;); // low traffic -- batch will never fill on its own
+        convertAndSend(&quot;reading-2&quot;);
+
+        Thread.sleep(500); // wait long enough for the timeout-based flush to fire
+        scheduler.shutdown();
+    }
+}</code></pre>
+<p>How to run: <code>java BatchingDemo.java</code>. Expected output: <code>Flushing batch of 2 messages (timeout, batch never filled): [reading-1, reading-2]</code> — printed after roughly 300ms, since the batch never reached its count or size threshold during this low-traffic window, but the timeout guarantees these two readings still get published within a bounded, predictable delay rather than waiting indefinitely for more traffic to arrive.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace several logical messages through accumulation, threshold evaluation, and eventual flush.</p>
+<ol><li><strong>First <code>convertAndSend</code> call</strong>: the very first logical message added to an empty buffer starts a new batching cycle; the template (or, in the example, the timeout scheduling logic) begins tracking accumulated count and size, and starts a timeout clock in case the batch never fills naturally.</li><li><strong>Subsequent calls accumulate</strong>: each further <code>convertAndSend</code> call adds another logical message to the same in-progress buffer, checking after each addition whether the count or size threshold has now been crossed.</li><li><strong>Threshold reached, flush triggered</strong>: the moment either the message-count limit or the total-size limit is reached (whichever comes first), the buffered messages are packed into a single physical <code>Message</code> (using the configured <code>BatchingStrategy</code> to concatenate them, typically with length-prefixing so the consumer can split them back apart) and published as one physical send.</li><li><strong>Timeout as a safety net</strong>: if traffic is too low for the batch to naturally reach its count or size threshold within a reasonable time, the scheduled timeout fires instead, flushing whatever has accumulated so far — ensuring no message waits indefinitely just because volume happened to be low at that moment.</li><li><strong>Physical send occurs once</strong>: regardless of which trigger caused the flush, exactly one physical AMQP publish happens for the entire batch, meaning the network round-trip and broker-side bookkeeping overhead is paid once for however many logical messages ended up in that batch.</li><li><strong>Consumer-side unpacking</strong>: on the receiving end, a batch-aware listener container recognizes the physical message as a batch (via a header the <code>BatchingStrategy</code> sets) and splits it back into individual logical messages, delivering each to the application&#x27;s listener method exactly as if it had arrived as its own separate message — the batching is, ideally, entirely transparent to the actual message-processing logic.</li></ol>
+<pre><code>convertAndSend(msg1) -&gt; buffer=[msg1], start timeout clock
+convertAndSend(msg2) -&gt; buffer=[msg1,msg2], below thresholds
+  [either: threshold reached -&gt; flush immediately]
+  [or: timeout elapses first -&gt; flush whatever accumulated]
+    -&gt; ONE physical send: [msg1][msg2]...
+      -&gt; consumer&#x27;s batch-aware container splits back into individual messages</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> batching adds latency to every message in the batch except possibly the last one — a message that arrives at the very start of a batching window can sit buffered for the full timeout duration (or until the batch naturally fills) before it&#x27;s actually sent; for genuinely latency-sensitive messages, this added delay may be unacceptable even though it improves aggregate throughput, so batching is a throughput-versus-latency trade-off, not a pure win.</blockquote>
+<ul><li>Reach for <code>BatchingRabbitTemplate</code> only when profiling or load testing shows per-message publish overhead is a genuine bottleneck — for most applications with moderate message volume, the added complexity and latency aren&#x27;t worth it.</li><li>Configure all three thresholds (count, size, timeout) deliberately — count and size protect against an unboundedly large single physical message, while the timeout protects against messages waiting indefinitely during low-traffic periods.</li><li>Consumers must be explicitly batch-aware (a batch listener container, or logic recognizing the batching header) to correctly unpack a batched physical message back into its individual logical messages — pointing an ordinary, non-batch-aware consumer at a batched producer&#x27;s queue results in the consumer receiving one large, unparsed blob instead of the expected individual messages.</li><li>Batching is specifically a throughput optimization for high-volume, latency-tolerant message streams (metrics, logs, sensor data) — it is generally the wrong tool for individually significant, latency-sensitive business events like order placements or payment confirmations, where per-message timeliness usually matters more than aggregate publish efficiency.</li></ul>
+  <div class="nav"><a class="prv" href="0017-mandatory-messages-returns-callback.html"><span class="mini">← Previous</span>Mandatory messages & returns callback</a><a class="nxt" href="0019-rpc-pattern-sendandreceive.html"><span class="mini">Next →</span>RPC pattern (sendAndReceive)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-amqp.html", ID = "t18";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

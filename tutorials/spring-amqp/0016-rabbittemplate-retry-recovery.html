@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"RabbitTemplate retry & recovery" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-amqp.html">Spring AMQP</a> › 2. Sending & Receiving</div>
+  <div class="htitle">
+    <h1>"RabbitTemplate retry & recovery"</h1>
+    <a class="back" href="../../spring-amqp.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>RabbitTemplate</code> supports wrapping its publish operations with a <code>RetryTemplate</code> (from Spring Retry, the same library underlying Spring Integration&#x27;s retry advice) via <code>setRetryTemplate(...)</code>, so a transient failure while attempting to publish — a momentary connection issue, a channel error — is retried automatically according to a configured policy, before the publish is considered truly failed. This is distinct from publisher confirms (card 0014): confirms tell you whether the broker accepted an already-successfully-sent message, while publish retry handles failures in the act of sending itself, before the message even reaches the broker successfully once.</p>
+<h2>2. Why &amp; when</h2>
+<p>You configure publish-side retry when the act of publishing itself can fail transiently and recovering automatically is worth the added complexity:</p>
+<ul><li><strong>A connection or channel-level failure occurs right as a publish is attempted</strong> — a brief network blip or a broker temporarily unavailable during a rolling restart can cause a publish attempt to throw, and a second attempt moments later often succeeds without any application-level intervention needed.</li><li><strong>Publishing happens on a critical path where losing a message to a transient failure is unacceptable</strong> — critical business events (an order placed, a payment initiated) benefit from automatic retry at the publish level so a momentary blip doesn&#x27;t silently drop the attempt.</li><li><strong>A recovery strategy is needed for when retries are ultimately exhausted</strong> — pairing retry with a <code>RecoveryCallback</code> means a publish that fails even after retrying has a defined fallback (logging, an alternate persistence path, an alert) rather than the exception simply propagating up uncaught.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of publish-side retry like redialing a phone number that gave a busy signal — the busy signal (a transient connection issue) often clears within a few seconds, and simply trying again shortly after is far more practical than immediately giving up and reporting the call as permanently failed. But if the line stays busy after several redial attempts, continuing to redial indefinitely wastes time; at some point, switching to a fallback plan (leaving a voicemail via a different channel, in this analogy — the recovery callback) is the sensible move.</p>
+<pre><code class="lang-java">@Bean
+public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory) {
+    RabbitTemplate template = new RabbitTemplate(connectionFactory);
+
+    RetryTemplate retryTemplate = RetryTemplate.builder()
+        .maxAttempts(3)
+        .fixedBackoff(500)
+        .retryOn(AmqpConnectException.class)
+        .build();
+    template.setRetryTemplate(retryTemplate);
+
+    template.setRecoveryCallback(context -&gt; {
+        System.out.println(&quot;Publish retries exhausted: &quot; + context.getLastThrowable());
+        return null; // or route to a fallback persistence mechanism
+    });
+
+    return template;
+}</code></pre>
+<p>A transient connection exception triggers up to 3 attempts with a 500ms pause between them; if all attempts fail, the recovery callback runs instead of letting the exception propagate.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A publish attempt that fails transiently is retried automatically per the configured retry policy; if every attempt fails, the recovery callback runs instead of the exception propagating uncaught" >
+  <rect x="20" y="20" width="150" height="45" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="95" y="47" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Publish attempt 1</text>
+
+  <line x1="170" y1="42" x2="240" y2="42" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a17)"/>
+  <text x="205" y="32" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">fails</text>
+
+  <rect x="240" y="20" width="150" height="45" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="315" y="47" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Attempt 2 (backoff)</text>
+
+  <line x1="315" y1="65" x2="150" y2="100" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a17)"/>
+  <text x="200" y="90" fill="#6db33f" font-size="7" text-anchor="middle" font-family="sans-serif">succeeds -&gt; done</text>
+
+  <line x1="390" y1="42" x2="460" y2="42" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a17)"/>
+  <text x="425" y="32" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">also fails</text>
+
+  <rect x="460" y="20" width="150" height="45" rx="6" fill="#0d1117" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="535" y="47" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Retries exhausted</text>
+
+  <line x1="535" y1="65" x2="400" y2="110" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a17)"/>
+  <text x="470" y="130" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">RecoveryCallback runs</text>
+</svg>
+<p>Retry absorbs transient publish failures; the recovery callback catches what retry couldn&#x27;t fix.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: publishing critical order events with automatic retry on transient connection failures, simulated with a plain in-memory retry loop standing in for <code>RetryTemplate</code> (no real Spring Retry dependency or RabbitMQ broker needed to demonstrate the retry-then-recover pattern), starting with a basic retry loop, then adding a recovery callback for exhausted retries, then adding backoff between attempts to model realistic transient-failure recovery timing.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// RabbitTemplateRetryDemo.java
+public class RabbitTemplateRetryDemo {
+    static int attemptCount = 0;
+
+    static void publishOrderEvent(String payload) {
+        attemptCount++;
+        if (attemptCount &lt; 2) throw new RuntimeException(&quot;transient connection issue, attempt &quot; + attemptCount);
+        System.out.println(&quot;Published successfully on attempt &quot; + attemptCount + &quot;: &quot; + payload);
+    }
+
+    static void publishWithRetry(String payload, int maxAttempts) {
+        for (int i = 1; i &lt;= maxAttempts; i++) {
+            try {
+                publishOrderEvent(payload);
+                return;
+            } catch (RuntimeException ex) {
+                System.out.println(&quot;Attempt &quot; + i + &quot; failed: &quot; + ex.getMessage());
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        publishWithRetry(&quot;{\&quot;orderId\&quot;:\&quot;ORD-1\&quot;}&quot;, 3);
+    }
+}</code></pre>
+<p>How to run: <code>java RabbitTemplateRetryDemo.java</code>. Expected output: <code>Attempt 1 failed: ...</code> then <code>Published successfully on attempt 2: {&quot;orderId&quot;:&quot;ORD-1&quot;}</code> — a transient publish failure recovered automatically on the second try.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// RabbitTemplateRetryDemo.java
+public class RabbitTemplateRetryDemo {
+    static int attemptCount = 0;
+
+    static void publishOrderEvent(String payload, int failUntilAttempt) {
+        attemptCount++;
+        if (attemptCount &lt; failUntilAttempt) throw new RuntimeException(&quot;transient connection issue, attempt &quot; + attemptCount);
+        System.out.println(&quot;Published successfully on attempt &quot; + attemptCount + &quot;: &quot; + payload);
+    }
+
+    // Real-world concern: retries can be exhausted without ever succeeding -- a recovery
+    // callback defines what happens then, rather than letting the failure propagate uncaught.
+    static void publishWithRetryAndRecovery(String payload, int maxAttempts, int failUntilAttempt) {
+        for (int i = 1; i &lt;= maxAttempts; i++) {
+            try {
+                publishOrderEvent(payload, failUntilAttempt);
+                return;
+            } catch (RuntimeException ex) {
+                System.out.println(&quot;Attempt &quot; + i + &quot; failed: &quot; + ex.getMessage());
+                if (i == maxAttempts) {
+                    System.out.println(&quot;Retries exhausted, running recovery callback for: &quot; + payload);
+                    // recovery: log, persist to a fallback store, alert -- whatever the app decides
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        publishWithRetryAndRecovery(&quot;{\&quot;orderId\&quot;:\&quot;ORD-2\&quot;}&quot;, 3, 100); // never succeeds within budget
+    }
+}</code></pre>
+<p>How to run: <code>java RabbitTemplateRetryDemo.java</code>. Expected output: three &quot;Attempt N failed&quot; lines followed by <code>Retries exhausted, running recovery callback for: {&quot;orderId&quot;:&quot;ORD-2&quot;}</code> — the message never actually gets published within the retry budget, but the failure is handled deliberately by the recovery callback rather than crashing whatever code initiated the publish.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// RabbitTemplateRetryDemo.java
+public class RabbitTemplateRetryDemo {
+    static int attemptCount = 0;
+
+    static void publishOrderEvent(String payload, int failUntilAttempt) {
+        attemptCount++;
+        if (attemptCount &lt; failUntilAttempt) throw new RuntimeException(&quot;transient connection issue, attempt &quot; + attemptCount);
+        System.out.println(&quot;Published successfully on attempt &quot; + attemptCount + &quot;: &quot; + payload);
+    }
+
+    // Production concern: retrying instantly, back to back, against a struggling broker can
+    // make things worse -- a backoff delay between attempts gives the broker (or network) time
+    // to actually recover before the next attempt, rather than hammering it continuously.
+    static void publishWithBackoffRetry(String payload, int maxAttempts, int failUntilAttempt, long backoffMillis)
+            throws InterruptedException {
+        for (int i = 1; i &lt;= maxAttempts; i++) {
+            try {
+                publishOrderEvent(payload, failUntilAttempt);
+                return;
+            } catch (RuntimeException ex) {
+                System.out.println(&quot;Attempt &quot; + i + &quot; failed: &quot; + ex.getMessage());
+                if (i == maxAttempts) {
+                    System.out.println(&quot;Retries exhausted, running recovery callback for: &quot; + payload);
+                    return;
+                }
+                System.out.println(&quot;Backing off for &quot; + backoffMillis + &quot;ms before next attempt&quot;);
+                Thread.sleep(backoffMillis);
+            }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        long start = System.currentTimeMillis();
+        publishWithBackoffRetry(&quot;{\&quot;orderId\&quot;:\&quot;ORD-3\&quot;}&quot;, 3, 3, 200);
+        System.out.println(&quot;Total elapsed: ~&quot; + (System.currentTimeMillis() - start) + &quot;ms&quot;);
+    }
+}</code></pre>
+<p>How to run: <code>java RabbitTemplateRetryDemo.java</code>. Expected output: two failed-attempt lines each followed by a &quot;Backing off for 200ms&quot; message, then <code>Published successfully on attempt 3: {&quot;orderId&quot;:&quot;ORD-3&quot;}</code>, and a total elapsed time reflecting the roughly 400ms of accumulated backoff delay — demonstrating the deliberate pacing between attempts that keeps automatic retry from hammering a struggling connection continuously.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace a publish operation through retry, backoff, and eventual recovery.</p>
+<ol><li><strong>Initial publish attempt</strong>: application code calls <code>convertAndSend(...)</code> on a <code>RabbitTemplate</code> configured with a <code>RetryTemplate</code>; internally, the retry template wraps the actual publish operation.</li><li><strong>Transient failure</strong>: the underlying publish throws an exception matching the retry policy&#x27;s configured retryable exception types (a connection-related exception, typically) — this happens before any publisher confirm would even be relevant, since the message never successfully reached the broker at all on this attempt.</li><li><strong>Backoff and retry</strong>: per the configured backoff policy, the retry template waits (fixed or exponentially increasing delay) before attempting the publish again — giving whatever caused the transient failure (a brief network blip, a broker restart) time to resolve.</li><li><strong>Success on a later attempt</strong>: if a subsequent attempt succeeds, the retry template returns normally, and from the calling code&#x27;s perspective, <code>convertAndSend</code> simply succeeded — the retries that happened underneath are invisible to the caller except for the added latency.</li><li><strong>Exhaustion and recovery</strong>: if every configured attempt fails, the retry template&#x27;s <code>RecoveryCallback</code> runs instead of letting the final exception propagate — this is where the application defines what &quot;truly failed to publish, even after retrying&quot; actually means for this particular publish operation: log it, persist to a fallback store for later reprocessing, or alert an operator.</li><li><strong>Downstream unaffected either way</strong>: whether the message ultimately got published on the first attempt or only after several retries, everything downstream (the broker&#x27;s routing, delivery to consumers) proceeds identically — the retry mechanism is entirely about the reliability of the act of publishing itself, not anything that happens after a successful publish.</li></ol>
+<pre><code>convertAndSend(...) wrapped by RetryTemplate
+  attempt 1 -&gt; transient failure -&gt; backoff
+    attempt 2 -&gt; transient failure -&gt; backoff
+      attempt 3 -&gt; succeeds -&gt; return normally (retries invisible to caller)
+                -&gt; OR also fails -&gt; RecoveryCallback runs (log/fallback/alert)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> publish-side retry is entirely separate from publisher confirms (card 0014) — retry handles failures in the act of sending (before the broker has accepted anything), while confirms tell you whether an already-successfully-sent message was actually accepted; conflating the two, or assuming retry alone provides delivery assurance, misses that a &quot;successfully sent&quot; (no exception, no retry needed) message can still be NACKed or unroutable at the confirm/return level afterward.</blockquote>
+<ul><li>Configure retry specifically for transient, likely-to-resolve-quickly failure types (connection issues) — retrying a failure caused by a genuine, permanent misconfiguration (an authentication failure, a malformed exchange name) just wastes time reproducing the same guaranteed failure repeatedly.</li><li>Always pair retry with a defined recovery strategy — retry with no recovery callback and retries eventually exhausted simply lets the original exception propagate, which may or may not be handled sensibly by whatever code called the publish in the first place.</li><li>Backoff between attempts (rather than retrying instantly, back to back) is important specifically because instant retries against a struggling connection or broker can compound the underlying problem rather than giving it room to recover.</li><li>Retry, confirms, and returns are three distinct but complementary reliability mechanisms in Spring AMQP&#x27;s publishing story — retry handles send-time failures, confirms verify broker acceptance, and returns catch unroutable messages; a genuinely reliable critical-path publish operation often uses all three together.</li></ul>
+  <div class="nav"><a class="prv" href="0015-correlation-data.html"><span class="mini">← Previous</span>Correlation data</a><a class="nxt" href="0017-mandatory-messages-returns-callback.html"><span class="mini">Next →</span>Mandatory messages & returns callback</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-amqp.html", ID = "t16";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
