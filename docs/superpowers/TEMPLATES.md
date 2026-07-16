@@ -90,7 +90,11 @@ cost of each operation.
 
 - **Part 3 — Core concept:** describe the shape of the structure and its **invariants**
   (the rules that always hold, e.g. "a binary search tree keeps left < node < right").
-  Explain how it is laid out in memory (array-backed vs node-and-pointer).
+  Explain how it is laid out in memory (array-backed vs node-and-pointer). Crucially,
+  explain **how each invariant makes the operations fast** — for example, "because the
+  tree stays sorted, search can throw away half the nodes at each step, which is why it
+  is O(log n)". Connect the structure's rules to its performance so the reader understands
+  the *algorithm*, not just the picture.
 - **Part 4 — Diagram:** draw the structure with an inline `<svg>` (boxes for
   array slots or nodes, arrows for pointers). Show a real small instance, not an
   abstract shape. Label the parts.
@@ -125,8 +129,14 @@ solution with correct complexity.
 - **Part 2 — Why & when:** list the **recognition signals** — the words or shapes in a
   problem statement that hint at this pattern (e.g. "sorted array + pair that sums to
   target → two pointers").
-- **Part 3 — Core concept:** explain the **algorithm/technique** in plain steps. State
-  the key idea in one sentence first, then the steps.
+- **Part 3 — Core concept:** explain the **algorithm/technique** properly, in three
+  passes: (1) state the key idea in ONE sentence; (2) give the steps as a numbered list,
+  each step one short sentence; (3) explain the **intuition and why it is correct** — why
+  this approach works and why it never misses a valid answer (e.g. "the array is sorted,
+  so if the sum is too small only a larger left value can help, therefore moving the left
+  pointer right can never skip the answer"). The reader must understand *why*, not just
+  memorise the moves. Also state the algorithm's time and space complexity here in one
+  line, and why the brute-force approach is slower.
 - **Part 4 — Diagram:** visualise the technique in action — two pointers moving toward
   each other, a window sliding, a recursion tree. Use `<svg>` or an ASCII frame.
 - **Part 5 — Runnable example (Java):** ONE concrete problem, solved at 3 levels — this
