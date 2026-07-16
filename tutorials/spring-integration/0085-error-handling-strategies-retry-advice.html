@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Error handling strategies & retry advice" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-integration.html">Spring Integration</a> › 4. Advanced & System</div>
+  <div class="htitle">
+    <h1>"Error handling strategies & retry advice"</h1>
+    <a class="back" href="../../spring-integration.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Error handling strategies bring together the different ways a flow can react when a step fails: routing the failure to an error channel for centralized handling, catching and recovering inline, or attaching retry advice (<code>RequestHandlerRetryAdvice</code>, built on Spring Retry) to an endpoint so a transient failure is retried automatically before it&#x27;s ever treated as a true failure. This card covers the overall strategic picture — which approach fits which kind of failure — with <code>RequestHandlerRetryAdvice</code> and circuit-breaker advice covered in more depth in the next card (0086).</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for a deliberate error-handling strategy because different failures call for genuinely different responses, and treating them all the same way is a common source of both silent data loss and unnecessary alarm:</p>
+<ul><li><strong>Transient failures should be retried automatically, not surfaced as errors</strong> — a downstream service returning a momentary timeout is often successful on a second attempt moments later; retry advice handles this without ever routing the message to an error channel or bothering a human.</li><li><strong>Permanent failures need a different destination than transient ones</strong> — a message that will never succeed no matter how many times it&#x27;s retried (malformed data, a business rule violation) belongs on an error channel or a dead-letter destination for inspection, not stuck in a retry loop that will exhaust itself and still fail.</li><li><strong>The error channel needs to distinguish &quot;give up cleanly&quot; from &quot;corrupt the flow&quot;</strong> — an unhandled exception with nowhere routed to catch it can, depending on configuration, silently swallow a message or crash a poller thread; an explicit error-handling strategy makes what happens to a failed message a deliberate decision, not an accident of default behavior.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of error handling like a hospital&#x27;s triage system: not every patient (failure) needs the same response. Some just need to wait a few minutes and try walking again (transient failure, handled by a quick retry). Some need to be sent to a specialist for review (permanent failure, routed to an error channel for a human or a separate process to examine). Treating every patient identically — either &quot;send everyone home to rest&quot; or &quot;escalate everyone to the ICU&quot; — would be either dangerously under-responsive or wastefully over-responsive; a good triage strategy matches the response to the actual nature of the problem.</p>
+<pre><code class="lang-java">@Bean
+public IntegrationFlow orderProcessingFlow() {
+    return IntegrationFlow.from(&quot;orderChannel&quot;)
+        .handle(orderService::process,
+            e -&gt; e.advice(retryAdvice())) // retries transient failures automatically
+        .get();
+}
+
+@Bean
+public RequestHandlerRetryAdvice retryAdvice() {
+    RequestHandlerRetryAdvice advice = new RequestHandlerRetryAdvice();
+    advice.setRecoveryCallback(context -&gt; {
+        // exhausted all retries -- this is where a permanent-looking failure gets routed onward
+        errorChannel().send(new ErrorMessage(context.getLastThrowable()));
+        return null;
+    });
+    return advice;
+}</code></pre>
+<p>Transient failures get quietly retried; only once retries are exhausted does the failure become visible on the error channel.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A failure first goes through retry advice; if a retry succeeds, processing continues normally; if retries are exhausted, the failure routes to an error channel for separate handling rather than being silently lost" >
+  <rect x="20" y="20" width="180" height="45" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="110" y="47" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Message processing</text>
+
+  <line x1="110" y1="65" x2="110" y2="90" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a4)"/>
+  <rect x="20" y="90" width="180" height="45" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="110" y="117" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Fails -&gt; retry advice</text>
+
+  <line x1="200" y1="112" x2="290" y2="60" stroke="#6db33f" stroke-width="1.5" marker-end="url(#a4)"/>
+  <text x="270" y="45" fill="#6db33f" font-size="7" text-anchor="middle" font-family="sans-serif">retry succeeds</text>
+  <rect x="290" y="20" width="180" height="45" rx="6" fill="#0d1117" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="380" y="47" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Continue normally</text>
+
+  <line x1="200" y1="118" x2="290" y2="145" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a4)"/>
+  <text x="270" y="150" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">retries exhausted</text>
+  <rect x="290" y="115" width="180" height="45" rx="6" fill="#0d1117" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="380" y="142" fill="#e6edf3" font-size="8" text-anchor="middle" font-family="sans-serif">Route to error channel</text>
+
+  <defs><marker id="a4" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#79c0ff"/></marker></defs>
+</svg>
+<p>Retry first, absorb transient blips silently; only a genuinely exhausted retry becomes a visible, routed error.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: processing an order against a flaky downstream service, simulated with a service that fails a configurable number of times before succeeding (no real Spring Retry dependency needed to demonstrate the retry-then-escalate strategy), starting with a basic retry loop, then adding a distinction between transient and permanent failures, then adding error-channel routing once retries are genuinely exhausted.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// ErrorStrategyDemo.java
+public class ErrorStrategyDemo {
+    static int attemptCount = 0;
+
+    // A service that fails the first two times, then succeeds -- simulating a transient blip.
+    static String callFlakyService(String orderId) {
+        attemptCount++;
+        if (attemptCount &lt; 3) throw new RuntimeException(&quot;timeout on attempt &quot; + attemptCount);
+        return &quot;confirmed:&quot; + orderId;
+    }
+
+    static String withRetry(String orderId, int maxAttempts) {
+        for (int i = 0; i &lt; maxAttempts; i++) {
+            try {
+                return callFlakyService(orderId);
+            } catch (RuntimeException ex) {
+                System.out.println(&quot;Attempt failed: &quot; + ex.getMessage() + &quot;, retrying...&quot;);
+            }
+        }
+        throw new RuntimeException(&quot;all retries exhausted&quot;);
+    }
+
+    public static void main(String[] args) {
+        String result = withRetry(&quot;ORD-1&quot;, 5);
+        System.out.println(&quot;Result: &quot; + result);
+    }
+}</code></pre>
+<p>How to run: <code>java ErrorStrategyDemo.java</code>. Expected output: two &quot;Attempt failed: ... retrying...&quot; lines followed by <code>Result: confirmed:ORD-1</code> — the transient failures absorbed silently by the retry loop until the underlying issue resolves itself.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// ErrorStrategyDemo.java
+public class ErrorStrategyDemo {
+    static class TransientException extends RuntimeException {
+        TransientException(String msg) { super(msg); }
+    }
+    static class PermanentException extends RuntimeException {
+        PermanentException(String msg) { super(msg); }
+    }
+
+    // Real-world concern: not every failure should be retried -- a malformed order will fail
+    // identically every time, and retrying it just wastes time before the inevitable failure.
+    static String callService(String orderId, boolean malformed, int attemptNumber) {
+        if (malformed) throw new PermanentException(&quot;invalid order data, will never succeed&quot;);
+        if (attemptNumber &lt; 3) throw new TransientException(&quot;timeout on attempt &quot; + attemptNumber);
+        return &quot;confirmed:&quot; + orderId;
+    }
+
+    static String withSelectiveRetry(String orderId, boolean malformed, int maxAttempts) {
+        for (int attempt = 1; attempt &lt;= maxAttempts; attempt++) {
+            try {
+                return callService(orderId, malformed, attempt);
+            } catch (TransientException ex) {
+                System.out.println(&quot;Transient failure, retrying: &quot; + ex.getMessage());
+            } catch (PermanentException ex) {
+                System.out.println(&quot;Permanent failure detected, not retrying: &quot; + ex.getMessage());
+                throw ex; // no point retrying, fail fast instead
+            }
+        }
+        throw new RuntimeException(&quot;retries exhausted for &quot; + orderId);
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;-- transient failure scenario --&quot;);
+        System.out.println(withSelectiveRetry(&quot;ORD-1&quot;, false, 5));
+
+        System.out.println(&quot;-- permanent failure scenario --&quot;);
+        try {
+            withSelectiveRetry(&quot;ORD-2&quot;, true, 5);
+        } catch (PermanentException ex) {
+            System.out.println(&quot;Caught permanent failure at top level, not retried further&quot;);
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java ErrorStrategyDemo.java</code>. Expected output: the transient scenario retries twice then succeeds; the permanent scenario fails on the very first attempt with no retry at all, since retrying a malformed order would only waste time reproducing the same guaranteed failure.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// ErrorStrategyDemo.java
+import java.util.*;
+
+public class ErrorStrategyDemo {
+    static class TransientException extends RuntimeException {
+        TransientException(String msg) { super(msg); }
+    }
+    static class PermanentException extends RuntimeException {
+        PermanentException(String msg) { super(msg); }
+    }
+
+    static String callService(String orderId, boolean malformed, int attemptNumber, int failUntilAttempt) {
+        if (malformed) throw new PermanentException(&quot;invalid order data, will never succeed&quot;);
+        if (attemptNumber &lt; failUntilAttempt) throw new TransientException(&quot;timeout on attempt &quot; + attemptNumber);
+        return &quot;confirmed:&quot; + orderId;
+    }
+
+    // Production concern: once retries are truly exhausted (not just one failure), route to an
+    // error channel for separate handling -- a dead-letter queue, an alert, a manual review
+    // queue -- rather than losing the message or crashing the calling thread.
+    static class ErrorChannel {
+        List&lt;String&gt; routedFailures = new ArrayList&lt;&gt;();
+        void send(String orderId, String reason) {
+            routedFailures.add(orderId + &quot;: &quot; + reason);
+            System.out.println(&quot;Routed to error channel: &quot; + orderId + &quot; (&quot; + reason + &quot;)&quot;);
+        }
+    }
+
+    static void processWithStrategy(String orderId, boolean malformed, int failUntilAttempt,
+                                     int maxAttempts, ErrorChannel errorChannel) {
+        for (int attempt = 1; attempt &lt;= maxAttempts; attempt++) {
+            try {
+                String result = callService(orderId, malformed, attempt, failUntilAttempt);
+                System.out.println(&quot;Success: &quot; + result);
+                return;
+            } catch (PermanentException ex) {
+                errorChannel.send(orderId, &quot;permanent: &quot; + ex.getMessage());
+                return;
+            } catch (TransientException ex) {
+                if (attempt == maxAttempts) {
+                    errorChannel.send(orderId, &quot;transient retries exhausted: &quot; + ex.getMessage());
+                    return;
+                }
+                System.out.println(&quot;Retrying &quot; + orderId + &quot; after: &quot; + ex.getMessage());
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        ErrorChannel errorChannel = new ErrorChannel();
+
+        processWithStrategy(&quot;ORD-1&quot;, false, 2, 5, errorChannel);       // succeeds after retries
+        processWithStrategy(&quot;ORD-2&quot;, true, 0, 5, errorChannel);        // permanent, no retry
+        processWithStrategy(&quot;ORD-3&quot;, false, 100, 3, errorChannel);     // transient, never recovers within budget
+
+        System.out.println(&quot;Total errors routed: &quot; + errorChannel.routedFailures.size());
+    }
+}</code></pre>
+<p>How to run: <code>java ErrorStrategyDemo.java</code>. Expected output: <code>ORD-1</code> retries once and succeeds; <code>ORD-2</code> routes immediately to the error channel as a permanent failure with no retry attempted; <code>ORD-3</code> retries up to its budget (<code>3</code> attempts) and, still failing, routes to the error channel as exhausted transient retries — <code>Total errors routed: 2</code> confirming both distinct failure paths correctly reached the error channel while the genuinely recoverable case did not.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace a message through the full error-handling decision tree.</p>
+<ol><li><strong>Processing attempt</strong>: a message reaches a <code>.handle(...)</code> step wrapped with retry advice, and the underlying service call executes.</li><li><strong>Exception classification</strong>: if the call throws, the flow (or the retry advice&#x27;s configured recoverable-exception classification) determines whether this looks like a transient failure worth retrying or a permanent one that will never succeed no matter how many times it&#x27;s attempted.</li><li><strong>Transient path — retry</strong>: for a transient failure, the retry advice waits (often with a backoff delay) and attempts the call again, repeating up to a configured maximum number of attempts, with each attempt logged or tracked for visibility.</li><li><strong>Transient path — recovery</strong>: if a retry succeeds, processing continues exactly as if the failure never happened — no error channel involvement, no alert, since the system genuinely recovered on its own.</li><li><strong>Transient path — exhaustion</strong>: if every retry attempt fails, the retry advice&#x27;s recovery callback fires, routing the message (typically wrapped as an <code>ErrorMessage</code>) to an error channel, since the transient issue has now proven not to be resolving within the retry budget.</li><li><strong>Permanent path</strong>: for a failure classified as permanent (a validation error, a business rule violation), the flow skips retrying altogether and routes directly to the error channel — retrying a guaranteed failure only delays the inevitable and wastes resources.</li><li><strong>Error channel handling</strong>: whatever consumes the error channel (a dead-letter store, an alerting system, a manual review queue) takes over from there, decoupled entirely from the original processing flow.</li></ol>
+<pre><code>message -&gt; handler attempt
+  throws -&gt; classify: transient or permanent?
+    transient -&gt; retry (up to N attempts, with backoff)
+       succeeds  -&gt; continue normally
+       exhausted -&gt; route to error channel
+    permanent -&gt; route to error channel immediately, no retry</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> retrying a failure that is actually permanent (misclassified as transient) doesn&#x27;t just waste time — if the failed operation has a side effect that partially took hold before failing (a partial write, a message already sent to a third party), blindly retrying it can duplicate that side effect on every attempt; retry logic needs to pair with idempotency where the underlying operation isn&#x27;t naturally safe to repeat.</blockquote>
+<ul><li>Draw an explicit line between transient and permanent failures in the exception hierarchy or classification logic — treating every exception as retriable, or every exception as immediately fatal, both lead to poor outcomes in different ways.</li><li>Always configure a maximum retry count and a recovery callback — retry advice with no upper bound and no defined behavior on exhaustion can turn a transient failure into an effectively infinite retry loop that never surfaces the problem to anyone.</li><li>Route genuinely failed messages somewhere inspectable (an error channel, a dead-letter store) rather than letting a caught exception simply be logged and discarded — a message an operator can never see again is effectively lost, even if the exception itself was &quot;handled&quot; in a narrow sense.</li><li>Pair retry logic with backoff (increasing delay between attempts) for anything hitting a struggling downstream service — retrying instantly and repeatedly against a service that&#x27;s already overloaded can make the underlying problem worse rather than helping it recover.</li></ul>
+  <div class="nav"><a class="prv" href="0084-reactive-streams-support.html"><span class="mini">← Previous</span>Reactive Streams support</a><a class="nxt" href="0086-requesthandlerretryadvice-circuitbreaker-advice.html"><span class="mini">Next →</span>RequestHandlerRetryAdvice / CircuitBreaker advice</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-integration.html", ID = "t85";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Transaction support in flows" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-integration.html">Spring Integration</a> › 4. Advanced & System</div>
+  <div class="htitle">
+    <h1>"Transaction support in flows"</h1>
+    <a class="back" href="../../spring-integration.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Transaction support (<code>TransactionInterceptor</code> applied via <code>.transactional()</code> on a poller or endpoint, backed by Spring&#x27;s standard <code>PlatformTransactionManager</code>) wraps a flow&#x27;s message processing in a database (or other resource) transaction, so a poller&#x27;s fetch-and-process cycle, or an endpoint&#x27;s handling of a message, either fully commits or fully rolls back as one unit — the same transactional semantics familiar from <code>@Transactional</code> service methods, applied to message-driven processing instead.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for transaction support when a flow&#x27;s processing step must leave a resource in a consistent state even when something partway through fails:</p>
+<ul><li><strong>A poller reads from a transactional source and the read itself should be undone on failure</strong> — the JDBC inbound adapter&#x27;s claim-then-select pattern (card 0064) benefits from running inside a transaction so that if downstream processing fails, the claiming update rolls back too, leaving the row available for a later retry rather than stuck in a half-claimed state.</li><li><strong>Multiple resource operations within one message&#x27;s processing must succeed or fail together</strong> — if handling a single message involves both a database write and a subsequent related write, wrapping both in the same transaction ensures a failure partway through doesn&#x27;t leave one write committed and the other missing.</li><li><strong>At-least-once delivery semantics need reinforcing</strong> — pairing a transactional poller with a message-driven channel adapter (like a JMS or Kafka consumer configured for transactional acknowledgment) ties the broker&#x27;s message acknowledgment to the same transaction as the database work, so a crash between &quot;processed the message&quot; and &quot;acknowledged the broker&quot; doesn&#x27;t silently lose or double-process it.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a bank transfer: money leaves one account and arrives in another, and either both halves happen or neither does — a transfer that debits one account but then crashes before crediting the other would corrupt the books. A transactional flow step works the same way: whatever resource operations happen while processing one message (claiming a row, writing a result, acknowledging a broker message) are wrapped together so that a failure partway through undoes everything already done in that same unit, rather than leaving the system in a partially-completed, inconsistent state.</p>
+<pre><code class="lang-java">@Bean
+public IntegrationFlow transactionalPollingFlow(DataSource dataSource, PlatformTransactionManager txManager) {
+    return IntegrationFlow.from(
+            Jdbc.inboundAdapter(dataSource, &quot;SELECT * FROM orders WHERE status = &#x27;PENDING&#x27;&quot;)
+                .updateSql(&quot;UPDATE orders SET status = &#x27;PROCESSING&#x27; WHERE id IN (:id)&quot;),
+            e -&gt; e.poller(Pollers.fixedDelay(5_000)
+                .transactional(new TransactionInterceptor(txManager, new DefaultTransactionAttribute()))))
+        .handle((Order order, headers) -&gt; orderService.process(order)) // failure here rolls back the claim too
+        .get();
+}</code></pre>
+<p>If <code>orderService.process(order)</code> throws, the entire transaction — including the earlier claiming update — rolls back, leaving the order genuinely still <code>PENDING</code> for the next poll to retry.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A transactional poller wraps claim, fetch, and process in one transaction; if processing fails, the whole transaction rolls back including the earlier claim, rather than leaving a row stuck half-claimed" >
+  <rect x="20" y="20" width="600" height="45" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="35" y="45" fill="#e6edf3" font-size="8" font-family="monospace">Transaction: [claim row] [select row] [process] -- all succeed -&gt; COMMIT</text>
+
+  <rect x="20" y="85" width="600" height="45" rx="6" fill="#0d1117" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="35" y="110" fill="#e6edf3" font-size="8" font-family="monospace">Transaction: [claim row] [select row] [process FAILS] -- ROLLBACK (claim undone too)</text>
+
+  <text x="320" y="140" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">Failure partway through undoes everything in the same transaction, including the earlier claim</text>
+</svg>
+<p>A single failed step rolls back everything else done in the same transaction, not just that one step.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: processing a claimed order where the processing step can fail, simulated with a plain in-memory &quot;transaction&quot; wrapper standing in for <code>PlatformTransactionManager</code> (no real database or transaction manager needed to demonstrate the commit/rollback semantics), starting with a basic transactional wrapper, then adding a rollback on processing failure, then adding a downstream write that must roll back together with the original claim.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// TransactionalFlowDemo.java
+import java.util.*;
+
+public class TransactionalFlowDemo {
+    record Order(int id, String status) {}
+
+    static void claim(Map&lt;Integer, Order&gt; table, int id) {
+        table.put(id, new Order(id, &quot;PROCESSING&quot;));
+    }
+
+    static void process(Order order) {
+        System.out.println(&quot;Processed order &quot; + order.id());
+    }
+
+    public static void main(String[] args) {
+        Map&lt;Integer, Order&gt; table = new HashMap&lt;&gt;();
+        table.put(1, new Order(1, &quot;PENDING&quot;));
+
+        claim(table, 1);
+        process(table.get(1));
+        System.out.println(&quot;Final status: &quot; + table.get(1).status());
+    }
+}</code></pre>
+<p>How to run: <code>java TransactionalFlowDemo.java</code>. Expected output: <code>Processed order 1</code> then <code>Final status: PROCESSING</code> — a basic claim-then-process, no rollback logic yet.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// TransactionalFlowDemo.java
+import java.util.*;
+import java.util.function.*;
+
+public class TransactionalFlowDemo {
+    record Order(int id, String status) {}
+
+    static class ProcessingFailedException extends RuntimeException {
+        ProcessingFailedException(String msg) { super(msg); }
+    }
+
+    // Real-world concern: if processing fails, the earlier claim must roll back too, or the
+    // order is stuck in PROCESSING forever with no automatic retry.
+    static void runTransactionally(Map&lt;Integer, Order&gt; table, int id, Consumer&lt;Order&gt; processingStep) {
+        Order originalState = table.get(id);
+        table.put(id, new Order(id, &quot;PROCESSING&quot;)); // claim
+        try {
+            processingStep.accept(table.get(id));
+            System.out.println(&quot;Transaction committed for order &quot; + id);
+        } catch (ProcessingFailedException ex) {
+            table.put(id, originalState); // rollback: restore pre-transaction state
+            System.out.println(&quot;Transaction rolled back for order &quot; + id + &quot;: &quot; + ex.getMessage());
+        }
+    }
+
+    public static void main(String[] args) {
+        Map&lt;Integer, Order&gt; table = new HashMap&lt;&gt;();
+        table.put(1, new Order(1, &quot;PENDING&quot;));
+        table.put(2, new Order(2, &quot;PENDING&quot;));
+
+        runTransactionally(table, 1, o -&gt; System.out.println(&quot;Processing order &quot; + o.id()));
+        runTransactionally(table, 2, o -&gt; { throw new ProcessingFailedException(&quot;payment gateway timeout&quot;); });
+
+        System.out.println(&quot;Order 1 final status: &quot; + table.get(1).status());
+        System.out.println(&quot;Order 2 final status: &quot; + table.get(2).status());
+    }
+}</code></pre>
+<p>How to run: <code>java TransactionalFlowDemo.java</code>. Expected output: order 1 commits and ends as <code>PROCESSING</code>; order 2&#x27;s processing throws, triggering a rollback message, and order 2 ends back at <code>PENDING</code> — exactly as it was before the transaction began, ready for a later retry.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// TransactionalFlowDemo.java
+import java.util.*;
+import java.util.function.*;
+
+public class TransactionalFlowDemo {
+    record Order(int id, String status) {}
+    record AuditEntry(int orderId, String action) {}
+
+    static class ProcessingFailedException extends RuntimeException {
+        ProcessingFailedException(String msg) { super(msg); }
+    }
+
+    // Production concern: a real flow often writes to more than one resource per message (the
+    // order table AND an audit log). Both writes must roll back together on failure, not just
+    // the first one -- otherwise a partial commit leaves an inconsistent audit trail.
+    static void runTransactionally(
+            Map&lt;Integer, Order&gt; orderTable, List&lt;AuditEntry&gt; auditLog,
+            int id, Consumer&lt;Order&gt; processingStep) {
+        Order originalOrderState = orderTable.get(id);
+        int auditLogSizeBeforeTransaction = auditLog.size();
+
+        orderTable.put(id, new Order(id, &quot;PROCESSING&quot;));
+        auditLog.add(new AuditEntry(id, &quot;CLAIMED&quot;));
+
+        try {
+            processingStep.accept(orderTable.get(id));
+            auditLog.add(new AuditEntry(id, &quot;PROCESSED&quot;));
+            System.out.println(&quot;Transaction committed for order &quot; + id);
+        } catch (ProcessingFailedException ex) {
+            orderTable.put(id, originalOrderState);
+            while (auditLog.size() &gt; auditLogSizeBeforeTransaction) {
+                auditLog.remove(auditLog.size() - 1); // roll back every audit entry from this transaction
+            }
+            System.out.println(&quot;Transaction rolled back for order &quot; + id + &quot; (audit log also reverted)&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        Map&lt;Integer, Order&gt; orderTable = new HashMap&lt;&gt;();
+        List&lt;AuditEntry&gt; auditLog = new ArrayList&lt;&gt;();
+        orderTable.put(1, new Order(1, &quot;PENDING&quot;));
+
+        runTransactionally(orderTable, auditLog, 1,
+            o -&gt; { throw new ProcessingFailedException(&quot;downstream service unavailable&quot;); });
+
+        System.out.println(&quot;Order status: &quot; + orderTable.get(1).status());
+        System.out.println(&quot;Audit log entries: &quot; + auditLog.size());
+    }
+}</code></pre>
+<p>How to run: <code>java TransactionalFlowDemo.java</code>. Expected output: <code>Transaction rolled back for order 1 (audit log also reverted)</code>, then <code>Order status: PENDING</code> and <code>Audit log entries: 0</code> — both the order table and the audit log revert together, since they participated in the same transaction, avoiding the inconsistency of a committed audit entry describing a claim that was actually undone.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace one poll cycle with a downstream failure, all inside a single transaction.</p>
+<ol><li><strong>Transaction begins</strong>: the poller&#x27;s <code>.transactional(...)</code> configuration starts a new transaction (via the configured <code>PlatformTransactionManager</code>) before executing anything else in this cycle.</li><li><strong>Claim</strong>: the inbound adapter&#x27;s <code>updateSql</code> runs inside this transaction, marking a row as claimed — this update is provisional until the transaction commits.</li><li><strong>Fetch and process</strong>: the claimed row is selected and handed to downstream processing, which may perform additional writes (an audit log entry, a related table update) — all still inside the same open transaction.</li><li><strong>Success path</strong>: if every step completes without error, the transaction commits, making the claim, the processing result, and any related writes durable together, atomically.</li><li><strong>Failure path</strong>: if any step throws (as in <code>processingStep</code> in the example), the transaction manager rolls back everything done since the transaction began — the claim included — restoring the affected rows to their pre-transaction state as though none of it had happened.</li><li><strong>Retry</strong>: because the rollback restores the order to <code>PENDING</code> rather than leaving it stuck at <code>PROCESSING</code>, the next poll cycle picks it up again naturally, without needing any special &quot;stuck order&quot; recovery logic.</li></ol>
+<pre><code>transaction begins
+  -&gt; claim row (UPDATE status=&#x27;PROCESSING&#x27;)
+    -&gt; select claimed row -&gt; process
+       success -&gt; [claim + processing writes] -&gt; COMMIT
+       failure -&gt; ROLLBACK (claim undone, order back to PENDING, retried later)</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> wrapping a poller in a transaction only protects resources that participate in that same transaction manager — a call to an external HTTP service or a non-transactional resource inside the processing step has no rollback semantics at all; a failure after that external call has already taken effect (a payment already charged, an email already sent) cannot be undone by the transaction rolling back the database rows.</blockquote>
+<ul><li>Transactional pollers pair naturally with the claim-then-select pattern from the JDBC adapter (card 0064) — the claim and the processing failure are tied together so a failed message genuinely becomes retriable rather than stuck.</li><li>For message-driven (non-polling) sources like JMS or Kafka, transaction support can extend to the broker acknowledgment itself, so a processing failure also prevents the message from being acknowledged, causing the broker to redeliver it — coordinating &quot;did we finish processing&quot; with &quot;should the broker consider this delivered.&quot;</li><li>Keep non-transactional side effects (sending an email, calling an external payment API) outside the transactional boundary where possible, or make peace with the fact that those effects cannot be rolled back the way database writes can — this is a common source of &quot;the refund got issued twice&quot; bugs when a transaction retries a step assumed to be safely re-runnable.</li><li>Transactions add real overhead and can hold locks for the duration of processing; keep the transactional scope as small as the correctness requirement actually needs, rather than wrapping an entire, potentially slow processing pipeline in one long-held transaction.</li></ul>
+  <div class="nav"><a class="prv" href="0082-groovy-dsl.html"><span class="mini">← Previous</span>Groovy DSL</a><a class="nxt" href="0084-reactive-streams-support.html"><span class="mini">Next →</span>Reactive Streams support</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-integration.html", ID = "t83";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

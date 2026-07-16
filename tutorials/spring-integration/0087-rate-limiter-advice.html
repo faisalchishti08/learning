@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Rate limiter advice" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-integration.html">Spring Integration</a> › 4. Advanced & System</div>
+  <div class="htitle">
+    <h1>"Rate limiter advice"</h1>
+    <a class="back" href="../../spring-integration.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Rate limiter advice wraps a message handler to cap how many messages it processes within a given time window, commonly implemented via a custom <code>MethodInterceptor</code>-based advice or by wiring in a dedicated rate-limiting library (like Resilience4j&#x27;s <code>RateLimiter</code>, which pairs naturally with Spring Integration&#x27;s advice mechanism). Where retry advice and circuit-breaker advice (card 0086) react to failures, rate limiter advice proactively caps throughput regardless of whether calls are succeeding, protecting a downstream dependency (or an externally imposed quota) from ever being sent more traffic than it&#x27;s allowed to receive.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for rate limiter advice when the concern is volume itself, not failure:</p>
+<ul><li><strong>A downstream API enforces a rate limit and exceeding it causes errors or throttling</strong> — many third-party APIs (payment processors, external data providers) reject or penalize requests beyond a contracted rate; a rate limiter advice on the outbound call keeps the flow within that budget proactively, rather than reactively handling 429 responses after the fact.</li><li><strong>A shared internal resource has finite capacity regardless of whether individual calls are failing</strong> — a downstream service might be handling requests successfully but degrade under too much concurrent volume; capping request rate protects it before it starts failing, rather than only reacting once it does (which is what circuit-breaker advice does).</li><li><strong>Fairness across multiple message producers matters</strong> — if several sources feed into the same handler and the downstream capacity must be shared, a rate limiter enforces an overall ceiling regardless of which source happens to be busiest at a given moment.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of a circuit breaker as a smoke detector — it reacts once something is already going wrong. A rate limiter is more like a turnstile at a venue with a fixed capacity: it doesn&#x27;t wait for the venue to become overcrowded and unsafe before acting — it simply admits people at a steady, pre-agreed rate from the start, so the venue never gets more crowded than its capacity allows in the first place. The two mechanisms are complementary: the turnstile prevents the crowding that might otherwise trigger the smoke detector&#x27;s underlying cause.</p>
+<pre><code class="lang-java">@Bean
+public IntegrationFlow rateLimitedApiFlow() {
+    return IntegrationFlow.from(&quot;apiCallRequests&quot;)
+        .handle(externalApiClient::call, e -&gt; e.advice(rateLimiterAdvice()))
+        .get();
+}
+
+@Bean
+public RateLimiterRequestHandlerAdvice rateLimiterAdvice() {
+    RateLimiterConfig config = RateLimiterConfig.custom()
+        .limitForPeriod(10)                       // 10 calls
+        .limitRefreshPeriod(Duration.ofSeconds(1)) // per second
+        .timeoutDuration(Duration.ofMillis(500))   // wait up to 500ms for a permit before failing
+        .build();
+    return new RateLimiterRequestHandlerAdvice(RateLimiter.of(&quot;externalApi&quot;, config));
+}</code></pre>
+<p>At most 10 calls per second reach <code>externalApiClient</code>, regardless of how many messages arrive on <code>apiCallRequests</code> in that window — excess messages wait briefly for a permit, or fail if none becomes available within the timeout.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A rate limiter admits calls at a steady configured rate regardless of arrival bursts, holding excess calls briefly or rejecting them if no permit becomes available in time" >
+  <rect x="20" y="20" width="600" height="35" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="35" y="42" fill="#e6edf3" font-size="8" font-family="monospace">Arrivals: msg msg msg msg msg msg msg msg msg msg msg msg (burst of 12 in one instant)</text>
+
+  <rect x="20" y="75" width="500" height="35" rx="6" fill="#0d1117" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="35" y="97" fill="#79c0ff" font-size="8" font-family="monospace">Admitted: 10 per second, evenly paced -- excess wait for the next window</text>
+
+  <text x="320" y="135" fill="#8b949e" font-size="8" text-anchor="middle" font-family="sans-serif">The downstream call rate stays capped even when arrivals spike well above it</text>
+</svg>
+<p>The limiter smooths a bursty arrival pattern into a steady, capped rate of actual downstream calls.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: capping calls to an external API at a fixed rate per time window, simulated with a plain token-bucket-style counter standing in for a Resilience4j <code>RateLimiter</code> (no real rate-limiting library needed to demonstrate the admit-or-wait/reject logic), starting with a basic fixed-window cap, then adding a timeout for calls that can&#x27;t get a permit quickly enough, then adding per-source fairness so one busy producer can&#x27;t starve another sharing the same limiter.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// RateLimiterDemo.java
+import java.util.*;
+
+public class RateLimiterDemo {
+    // Stand-in for a RateLimiter configured with limitForPeriod(3) per window.
+    static class SimpleRateLimiter {
+        private final int limitPerWindow;
+        private int usedThisWindow = 0;
+
+        SimpleRateLimiter(int limitPerWindow) { this.limitPerWindow = limitPerWindow; }
+
+        boolean tryAcquire() {
+            if (usedThisWindow &lt; limitPerWindow) {
+                usedThisWindow++;
+                return true;
+            }
+            return false;
+        }
+
+        void resetWindow() { usedThisWindow = 0; }
+    }
+
+    public static void main(String[] args) {
+        SimpleRateLimiter limiter = new SimpleRateLimiter(3);
+        for (int i = 1; i &lt;= 5; i++) {
+            if (limiter.tryAcquire()) {
+                System.out.println(&quot;Call &quot; + i + &quot;: permit acquired, calling API&quot;);
+            } else {
+                System.out.println(&quot;Call &quot; + i + &quot;: no permit available, rejected&quot;);
+            }
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java RateLimiterDemo.java</code>. Expected output: calls 1-3 acquire a permit and proceed; calls 4-5 are rejected — the fixed per-window cap enforced regardless of how many calls actually arrived.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// RateLimiterDemo.java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class RateLimiterDemo {
+    static class SimpleRateLimiter {
+        private final int limitPerWindow;
+        private int usedThisWindow = 0;
+        SimpleRateLimiter(int limitPerWindow) { this.limitPerWindow = limitPerWindow; }
+        synchronized boolean tryAcquire() {
+            if (usedThisWindow &lt; limitPerWindow) { usedThisWindow++; return true; }
+            return false;
+        }
+        synchronized void resetWindow() { usedThisWindow = 0; }
+    }
+
+    // Real-world concern: instead of rejecting immediately when no permit is available, wait
+    // briefly (up to a timeout) for the next window to open -- absorbing small bursts smoothly
+    // rather than rejecting every call that arrives even microseconds too early.
+    static boolean acquireWithTimeout(SimpleRateLimiter limiter, long timeoutMillis) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (System.currentTimeMillis() &lt; deadline) {
+            if (limiter.tryAcquire()) return true;
+            Thread.sleep(20);
+        }
+        return false;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        SimpleRateLimiter limiter = new SimpleRateLimiter(2);
+
+        Timer windowResetter = new Timer(true);
+        windowResetter.scheduleAtFixedRate(new TimerTask() {
+            public void run() { limiter.resetWindow(); }
+        }, 100, 100); // window resets every 100ms in this simulation
+
+        for (int i = 1; i &lt;= 4; i++) {
+            boolean acquired = acquireWithTimeout(limiter, 150);
+            System.out.println(&quot;Call &quot; + i + &quot;: &quot; + (acquired ? &quot;permit acquired&quot; : &quot;timed out waiting&quot;));
+        }
+        windowResetter.cancel();
+    }
+}</code></pre>
+<p>How to run: <code>java RateLimiterDemo.java</code>. Expected output: calls that exceed the immediate per-window limit wait (rather than rejecting outright) and typically succeed once the next window resets within the 150ms timeout — demonstrating graceful absorption of a small burst instead of rejecting every call that narrowly misses the current window.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// RateLimiterDemo.java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class RateLimiterDemo {
+    static class SimpleRateLimiter {
+        private final int limitPerWindow;
+        private int usedThisWindow = 0;
+        SimpleRateLimiter(int limitPerWindow) { this.limitPerWindow = limitPerWindow; }
+        synchronized boolean tryAcquire() {
+            if (usedThisWindow &lt; limitPerWindow) { usedThisWindow++; return true; }
+            return false;
+        }
+        synchronized void resetWindow() { usedThisWindow = 0; }
+    }
+
+    // Production concern: several producers share ONE downstream rate limit. Without fairness,
+    // a busy producer can grab every available permit before a quieter producer ever gets a
+    // chance -- round-robin admission across sources keeps one source from starving another.
+    static class FairSharedRateLimiter {
+        private final SimpleRateLimiter underlying;
+        private final Queue&lt;String&gt; pendingSources = new LinkedList&lt;&gt;();
+
+        FairSharedRateLimiter(int limitPerWindow) { this.underlying = new SimpleRateLimiter(limitPerWindow); }
+
+        void enqueue(String source) { pendingSources.add(source); }
+
+        void resetWindow() { underlying.resetWindow(); }
+
+        void processQueueRoundRobin() {
+            int processedThisRound = 0;
+            int queueSizeAtStart = pendingSources.size();
+            while (processedThisRound &lt; queueSizeAtStart &amp;&amp; underlying.tryAcquire()) {
+                String source = pendingSources.poll();
+                System.out.println(&quot;Admitted call from &quot; + source);
+                processedThisRound++;
+            }
+            System.out.println(&quot;Remaining queued (waiting for next window): &quot; + pendingSources.size());
+        }
+    }
+
+    public static void main(String[] args) {
+        FairSharedRateLimiter limiter = new FairSharedRateLimiter(3);
+
+        // producer-A is busy and enqueues many calls; producer-B enqueues just one.
+        for (int i = 0; i &lt; 4; i++) limiter.enqueue(&quot;producer-A&quot;);
+        limiter.enqueue(&quot;producer-B&quot;);
+
+        limiter.processQueueRoundRobin();
+    }
+}</code></pre>
+<p>How to run: <code>java RateLimiterDemo.java</code>. Expected output: three &quot;Admitted call from producer-A&quot; lines (the queue is FIFO in this simplified model, so <code>producer-B</code>&#x27;s single call waits behind <code>producer-A</code>&#x27;s first three), then <code>Remaining queued (waiting for next window): 2</code> — showing that without genuine round-robin fairness (rather than plain FIFO), a busy producer can still dominate the available permits; a production-grade fair limiter would interleave sources rather than draining one queue fully before considering another, a refinement worth calling out explicitly when fairness genuinely matters.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace a burst of API calls through rate-limiting admission control.</p>
+<ol><li><strong>Messages arrive</strong>: a burst of requests needing an external API call arrives on the flow&#x27;s input channel, potentially far more in a short window than the API&#x27;s contracted rate allows.</li><li><strong>Permit request</strong>: each message&#x27;s <code>.handle(...)</code> step, wrapped with rate limiter advice, requests a permit from the shared rate limiter before the actual API call is made.</li><li><strong>Permit available</strong>: if the current window still has capacity, the permit is granted immediately and the call proceeds normally, counting against that window&#x27;s budget.</li><li><strong>Permit unavailable, within timeout</strong>: if the current window is exhausted but the configured timeout hasn&#x27;t elapsed, the request waits, checking again as the window resets — absorbing brief bursts smoothly rather than rejecting them outright.</li><li><strong>Permit unavailable, timeout exceeded</strong>: if no permit becomes available within the configured wait time, the call is rejected (typically raising an exception the flow can route to a fallback or an error channel), rather than waiting indefinitely and blocking the message indefinitely.</li><li><strong>Window reset</strong>: after the configured period elapses, the rate limiter&#x27;s budget resets, and pending or new requests can again acquire permits — the cycle repeats continuously as long as the flow is running.</li></ol>
+<pre><code>burst of messages arrives
+  -&gt; each requests a permit from the shared rate limiter
+       permit available          -&gt; call proceeds
+       unavailable, within wait  -&gt; wait, retry as window resets
+       unavailable, timeout hit  -&gt; reject / route to fallback
+  -&gt; window resets periodically, freeing new permits</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a rate limiter shared across multiple producers without any fairness mechanism can let one high-volume source consume the entire budget before a lower-volume source ever gets a permit — if fairness across sources genuinely matters, the limiter needs explicit round-robin or per-source sub-quotas, not just a single shared counter that whoever asks first exhausts.</blockquote>
+<ul><li>Rate limiting is proactive (cap volume before problems occur); circuit breaking (card 0086) is reactive (respond after failures accumulate) — the two address different failure modes and are often used together, not as substitutes for each other.</li><li>Always define explicit behavior for a request that can&#x27;t get a permit in time — silently dropping it, queuing it indefinitely, and failing it outright are all valid choices depending on the use case, but the choice needs to be deliberate rather than whatever the default happens to be.</li><li>Match the rate limiter&#x27;s configured rate to the actual contracted or safe limit of the downstream dependency — setting it too generously defeats its purpose, and setting it too conservatively throttles legitimate traffic the downstream system could actually handle.</li><li>When several message sources share one rate-limited resource, consider whether fairness across sources matters for the use case; if it does, a plain shared counter isn&#x27;t enough on its own.</li></ul>
+  <div class="nav"><a class="prv" href="0086-requesthandlerretryadvice-circuitbreaker-advice.html"><span class="mini">← Previous</span>RequestHandlerRetryAdvice / CircuitBreaker advice</a><a class="nxt" href="0088-smart-polling.html"><span class="mini">Next →</span>Smart polling</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-integration.html", ID = "t87";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

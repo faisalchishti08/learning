@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"RequestHandlerRetryAdvice / CircuitBreaker advice" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../spring-integration.html">Spring Integration</a> › 4. Advanced & System</div>
+  <div class="htitle">
+    <h1>"RequestHandlerRetryAdvice / CircuitBreaker advice"</h1>
+    <a class="back" href="../../spring-integration.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>RequestHandlerRetryAdvice</code> and <code>RequestHandlerCircuitBreakerAdvice</code> are two concrete, attachable advices (both built on Spring Retry) that wrap a message handler with resilience behavior: the retry advice re-attempts a failed call a configured number of times with optional backoff, while the circuit-breaker advice tracks failure counts and, once a threshold is crossed, stops attempting the call at all for a cooldown period — failing fast instead of continuing to hammer a service that&#x27;s clearly already struggling.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reach for these specific advices to attach concrete, off-the-shelf resilience behavior to an endpoint without hand-writing retry or circuit-breaking logic:</p>
+<ul><li><strong>A downstream call fails occasionally and a second attempt usually succeeds</strong> — <code>RequestHandlerRetryAdvice</code> handles this directly, configured with a maximum attempt count and a backoff policy, without the flow&#x27;s own handler code needing any retry logic embedded in it.</li><li><strong>A downstream service is having a sustained outage, and continuing to retry every message only adds load to an already-failing system</strong> — <code>RequestHandlerCircuitBreakerAdvice</code> detects the sustained failure pattern and stops attempting calls for a cooldown period, letting the struggling service recover instead of being bombarded by a stream of retried requests from every failing message.</li><li><strong>Both advices are meant to compose</strong> — a handler can be wrapped with retry advice (to absorb brief blips) and circuit-breaker advice (to detect a sustained outage and stop hammering it) at the same time, each addressing a different failure timescale.</li></ul>
+<h2>3. Core concept</h2>
+<p>Think of <code>RequestHandlerRetryAdvice</code> as knocking on a door a few more times if there&#x27;s no answer — reasonable when someone might just be a moment away from answering. Think of <code>RequestHandlerCircuitBreakerAdvice</code> as recognizing, after enough consecutive no-answers, that continuing to knock is pointless and possibly rude — so it stops knocking altogether for a while, coming back to try again only after a cooldown period has passed, rather than knocking incessantly the whole time no one&#x27;s answering.</p>
+<pre><code class="lang-java">@Bean
+public IntegrationFlow resilientCallFlow() {
+    return IntegrationFlow.from(&quot;paymentRequests&quot;)
+        .handle(paymentGateway::charge, e -&gt; e.advice(retryAdvice(), circuitBreakerAdvice()))
+        .get();
+}
+
+@Bean
+public RequestHandlerRetryAdvice retryAdvice() {
+    RequestHandlerRetryAdvice advice = new RequestHandlerRetryAdvice();
+    advice.setRetryTemplate(RetryTemplate.builder().maxAttempts(3).fixedBackoff(500).build());
+    return advice;
+}
+
+@Bean
+public RequestHandlerCircuitBreakerAdvice circuitBreakerAdvice() {
+    RequestHandlerCircuitBreakerAdvice advice = new RequestHandlerCircuitBreakerAdvice();
+    advice.setThreshold(5);       // open the circuit after 5 consecutive failures
+    advice.setHalfOpenAfter(30_000); // try again after 30 seconds
+    return advice;
+}</code></pre>
+<p>Each individual call gets up to 3 quick retry attempts; if the gateway has been failing consistently across many messages, the circuit breaker stops even attempting calls for 30 seconds at a time.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A circuit breaker moves through CLOSED (calls go through), OPEN (calls fail fast without attempting the downstream service), and HALF-OPEN (a trial call decides whether to close again or reopen)" >
+  <rect x="20" y="20" width="170" height="55" rx="6" fill="#1c2430" stroke="#6db33f" stroke-width="1.5"/>
+  <text x="105" y="42" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">CLOSED</text>
+  <text x="105" y="60" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">calls go through normally</text>
+
+  <line x1="190" y1="47" x2="270" y2="47" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a5)"/>
+  <text x="230" y="38" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">threshold failures</text>
+
+  <rect x="270" y="20" width="170" height="55" rx="6" fill="#1c2430" stroke="#8b949e" stroke-width="1.5"/>
+  <text x="355" y="42" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">OPEN</text>
+  <text x="355" y="60" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">fail fast, no call attempted</text>
+
+  <line x1="440" y1="47" x2="520" y2="47" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a5)"/>
+  <text x="480" y="38" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">cooldown elapses</text>
+
+  <rect x="520" y="20" width="100" height="55" rx="6" fill="#1c2430" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="570" y="42" fill="#e6edf3" font-size="9" text-anchor="middle" font-family="sans-serif">HALF-OPEN</text>
+  <text x="570" y="60" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">one trial call</text>
+
+  <path d="M 520 65 Q 300 130 105 75" stroke="#6db33f" stroke-width="1.5" fill="none" marker-end="url(#a5)"/>
+  <text x="320" y="130" fill="#6db33f" font-size="7" text-anchor="middle" font-family="sans-serif">trial succeeds -&gt; back to CLOSED</text>
+
+  <path d="M 520 78 Q 400 150 190 78" stroke="#8b949e" stroke-width="1.5" fill="none" marker-end="url(#a5)"/>
+  <text x="330" y="160" fill="#8b949e" font-size="7" text-anchor="middle" font-family="sans-serif">trial fails -&gt; back to OPEN, cooldown restarts</text>
+
+  <defs><marker id="a5" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b949e"/></marker></defs>
+</svg>
+<p>The circuit breaker&#x27;s three states cycle based on observed failures and a trial call, not a fixed schedule.</p>
+<h2>5. Runnable example</h2>
+<p>The scenario: calling a payment gateway that fails for a sustained period, simulated with a plain state machine standing in for <code>RequestHandlerCircuitBreakerAdvice</code> combined with a simple retry loop (no real Spring Retry dependency needed to demonstrate the retry-plus-circuit-breaker composition), starting with basic retry only, then adding a circuit breaker that opens after repeated failures across multiple messages, then adding the half-open trial recovery behavior.</p>
+<h3>Level 1 — Basic</h3>
+<pre><code class="lang-java">// ResilienceAdviceDemo.java
+public class ResilienceAdviceDemo {
+    static int callCount = 0;
+
+    static String chargeCard(String orderId) {
+        callCount++;
+        throw new RuntimeException(&quot;gateway down, attempt &quot; + callCount);
+    }
+
+    static String withRetry(String orderId, int maxAttempts) {
+        for (int i = 0; i &lt; maxAttempts; i++) {
+            try {
+                return chargeCard(orderId);
+            } catch (RuntimeException ex) {
+                System.out.println(&quot;Retry failed: &quot; + ex.getMessage());
+            }
+        }
+        return &quot;FAILED after retries&quot;;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(withRetry(&quot;ORD-1&quot;, 3));
+    }
+}</code></pre>
+<p>How to run: <code>java ResilienceAdviceDemo.java</code>. Expected output: three &quot;Retry failed: ...&quot; lines then <code>FAILED after retries</code> — retry alone keeps attempting the call for every message with no memory of past failures across calls.</p>
+<h3>Level 2 — Intermediate</h3>
+<pre><code class="lang-java">// ResilienceAdviceDemo.java
+public class ResilienceAdviceDemo {
+    // Real-world concern: retrying each message independently means a sustained outage still
+    // gets hammered by every incoming message&#x27;s own retry attempts. A circuit breaker tracks
+    // failures ACROSS messages and stops attempting calls once a threshold is crossed.
+    static class CircuitBreaker {
+        private int consecutiveFailures = 0;
+        private final int threshold;
+        private boolean open = false;
+
+        CircuitBreaker(int threshold) { this.threshold = threshold; }
+
+        boolean isOpen() { return open; }
+
+        void recordFailure() {
+            consecutiveFailures++;
+            if (consecutiveFailures &gt;= threshold) {
+                open = true;
+                System.out.println(&quot;Circuit OPENED after &quot; + consecutiveFailures + &quot; consecutive failures&quot;);
+            }
+        }
+
+        void recordSuccess() { consecutiveFailures = 0; }
+    }
+
+    static String chargeCard(String orderId) {
+        throw new RuntimeException(&quot;gateway down&quot;);
+    }
+
+    public static void main(String[] args) {
+        CircuitBreaker breaker = new CircuitBreaker(3);
+
+        for (int i = 1; i &lt;= 5; i++) {
+            if (breaker.isOpen()) {
+                System.out.println(&quot;Message &quot; + i + &quot;: circuit open, failing fast (no call attempted)&quot;);
+                continue;
+            }
+            try {
+                chargeCard(&quot;ORD-&quot; + i);
+            } catch (RuntimeException ex) {
+                System.out.println(&quot;Message &quot; + i + &quot; failed: &quot; + ex.getMessage());
+                breaker.recordFailure();
+            }
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java ResilienceAdviceDemo.java</code>. Expected output: messages 1-3 each fail and are logged, with the circuit opening after the third; messages 4 and 5 print &quot;circuit open, failing fast (no call attempted)&quot; — no further calls to the already-struggling gateway are made, sparing it additional load while it&#x27;s clearly down.</p>
+<h3>Level 3 — Advanced</h3>
+<pre><code class="lang-java">// ResilienceAdviceDemo.java
+public class ResilienceAdviceDemo {
+    static class CircuitBreaker {
+        private int consecutiveFailures = 0;
+        private final int threshold;
+        private final long cooldownMillis;
+        private boolean open = false;
+        private long openedAtMillis = 0;
+
+        CircuitBreaker(int threshold, long cooldownMillis) {
+            this.threshold = threshold;
+            this.cooldownMillis = cooldownMillis;
+        }
+
+        // Production concern: after the cooldown, allow exactly ONE trial call through
+        // (half-open) rather than either staying permanently open or fully reopening the
+        // floodgates -- the trial&#x27;s outcome decides whether service has actually recovered.
+        boolean allowCall(long nowMillis) {
+            if (!open) return true;
+            if (nowMillis - openedAtMillis &gt;= cooldownMillis) {
+                System.out.println(&quot;Cooldown elapsed, allowing one HALF-OPEN trial call&quot;);
+                return true;
+            }
+            return false;
+        }
+
+        void recordFailure(long nowMillis) {
+            consecutiveFailures++;
+            if (consecutiveFailures &gt;= threshold) {
+                if (!open) System.out.println(&quot;Circuit OPENED after &quot; + consecutiveFailures + &quot; consecutive failures&quot;);
+                open = true;
+                openedAtMillis = nowMillis; // reopening also restarts the cooldown clock
+            }
+        }
+
+        void recordSuccess() {
+            if (open) System.out.println(&quot;Trial call succeeded, circuit CLOSED&quot;);
+            consecutiveFailures = 0;
+            open = false;
+        }
+    }
+
+    public static void main(String[] args) {
+        CircuitBreaker breaker = new CircuitBreaker(2, 1000);
+        boolean[] gatewayIsDown = { true, true, true, true, false }; // recovers on message 5
+
+        long now = 0;
+        for (int i = 0; i &lt; gatewayIsDown.length; i++) {
+            if (!breaker.allowCall(now)) {
+                System.out.println(&quot;Message &quot; + (i + 1) + &quot;: circuit open, failing fast&quot;);
+            } else if (gatewayIsDown[i]) {
+                System.out.println(&quot;Message &quot; + (i + 1) + &quot;: call failed&quot;);
+                breaker.recordFailure(now);
+            } else {
+                System.out.println(&quot;Message &quot; + (i + 1) + &quot;: call succeeded&quot;);
+                breaker.recordSuccess();
+            }
+            now += 600; // messages arrive every 600ms; cooldown is 1000ms
+        }
+    }
+}</code></pre>
+<p>How to run: <code>java ResilienceAdviceDemo.java</code>. Expected output: messages 1-2 fail and open the circuit; message 3 (at t=1200ms, past the 1000ms cooldown) gets a half-open trial that also fails, reopening the circuit and restarting the cooldown; message 4 fails fast since the new cooldown hasn&#x27;t elapsed; message 5&#x27;s trial (gateway now recovered) succeeds and closes the circuit — demonstrating the full open/half-open/closed cycle reacting to real recovery rather than just a fixed timer.</p>
+<h2>6. Walkthrough</h2>
+<p>Trace a sequence of payment attempts through both advices working together.</p>
+<ol><li><strong>Normal operation (circuit CLOSED)</strong>: each message&#x27;s <code>.handle(...)</code> call goes through, wrapped first by retry advice (a few quick attempts on failure) and then by the circuit breaker&#x27;s failure tracking, which increments its consecutive-failure count on each retry-exhausted failure.</li><li><strong>Threshold crossed (circuit OPENS)</strong>: once enough messages in a row have exhausted their retries and failed, the circuit breaker flips to OPEN — from this point, incoming messages don&#x27;t even attempt the downstream call; they fail fast immediately, and the circuit-open state itself becomes the &quot;error&quot; the flow reacts to (routing to an error channel, for instance).</li><li><strong>Cooldown period</strong>: while OPEN, every message fails immediately without touching the actual downstream service — this is the entire point, sparing an already-overloaded or down service from being hit by a continuous stream of retried requests it cannot currently handle anyway.</li><li><strong>Cooldown elapses (circuit HALF-OPEN)</strong>: once the configured cooldown has passed, the next incoming message is allowed through as a trial call, to test whether the downstream service has actually recovered.</li><li><strong>Trial succeeds (circuit CLOSES)</strong>: if the trial call succeeds, the circuit breaker resets its failure count and returns to CLOSED, resuming normal call-through behavior for all subsequent messages.</li><li><strong>Trial fails (circuit reopens)</strong>: if the trial call also fails, the circuit breaker immediately reopens and restarts its cooldown timer, deferring the next trial attempt further into the future rather than repeatedly hammering a service that clearly hasn&#x27;t recovered yet.</li></ol>
+<pre><code>message arrives -&gt; circuit state?
+  CLOSED    -&gt; attempt call (with retry advice) -&gt; success: continue, stay CLOSED
+                                                 -&gt; failure: increment count -&gt; threshold? -&gt; OPEN
+  OPEN      -&gt; fail fast, no call attempted -&gt; cooldown elapsed? -&gt; HALF-OPEN trial
+  HALF-OPEN -&gt; one trial call -&gt; succeeds: CLOSED
+                              -&gt; fails: OPEN again, cooldown restarts</code></pre>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> retry advice and circuit-breaker advice operate on different timescales and can interact in a surprising way if misconfigured — if the retry advice&#x27;s own attempts (with backoff) take longer than the circuit breaker&#x27;s failure-counting window expects, the circuit may open more slowly (or quickly) than intended; tune the retry attempt count/backoff and the circuit breaker&#x27;s threshold together, not independently.</blockquote>
+<ul><li>Retry advice absorbs brief, per-call blips; circuit-breaker advice protects against sustained, cross-message outages — they solve different problems on different timescales, and using only one leaves the other gap uncovered.</li><li>A circuit breaker&#x27;s failing-fast behavior during the OPEN state is a feature, not a bug to work around — it protects the downstream service from pointless additional load and gives the calling flow a fast, predictable failure to route elsewhere (a fallback, a queued retry for later, a user-facing &quot;try again shortly&quot; message) instead of a slow timeout on every attempt.</li><li>Tune the failure threshold and cooldown duration to the actual failure and recovery characteristics of the downstream service — a threshold too low trips the circuit on ordinary noise; a cooldown too short sends trial calls at a struggling service faster than it can possibly stabilize.</li><li>Composing both advices on the same handler is a common and sensible pattern: let retry handle the small stuff, let the circuit breaker handle the big stuff, and route to an error channel or fallback specifically when the circuit is open, since that state itself signals &quot;don&#x27;t even bother trying right now.&quot;</li></ul>
+  <div class="nav"><a class="prv" href="0085-error-handling-strategies-retry-advice.html"><span class="mini">← Previous</span>Error handling strategies & retry advice</a><a class="nxt" href="0087-rate-limiter-advice.html"><span class="mini">Next →</span>Rate limiter advice</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:spring-integration.html", ID = "t86";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
