@@ -28,16 +28,18 @@ class TestMetadata(unittest.TestCase):
                 self.assertIn(k, p)
             self.assertIsInstance(p["sections"], list)
 
-    def test_registered_in_generator_after_webdev_before_core(self):
+    def test_registered_in_generator_after_java_before_webdev_and_core(self):
         files = [p["file"] for p in generate.PROJECTS]
         self.assertIn("system-design.html", files)
         self.assertIn("data-structures.html", files)
         self.assertIn("leetcode-patterns.html", files)
-        wd = files.index("webdev.html")
+        java = files.index("java.html")
         sd = files.index("system-design.html")
+        wd = files.index("webdev.html")
         # first data_core file is spring-framework.html
         core = files.index("spring-framework.html")
-        self.assertLess(wd, sd)
+        self.assertLess(java, sd)
+        self.assertLess(sd, wd)
         self.assertLess(sd, core)
 
 class TestStructuralInvariants(unittest.TestCase):
@@ -143,6 +145,32 @@ class TestLeetCode(unittest.TestCase):
         # Curated, duplicate-free set across 36 patterns (concept items + named problems).
         n = len(topics.enumerate_topics(self.lc()))
         self.assertGreaterEqual(n, 620)
+
+
+class TestGeneratedOutput(unittest.TestCase):
+    ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+    def read(self, name):
+        with open(os.path.join(self.ROOT, name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_subject_pages_exist_and_titled(self):
+        self.assertIn("System Design", self.read("system-design.html"))
+        self.assertIn("Data Structures", self.read("data-structures.html"))
+        self.assertIn("LeetCode Patterns", self.read("leetcode-patterns.html"))
+
+    def test_index_has_category_and_three_cards(self):
+        idx = self.read("index.html")
+        self.assertIn("CS & Interview Prep", idx)
+        self.assertIn('href="system-design.html"', idx)
+        self.assertIn('href="data-structures.html"', idx)
+        self.assertIn('href="leetcode-patterns.html"', idx)
+
+    def test_manifest_lists_new_cards(self):
+        import json
+        man = json.loads(self.read("content/_manifest.json"))
+        for stem in ("system-design", "data-structures", "leetcode-patterns"):
+            self.assertIn(stem, man["cards"])
 
 
 if __name__ == "__main__":
