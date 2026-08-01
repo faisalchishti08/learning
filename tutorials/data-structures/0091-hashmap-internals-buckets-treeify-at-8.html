@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>'HashMap internals (buckets, treeify at 8)' — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../data-structures.html">Data Structures</a> › 7. Hashing</div>
+  <div class="htitle">
+    <h1>'HashMap internals (buckets, treeify at 8)'</h1>
+    <a class="back" href="../../data-structures.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><code>java.util.HashMap</code> is Java&#x27;s standard hash table implementation. Internally, it is an array of buckets, where each bucket is either empty, a linked list of entries (separate chaining), or — once that list grows past a threshold — a red-black tree. Understanding this internal structure explains behavior that would otherwise look mysterious: why iteration order is unpredictable, why a bad <code>hashCode()</code> still &quot;works&quot; but is slow, and why performance stays stable even under heavy collisions.</p>
+<h2>2. Why &amp; when</h2>
+<p>Knowing <code>HashMap</code>&#x27;s internals matters whenever performance under load is a concern, when writing custom key types, or when explaining *why* <code>HashMap</code> behaves the way it does in an interview. It also directly explains topics covered elsewhere in this section — <a href="0086-load-factor-rehashing.md">Load factor &amp; rehashing</a> and <a href="0087-collision-resolution-separate-chaining.md">Collision resolution: separate chaining</a> — as concrete implementation choices, not abstract theory.</p>
+<h2>3. Core concept</h2>
+<p><strong>What backs it.</strong> An array of <code>Node&lt;K,V&gt;</code> bucket heads (<code>table</code> internally). Each <code>Node</code> holds a key, a value, a cached hash code, and a <code>next</code> reference — a plain singly linked list node. <code>hash(key)</code> combines <code>key.hashCode()</code> with a bit-spreading step (XOR-ing the hash with its own upper bits) before taking it modulo the table size, which improves distribution for hash codes that vary mostly in their high bits.</p>
+<p><strong>Bucket index computation.</strong> <code>HashMap</code> uses <code>(capacity - 1) &amp; hash</code> instead of <code>hash % capacity</code> — capacity is always a power of two, so a bitwise AND with <code>capacity - 1</code> is equivalent to modulo, but faster.</p>
+<p><strong>Treeify at 8.</strong> If a single bucket&#x27;s chain grows to 8 or more nodes, *and* the table&#x27;s total capacity is at least 64, that bucket converts from a linked list to a red-black tree (<code>TreeNode</code>, a subclass of <code>Node</code>), bounding worst-case lookup within that bucket to O(log n). If the table is smaller than 64 buckets, <code>HashMap</code> instead resizes the whole table first, since a small table with only 8 buckets is more likely the real cause of the crowding, not bad luck.</p>
+<p><strong>Untreeify at 6.</strong> If entries are removed and a treeified bucket&#x27;s size drops back to 6 or fewer, it converts back to a plain linked list — the tree&#x27;s bookkeeping overhead is not worth it for a small bucket.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A HashMap bucket array where most buckets hold a short chain or are empty, and one heavily collided bucket has become a red black tree after exceeding 8 entries">
+  <g font-family="sans-serif" font-size="11">
+    <text x="20" y="16" fill="#8b949e">table[] -- capacity 16 (power of two)</text>
+    <rect x="20" y="30" width="34" height="24" fill="#161b22" stroke="#8b949e"/>
+    <rect x="58" y="30" width="34" height="24" fill="#0d1117" stroke="#79c0ff"/><text x="75" y="46" fill="#e6edf3" text-anchor="middle" font-size="8">1 node</text>
+    <rect x="96" y="30" width="34" height="24" fill="#161b22" stroke="#8b949e"/>
+    <text x="180" y="46" fill="#8b949e" font-size="9">... mostly empty or short chains ...</text>
+    <rect x="360" y="30" width="60" height="24" fill="#0d1117" stroke="#f0883e"/><text x="390" y="46" fill="#e6edf3" text-anchor="middle" font-size="8">bucket 9</text>
+    <circle cx="390" cy="90" r="14" fill="#0d1117" stroke="#f0883e"/>
+    <circle cx="360" cy="130" r="14" fill="#161b22" stroke="#8b949e"/>
+    <circle cx="420" cy="130" r="14" fill="#161b22" stroke="#8b949e"/>
+    <line x1="384" y1="100" x2="368" y2="118" stroke="#8b949e"/>
+    <line x1="396" y1="100" x2="412" y2="118" stroke="#8b949e"/>
+    <text x="390" y="165" fill="#f0883e" text-anchor="middle" font-size="9">bucket 9: 9+ entries -&gt; treeified into a red-black tree</text>
+  </g>
+</svg>
+<p>Most buckets stay short linked chains; a bucket that grows past 8 entries (with a large-enough table) converts to a balanced tree instead.</p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// HashMapInternalsDemo.java
+import java.util.HashMap;
+import java.util.Map;
+
+public class HashMapInternalsDemo {
+
+    // Basic: iteration order is NOT insertion order -- it follows internal bucket order, which looks arbitrary.
+    static void basicLevel() {
+        Map&lt;String, Integer&gt; map = new HashMap&lt;&gt;();
+        map.put(&quot;zebra&quot;, 1);
+        map.put(&quot;apple&quot;, 2);
+        map.put(&quot;mango&quot;, 3);
+        System.out.println(&quot;basic: HashMap iteration order (not insertion order) -&gt; &quot; + map.keySet());
+    }
+
+    // Deliberately collide many keys into ONE bucket, to observe the map still working correctly at scale.
+    static class SameBucketKey {
+        int value;
+        SameBucketKey(int value) { this.value = value; }
+        @Override public int hashCode() { return 7; } // fixed hash -- forces every instance into the same bucket
+        @Override public boolean equals(Object o) { return o instanceof SameBucketKey k &amp;&amp; k.value == value; }
+        @Override public String toString() { return &quot;K&quot; + value; }
+    }
+
+    // Intermediate: push a bucket past the treeify threshold (8), and confirm correctness is unaffected.
+    static void intermediateLevel() {
+        Map&lt;SameBucketKey, Integer&gt; map = new HashMap&lt;&gt;();
+        for (int i = 0; i &lt; 20; i++) map.put(new SameBucketKey(i), i); // far more than 8 -- forces treeification (capacity permitting)
+
+        System.out.println(&quot;intermediate: get(K15) after forcing 20 keys into one bucket -&gt; &quot; + map.get(new SameBucketKey(15)));
+        System.out.println(&quot;intermediate: size (all 20 distinct keys correctly stored) -&gt; &quot; + map.size());
+    }
+
+    // Advanced: untreeify -- remove entries back down below 6, confirming the map still behaves correctly either way.
+    static void advancedLevel() {
+        Map&lt;SameBucketKey, Integer&gt; map = new HashMap&lt;&gt;();
+        for (int i = 0; i &lt; 20; i++) map.put(new SameBucketKey(i), i);
+
+        for (int i = 0; i &lt; 15; i++) map.remove(new SameBucketKey(i)); // drop back to 5 remaining entries in that bucket
+
+        System.out.println(&quot;advanced: after removing most entries, remaining size -&gt; &quot; + map.size());
+        System.out.println(&quot;advanced: get(K19) still correct after untreeify -&gt; &quot; + map.get(new SameBucketKey(19)));
+    }
+
+    public static void main(String[] args) {
+        basicLevel();
+        intermediateLevel();
+        advancedLevel();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>HashMapInternalsDemo.java</code>, then run <code>java HashMapInternalsDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>basicLevel()</code> inserts three keys and prints the iteration order, which reflects internal bucket order (<code>hash(key) &amp; (capacity - 1)</code>), not insertion order — this is the direct, visible consequence of <code>HashMap</code>&#x27;s bucket-array structure, and why <code>HashMap</code> never promises a predictable iteration order.</li><li><code>intermediateLevel()</code> forces 20 keys into the same bucket via a constant <code>hashCode()</code>. Once that bucket&#x27;s chain exceeds 8 nodes (and the table is at least 64 buckets, which <code>HashMap</code> grows into automatically as needed), Java internally converts it to a red-black tree. <code>get(K15)</code> still returns the correct value — correctness is unaffected — but internally the lookup now does a tree search instead of a linear scan.</li><li><code>advancedLevel()</code> removes most of those 20 entries, dropping the crowded bucket&#x27;s size to <code>5</code>, below the untreeify threshold of <code>6</code>. <code>HashMap</code> converts the bucket back to a plain linked list, since a tree&#x27;s bookkeeping overhead is no longer justified for so few entries. The map continues to return correct results throughout, regardless of which internal representation the bucket currently uses.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: treeification only happens if the *whole table* has at least 64 buckets — a small table with one badly crowded bucket resizes the entire table first instead, since Java assumes an undersized table (not a bad hash function) is the more likely cause when this happens early. This means the same colliding-key scenario can behave differently depending on how many total entries the map has accumulated so far.</blockquote>
+<ul><li><code>HashMap</code> buckets start as linked lists (separate chaining) and convert to red-black trees once a bucket exceeds 8 entries, in a table of at least 64 buckets.</li><li>Bucket index uses <code>(capacity - 1) &amp; hash</code>, relying on capacity always being a power of two, instead of the slower <code>%</code> operator.</li><li>Iteration order reflects internal bucket layout, not insertion order — never rely on it.</li><li>A bucket untreeifies back to a linked list if it shrinks to 6 or fewer entries after removals.</li><li>Related concepts: <a href="0087-collision-resolution-separate-chaining.md">Collision resolution: separate chaining</a>, <a href="0090-worst-case-degradation-mitigation.md">Worst-case degradation &amp; mitigation</a>, <a href="0092-hashset-linkedhashmap-ordering.md">HashSet &amp; LinkedHashMap ordering</a>.</li></ul>
+  <div class="nav"><a class="prv" href="0090-worst-case-degradation-mitigation.html"><span class="mini">← Previous</span>Worst-case degradation & mitigation</a><a class="nxt" href="0092-hashset-linkedhashmap-ordering.html"><span class="mini">Next →</span>HashSet & LinkedHashMap ordering</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:data-structures.html", ID = "t91";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
