@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quadtree & geohashing (spatial indexing) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../data-structures.html">Data Structures</a> › 12. Advanced Trees & Range Structures</div>
+  <div class="htitle">
+    <h1>Quadtree & geohashing (spatial indexing)</h1>
+    <a class="back" href="../../data-structures.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>quadtree</strong> indexes 2D space by recursively splitting a region into four equal quadrants — northwest, northeast, southwest, southeast — whenever a quadrant holds more points than a set limit. <strong>Geohashing</strong> is a different approach to the same problem: it encodes a coordinate as a single string, where each added character narrows the location into a smaller rectangle, so two nearby points tend to share a long common prefix.</p>
+<h2>2. Why &amp; when</h2>
+<p>Both solve &quot;find everything near this location&quot; for map-like data — nearby drivers in a ride-sharing app, nearby stores, or map tiles to render. A quadtree is a real tree structure you build and query in memory, good when you control the data structure directly (game engines, in-process spatial indexes). Geohashing turns location into a <strong>string</strong>, which you can store as an ordinary indexed column in any database or key-value store — no custom tree code needed, at the cost of some accuracy at cell boundaries.</p>
+<h2>3. Core concept</h2>
+<p><strong>The quadtree&#x27;s shape.</strong> Each node covers a rectangular region. A node starts as a leaf holding up to <code>capacity</code> points. Once it would exceed <code>capacity</code>, it <strong>subdivides</strong> into four children — NW, NE, SW, SE — each covering one quarter of the parent&#x27;s region, and its points are redistributed into whichever child region contains them.</p>
+<p><strong>The invariant.</strong> Every point is stored in the smallest quadrant whose region contains it. Regions never overlap and their union is always the full covered area.</p>
+<p><strong>Why it makes queries fast.</strong> A range query (&quot;find all points inside this rectangle&quot;) only descends into a child quadrant if that quadrant&#x27;s region <strong>intersects</strong> the query rectangle. Quadrants entirely outside the query are skipped in <code>O(1)</code>, without visiting a single point inside them — the same pruning idea as a <a href="0160-k-d-tree-spatial-partitioning.md">k-d tree</a>, but splitting evenly into 4 fixed quadrants instead of adapting the split point to the data.</p>
+<p><strong>Geohashing&#x27;s shape.</strong> Interleave bits from the latitude and longitude, halving the possible range with each bit: does the point fall in the top or bottom half of the current latitude range, then the left or right half of the current longitude range, alternating. Group the resulting bits into base-32 characters. The result is a string like <code>&quot;9q8yy&quot;</code>, where each extra character shrinks the represented rectangle further.</p>
+<p><strong>Why prefixes matter.</strong> Because each character narrows the cell, two geohash strings that share a long prefix are guaranteed to be geographically close — this lets you find nearby points using ordinary string prefix queries (<code>LIKE &#x27;9q8yy%&#x27;</code>), which every database already indexes efficiently.</p>
+<h2>4. Diagram</h2>
+<svg viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A quadtree subdividing a region into four quadrants, next to a geohash string narrowing a coordinate one character at a time">
+  <g font-family="sans-serif" font-size="10" fill="#e6edf3">
+    <rect x="20" y="20" width="180" height="180" fill="none" stroke="#79c0ff" stroke-width="2"/>
+    <line x1="110" y1="20" x2="110" y2="200" stroke="#79c0ff"/>
+    <line x1="20" y1="110" x2="200" y2="110" stroke="#79c0ff"/>
+    <rect x="110" y="20" width="45" height="45" fill="none" stroke="#f0883e"/>
+    <line x1="132" y1="20" x2="132" y2="65" stroke="#f0883e"/>
+    <line x1="110" y1="42" x2="155" y2="42" stroke="#f0883e"/>
+    <text x="110" y="14" font-size="9">quadtree: NE quadrant subdivided further</text>
+
+    <g transform="translate(280,0)">
+      <text x="0" y="20" font-size="9">geohash narrowing:</text>
+      <rect x="0" y="30" width="320" height="20" fill="#161b22" stroke="#8b949e"/>
+      <text x="4" y="45" font-size="9">char 1 "9": narrows to 1/32 of the globe</text>
+      <rect x="0" y="60" width="160" height="20" fill="#161b22" stroke="#8b949e"/>
+      <text x="4" y="75" font-size="9">char 2 "q": narrows further</text>
+      <rect x="0" y="90" width="80" height="20" fill="#161b22" stroke="#8b949e"/>
+      <text x="4" y="105" font-size="9">char 3 "8": ~city-block size</text>
+      <text x="0" y="140" font-size="9" fill="#8b949e">"9q8yy" and "9q8yz" share a 4-char</text>
+      <text x="0" y="155" font-size="9" fill="#8b949e">prefix -&gt; they are geographically close</text>
+    </g>
+  </g>
+</svg>
+<p>Quadtree: each split covers a shrinking region. Geohash: each character shrinks the encoded rectangle.</p>
+<h2>5. Runnable example</h2>
+<pre><code class="lang-java">// QuadtreeGeohash.java
+import java.util.*;
+
+public class QuadtreeGeohash {
+
+    record Point(double x, double y, String label) {}
+
+    // Basic: a quadtree that subdivides once a node exceeds capacity.
+    static class Quadtree {
+        double x, y, w, h; // region: top-left (x,y), width w, height h
+        int capacity;
+        List&lt;Point&gt; points = new ArrayList&lt;&gt;();
+        Quadtree nw, ne, sw, se;
+        boolean divided = false;
+
+        Quadtree(double x, double y, double w, double h, int capacity) {
+            this.x = x; this.y = y; this.w = w; this.h = h; this.capacity = capacity;
+        }
+
+        boolean contains(Point p) {
+            return p.x() &gt;= x &amp;&amp; p.x() &lt; x + w &amp;&amp; p.y() &gt;= y &amp;&amp; p.y() &lt; y + h;
+        }
+
+        void subdivide() {
+            double hw = w / 2, hh = h / 2;
+            nw = new Quadtree(x, y, hw, hh, capacity);
+            ne = new Quadtree(x + hw, y, hw, hh, capacity);
+            sw = new Quadtree(x, y + hh, hw, hh, capacity);
+            se = new Quadtree(x + hw, y + hh, hw, hh, capacity);
+            divided = true;
+        }
+
+        void insert(Point p) {
+            if (!contains(p)) return;
+            if (points.size() &lt; capacity &amp;&amp; !divided) { points.add(p); return; }
+            if (!divided) subdivide();
+            nw.insert(p); ne.insert(p); sw.insert(p); se.insert(p);
+        }
+    }
+
+    static void basicLevel() {
+        Quadtree tree = new Quadtree(0, 0, 100, 100, 2);
+        for (Point p : new Point[]{
+            new Point(10, 10, &quot;A&quot;), new Point(20, 15, &quot;B&quot;), new Point(80, 80, &quot;C&quot;), new Point(15, 90, &quot;D&quot;)}) {
+            tree.insert(p);
+        }
+        System.out.println(&quot;basic: root divided after 3rd point in same quadrant -&gt; &quot; + tree.divided);
+    }
+
+    // Intermediate: range query, pruning quadrants that don&#x27;t intersect the query rectangle.
+    static boolean intersects(Quadtree q, double qx, double qy, double qw, double qh) {
+        return !(qx &gt; q.x + q.w || qx + qw &lt; q.x || qy &gt; q.y + q.h || qy + qh &lt; q.y);
+    }
+
+    static void queryRange(Quadtree q, double qx, double qy, double qw, double qh, List&lt;Point&gt; results) {
+        if (!intersects(q, qx, qy, qw, qh)) return;
+        for (Point p : q.points) {
+            if (p.x() &gt;= qx &amp;&amp; p.x() &lt;= qx + qw &amp;&amp; p.y() &gt;= qy &amp;&amp; p.y() &lt;= qy + qh) results.add(p);
+        }
+        if (q.divided) {
+            queryRange(q.nw, qx, qy, qw, qh, results);
+            queryRange(q.ne, qx, qy, qw, qh, results);
+            queryRange(q.sw, qx, qy, qw, qh, results);
+            queryRange(q.se, qx, qy, qw, qh, results);
+        }
+    }
+
+    static void intermediateLevel() {
+        Quadtree tree = new Quadtree(0, 0, 100, 100, 2);
+        for (Point p : new Point[]{
+            new Point(10, 10, &quot;A&quot;), new Point(20, 15, &quot;B&quot;), new Point(80, 80, &quot;C&quot;), new Point(15, 90, &quot;D&quot;)}) {
+            tree.insert(p);
+        }
+        List&lt;Point&gt; results = new ArrayList&lt;&gt;();
+        queryRange(tree, 0, 0, 30, 30, results);
+        System.out.println(&quot;intermediate: points in [0,0]-[30,30] -&gt; &quot; + results);
+    }
+
+    // Advanced: a simplified geohash-style encoder, interleaving lat/lon bits into a bit string.
+    static String simpleGeohashBits(double lat, double lon, int bits) {
+        double latMin = -90, latMax = 90, lonMin = -180, lonMax = 180;
+        StringBuilder result = new StringBuilder();
+        boolean useLon = true;
+        for (int i = 0; i &lt; bits; i++) {
+            if (useLon) {
+                double mid = (lonMin + lonMax) / 2;
+                if (lon &gt;= mid) { result.append(&#x27;1&#x27;); lonMin = mid; } else { result.append(&#x27;0&#x27;); lonMax = mid; }
+            } else {
+                double mid = (latMin + latMax) / 2;
+                if (lat &gt;= mid) { result.append(&#x27;1&#x27;); latMin = mid; } else { result.append(&#x27;0&#x27;); latMax = mid; }
+            }
+            useLon = !useLon;
+        }
+        return result.toString();
+    }
+
+    static void advancedLevel() {
+        String hashA = simpleGeohashBits(40.7128, -74.0060, 20); // New York
+        String hashB = simpleGeohashBits(40.7300, -73.9950, 20); // nearby point in New York
+        String hashC = simpleGeohashBits(34.0522, -118.2437, 20); // Los Angeles
+
+        System.out.println(&quot;advanced: New York bits      -&gt; &quot; + hashA);
+        System.out.println(&quot;advanced: nearby NY point     -&gt; &quot; + hashB);
+        System.out.println(&quot;advanced: Los Angeles bits    -&gt; &quot; + hashC);
+        System.out.println(&quot;advanced: NY vs nearby shared prefix length -&gt; &quot; + commonPrefixLength(hashA, hashB));
+        System.out.println(&quot;advanced: NY vs LA shared prefix length     -&gt; &quot; + commonPrefixLength(hashA, hashC));
+    }
+
+    static int commonPrefixLength(String a, String b) {
+        int i = 0;
+        while (i &lt; a.length() &amp;&amp; i &lt; b.length() &amp;&amp; a.charAt(i) == b.charAt(i)) i++;
+        return i;
+    }
+
+    public static void main(String[] args) {
+        basicLevel();
+        intermediateLevel();
+        advancedLevel();
+    }
+}</code></pre>
+<p>How to run: <code>java QuadtreeGeohash.java</code></p>
+<h2>6. Walkthrough</h2>
+<p>Build a quadtree over a 100x100 region with capacity <code>2</code>. Insert <code>A(10,10)</code>, <code>B(20,15)</code>, <code>C(80,80)</code>, <code>D(15,90)</code>. <code>A</code> and <code>B</code> both fall in the top-left region and fit within capacity <code>2</code>, so the root stays a leaf holding <code>[A, B]</code>. Once a third point that also lands in the same small area arrives, that node would exceed capacity <code>2</code> and calls <code>subdivide()</code>, creating four child quadrants and redistributing its points into whichever child actually contains each one.</p>
+<p>Now query the rectangle <code>[0,0]</code> to <code>[30,30]</code>. Starting at the root: does the root&#x27;s region intersect the query? Yes (it always does, since the root covers everything). Check the root&#x27;s own points if it is still a leaf, or descend into children whose regions intersect <code>[0,0]-[30,30]</code> if it has divided. <code>C</code> at <code>(80,80)</code> and <code>D</code> at <code>(15,90)</code> sit in regions that do not intersect the query rectangle, so those branches are skipped entirely — only <code>A</code> and <code>B</code> are checked and returned.</p>
+<p>For geohashing: encode New York <code>(40.7128, -74.0060)</code> and a nearby point <code>(40.7300, -73.9950)</code> into bit strings by repeatedly halving the latitude and longitude ranges. Because both points fall in nearly the same half at almost every step, their bit strings share a long common prefix. A far-away point like Los Angeles diverges from New York within the first few bits, giving a short common prefix.</p>
+<p><strong>Complexity.</strong> Quadtree: insert <code>O(log n)</code> average (depends on point distribution — a skewed distribution can make some branches deep). Range query: <code>O(log n + k)</code> for <code>k</code> results found, after pruning non-intersecting quadrants. Geohash: encoding is <code>O(bits)</code> — constant for a fixed precision — and prefix search is as fast as the underlying string index (typically <code>O(log n)</code> for a B-tree-backed database index).</p>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Geohashing has a boundary problem: two points can be extremely close in real distance but land on opposite sides of a cell boundary, giving them completely different prefixes despite being neighbors. Production geohash queries typically check the 8 neighboring cells too, not just an exact prefix match.</blockquote>
+<ul><li>A quadtree with a skewed point distribution (everyone clustered in one corner) can subdivide very deeply in that corner while staying shallow elsewhere — capacity limits bound memory, not guaranteed balance.</li><li>Geohash precision trades off directly with string length: more characters means a smaller, more precise cell, and a shorter shared-prefix requirement for &quot;nearby.&quot;</li><li>Choose a quadtree when you own the data structure and need exact range/nearest queries in memory. Choose geohashing when you want to piggyback on an existing database&#x27;s string index instead of writing custom spatial code.</li></ul>
+  <div class="nav"><a class="prv" href="0160-k-d-tree-spatial-partitioning.html"><span class="mini">← Previous</span>k-d tree (spatial partitioning)</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:data-structures.html", ID = "t161";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
