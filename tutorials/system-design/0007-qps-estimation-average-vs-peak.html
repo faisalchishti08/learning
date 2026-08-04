@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QPS estimation (average vs peak) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 1. Fundamentals & Estimation</div>
+  <div class="htitle">
+    <h1>QPS estimation (average vs peak)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Queries Per Second (QPS)</strong> is the number of requests a system receives every second. <strong>Average QPS</strong> is the total requests in a day divided evenly across all 86,400 seconds in that day. <strong>Peak QPS</strong> is the actual, higher rate during the busiest moments — most traffic is not spread evenly; it clusters around certain hours or events. Estimating both numbers tells you how many servers you need, sized for the busy moments, not the calm ones.</p>
+<p>Think of a restaurant: average customers per hour across a whole day looks manageable, but if everyone arrives at once for lunch, the kitchen needs enough staff for that lunch rush specifically, not for the daily average.</p>
+<h2>2. Why &amp; when</h2>
+<p>If you size a system only for average load, it falls over exactly when it matters most — during a traffic spike. QPS estimation is one of the first numbers you compute after gathering requirements, because it directly answers &quot;how many servers do I need?&quot; and &quot;do I need a load balancer, a queue, or auto-scaling?&quot;</p>
+<p>You compute this any time you know (or can estimate) daily active users and roughly how many requests each user generates.</p>
+<h2>3. Core concept</h2>
+<p><strong>The estimation method, step by step:</strong></p>
+<ol><li><strong>Start from daily active users (DAU).</strong> Either given by the interviewer or a reasonable assumption, e.g. &quot;100 million DAU&quot;.</li><li><strong>Estimate requests per user per day.</strong> For a read-heavy feed app, maybe each user makes 10 read requests a day. Multiply: <code>100,000,000 users × 10 requests = 1,000,000,000 requests/day</code>.</li><li><strong>Convert to average QPS</strong> by dividing by the number of seconds in a day (86,400): <code>1,000,000,000 / 86,400 ≈ 11,574 average QPS</code>.</li><li><strong>Estimate peak QPS.</strong> Traffic is rarely flat across 24 hours. A common, defensible rule of thumb is that peak traffic is <strong>2 to 3 times the average</strong>, because usage clusters around waking hours or specific events. <code>Peak QPS ≈ average QPS × peak factor (commonly 2-3x)</code>.</li></ol>
+<p>Using the 3x factor: <code>11,574 × 3 ≈ 34,722 peak QPS</code>. <strong>You size your system for the peak number, not the average</strong>, because the system must survive the busiest second, not just perform well on a typical one.</p>
+<h2>4. Diagram</h2>
+<pre><code> Daily requests = DAU x requests/user/day
+        |
+        v
+ Average QPS = Daily requests / 86,400 seconds
+        |
+        v (x 2-3, traffic is not flat)
+        |
+ Peak QPS  &lt;-- design your servers for THIS number</code></pre>
+<p>*Caption: average QPS comes from dividing by a day&#x27;s seconds; peak QPS multiplies that by a clustering factor, and peak is what you design for.*</p>
+<h2>5. Runnable example</h2>
+<h3>Artifact: a Java QPS calculator from DAU and requests-per-user</h3>
+<pre><code class="lang-java">public class QpsEstimator {
+
+    static final long SECONDS_PER_DAY = 86_400L;
+
+    static long dailyRequests(long dau, long requestsPerUserPerDay) {
+        return dau * requestsPerUserPerDay;
+    }
+
+    static double averageQps(long dailyRequests) {
+        return dailyRequests / (double) SECONDS_PER_DAY;
+    }
+
+    static double peakQps(double averageQps, double peakFactor) {
+        return averageQps * peakFactor;
+    }
+
+    public static void main(String[] args) {
+        long dau = 100_000_000L;              // 100 million daily active users
+        long requestsPerUserPerDay = 10L;      // e.g. 10 feed reads per user per day
+        double peakFactor = 3.0;               // common assumption: peak is 3x average
+
+        long daily = dailyRequests(dau, requestsPerUserPerDay);
+        double avg = averageQps(daily);
+        double peak = peakQps(avg, peakFactor);
+
+        System.out.println(&quot;Daily requests: &quot; + daily);
+        System.out.printf(&quot;Average QPS: %.0f%n&quot;, avg);
+        System.out.printf(&quot;Peak QPS (x%.0f): %.0f%n&quot;, peakFactor, peak);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>QpsEstimator.java</code>, run <code>java QpsEstimator.java</code> (JDK 17+).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>dailyRequests</code> multiplies daily active users by requests per user per day, giving the total requests the system serves in 24 hours.</li><li><code>averageQps</code> divides that daily total by 86,400 (the number of seconds in a day), spreading the load evenly to get a baseline rate.</li><li><code>peakQps</code> multiplies the average by a peak factor (here, 3.0) to model real, uneven traffic.</li><li><code>main</code> runs the three steps in order with the 100-million-DAU scenario and prints each intermediate number.</li><li>Output:</li></ol>
+<pre><code>Daily requests: 1000000000
+Average QPS: 11574
+Peak QPS (x3): 34722</code></pre>
+<ol><li>In an interview, you say this out loud in the same order: &quot;100 million DAU, 10 requests each, so 1 billion requests a day. Divide by 86,400 seconds, that&#x27;s about 11,600 average QPS. Traffic isn&#x27;t flat, so I&#x27;ll assume peak is 3x average — about 35,000 QPS. I&#x27;ll design for that peak number.&quot;</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> designing only for average QPS. A system that comfortably handles 11,600 QPS can still fail completely at a genuine peak of 35,000 QPS, because it was never tested or provisioned for that rate.</blockquote>
+<ul><li>Always compute both average and peak QPS; state the peak factor you assumed (2-3x is a safe, common default) and why.</li><li>A single machine typically handles somewhere from a few hundred to a few thousand QPS for a simple service; compare your peak QPS against that to decide if you need multiple servers behind a load balancer.</li><li>Round numbers aggressively — the goal is the right order of magnitude, not decimal precision.</li></ul>
+  <div class="nav"><a class="prv" href="0006-latency-numbers-every-engineer-should-know.html"><span class="mini">← Previous</span>Latency numbers every engineer should know</a><a class="nxt" href="0008-storage-estimation-per-record-total.html"><span class="mini">Next →</span>Storage estimation (per-record & total)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t7";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

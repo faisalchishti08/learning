@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bandwidth estimation (ingress/egress) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 1. Fundamentals & Estimation</div>
+  <div class="htitle">
+    <h1>Bandwidth estimation (ingress/egress)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Bandwidth</strong> is the rate of data flowing across the network, usually measured in bits per second. <strong>Ingress</strong> is data flowing *into* your system (uploads, writes). <strong>Egress</strong> is data flowing *out* of your system (downloads, reads, page loads). Bandwidth estimation multiplies your QPS numbers by the size of each request or response, to find out how much network capacity your servers and load balancers actually need.</p>
+<p>Think of it as the difference between how many cars use a road (QPS) and how wide that road needs to be (bandwidth) — a road built for a few large trucks needs different capacity than one built for many small cars, even at the same vehicle count.</p>
+<h2>2. Why &amp; when</h2>
+<p>Bandwidth estimates decide network provisioning: how much capacity your load balancer and network links need, and whether egress costs (which cloud providers typically charge for) will be significant. You compute this after QPS and storage estimation, since it reuses both: QPS tells you the rate of requests, and per-record size tells you the size of each one.</p>
+<h2>3. Core concept</h2>
+<p><strong>The estimation method, step by step:</strong></p>
+<ol><li><strong>Separate reads from writes</strong>, since they usually have different sizes and different QPS. Writes (ingress) often carry just the new data; reads (egress) often carry more, such as a full timeline of many records per response.</li><li><strong>Compute ingress:</strong> <code>write QPS × average request size = ingress bytes/second</code>.</li><li><strong>Compute egress:</strong> <code>read QPS × average response size = egress bytes/second</code>. Egress is very often far bigger than ingress, because a single read (like loading a feed) typically returns many records, while a single write submits just one.</li><li><strong>Convert bytes/second to bits/second</strong> for stating network capacity (multiply by 8), since network links are conventionally rated in bits per second (e.g. Mbps, Gbps).</li></ol>
+<p><strong>A concrete pattern:</strong> if reading a timeline returns 20 tweets at 500 bytes each, one read response is <code>20 × 500 = 10,000 bytes = 10 KB</code>, even though writing one tweet is only 500 bytes. This asymmetry is why egress bandwidth is usually the larger, more important number to size for.</p>
+<h2>4. Diagram</h2>
+<pre><code> WRITES (ingress)                    READS (egress)
+ write QPS x avg write size          read QPS x avg response size
+        |                                    |
+        v                                    v
+   bytes/sec IN                        bytes/sec OUT   &lt;-- usually much bigger
+        \                                    /            (one read often returns
+         \                                  /              many records)
+          \                                /
+           total network capacity needed (x8 for bits/sec)</code></pre>
+<p>*Caption: ingress and egress are computed separately from their own QPS and size; egress is usually the dominant, larger number.*</p>
+<h2>5. Runnable example</h2>
+<h3>Artifact: a Java bandwidth calculator for ingress and egress</h3>
+<pre><code class="lang-java">public class BandwidthEstimator {
+
+    static double bytesPerSecond(double qps, double avgBytesPerRequest) {
+        return qps * avgBytesPerRequest;
+    }
+
+    static double toMbps(double bytesPerSecond) {
+        return (bytesPerSecond * 8) / 1_000_000.0;
+    }
+
+    public static void main(String[] args) {
+        // Writes: posting a tweet.
+        double writeQps = 1_200;          // average write QPS
+        double avgWriteBytes = 500;       // one tweet + metadata
+
+        // Reads: loading a timeline of 20 tweets per request.
+        double readQps = 11_000;          // average read QPS
+        double avgReadBytes = 20 * 500;   // 20 tweets per timeline response
+
+        double ingressBps = bytesPerSecond(writeQps, avgWriteBytes);
+        double egressBps = bytesPerSecond(readQps, avgReadBytes);
+
+        System.out.printf(&quot;Ingress: %.0f bytes/sec (%.2f Mbps)%n&quot;, ingressBps, toMbps(ingressBps));
+        System.out.printf(&quot;Egress:  %.0f bytes/sec (%.2f Mbps)%n&quot;, egressBps, toMbps(egressBps));
+        System.out.printf(&quot;Egress is %.1fx the ingress rate%n&quot;, egressBps / ingressBps);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>BandwidthEstimator.java</code>, run <code>java BandwidthEstimator.java</code> (JDK 17+).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>bytesPerSecond</code> multiplies a request rate (QPS) by the average size of that request or response, giving raw throughput in bytes per second.</li><li><code>toMbps</code> converts bytes/second into megabits/second by multiplying by 8 (bits per byte) and dividing by 1,000,000, matching how network links are usually specified.</li><li><code>main</code> sets up separate numbers for writes (1,200 QPS, 500 bytes each) and reads (11,000 QPS, 10,000 bytes each, since one timeline read returns 20 tweets).</li><li>It computes ingress and egress independently, then prints both, plus the ratio between them.</li><li>Output:</li></ol>
+<pre><code>Ingress: 600000 bytes/sec (4.80 Mbps)
+Egress:  110000000 bytes/sec (880.00 Mbps)
+Egress is 183.3x the ingress rate</code></pre>
+<ol><li>This large gap is the concrete number behind a common design statement: &quot;this system is egress-heavy, so I&#x27;ll focus on caching reads and using a Content Delivery Network (CDN) to absorb egress load, rather than optimizing the write path.&quot;</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> estimating bandwidth using only the write path. Because reads often return many records per response, egress can be one or two orders of magnitude larger than ingress — missing this hides the system&#x27;s real network bottleneck.</blockquote>
+<ul><li>Always estimate ingress and egress separately; they rarely have the same QPS or the same per-request size.</li><li>Remember the ×8 conversion between bytes/second and bits/second before quoting a number in Mbps or Gbps.</li><li>A large egress number is a strong signal to bring up caching, pagination (returning fewer records per response), or a CDN in your design.</li></ul>
+  <div class="nav"><a class="prv" href="0008-storage-estimation-per-record-total.html"><span class="mini">← Previous</span>Storage estimation (per-record & total)</a><a class="nxt" href="0010-read-write-ratio-its-design-impact.html"><span class="mini">Next →</span>Read:write ratio & its design impact</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t9";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
