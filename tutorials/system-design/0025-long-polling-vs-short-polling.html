@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Long polling vs short polling — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 2. Networking & Communication</div>
+  <div class="htitle">
+    <h1>Long polling vs short polling</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Short polling</strong> is a client repeatedly sending a request every fixed interval (e.g. every 3 seconds) asking &quot;is there anything new?&quot;, getting an immediate reply either way. <strong>Long polling</strong> is a client sending a request that the *server deliberately holds open* — not replying immediately — until either new data becomes available or a timeout is reached; the client then immediately opens a new long-poll request to keep waiting for the next update.</p>
+<h2>2. Why &amp; when</h2>
+<p>Both are workarounds for getting near-real-time updates from a server using only plain, ordinary HTTP request-response, without needing WebSocket or SSE support. You reach for one of these when a client (often an older system, or one behind infrastructure that does not support WebSocket) needs semi-real-time updates but you cannot use a persistent-connection protocol.</p>
+<h2>3. Core concept</h2>
+<p><strong>Short polling</strong> is simple to implement, but wasteful: most requests return &quot;nothing new&quot;, yet each one still pays the full cost of a request (and a database or cache lookup on the server) for that empty answer. There is also an inherent latency floor equal to the poll interval — if you poll every 3 seconds, an update can be up to 3 seconds old before the client learns about it.</p>
+<p><strong>Long polling</strong> removes most of the wasted &quot;nothing new&quot; replies: the server only responds once it actually has something to say (or the timeout passes), so nearly every response carries real data. This dramatically reduces the number of empty round trips compared to short polling, while still working over plain HTTP. Its downside is that it ties up a server-side connection (and often a server thread or resource) for the entire time it is waiting, which can strain server capacity if many clients are long-polling simultaneously.</p>
+<p><strong>Comparing the three approaches on this section&#x27;s continuum:</strong></p>
+<table><thead><tr><th>Approach</th><th>Requests for N updates over time</th><th>Update latency</th><th>Server resource cost</th></tr></thead><tbody><tr><td>Short polling</td><td>Many (most return empty)</td><td>Up to one poll interval</td><td>Cheap per request, but many requests</td></tr><tr><td>Long polling</td><td>Roughly one per real update</td><td>Near-instant</td><td>Holds a connection open while waiting</td></tr><tr><td>WebSocket/SSE</td><td>One connection total</td><td>Instant (pushed)</td><td>One long-lived connection, no repeated requests</td></tr></tbody></table>
+<h2>4. Diagram</h2>
+<pre><code> SHORT POLLING (poll every 3s)              LONG POLLING (hold open until data)
+ req -&gt; &quot;nothing new&quot; (0.1s)                 req -&gt; ... waiting ...
+ wait 3s                                             ... waiting ...
+ req -&gt; &quot;nothing new&quot; (0.1s)                        -&gt; &quot;here&#x27;s the update!&quot; (2.7s later)
+ wait 3s                                     req (new one immediately) -&gt; ... waiting ...
+ req -&gt; &quot;update!&quot; (0.1s)                            -&gt; &quot;here&#x27;s the update!&quot; (1.1s later)
+
+ many wasted round trips                     few round trips, each one useful</code></pre>
+<p>*Caption: short polling pays for many empty replies at a fixed cadence; long polling waits for real data before replying.*</p>
+<h2>5. Runnable example</h2>
+<h3>Artifact: a Java simulation comparing the total request count of short polling vs long polling for the same sequence of update arrival times</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class PollingSim {
+
+    public static void main(String[] args) {
+        // Updates actually become available at these times (seconds from start).
+        List&lt;Integer&gt; updateArrivalTimes = List.of(7, 8, 20);
+        int totalDurationSeconds = 21;
+        int shortPollIntervalSeconds = 3;
+
+        // Short polling: one request every fixed interval, regardless of data.
+        int shortPollRequests = totalDurationSeconds / shortPollIntervalSeconds;
+
+        // Long polling: roughly one request per actual update, since the
+        // server holds each request open until data (or a timeout) arrives.
+        int longPollRequests = updateArrivalTimes.size();
+
+        System.out.println(&quot;Simulated duration: &quot; + totalDurationSeconds + &quot;s, updates at: &quot; + updateArrivalTimes);
+        System.out.println(&quot;Short polling (every &quot; + shortPollIntervalSeconds + &quot;s): &quot; + shortPollRequests + &quot; requests total&quot;);
+        System.out.println(&quot;Long polling: &quot; + longPollRequests + &quot; requests total (one per real update)&quot;);
+        System.out.printf(&quot;Short polling makes %.1fx more requests for the same updates%n&quot;,
+            (double) shortPollRequests / longPollRequests);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>PollingSim.java</code>, run <code>java PollingSim.java</code> (JDK 17+).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>updateArrivalTimes</code> lists the moments, in seconds, when real updates actually become available — only 3 real updates across a 21-second window.</li><li><code>shortPollRequests</code> computes how many requests short polling would make regardless of whether any update is ready, simply based on the fixed 3-second interval: <code>21 / 3 = 7</code> requests.</li><li><code>longPollRequests</code> reflects that, in long polling, the server holds each request open until real data arrives, so roughly one request corresponds to one real update — 3 requests total.</li><li>Output:</li></ol>
+<pre><code>Simulated duration: 21s, updates at: [7, 8, 20]
+Short polling (every 3s): 7 requests total
+Long polling: 3 requests total (one per real update)
+Short polling makes 2.3x more requests for the same updates</code></pre>
+<ol><li>Most of short polling&#x27;s 7 requests (4 of them) returned &quot;nothing new&quot; — wasted round trips that long polling avoids by waiting for real data before replying, at the cost of holding a connection open on the server in the meantime.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> deploying long polling at very large scale without accounting for the resource cost of many simultaneously held-open requests. Each waiting long-poll request can tie up a server thread or connection slot; at high concurrent client counts, this can exhaust server capacity faster than short polling would, even though it sends fewer total requests.</blockquote>
+<ul><li>Short polling is simple but wasteful, with a latency floor equal to the poll interval.</li><li>Long polling reduces wasted requests significantly, but holds server resources open while waiting.</li><li>If the client and infrastructure both support it, WebSocket or SSE remove polling&#x27;s overhead entirely — prefer them when available.</li></ul>
+  <div class="nav"><a class="prv" href="0024-server-sent-events-sse.html"><span class="mini">← Previous</span>Server-Sent Events (SSE)</a><a class="nxt" href="0026-webhooks-server-push-callbacks.html"><span class="mini">Next →</span>Webhooks (server-push callbacks)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t25";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
