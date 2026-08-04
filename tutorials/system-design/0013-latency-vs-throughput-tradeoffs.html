@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Latency vs throughput tradeoffs — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 1. Fundamentals & Estimation</div>
+  <div class="htitle">
+    <h1>Latency vs throughput tradeoffs</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Latency</strong> is how long a single request takes, from start to finish. <strong>Throughput</strong> is how many requests a system can process per unit of time, such as requests per second. They sound related, but improving one can make the other worse. A system with excellent throughput can still have terrible latency for any one user, and a system tuned for the fastest possible single request can process fewer requests overall.</p>
+<p>Think of a highway: throughput is how many cars pass a point per hour; latency is how long one specific car takes to drive the whole route. Adding more lanes raises throughput, but a single car&#x27;s trip time barely changes. Batching cars into a slow-moving convoy could raise throughput further, while making each individual car&#x27;s trip slower.</p>
+<h2>2. Why &amp; when</h2>
+<p>You reason about this tradeoff whenever a design decision speeds up the system in aggregate but slows down individual requests, or vice versa. It comes up constantly with batching (grouping many small requests into one bigger operation) and with buffering or queueing (holding requests briefly to process them more efficiently). Naming this tradeoff explicitly shows the interviewer you understand that &quot;faster&quot; is not one single dimension.</p>
+<h2>3. Core concept</h2>
+<p><strong>Why the two can conflict:</strong> batching is the clearest example. Suppose a database write takes 5 ms of fixed overhead per write, no matter the batch size. Writing 100 records one at a time costs <code>100 × 5 ms = 500 ms</code> of overhead total, but each individual record&#x27;s write latency is low (5 ms). Batching all 100 records into one write cuts total overhead to just 5 ms — hugely better throughput — but now the first record in the batch has to wait for all 99 others to arrive before it is written, and its own <strong>latency</strong> grows if the system waits to fill a batch.</p>
+<p><strong>The general pattern:</strong></p>
+<ul><li><strong>Increasing throughput</strong> often means processing things in bigger groups, or overlapping more work at once (more parallel workers). This amortizes fixed costs but can add waiting time for any single item.</li><li><strong>Reducing latency</strong> often means processing each request as soon as it arrives, immediately, without waiting to batch it with others — which can waste capacity that batching would have used more efficiently.</li></ul>
+<p><strong>When to prioritize which:</strong> prioritize low latency for interactive, user-facing requests (a user waiting for a page to load). Prioritize high throughput for background, bulk work where no single item&#x27;s timing matters (a nightly analytics job processing billions of log lines). Many real systems use both: an interactive path optimized for latency, and a background path optimized for throughput.</p>
+<h2>4. Diagram</h2>
+<pre><code> ONE AT A TIME (low latency, lower throughput)
+ [req]-&gt;done  [req]-&gt;done  [req]-&gt;done     each request finishes fast,
+                                             but fixed overhead paid every time
+
+ BATCHED (higher throughput, higher latency per item)
+ [req][req][req][req] --wait to fill batch--&gt; [ALL WRITTEN AT ONCE]
+                                                fixed overhead paid ONCE,
+                                                but first item waited longest</code></pre>
+<p>*Caption: batching raises throughput by amortizing overhead, but makes individual requests wait longer — the core latency/throughput tension.*</p>
+<h2>5. Runnable example</h2>
+<h3>Artifact: a Java simulation comparing per-request vs batched write latency and throughput</h3>
+<pre><code class="lang-java">public class LatencyThroughputTradeoff {
+
+    static final int FIXED_OVERHEAD_MS = 5;
+    static final int RECORD_COUNT = 100;
+
+    public static void main(String[] args) {
+        // One at a time: overhead paid on every single write.
+        int totalTimeOneAtATime = RECORD_COUNT * FIXED_OVERHEAD_MS;
+        int latencyPerRecordOneAtATime = FIXED_OVERHEAD_MS;
+
+        // Batched: overhead paid once for the whole batch.
+        int totalTimeBatched = FIXED_OVERHEAD_MS;
+        // The first record in the batch waits for the whole batch to be written.
+        int worstCaseLatencyBatched = FIXED_OVERHEAD_MS;
+
+        double throughputOneAtATime = RECORD_COUNT / (totalTimeOneAtATime / 1000.0);
+        double throughputBatched = RECORD_COUNT / (totalTimeBatched / 1000.0);
+
+        System.out.println(&quot;One at a time:&quot;);
+        System.out.println(&quot;  Total time: &quot; + totalTimeOneAtATime + &quot; ms&quot;);
+        System.out.println(&quot;  Latency per record: &quot; + latencyPerRecordOneAtATime + &quot; ms&quot;);
+        System.out.printf(&quot;  Throughput: %.0f records/sec%n&quot;, throughputOneAtATime);
+
+        System.out.println(&quot;Batched (all 100 in one write):&quot;);
+        System.out.println(&quot;  Total time: &quot; + totalTimeBatched + &quot; ms&quot;);
+        System.out.println(&quot;  Worst-case latency (first record queued): &quot; + worstCaseLatencyBatched + &quot; ms&quot;);
+        System.out.printf(&quot;  Throughput: %.0f records/sec%n&quot;, throughputBatched);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>LatencyThroughputTradeoff.java</code>, run <code>java LatencyThroughputTradeoff.java</code> (JDK 17+).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>FIXED_OVERHEAD_MS</code> models a constant cost paid by every database write operation, regardless of how many records it contains.</li><li>The &quot;one at a time&quot; branch multiplies that fixed overhead by the number of records, since it is paid on every single write; each record&#x27;s own latency stays low, at just the fixed overhead.</li><li>The &quot;batched&quot; branch pays the fixed overhead only once for the entire group of 100 records, since they are all written together.</li><li>Both branches compute throughput as records processed divided by total time taken.</li><li>Output:</li></ol>
+<pre><code>One at a time:
+  Total time: 500 ms
+  Latency per record: 5 ms
+  Throughput: 200 records/sec
+Batched (all 100 in one write):
+  Total time: 5 ms
+  Worst-case latency (first record queued): 5 ms
+  Throughput: 20000 records/sec</code></pre>
+<ol><li>This numeric gap (200 vs 20,000 records/sec) is the throughput win from batching. The tradeoff hides in a detail the code above simplifies: in a real system, records for a batch usually arrive over time and the system must *wait* to accumulate a full batch before writing, which adds real waiting time to a single record&#x27;s latency — a cost this simulation does not model, but a real design must account for.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> assuming a change that improves one number (like throughput) automatically improves the system overall. It can silently make individual request latency worse — measure both, and know which one your users actually feel.</blockquote>
+<ul><li>Latency is what one user experiences; throughput is what the system handles in aggregate. They are different axes, not the same thing measured two ways.</li><li>Batching and buffering usually trade latency for throughput; state this tradeoff explicitly when you propose them.</li><li>Match your optimization target to the use case: low latency for interactive, user-facing paths; high throughput for background, bulk work.</li></ul>
+  <div class="nav"><a class="prv" href="0012-availability-math-nines-downtime-budgets.html"><span class="mini">← Previous</span>Availability math (nines & downtime budgets)</a><a class="nxt" href="0014-cost-vs-performance-vs-complexity-tradeoffs.html"><span class="mini">Next →</span>Cost vs performance vs complexity tradeoffs</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t13";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
