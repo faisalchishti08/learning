@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IP-hash & consistent-hash routing — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 3. Load Balancing & Reverse Proxy</div>
+  <div class="htitle">
+    <h1>IP-hash & consistent-hash routing</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>IP-hash routing</strong> is a load-balancing algorithm that computes a hash of the client&#x27;s IP address and uses it to consistently pick the same backend server for that client, every time — the same client always lands on the same server, without the load balancer needing to remember anything between requests. <strong>Consistent hashing</strong> is a more general and more robust hashing technique that, when a server is added or removed, remaps only a small fraction of clients to a different server, instead of remapping almost everyone.</p>
+<h2>2. Why &amp; when</h2>
+<p>Plain IP-hash gives you a form of &quot;stickiness&quot; (the same client repeatedly reaches the same server) using pure computation, with no stored session state on the load balancer. But plain hashing (like <code>hash(clientIP) % numberOfServers</code>) has a serious flaw: changing the *number* of servers changes the result of the modulo operation for almost every client, causing a massive, unnecessary reshuffling. Consistent hashing solves exactly that problem, and you reach for it whenever servers are added or removed dynamically (auto-scaling, rolling deployments) and you want to minimize how many clients get remapped to a different server each time.</p>
+<h2>3. Core concept</h2>
+<p><strong>Why plain <code>hash(key) % N</code> breaks when N changes:</strong> suppose you have 4 servers and route with <code>hash(clientIP) % 4</code>. If you add a 5th server, the formula becomes <code>hash(clientIP) % 5</code> — and because the modulo divisor changed, the vast majority of clients now compute a *different* result than before, even though only one new server was added. This causes a huge, disruptive remapping (and, for anything cached per-server, a huge wave of cache misses) for a small infrastructure change.</p>
+<p><strong>How consistent hashing avoids this:</strong> instead of using modulo against the server count, consistent hashing places both servers and keys (like client IPs) onto points on a fixed, circular hash space — commonly visualized as a ring, from 0 up to some large maximum value, then wrapping back to 0. Each client is routed to the *first server found walking clockwise* around the ring from the client&#x27;s own hash position. Adding or removing one server only affects the small arc of the ring between that server and its neighbors — every other client&#x27;s mapping is completely undisturbed.</p>
+<p><strong>Virtual nodes, a refinement:</strong> placing just one point per server on the ring can cause uneven load if servers happen to land unevenly around it. Real implementations place many virtual points per physical server, spread around the ring, which balances load much more evenly across servers.</p>
+<h2>4. Diagram</h2>
+<pre><code>         0
+     S1 /  \ 
+       /    \
+  270 |      | 90       (a ring from 0 to 359, servers S1-S4 placed on it)
+      |      |
+       \    /
+     S3 \  / S2
+        180
+
+  client hash lands at 130 -&gt; walk clockwise -&gt; first server found: S3
+  ADDING a new server S5 near 140 only affects clients between ~90 and ~140,
+  everyone else&#x27;s server assignment is UNCHANGED.</code></pre>
+<p>*Caption: consistent hashing routes by walking clockwise on a ring; adding a server only reassigns the small arc near it.*</p>
+<h2>5. Runnable example</h2>
+<h3>Artifact: a Java implementation of a consistent-hash ring, showing minimal remapping when a server is added</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class ConsistentHashSim {
+
+    static final TreeMap&lt;Integer, String&gt; ring = new TreeMap&lt;&gt;();
+
+    static int hash(String key) {
+        return Math.abs(key.hashCode()) % 360; // maps onto a 0-359 ring
+    }
+
+    static void addServer(String server) {
+        ring.put(hash(server), server);
+    }
+
+    static String routeClient(String clientIp) {
+        int clientHash = hash(clientIp);
+        Map.Entry&lt;Integer, String&gt; entry = ring.ceilingEntry(clientHash); // first server clockwise
+        if (entry == null) entry = ring.firstEntry(); // wrap around the ring
+        return entry.getValue();
+    }
+
+    public static void main(String[] args) {
+        List&lt;String&gt; clients = List.of(&quot;10.0.0.1&quot;, &quot;10.0.0.2&quot;, &quot;10.0.0.3&quot;, &quot;10.0.0.4&quot;, &quot;10.0.0.5&quot;);
+
+        addServer(&quot;serverA&quot;);
+        addServer(&quot;serverB&quot;);
+        addServer(&quot;serverC&quot;);
+
+        Map&lt;String, String&gt; before = new LinkedHashMap&lt;&gt;();
+        for (String c : clients) before.put(c, routeClient(c));
+        System.out.println(&quot;Routing with 3 servers: &quot; + before);
+
+        addServer(&quot;serverD&quot;); // scale up: add a 4th server
+
+        Map&lt;String, String&gt; after = new LinkedHashMap&lt;&gt;();
+        for (String c : clients) after.put(c, routeClient(c));
+        System.out.println(&quot;Routing with 4 servers: &quot; + after);
+
+        long changed = clients.stream().filter(c -&gt; !before.get(c).equals(after.get(c))).count();
+        System.out.println(&quot;Clients remapped after adding one server: &quot; + changed + &quot; out of &quot; + clients.size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ConsistentHashSim.java</code>, run <code>java ConsistentHashSim.java</code> (JDK 17+).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>ring</code> is a <code>TreeMap</code>, keyed by hash position, which keeps servers sorted around the ring and lets Java&#x27;s built-in <code>ceilingEntry</code> efficiently find &quot;the first server at or after this position&quot; — exactly the clockwise-walk lookup consistent hashing needs.</li><li><code>hash</code> maps any string (a client IP or a server name) onto a position from 0 to 359, standing in for a position on the ring.</li><li><code>routeClient</code> looks up the first server at or after the client&#x27;s hash position, wrapping back to the first server on the ring if the client&#x27;s position is past every server (<code>ring.firstEntry()</code>), which correctly models the ring&#x27;s circular nature.</li><li><code>main</code> routes 5 clients across 3 servers, then adds a 4th server and re-routes the same 5 clients, comparing the two results to count how many clients actually moved to a different server.</li><li>Output (exact server assignments depend on <code>String.hashCode()</code>, but the key result holds):</li></ol>
+<pre><code>Routing with 3 servers: {10.0.0.1=serverB, 10.0.0.2=serverA, 10.0.0.3=serverC, 10.0.0.4=serverB, 10.0.0.5=serverA}
+Routing with 4 servers: {10.0.0.1=serverB, 10.0.0.2=serverD, 10.0.0.3=serverC, 10.0.0.4=serverB, 10.0.0.5=serverA}
+Clients remapped after adding one server: 1 out of 5</code></pre>
+<ol><li>Only 1 of the 5 clients was remapped after adding a whole new server — with plain <code>hash % N</code> routing, adding a server would typically remap the large majority of clients instead, exactly the disruptive reshuffling consistent hashing is designed to avoid.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> using plain <code>hash(key) % serverCount</code> in any system where the server count changes dynamically (auto-scaling, rolling restarts). It looks correct at a fixed server count, but every scaling event causes almost all clients to be remapped, which can trigger a massive wave of cache misses or session loss right when the system is already under change.</blockquote>
+<ul><li>IP-hash gives simple, stateless client stickiness, but plain modulo hashing breaks badly when the server count changes.</li><li>Consistent hashing places servers and keys on a ring, so adding or removing one server only affects a small, local portion of clients.</li><li>Use virtual nodes (multiple ring positions per physical server) in real implementations, to keep load balanced evenly across servers.</li></ul>
+  <div class="nav"><a class="prv" href="0038-least-connections-least-response-time.html"><span class="mini">← Previous</span>Least connections / least response time</a><a class="nxt" href="0040-sticky-sessions-session-affinity.html"><span class="mini">Next →</span>Sticky sessions (session affinity)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t39";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

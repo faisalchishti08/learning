@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spring Cloud LoadBalancer for client-side balancing — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 3. Load Balancing & Reverse Proxy</div>
+  <div class="htitle">
+    <h1>Spring Cloud LoadBalancer for client-side balancing</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Spring Cloud LoadBalancer</strong> performs <strong>client-side load balancing</strong>: instead of every request going through a separate, centralized load balancer server, the *calling service itself* looks up the list of available instances of the service it wants to call (via service discovery) and picks one directly, before making the request. This is the mechanism behind the <code>lb://service-name</code> URI scheme used by Spring Cloud Gateway, and it can also be used directly by any service calling another.</p>
+<h2>2. Why &amp; when</h2>
+<p>A traditional (server-side) load balancer is a separate component every request must pass through, adding a network hop and a potential bottleneck. Client-side load balancing removes that extra hop: the calling service already knows the full list of healthy instances (from service discovery) and picks one itself, calling it directly. This fits naturally inside a microservices architecture, where services already register themselves with a discovery mechanism (like Eureka or Kubernetes-native discovery) for other reasons.</p>
+<h2>3. Core concept</h2>
+<p><strong>How it works, step by step:</strong></p>
+<ol><li>Each instance of a service registers itself with a <strong>service registry</strong> on startup (e.g. &quot;order-service instance running at <code>10.0.1.5:8080</code>&quot;).</li><li>A calling service, wanting to reach <code>order-service</code>, asks the registry for the current list of healthy instances, instead of using one fixed, hardcoded address.</li><li>Spring Cloud LoadBalancer applies a load-balancing algorithm (by default, round-robin) across that list, on the client&#x27;s own side, to pick one instance for this specific call.</li><li>The call goes directly from the calling service to the chosen instance — no separate load balancer server sits in between.</li></ol>
+<p><strong>How it plugs into HTTP clients you already use:</strong> a <code>RestClient</code> or <code>WebClient</code> bean configured with <code>@LoadBalanced</code> automatically resolves a logical service name (like <code>http://order-service/orders/42</code>) into an actual instance address using this mechanism, so calling code stays almost identical to a normal HTTP call — the load-balancing and service-discovery lookup happen transparently underneath.</p>
+<p><strong>Client-side vs server-side load balancing — the key tradeoff:</strong></p>
+<table><thead><tr><th></th><th>Server-side (traditional LB)</th><th>Client-side (Spring Cloud LoadBalancer)</th></tr></thead><tbody><tr><td>Extra network hop</td><td>Yes — every request passes through the LB</td><td>No — caller connects directly to the chosen instance</td></tr><tr><td>Where the instance list lives</td><td>On the load balancer</td><td>On each individual calling service</td></tr><tr><td>Failure mode</td><td>LB itself must be made highly available</td><td>Each caller depends on service discovery being available</td></tr></tbody></table>
+<h2>4. Diagram</h2>
+<pre><code> SERVER-SIDE (traditional)              CLIENT-SIDE (Spring Cloud LoadBalancer)
+ Caller -&gt; [LB server] -&gt; Instance1      Caller: &quot;who are order-service&#x27;s instances?&quot;
+                        -&gt; Instance2               |
+                        -&gt; Instance3      Service Registry: &quot;Instance1, Instance2, Instance3&quot;
+   (every call passes through                       |
+    a separate LB hop)                    Caller picks Instance2 itself (round-robin)
+                                                     |
+                                                     v
+                                              connects DIRECTLY to Instance2
+                                            (no separate LB hop in the path)</code></pre>
+<p>*Caption: client-side load balancing removes the separate load-balancer hop by letting the caller pick an instance itself, using service discovery.*</p>
+<h2>5. Runnable example</h2>
+<h3>Artifact: a minimal Java sketch of client-side load balancing over a discovered instance list</h3>
+<pre><code class="lang-java">import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class ClientSideLoadBalancerSim {
+
+    // Stands in for a service registry lookup (e.g. Eureka).
+    static List&lt;String&gt; discoverInstances(String serviceName) {
+        return List.of(&quot;10.0.1.5:8080&quot;, &quot;10.0.1.6:8080&quot;, &quot;10.0.1.7:8080&quot;);
+    }
+
+    static class RoundRobinClientLoadBalancer {
+        AtomicInteger counter = new AtomicInteger(0);
+
+        String chooseInstance(String serviceName) {
+            List&lt;String&gt; instances = discoverInstances(serviceName);
+            int index = counter.getAndIncrement() % instances.size();
+            return instances.get(index);
+        }
+    }
+
+    public static void main(String[] args) {
+        RoundRobinClientLoadBalancer loadBalancer = new RoundRobinClientLoadBalancer();
+
+        System.out.println(&quot;Calling code asks for &#x27;order-service&#x27;, gets a chosen instance directly:&quot;);
+        for (int i = 0; i &lt; 4; i++) {
+            String instance = loadBalancer.chooseInstance(&quot;order-service&quot;);
+            System.out.println(&quot;  Call &quot; + (i + 1) + &quot; -&gt; connects directly to &quot; + instance);
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ClientSideLoadBalancerSim.java</code>, run <code>java ClientSideLoadBalancerSim.java</code> (JDK 17+). A real Spring Cloud application uses <code>spring-cloud-starter-loadbalancer</code> together with a discovery client (like <code>spring-cloud-starter-netflix-eureka-client</code>), and the <code>@LoadBalanced</code> annotation on a <code>RestClient</code>/<code>WebClient</code> bean handles this transparently, rather than requiring manual instance selection code.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>discoverInstances</code> stands in for a real service registry lookup, returning the current list of healthy <code>order-service</code> instances — in a real app, this list changes dynamically as instances start, stop, or fail health checks.</li><li><code>RoundRobinClientLoadBalancer.chooseInstance</code> fetches that instance list fresh, then applies a simple round-robin index to pick one — this is the client-side balancing decision, made entirely by the caller, with no separate load balancer server involved.</li><li><code>main</code> simulates the calling service making 4 separate calls to <code>order-service</code>, each one independently resolving and picking an instance.</li><li>Output:</li></ol>
+<pre><code>Calling code asks for &#x27;order-service&#x27;, gets a chosen instance directly:
+  Call 1 -&gt; connects directly to 10.0.1.5:8080
+  Call 2 -&gt; connects directly to 10.0.1.6:8080
+  Call 3 -&gt; connects directly to 10.0.1.7:8080
+  Call 4 -&gt; connects directly to 10.0.1.5:8080</code></pre>
+<ol><li>Each call connects to a *different, specific instance address*, chosen entirely by the caller&#x27;s own logic — there is no intermediate load balancer server in this path at all, which is the defining characteristic of client-side load balancing versus the traditional server-side approach.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> assuming client-side load balancing removes the need for service discovery to be reliable. If the service registry itself is unavailable or returns a stale instance list, every calling service loses the ability to find healthy instances — client-side load balancing shifts the dependency from &quot;the load balancer must be up&quot; to &quot;service discovery must be up and accurate&quot;, not eliminating that dependency entirely.</blockquote>
+<ul><li>Client-side load balancing lets the calling service pick a target instance itself, using service discovery, removing the extra hop through a separate load balancer server.</li><li><code>@LoadBalanced</code> on a <code>RestClient</code>/<code>WebClient</code> bean makes this transparent to calling code, resolving a logical service name into a real instance address automatically.</li><li>It trades a centralized load balancer&#x27;s single point of failure for a distributed dependency on service discovery being available and accurate everywhere.</li></ul>
+  <div class="nav"><a class="prv" href="0042-spring-cloud-gateway-as-the-edge-gateway.html"><span class="mini">← Previous</span>Spring Cloud Gateway as the edge gateway</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t43";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

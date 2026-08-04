@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Health checks & passive failure detection — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 3. Load Balancing & Reverse Proxy</div>
+  <div class="htitle">
+    <h1>Health checks & passive failure detection</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>health check</strong> is a periodic probe a load balancer sends to each backend server to verify it is still working correctly, so unhealthy servers can be automatically removed from routing before they cause failed requests for real clients. <strong>Active health checks</strong> are the load balancer proactively pinging each server on a schedule. <strong>Passive failure detection</strong> instead watches *real* client traffic for signs of trouble — like a server returning errors or timing out — without sending any separate probe requests at all.</p>
+<h2>2. Why &amp; when</h2>
+<p>Without health checks, a load balancer keeps routing traffic to a crashed or malfunctioning server, sending real client requests to a dead end. This directly undermines the entire point of having multiple servers behind a load balancer for availability, covered earlier in this section. You always include health checks in a load-balanced design; the discussion is really about which kind, and how quickly they should react.</p>
+<h2>3. Core concept</h2>
+<p><strong>Active health checks:</strong> the load balancer sends a request — often a lightweight, dedicated endpoint like <code>GET /health</code> — to every server on a fixed interval (e.g. every 5 seconds). If a server fails a certain number of consecutive checks (a threshold, to avoid reacting to one transient blip), it is marked unhealthy and removed from routing. It continues to be checked while unhealthy, and is added back once it passes checks again.</p>
+<p><strong>Key active health check settings:</strong></p>
+<ul><li><strong>Interval:</strong> how often to check (e.g. every 5s). Shorter intervals detect failure faster, but add more overhead.</li><li><strong>Timeout:</strong> how long to wait for a response before counting it as a failure.</li><li><strong>Unhealthy threshold:</strong> how many consecutive failures before marking a server down (avoids reacting to one flaky response).</li><li><strong>Healthy threshold:</strong> how many consecutive successes before marking a recovered server healthy again.</li></ul>
+<p><strong>Passive failure detection:</strong> instead of (or in addition to) separate probe requests, the load balancer watches real request outcomes — a spike in error responses or timeouts from a specific server — and reacts by temporarily removing that server from rotation. This has the advantage of reacting to real, actual failures affecting real users without any extra probe traffic, but it means at least a few real requests must fail before the problem is noticed — active checks can catch failures proactively, before any real user is affected.</p>
+<p><strong>Why both approaches together are common:</strong> active checks catch a server that has gone completely unresponsive, even during a quiet period with little real traffic. Passive detection catches subtler problems — like a server that responds to a simple health check endpoint but is actually failing on real, more complex requests — that a shallow active check might miss.</p>
+<h2>4. Diagram</h2>
+<pre><code> ACTIVE HEALTH CHECK (LB proactively probes)      PASSIVE DETECTION (LB watches real traffic)
+ LB --GET /health---&gt; Server1   (every 5s)         Client req -&gt; Server2 -&gt; 500 error
+ LB &lt;--200 OK---------|                             Client req -&gt; Server2 -&gt; 500 error
+                                                     Client req -&gt; Server2 -&gt; timeout
+ 3 consecutive failures -&gt; Server1 marked unhealthy   3 failures in a row -&gt; Server2 marked
+ and removed from routing                             unhealthy, removed from routing</code></pre>
+<p>*Caption: active checks probe proactively on a schedule; passive detection reacts to failures observed in real request traffic.*</p>
+<h2>5. Runnable example</h2>
+<h3>Artifact: a Java simulation of both active health checking and passive failure detection, each removing an unhealthy server from routing</h3>
+<pre><code class="lang-java">import java.util.*;
+
+public class HealthCheckSim {
+
+    static final int UNHEALTHY_THRESHOLD = 3;
+    static final Map&lt;String, Integer&gt; consecutiveFailures = new HashMap&lt;&gt;();
+    static final Set&lt;String&gt; unhealthyServers = new HashSet&lt;&gt;();
+
+    static void recordCheckResult(String server, boolean success) {
+        if (success) {
+            consecutiveFailures.put(server, 0);
+            if (unhealthyServers.remove(server)) {
+                System.out.println(&quot;  &quot; + server + &quot; recovered, added back to routing&quot;);
+            }
+        } else {
+            int failures = consecutiveFailures.merge(server, 1, Integer::sum);
+            if (failures &gt;= UNHEALTHY_THRESHOLD &amp;&amp; unhealthyServers.add(server)) {
+                System.out.println(&quot;  &quot; + server + &quot; marked UNHEALTHY after &quot; + failures + &quot; consecutive failures, removed from routing&quot;);
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Active health checks on serverA (every interval):&quot;);
+        recordCheckResult(&quot;serverA&quot;, true);
+        recordCheckResult(&quot;serverA&quot;, false);
+        recordCheckResult(&quot;serverA&quot;, false);
+        recordCheckResult(&quot;serverA&quot;, false); // 3rd consecutive failure
+
+        System.out.println(&quot;Passive detection watching real traffic to serverB:&quot;);
+        recordCheckResult(&quot;serverB&quot;, false); // real request failed
+        recordCheckResult(&quot;serverB&quot;, false); // another real request failed
+        recordCheckResult(&quot;serverB&quot;, false); // 3rd real failure
+
+        System.out.println(&quot;serverA recovers on next active check:&quot;);
+        recordCheckResult(&quot;serverA&quot;, true);
+
+        System.out.println(&quot;Currently unhealthy (excluded from routing): &quot; + unhealthyServers);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>HealthCheckSim.java</code>, run <code>java HealthCheckSim.java</code> (JDK 17+).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>consecutiveFailures</code> tracks how many checks (active or passive) in a row have failed for each server, resetting to zero on any success — this is what makes the threshold require *consecutive* failures, not just any failures ever.</li><li><code>recordCheckResult</code> is called for both active probe results and passive real-traffic observations — the underlying logic is identical either way; only the *source* of the success/failure signal differs.</li><li><code>main</code> first simulates 3 consecutive active health-check failures for <code>serverA</code>, crossing the threshold. It then simulates 3 consecutive *real request* failures for <code>serverB</code>, representing passive detection reaching the same threshold through actual client traffic instead of a dedicated probe.</li><li>It then simulates <code>serverA</code> passing a check again, showing recovery.</li><li>Output:</li></ol>
+<pre><code>Active health checks on serverA (every interval):
+  serverA marked UNHEALTHY after 3 consecutive failures, removed from routing
+Passive detection watching real traffic to serverB:
+  serverB marked UNHEALTHY after 3 consecutive failures, removed from routing
+serverA recovers on next active check:
+  serverA recovered, added back to routing
+Currently unhealthy (excluded from routing): [serverB]</code></pre>
+<ol><li>Note both <code>serverA</code> and <code>serverB</code> reach &quot;unhealthy&quot; through the exact same threshold logic — the only difference was whether the failing signal came from a dedicated health-check probe or from real client requests failing.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> setting the unhealthy threshold to 1 (marking a server down after a single failed check). A single transient network blip or garbage-collection pause can then remove a perfectly healthy server from rotation, needlessly reducing capacity — a threshold of several consecutive failures avoids overreacting to one-off noise.</blockquote>
+<ul><li>Active health checks proactively probe every server on a schedule; passive detection reacts to failures seen in real traffic.</li><li>Require multiple consecutive failures before marking a server unhealthy, to avoid overreacting to transient blips.</li><li>Use both together in production: active checks catch total unresponsiveness even during quiet periods; passive detection catches subtler problems a shallow probe might miss.</li></ul>
+  <div class="nav"><a class="prv" href="0040-sticky-sessions-session-affinity.html"><span class="mini">← Previous</span>Sticky sessions (session affinity)</a><a class="nxt" href="0042-spring-cloud-gateway-as-the-edge-gateway.html"><span class="mini">Next →</span>Spring Cloud Gateway as the edge gateway</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t41";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
