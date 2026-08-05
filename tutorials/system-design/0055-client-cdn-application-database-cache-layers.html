@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Client / CDN / application / database cache layers" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>"Client / CDN / application / database cache layers"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Real systems rarely cache in just one place. A request typically passes through several <strong>cache layers</strong>, each catching a different fraction of traffic: the <strong>client cache</strong> (browser or mobile app, on the user&#x27;s own device), the <strong>Content Delivery Network (CDN)</strong> cache (at edge locations near the user), the <strong>application cache</strong> (in-process or a shared cache like Redis, close to the application servers), and the <strong>database cache</strong> (the database engine&#x27;s own internal buffer of recently used data).</p>
+<h2>2. Why &amp; when</h2>
+<p>Each layer is progressively closer to the origin database and progressively more expensive to serve from. A request that stops at the client cache costs nothing — no network trip at all. One that reaches the CDN costs a short trip to a nearby edge server. One that reaches the application cache costs a trip to your own servers. One that reaches the database costs the most: a full query on the most contended, hardest-to-scale layer. Combining layers means only the requests that truly need fresh or uncached data pay the full cost, and every layer above it absorbs everything it can first.</p>
+<h2>3. Core concept</h2>
+<p><strong>Client cache:</strong> controlled by HTTP caching headers (<code>Cache-Control</code>, <code>ETag</code>) or app-level storage. It serves repeat requests from the exact same device with zero network trip at all — the fastest possible cache, but only useful to that one user.</p>
+<p><strong>CDN cache:</strong> a network of edge servers geographically distributed near users. It caches responses (especially static assets — images, CSS, JavaScript — but also cacheable API responses) so many different users near the same location share one cached copy, without any request reaching your origin servers at all.</p>
+<p><strong>Application cache:</strong> an in-memory store (in-process, or a shared service like Redis or Memcached) that your application servers check before querying the database. This is where the patterns in this section — cache-aside, write-through, eviction policies — most directly apply.</p>
+<p><strong>Database cache:</strong> the database engine itself keeps a buffer pool of recently accessed pages in memory, so even a &quot;cache miss&quot; at the application layer might still be served from the database&#x27;s own memory rather than hitting disk.</p>
+<p><strong>The funnel effect:</strong> each layer only has to handle the traffic the layer before it did not absorb. A well-tuned CDN can eliminate 90%+ of requests for static content before they ever reach the application; a well-tuned application cache can eliminate most of the rest before they reach the database.</p>
+<h2>4. Diagram</h2>
+<pre><code>User&#x27;s browser
+   |  1. check CLIENT cache (local, zero network) -- HIT: done, fastest path
+   v  MISS
+CDN edge server (near the user)
+   |  2. check CDN cache -- HIT: return from edge, origin never contacted
+   v  MISS
+Application server
+   |  3. check APPLICATION cache (Redis / in-process) -- HIT: return, no query
+   v  MISS
+Database
+   |  4. check DATABASE&#x27;s own buffer pool (in memory) -- HIT: served from memory
+   v  MISS
+   Read from disk  (the slowest, most expensive path -- reached only when
+                     every layer above missed)</code></pre>
+<p>*Caption: each layer only serves the traffic the layer before it could not absorb; the request only reaches disk when all four layers miss.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Simulate the four layers as nested lookups, with a cost counter per layer.</p>
+<p><strong>Level 2 — Populating on miss.</strong> Each layer that misses populates itself from the layer below, exactly like a chain of read-through caches.</p>
+<p><strong>Level 3 — Layer effectiveness.</strong> Run many requests through the chain and report what fraction each layer absorbed.</p>
+<pre><code class="lang-java">// CacheLayers.java
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Random;
+
+public class CacheLayers {
+
+    static final Map&lt;String, String&gt; database = Map.of(&quot;home:hero-image&quot;, &quot;image-bytes&quot;);
+
+    static final Map&lt;String, String&gt; clientCache = new HashMap&lt;&gt;();
+    static final Map&lt;String, String&gt; cdnCache = new HashMap&lt;&gt;();
+    static final Map&lt;String, String&gt; appCache = new HashMap&lt;&gt;();
+
+    static int clientHits = 0, cdnHits = 0, appHits = 0, databaseHits = 0;
+
+    // Level 1 &amp; 2: each layer checks itself, then falls through and populates on miss.
+    static String fetch(String key) {
+        if (clientCache.containsKey(key)) { clientHits++; return clientCache.get(key); }
+
+        if (cdnCache.containsKey(key)) {
+            cdnHits++;
+            String value = cdnCache.get(key);
+            clientCache.put(key, value); // client learns it too, for next time
+            return value;
+        }
+
+        if (appCache.containsKey(key)) {
+            appHits++;
+            String value = appCache.get(key);
+            cdnCache.put(key, value);
+            clientCache.put(key, value);
+            return value;
+        }
+
+        // final fallback: the database (the &quot;disk&quot; layer, most expensive)
+        databaseHits++;
+        String value = database.get(key);
+        appCache.put(key, value);
+        cdnCache.put(key, value);
+        clientCache.put(key, value);
+        return value;
+    }
+
+    public static void main(String[] args) {
+        // Level 3: 100 &quot;different users&quot; request the same popular key.
+        // Only the CLIENT cache is per-user, so simulate a fresh client each time,
+        // but a SHARED cdnCache and appCache (as real infrastructure would be).
+        int users = 100;
+        for (int i = 0; i &lt; users; i++) {
+            clientCache.clear(); // new device: nothing cached locally yet
+            fetch(&quot;home:hero-image&quot;);
+        }
+
+        System.out.println(&quot;client hits (would only ever be &gt;0 on repeat visits by the SAME user): &quot; + clientHits);
+        System.out.println(&quot;cdn hits: &quot; + cdnHits);
+        System.out.println(&quot;application cache hits: &quot; + appHits);
+        System.out.println(&quot;database hits: &quot; + databaseHits);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CacheLayers.java</code>, then run <code>java CacheLayers.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The first simulated user calls <code>fetch(&quot;home:hero-image&quot;)</code>; <code>clientCache</code> is empty (fresh device), <code>cdnCache</code> is empty (nothing cached at the edge yet), and <code>appCache</code> is empty too, so it falls all the way through to <code>database</code>, incrementing <code>databaseHits</code>, and populates <code>appCache</code>, <code>cdnCache</code>, and <code>clientCache</code> on the way back up.</li><li>The second simulated user clears their own <code>clientCache</code> (a different device) but shares the same <code>cdnCache</code> and <code>appCache</code> as before — this models the CDN and application cache being shared infrastructure, while the client cache is per-device.</li><li>That second user&#x27;s <code>fetch</code> misses <code>clientCache</code> (empty for this &quot;device&quot;) but hits <code>cdnCache</code>, which was populated by the first user — <code>cdnHits</code> increments, and the value is copied into this user&#x27;s <code>clientCache</code> and returned, without touching <code>appCache</code> or <code>database</code> at all.</li><li>Every subsequent simulated user follows the same path: miss at the (per-user) client layer, hit at the shared CDN layer.</li><li>The final counts show <code>databaseHits = 1</code> and <code>cdnHits = 99</code> — only the very first request of all 100 ever reached the database; the CDN absorbed everything after that.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: because each layer independently decides when to invalidate, they can disagree — a CDN edge server might still serve an old version of a page for minutes after the application cache and database have both moved on, unless you explicitly purge the CDN (or set its cache duration much shorter) on that kind of update.</blockquote>
+<ul><li>Each layer should have its own appropriate TTL: client and CDN caches often hold static assets for a long time (with the URL itself changed to bust the cache on deploy), while the application cache holds more dynamic data for a much shorter window.</li><li>Debugging &quot;why am I seeing stale data&quot; in a multi-layer system means checking each layer in order, from the client inward, since any one of them can be the culprit.</li><li>Related concepts: <a href="0056-how-a-cdn-works-edge-pops.md">How a CDN works (edge PoPs)</a> (a closer look at the CDN layer specifically), <a href="0054-cache-consistency-staleness.md">Cache consistency &amp; staleness</a> (the staleness question, now multiplied across every layer).</li></ul>
+  <div class="nav"><a class="prv" href="0054-cache-consistency-staleness.html"><span class="mini">← Previous</span>Cache consistency & staleness</a><a class="nxt" href="0056-how-a-cdn-works-edge-pops.html"><span class="mini">Next →</span>How a CDN works (edge PoPs)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t55";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

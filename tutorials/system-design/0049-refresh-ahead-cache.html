@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Refresh-ahead cache — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>Refresh-ahead cache</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>refresh-ahead cache</strong> proactively reloads a cache entry from the database shortly before it expires, in the background, instead of waiting for a request to arrive after expiry and forcing that unlucky caller to pay the full database-lookup cost.</p>
+<h2>2. Why &amp; when</h2>
+<p>Every time-to-live (TTL) based cache has the same problem: the request that happens to arrive right after an entry expires gets a slow response, because it triggers a synchronous reload. Refresh-ahead removes that penalty for frequently accessed keys by refreshing them just before they expire, so almost every request — including the one that would otherwise have caused the reload — sees a cache hit. Use it for hot keys with predictable, frequent access, where the extra background work is worth eliminating tail latency.</p>
+<h2>3. Core concept</h2>
+<p><strong>The refresh trigger:</strong> each entry is stored with an expiry time. Refresh-ahead defines a threshold — for example, &quot;when 75% of an entry&#x27;s TTL has elapsed&quot; — and, when a read for that entry crosses the threshold, the cache serves the still-valid cached value immediately but also kicks off a background reload to refresh it before it actually expires.</p>
+<p><strong>Why this differs from a plain TTL cache:</strong> a plain TTL cache lets an entry go fully stale and only reloads it on the next request after expiry, so that request pays full database latency. Refresh-ahead shifts the reload earlier, off the request path entirely, so the entry is fresh again well before it would have expired.</p>
+<p><strong>The trade-off:</strong> refresh-ahead only pays off for keys that keep getting read; if a key is refreshed ahead of time but then never read again before its new expiry, the refresh was wasted work. It is a poor fit for cold or rarely accessed keys.</p>
+<h2>4. Diagram</h2>
+<pre><code>TTL = 100ms, refresh threshold = 75ms
+
+  t=0 ----------------- t=75 ------------- t=100
+  entry stored          READ HERE:          (plain TTL: entry
+                         value still valid,   would expire here,
+                         age &gt;= threshold,    forcing a slow
+                         so a BACKGROUND      synchronous reload
+                         refresh starts       on the next read)
+                         now, ahead of time
+
+  Result with refresh-ahead: entry is renewed before t=100, so requests
+  right after t=100 still hit a fresh cached value, not a slow reload.</code></pre>
+<p>*Caption: crossing the refresh threshold triggers a background reload, so the entry never actually goes stale under steady traffic.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> An entry with a TTL and an &quot;age&quot; tracked via a logical clock, read normally.</p>
+<p><strong>Level 2 — Threshold check.</strong> A <code>get</code> that detects when an entry has crossed the refresh threshold and reloads it in place before returning.</p>
+<p><strong>Level 3 — Comparing costs.</strong> Count reload calls under refresh-ahead versus a plain TTL cache to show the tail-latency reload is avoided.</p>
+<pre><code class="lang-java">// RefreshAheadCache.java
+import java.util.HashMap;
+import java.util.Map;
+
+public class RefreshAheadCache {
+
+    static final Map&lt;String, String&gt; database = new HashMap&lt;&gt;();
+    static int reloadsOnRequestPath = 0; // reloads that a real caller had to wait on
+
+    static class Entry {
+        String value;
+        int storedAtTick;
+        Entry(String value, int storedAtTick) { this.value = value; this.storedAtTick = storedAtTick; }
+    }
+
+    static final Map&lt;String, Entry&gt; cache = new HashMap&lt;&gt;();
+    static final int ttl = 100;
+    static final int refreshThreshold = 75; // refresh once age crosses this
+
+    static String reload(String key) {
+        return database.get(key); // stands in for a real database query
+    }
+
+    // Level 1 &amp; 2: refresh-ahead get, using a logical clock &quot;now&quot;.
+    static String get(String key, int now) {
+        Entry entry = cache.get(key);
+        if (entry == null) {
+            reloadsOnRequestPath++; // cold start: caller waits
+            String value = reload(key);
+            cache.put(key, new Entry(value, now));
+            return value;
+        }
+        int age = now - entry.storedAtTick;
+        if (age &gt;= ttl) {
+            reloadsOnRequestPath++; // fully expired: caller waits (the case refresh-ahead avoids)
+            String value = reload(key);
+            cache.put(key, new Entry(value, now));
+            return value;
+        }
+        if (age &gt;= refreshThreshold) {
+            // still valid: serve immediately, refresh happens &quot;in the background&quot; (simulated inline here)
+            String value = reload(key);
+            cache.put(key, new Entry(value, now));
+            return entry.value; // caller gets the still-fresh old value, not a wait
+        }
+        return entry.value; // well within TTL: plain hit
+    }
+
+    public static void main(String[] args) {
+        database.put(&quot;trending:topics&quot;, &quot;v1&quot;);
+
+        System.out.println(get(&quot;trending:topics&quot;, 0)); // cold start
+        System.out.println(get(&quot;trending:topics&quot;, 50)); // hit, before threshold
+
+        database.put(&quot;trending:topics&quot;, &quot;v2&quot;);
+        System.out.println(get(&quot;trending:topics&quot;, 80)); // past threshold: background-style refresh, still fast
+        System.out.println(get(&quot;trending:topics&quot;, 90)); // now sees v2, still no request-path wait
+
+        System.out.println(&quot;reloads on the request path (caller had to wait): &quot; + reloadsOnRequestPath);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>RefreshAheadCache.java</code>, then run <code>java RefreshAheadCache.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>get(&quot;trending:topics&quot;, 0)</code> finds no entry, so it reloads (<code>reloadsOnRequestPath</code> becomes <code>1</code>) and stores <code>&quot;v1&quot;</code> with <code>storedAtTick = 0</code>.</li><li><code>get(&quot;trending:topics&quot;, 50)</code> computes <code>age = 50</code>, below the <code>75</code> threshold, so it returns <code>&quot;v1&quot;</code> directly — a plain hit.</li><li>The database is updated to <code>&quot;v2&quot;</code>, simulating new data arriving.</li><li><code>get(&quot;trending:topics&quot;, 80)</code> computes <code>age = 80</code>, past the threshold but under the <code>100</code> TTL, so it still returns the old cached value <code>&quot;v1&quot;</code> to the caller immediately, while also reloading and re-storing the entry with the fresh value and a new <code>storedAtTick = 80</code>.</li><li><code>get(&quot;trending:topics&quot;, 90)</code> now sees the refreshed entry (<code>age = 10</code>, well under threshold) and returns <code>&quot;v2&quot;</code> — the newer value — without the caller ever having waited on a synchronous reload.</li><li><code>reloadsOnRequestPath</code> stays at <code>1</code> for the whole run: only the very first, cold-start call actually forced a caller to wait on <code>reload</code>.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: refresh-ahead only triggers on a read that happens to land after the threshold; if traffic to a key stops entirely, nothing refreshes it, and the entry simply expires like a plain TTL entry on the next request.</blockquote>
+<ul><li>Refresh-ahead eliminates the &quot;unlucky request right after expiry pays full latency&quot; problem, but only for keys that keep receiving reads.</li><li>It adds background load (extra database reads) in exchange for smoother tail latency — a poor trade for cold or rarely read keys.</li><li>Related concepts: <a href="0050-eviction-policies-lru-lfu-fifo-ttl.md">Eviction policies (LRU, LFU, FIFO, TTL)</a> (TTL is the baseline this pattern improves on), <a href="0053-thundering-herd-cache-stampede-mitigation.md">Thundering herd / cache stampede &amp; mitigation</a> (a related problem when many keys expire and reload at once).</li></ul>
+  <div class="nav"><a class="prv" href="0048-write-back-write-behind-cache.html"><span class="mini">← Previous</span>Write-back (write-behind) cache</a><a class="nxt" href="0050-eviction-policies-lru-lfu-fifo-ttl.html"><span class="mini">Next →</span>Eviction policies (LRU, LFU, FIFO, TTL)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t49";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

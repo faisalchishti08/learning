@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Read-through cache — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>Read-through cache</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>read-through cache</strong> sits directly in the read path between the application and the database. The application only ever talks to the cache; on a miss, the cache library itself queries the database, stores the result, and returns it. The application code never sees a fallback branch to the database.</p>
+<h2>2. Why &amp; when</h2>
+<p>Read-through gives the same benefit as cache-aside — the database is shielded from repeated reads of the same data — but centralizes the miss-handling logic in one place instead of scattering &quot;check cache, else query database, else populate cache&quot; across every call site. Use it when many parts of a codebase read the same entities, so you want that logic written once, in a caching layer or library, rather than duplicated in every caller.</p>
+<h2>3. Core concept</h2>
+<p><strong>The loader function:</strong> a read-through cache is configured with a <strong>loader</strong>, a function that knows how to fetch a value for a key from the database. The application calls a single <code>get(key)</code> method on the cache; it never calls the database directly.</p>
+<p><strong>What happens on a miss:</strong> the cache itself invokes the loader, stores the returned value, and hands it back to the caller. On a hit, the loader is never invoked. From the application&#x27;s point of view, <code>get(key)</code> always &quot;just works&quot; — the miss-handling is invisible.</p>
+<p><strong>Cache-aside vs read-through:</strong> the two patterns move the same logic to a different place. Cache-aside puts the &quot;check cache, else query, else populate&quot; logic in application code; read-through puts identical logic inside the cache abstraction, behind a single method call. The runtime behavior — same miss path, same population — is otherwise the same.</p>
+<h2>4. Diagram</h2>
+<pre><code>App --get(key)--&gt; Cache
+                     |
+                     | MISS: cache calls its own loader(key)
+                     v
+                  Database
+                     |
+                     v
+                  Cache stores the row, then returns it
+App &lt;--row-- Cache          (application never called the database itself)</code></pre>
+<p>*Caption: the loader function lives inside the cache; the application only ever calls <code>get</code>.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A <code>ReadThroughCache</code> wired with a loader function that queries a simulated database.</p>
+<p><strong>Level 2 — Hit path.</strong> Confirm the loader is not called again once a value is cached.</p>
+<p><strong>Level 3 — Pluggable loader.</strong> Swap in a different loader (a computed value) to show the cache logic is fully generic and independent of where data comes from.</p>
+<pre><code class="lang-java">// ReadThroughCache.java
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
+
+public class ReadThroughCache {
+
+    // Level 1 &amp; 2: a generic read-through cache wrapping any loader.
+    static class Cache&lt;K, V&gt; {
+        private final Map&lt;K, V&gt; store = new HashMap&lt;&gt;();
+        private final Function&lt;K, V&gt; loader;
+        int loaderCalls = 0;
+
+        Cache(Function&lt;K, V&gt; loader) {
+            this.loader = loader;
+        }
+
+        V get(K key) {
+            if (store.containsKey(key)) {
+                return store.get(key); // hit: loader not touched
+            }
+            loaderCalls++;
+            V value = loader.apply(key); // miss: cache does the loading itself
+            store.put(key, value);
+            return value;
+        }
+    }
+
+    public static void main(String[] args) {
+        Map&lt;String, String&gt; database = new HashMap&lt;&gt;();
+        database.put(&quot;user:1&quot;, &quot;Alice&quot;);
+
+        Cache&lt;String, String&gt; userCache = new Cache&lt;&gt;(database::get);
+
+        System.out.println(&quot;first get: &quot; + userCache.get(&quot;user:1&quot;));
+        System.out.println(&quot;second get: &quot; + userCache.get(&quot;user:1&quot;));
+        System.out.println(&quot;loader calls: &quot; + userCache.loaderCalls); // stays 1
+
+        // Level 3: a different loader, computed rather than from a map.
+        Cache&lt;Integer, Integer&gt; squareCache = new Cache&lt;&gt;(n -&gt; n * n);
+        System.out.println(&quot;square(7) = &quot; + squareCache.get(7));
+        System.out.println(&quot;square(7) again = &quot; + squareCache.get(7));
+        System.out.println(&quot;square loader calls: &quot; + squareCache.loaderCalls); // stays 1
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ReadThroughCache.java</code>, then run <code>java ReadThroughCache.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>userCache.get(&quot;user:1&quot;)</code> finds nothing in <code>store</code>, so it calls <code>loader.apply(&quot;user:1&quot;)</code>, which runs <code>database::get</code> and returns <code>&quot;Alice&quot;</code>; <code>loaderCalls</code> becomes <code>1</code>, and <code>store</code> is populated.</li><li><code>userCache.get(&quot;user:1&quot;)</code> a second time finds <code>&quot;Alice&quot;</code> already in <code>store</code> and returns it without touching <code>loader</code>; <code>loaderCalls</code> stays at <code>1</code>.</li><li><code>squareCache</code> is built with a completely different loader — a computation instead of a database lookup — proving the <code>Cache</code> class does not care what the loader does, only that it can produce a value for a key.</li><li><code>squareCache.get(7)</code> calls the loader once, caches <code>49</code>, and the second call returns the cached value without recomputing.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: because the loader is invoked from inside <code>get</code>, a slow or failing loader (a slow database, a network timeout) blocks the caller directly; production read-through caches usually add a timeout and a way to return stale data rather than hanging indefinitely.</blockquote>
+<ul><li>Read-through moves miss-handling into the cache layer, so every caller gets consistent behavior for free instead of re-implementing it.</li><li>The write path is a separate concern: read-through by itself says nothing about how writes reach the database, which is why it is usually paired with write-through or write-back.</li><li>Related concepts: <a href="0045-cache-aside-lazy-loading.md">Cache-aside (lazy loading)</a> (the same miss-handling logic, written in the application instead), <a href="0047-write-through-cache.md">Write-through cache</a> (the matching pattern for the write path).</li></ul>
+  <div class="nav"><a class="prv" href="0045-cache-aside-lazy-loading.html"><span class="mini">← Previous</span>Cache-aside (lazy loading)</a><a class="nxt" href="0047-write-through-cache.html"><span class="mini">Next →</span>Write-through cache</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t46";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

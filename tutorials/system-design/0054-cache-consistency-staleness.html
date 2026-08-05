@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cache consistency & staleness — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>Cache consistency & staleness</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Cache consistency</strong> is how closely a cached value matches the current value in the database at any given moment. <strong>Staleness</strong> is the gap between them when they briefly disagree — a cached value that has not yet caught up with a more recent database write. Every cache accepts some staleness in exchange for speed; the design question is how much staleness is tolerable and for how long.</p>
+<h2>2. Why &amp; when</h2>
+<p>A cache is, by definition, a second copy of data that can fall out of sync with the original. Understanding this trade-off matters because different data has very different tolerance for it: a product&#x27;s star rating can be a few minutes stale with no real harm, but an account balance or an inventory count being stale can cause real problems (overselling, incorrect charges). The strategies covered elsewhere in this section — TTL, explicit invalidation, write-through — are all different ways of controlling how much staleness a system allows and for how long.</p>
+<h2>3. Core concept</h2>
+<p><strong>Where staleness comes from:</strong> any time data is written to the database without also, atomically, updating every cached copy of it, a window opens where the cache is wrong. That window closes when the cache entry is invalidated, refreshed, or naturally expires.</p>
+<p><strong>Strong-ish consistency, at a cost:</strong> write-through caching (writing the database and cache together, synchronously) minimizes staleness for the writer&#x27;s own reads, but it does nothing for other cache instances that hold their own copy, and it adds write latency. True strong consistency across a distributed cache generally requires coordination (e.g. cache invalidation broadcast, or reading straight from the database), which costs latency or throughput.</p>
+<p><strong>Eventual consistency, the common default:</strong> most caches accept <strong>eventual consistency</strong> — the cache will catch up to the database&#x27;s true value at some point, bounded by the invalidation strategy in use (usually the TTL), but not instantly. This is the right default whenever a brief staleness window causes no real harm.</p>
+<p><strong>Measuring the staleness window:</strong> the maximum staleness a cache can produce is bounded by whichever invalidation mechanism is weakest. If a system relies purely on a 60-second TTL, then 60 seconds is the worst-case staleness window, full stop — no matter how fast explicit invalidation runs elsewhere, TTL sets the outer bound.</p>
+<h2>4. Diagram</h2>
+<pre><code>t=0    Database write: balance = 100 -&gt; 90
+t=0    Cache still holds:  balance = 100        &lt;- STALE from this instant
+t=0..T Any read during this window sees the WRONG value (100, not 90)
+t=T    Cache entry invalidated/expires/refreshes -&gt; now holds 90
+t=T+   Reads are correct again
+
+  T = the staleness window; its maximum length is bounded by the
+  weakest invalidation mechanism in use (often the TTL).</code></pre>
+<p>*Caption: staleness is the time between a database write and the cache catching up; every caching strategy is really a choice about how long, and how bounded, that window is.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A cache and database that can independently disagree, with a method to check whether they currently match.</p>
+<p><strong>Level 2 — Measuring the staleness window.</strong> Track the tick at which the database changes and the tick at which the cache catches up, then compute the gap.</p>
+<p><strong>Level 3 — Comparing strategies.</strong> Compare the staleness window under a TTL-only strategy versus explicit invalidation on the same write.</p>
+<pre><code class="lang-java">// CacheConsistency.java
+import java.util.HashMap;
+import java.util.Map;
+
+public class CacheConsistency {
+
+    static final Map&lt;String, Integer&gt; database = new HashMap&lt;&gt;();
+
+    static class TtlEntry {
+        int value; long expiresAtTick;
+        TtlEntry(int value, long expiresAtTick) { this.value = value; this.expiresAtTick = expiresAtTick; }
+    }
+
+    // Level 1 &amp; 2: TTL-only cache, no explicit invalidation on write.
+    static final Map&lt;String, TtlEntry&gt; ttlOnlyCache = new HashMap&lt;&gt;();
+    static final long ttl = 60;
+
+    static Integer readTtlOnly(String key, long now) {
+        TtlEntry e = ttlOnlyCache.get(key);
+        if (e == null || now &gt;= e.expiresAtTick) {
+            int fresh = database.get(key);
+            ttlOnlyCache.put(key, new TtlEntry(fresh, now + ttl));
+            return fresh;
+        }
+        return e.value; // may be stale if database changed since e was stored
+    }
+
+    // Level 3: explicit invalidation, database write deletes the entry immediately.
+    static final Map&lt;String, Integer&gt; explicitCache = new HashMap&lt;&gt;();
+    static void writeExplicit(String key, int value, long now) {
+        database.put(key, value);
+        explicitCache.remove(key); // staleness window closes immediately
+    }
+    static Integer readExplicit(String key) {
+        Integer cached = explicitCache.get(key);
+        if (cached == null) {
+            cached = database.get(key);
+            explicitCache.put(key, cached);
+        }
+        return cached;
+    }
+
+    public static void main(String[] args) {
+        database.put(&quot;balance:acct1&quot;, 100);
+
+        long writeTick = 10;
+        System.out.println(&quot;TTL cache, initial read at t=0: &quot; + readTtlOnly(&quot;balance:acct1&quot;, 0)); // 100, caches until t=60
+
+        database.put(&quot;balance:acct1&quot;, 90); // write happens at t=10, TTL cache does not know yet
+        System.out.println(&quot;TTL cache, read at t=&quot; + writeTick + &quot; right after write (STALE): &quot; + readTtlOnly(&quot;balance:acct1&quot;, writeTick));
+        System.out.println(&quot;TTL cache, read at t=59 (still STALE): &quot; + readTtlOnly(&quot;balance:acct1&quot;, 59));
+        System.out.println(&quot;TTL cache, read at t=60 (expired, now correct): &quot; + readTtlOnly(&quot;balance:acct1&quot;, 60));
+        System.out.println(&quot;TTL staleness window length: &quot; + (60 - writeTick) + &quot; ticks&quot;);
+
+        database.put(&quot;balance:acct2&quot;, 100);
+        explicitCache.put(&quot;balance:acct2&quot;, readExplicit(&quot;balance:acct2&quot;)); // warm the cache
+        writeExplicit(&quot;balance:acct2&quot;, 90, writeTick); // write + invalidate together
+        System.out.println(&quot;explicit cache, read right after write: &quot; + readExplicit(&quot;balance:acct2&quot;)); // correct immediately
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CacheConsistency.java</code>, then run <code>java CacheConsistency.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>readTtlOnly(&quot;balance:acct1&quot;, 0)</code> misses, loads <code>100</code> from <code>database</code>, and caches it with <code>expiresAtTick = 60</code>.</li><li><code>database.put(&quot;balance:acct1&quot;, 90)</code> changes the true value at <code>t=10</code>, but nothing tells <code>ttlOnlyCache</code> — it still holds the old entry with <code>expiresAtTick = 60</code>.</li><li>Reading at <code>t=10</code> and again at <code>t=59</code> both return the stale <code>100</code>, because <code>now &lt; 60</code> in both cases, so the TTL entry is still considered valid even though it is wrong.</li><li>Reading at <code>t=60</code> finally sees <code>now &gt;= expiresAtTick</code>, triggers a reload, and returns the correct <code>90</code> — the staleness window lasted exactly <code>60 - 10 = 50</code> ticks.</li><li>For <code>balance:acct2</code>, <code>writeExplicit</code> updates the database and removes the cache entry in the same call, at <code>t=10</code>; the very next read misses, reloads, and returns <code>90</code> immediately — a staleness window of effectively zero.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: explicit invalidation only closes the staleness window for the cache the writer directly touches; in a system with multiple cache instances, each one still needs its own invalidation path (see event-based invalidation), or it stays stale exactly as long as a TTL-only cache would.</blockquote>
+<ul><li>Staleness is not a bug to eliminate; it is a parameter to bound deliberately, based on how much a wrong read actually costs for that specific data.</li><li>The worst-case staleness window is set by the weakest invalidation mechanism protecting a key, not the strongest one.</li><li>Related concepts: <a href="0051-cache-invalidation-strategies.md">Cache invalidation strategies</a> (the mechanisms that bound staleness), <a href="0047-write-through-cache.md">Write-through cache</a> (minimizes staleness for the writer&#x27;s own subsequent reads).</li></ul>
+  <div class="nav"><a class="prv" href="0053-thundering-herd-cache-stampede-mitigation.html"><span class="mini">← Previous</span>Thundering herd / cache stampede & mitigation</a><a class="nxt" href="0055-client-cdn-application-database-cache-layers.html"><span class="mini">Next →</span>Client / CDN / application / database cache layers</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t54";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

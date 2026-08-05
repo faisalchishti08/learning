@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Write-back (write-behind) cache" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>"Write-back (write-behind) cache"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>write-back cache</strong>, also called <strong>write-behind</strong>, writes an update to the cache immediately and returns to the caller right away, without waiting for the database. The write to the database happens later, asynchronously, often batched together with other pending writes.</p>
+<h2>2. Why &amp; when</h2>
+<p>Write-back gives the lowest possible write latency, since the caller only waits on an in-memory cache write, not a database round trip. It also lets you batch many writes into fewer, larger database operations, which is efficient for very write-heavy workloads (metrics counters, activity logs, view counts) where losing a small, recent window of data on a crash is an acceptable trade for speed. Do not use it where every write must be durable immediately, such as a financial transaction.</p>
+<h2>3. Core concept</h2>
+<p><strong>The write path, step by step:</strong></p>
+<ol><li>The application calls <code>write(key, value)</code>.</li><li>The value is written to the cache only, and marked <strong>dirty</strong> (meaning &quot;not yet saved to the database&quot;).</li><li>The call returns immediately.</li><li>A background process later flushes dirty entries to the database, either on a timer, when a batch size is reached, or when an entry is evicted from the cache.</li></ol>
+<p><strong>The durability gap:</strong> between step 3 and the background flush, the only copy of the latest value lives in the cache. If the cache process crashes before flushing, that update is lost — this is the fundamental trade write-back makes for speed.</p>
+<p><strong>Why batching helps:</strong> if the same key is written multiple times before the flush runs, only the final value needs to be sent to the database, collapsing many writes into one. This is why write-back suits high-frequency updates to the same keys, such as a &quot;like counter.&quot;</p>
+<h2>4. Diagram</h2>
+<pre><code>App --write(key,value)--&gt; Cache      (marks entry dirty)
+App &lt;---------- OK -----------+       (returns immediately, database not touched yet)
+
+  ... later, on a timer or batch threshold ...
+
+Background flusher --reads all dirty entries--&gt; Cache
+Background flusher --batched write--&gt; Database
+Cache: entries marked clean</code></pre>
+<p>*Caption: the caller only waits on the cache; the database catch-up happens later, in the background.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A cache that marks entries dirty on write and returns immediately.</p>
+<p><strong>Level 2 — Batched flush.</strong> A <code>flush</code> method that writes all dirty entries to the database in one pass and clears the dirty flags.</p>
+<p><strong>Level 3 — Collapsed writes.</strong> Show that writing the same key three times before a flush only produces one database write, with the final value.</p>
+<pre><code class="lang-java">// WriteBackCache.java
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
+
+public class WriteBackCache {
+
+    static final Map&lt;String, String&gt; database = new HashMap&lt;&gt;();
+    static final Map&lt;String, String&gt; cache = new HashMap&lt;&gt;();
+    static final Set&lt;String&gt; dirtyKeys = new HashSet&lt;&gt;();
+    static int databaseWrites = 0;
+
+    // Level 1: write only touches the cache; returns immediately.
+    static void write(String key, String value) {
+        cache.put(key, value);
+        dirtyKeys.add(key); // mark for later flush
+    }
+
+    // Level 2 &amp; 3: flush all dirty entries in one batched pass.
+    static void flush() {
+        for (String key : dirtyKeys) {
+            database.put(key, cache.get(key)); // one write per key, final value only
+            databaseWrites++;
+        }
+        dirtyKeys.clear();
+    }
+
+    public static void main(String[] args) {
+        write(&quot;likes:post42&quot;, &quot;1&quot;);
+        write(&quot;likes:post42&quot;, &quot;2&quot;); // same key, overwrites before any flush
+        write(&quot;likes:post42&quot;, &quot;3&quot;);
+        write(&quot;views:post42&quot;, &quot;100&quot;);
+
+        System.out.println(&quot;database before flush: &quot; + database); // empty, nothing flushed yet
+        System.out.println(&quot;cache before flush: &quot; + cache);
+
+        flush();
+
+        System.out.println(&quot;database after flush: &quot; + database);
+        System.out.println(&quot;database writes performed: &quot; + databaseWrites); // 2, not 4
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>WriteBackCache.java</code>, then run <code>java WriteBackCache.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Three calls to <code>write(&quot;likes:post42&quot;, ...)</code> each update <code>cache</code> and re-add <code>&quot;likes:post42&quot;</code> to <code>dirtyKeys</code>; <code>database</code> is never touched by any of them.</li><li><code>write(&quot;views:post42&quot;, &quot;100&quot;)</code> similarly only updates <code>cache</code>.</li><li>Printing <code>database</code> before <code>flush()</code> shows it is still empty — every write so far only reached the cache.</li><li><code>flush()</code> iterates <code>dirtyKeys</code> (now just two distinct keys: <code>likes:post42</code> and <code>views:post42</code>) and writes each one&#x27;s current cached value to <code>database</code>, so <code>databaseWrites</code> ends at <code>2</code> even though <code>write</code> was called four times — the three overwrites of <code>likes:post42</code> collapsed into a single database write of its final value, <code>&quot;3&quot;</code>.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: if the process holding the cache crashes before <code>flush()</code> runs, every dirty entry is lost permanently; production systems mitigate this with a durable write-ahead log or by replicating the cache, but the risk is never fully zero.</blockquote>
+<ul><li>Write-back trades durability for write speed and for batching efficiency on hot keys.</li><li>The size of the durability gap is a direct function of how often you flush — flushing more often shrinks potential data loss but reduces the batching benefit.</li><li>Related concepts: <a href="0047-write-through-cache.md">Write-through cache</a> (the safer, synchronous alternative), <a href="0049-refresh-ahead-cache.md">Refresh-ahead cache</a> (a different background-process pattern, for reads instead of writes).</li></ul>
+  <div class="nav"><a class="prv" href="0047-write-through-cache.html"><span class="mini">← Previous</span>Write-through cache</a><a class="nxt" href="0049-refresh-ahead-cache.html"><span class="mini">Next →</span>Refresh-ahead cache</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t48";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

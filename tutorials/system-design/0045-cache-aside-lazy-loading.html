@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Cache-aside (lazy loading)" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>"Cache-aside (lazy loading)"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Cache-aside</strong>, also called <strong>lazy loading</strong>, is a caching pattern where the application code — not the cache itself — is responsible for reading from and writing to the cache. On a read, the application checks the cache first; only if the data is missing does it fetch from the database and then store a copy in the cache for next time.</p>
+<h2>2. Why &amp; when</h2>
+<p>Cache-aside is the most common caching pattern because it is simple and the cache only ever holds data that was actually requested, avoiding wasted memory on data nobody reads. Use it when reads greatly outnumber writes and some staleness is acceptable, such as product catalog pages or user profile lookups. The main alternative, read-through caching (covered next), moves this same logic behind a library so the application code stays simpler.</p>
+<h2>3. Core concept</h2>
+<p><strong>The read path, step by step:</strong></p>
+<ol><li>The application asks the cache for the key.</li><li><strong>Cache hit:</strong> the cache returns the value immediately; the database is never touched.</li><li><strong>Cache miss:</strong> the application queries the database itself, then writes the result into the cache before returning it to the caller.</li></ol>
+<p><strong>The write path:</strong> on an update, the application writes to the database and then either updates or deletes the matching cache entry, so the next read is forced to reload fresh data. Deleting (rather than updating) the cache entry on write is the safer default, because it avoids a race where a stale value gets written back into the cache after a concurrent read already reloaded it.</p>
+<p><strong>Why &quot;aside&quot;:</strong> the cache sits beside the application, not between the application and the database. The application explicitly decides when to populate it, unlike read-through caching where the cache library does that automatically.</p>
+<h2>4. Diagram</h2>
+<pre><code>READ (cache miss):
+  App --get(key)--&gt; Cache --MISS--&gt; App --query--&gt; Database
+                                      App &lt;--row-- Database
+  App --put(key,row)--&gt; Cache
+  App &lt;--row-- (returned to caller)
+
+READ (cache hit):
+  App --get(key)--&gt; Cache --HIT: row--&gt; App   (database never touched)
+
+WRITE:
+  App --update--&gt; Database
+  App --delete(key)--&gt; Cache   (next read reloads fresh data)</code></pre>
+<p>*Caption: the application owns every cache read and write; the cache never talks to the database on its own.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A cache-aside <code>get</code> that falls back to a simulated database on a miss.</p>
+<p><strong>Level 2 — Write path.</strong> Add <code>update</code>, which writes the database first and then invalidates the cache entry.</p>
+<p><strong>Level 3 — Hit/miss counters.</strong> Track hit and miss counts to show the cache actually reduces database load over repeated reads.</p>
+<pre><code class="lang-java">// CacheAside.java
+import java.util.HashMap;
+import java.util.Map;
+
+public class CacheAside {
+
+    static final Map&lt;String, String&gt; database = new HashMap&lt;&gt;();
+    static final Map&lt;String, String&gt; cache = new HashMap&lt;&gt;();
+    static int dbReads = 0;
+
+    static String dbQuery(String key) {
+        dbReads++;
+        return database.get(key);
+    }
+
+    // Level 1: cache-aside read.
+    static String get(String key) {
+        String value = cache.get(key);
+        if (value != null) {
+            return value; // cache hit
+        }
+        value = dbQuery(key); // cache miss: go to the database
+        if (value != null) {
+            cache.put(key, value);
+        }
+        return value;
+    }
+
+    // Level 2: write path invalidates the cache entry.
+    static void update(String key, String newValue) {
+        database.put(key, newValue); // database is the source of truth
+        cache.remove(key); // force next read to reload
+    }
+
+    public static void main(String[] args) {
+        database.put(&quot;user:1&quot;, &quot;Alice&quot;);
+
+        System.out.println(&quot;first get: &quot; + get(&quot;user:1&quot;)); // miss
+        System.out.println(&quot;second get: &quot; + get(&quot;user:1&quot;)); // hit
+        System.out.println(&quot;db reads so far: &quot; + dbReads);
+
+        update(&quot;user:1&quot;, &quot;Alice Smith&quot;);
+        System.out.println(&quot;after update: &quot; + get(&quot;user:1&quot;)); // miss again, fresh value
+        System.out.println(&quot;total db reads: &quot; + dbReads);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CacheAside.java</code>, then run <code>java CacheAside.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>get(&quot;user:1&quot;)</code> finds nothing in <code>cache</code>, so it calls <code>dbQuery</code>, incrementing <code>dbReads</code> to <code>1</code>, and stores <code>&quot;Alice&quot;</code> in <code>cache</code> before returning it.</li><li>The second <code>get(&quot;user:1&quot;)</code> finds <code>&quot;Alice&quot;</code> already in <code>cache</code> and returns it directly; <code>dbReads</code> stays at <code>1</code>.</li><li><code>update(&quot;user:1&quot;, &quot;Alice Smith&quot;)</code> writes the new value to <code>database</code> first, then removes <code>&quot;user:1&quot;</code> from <code>cache</code>, leaving the cache empty for that key.</li><li>The next <code>get(&quot;user:1&quot;)</code> misses again, so it reloads <code>&quot;Alice Smith&quot;</code> from <code>database</code> (<code>dbReads</code> becomes <code>2</code>) and re-populates <code>cache</code>.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: if the application crashes or is slow between the database write and the cache invalidation in <code>update</code>, a reader can briefly see a stale cached value; this window is usually acceptable but is not eliminated by cache-aside alone.</blockquote>
+<ul><li>The cache only ever contains data that has actually been requested, so cold caches naturally warm up from real traffic.</li><li>A crashed cache is not fatal: every read simply falls through to the database, at the cost of higher latency until the cache is repopulated.</li><li>Related concepts: <a href="0046-read-through-cache.md">Read-through cache</a> (the same idea moved into a library), <a href="0051-cache-invalidation-strategies.md">Cache invalidation strategies</a> (deeper look at the delete-vs-update choice on write).</li></ul>
+  <div class="nav"><a class="prv" href="0044-service-discovery-integration-eureka-consul.html"><span class="mini">← Previous</span>Service discovery integration (Eureka / Consul)</a><a class="nxt" href="0046-read-through-cache.html"><span class="mini">Next →</span>Read-through cache</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t45";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

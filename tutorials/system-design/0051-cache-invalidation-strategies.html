@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cache invalidation strategies — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>Cache invalidation strategies</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Cache invalidation</strong> is the process of removing or updating a cache entry once the underlying data it represents has changed, so the cache stops serving outdated values. The three common strategies are <strong>TTL-based expiry</strong> (remove after a fixed time), <strong>explicit invalidation</strong> (the writer deletes or updates the entry the moment it changes the data), and <strong>event-based invalidation</strong> (a message tells other services to invalidate their copies).</p>
+<h2>2. Why &amp; when</h2>
+<p>Every cache creates a second copy of data that can drift from the source of truth. Invalidation is how you bound how wrong that copy is allowed to get. TTL alone is simple but always leaves a window of staleness up to the TTL length. Explicit invalidation removes staleness immediately for the service that made the write, but only for that service. Event-based invalidation extends explicit invalidation across multiple services or cache instances that each hold their own copy of the same data — essential once you scale beyond a single cache.</p>
+<h2>3. Core concept</h2>
+<p><strong>TTL-based expiry:</strong> every entry is stored with an expiry time; the cache treats it as gone once that time passes, whether or not the underlying data actually changed. It requires no coordination but guarantees a staleness window equal to the TTL.</p>
+<p><strong>Explicit invalidation:</strong> the code path that writes new data also deletes (or updates) the matching cache entry as part of the same operation — the pattern already used in cache-aside and write-through. It is immediate and precise, but only invalidates the cache the writer itself knows about.</p>
+<p><strong>Event-based invalidation:</strong> the writer publishes an event (&quot;<code>user:1</code> changed&quot;) to a message broker; every service holding its own cache subscribes to these events and invalidates its local copy on receipt. This is necessary once caching is distributed across multiple application instances, each with its own local (in-process) cache, because one instance&#x27;s explicit invalidation cannot reach another instance&#x27;s memory directly.</p>
+<p><strong>Delete vs update on invalidation:</strong> deleting the entry is usually safer than overwriting it with the new value, because a delete forces the next reader to reload fresh data from the source of truth, closing off a race where a slightly-out-of-order update could leave a stale value cached.</p>
+<h2>4. Diagram</h2>
+<pre><code>Single instance, explicit invalidation:
+  Writer: update DB -&gt; delete cache[&quot;user:1&quot;]                (done, safe)
+
+Multiple instances, event-based invalidation:
+  Instance A: update DB -&gt; delete local cache[&quot;user:1&quot;]
+                          -&gt; publish event &quot;user:1 changed&quot; --&gt; Message broker
+                                                                     |
+                              Instance B &lt;----------------------------+
+                              Instance B: on receiving event, delete local cache[&quot;user:1&quot;]
+                              Instance C: on receiving event, delete local cache[&quot;user:1&quot;]</code></pre>
+<p>*Caption: a single cache only needs explicit invalidation; multiple independent caches need an event to reach the ones the writer cannot touch directly.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Explicit invalidation: a write deletes the matching cache entry in the same operation.</p>
+<p><strong>Level 2 — TTL fallback.</strong> An entry with an expiry timestamp that is treated as invalid once its time has passed, even without an explicit delete.</p>
+<p><strong>Level 3 — Event-based, multi-instance.</strong> Two independent in-memory caches subscribe to a shared event list; a write on one publishes an event that invalidates the entry on both.</p>
+<pre><code class="lang-java">// CacheInvalidation.java
+import java.util.HashMap;
+import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
+
+public class CacheInvalidation {
+
+    static final Map&lt;String, String&gt; database = new HashMap&lt;&gt;();
+
+    // Level 1: explicit invalidation on a single cache.
+    static final Map&lt;String, String&gt; localCache = new HashMap&lt;&gt;();
+    static void writeExplicit(String key, String value) {
+        database.put(key, value);
+        localCache.remove(key); // invalidate immediately, same operation
+    }
+
+    // Level 2: TTL-based invalidation, checked at read time.
+    static class TtlEntry {
+        String value; long expiresAtTick;
+        TtlEntry(String value, long expiresAtTick) { this.value = value; this.expiresAtTick = expiresAtTick; }
+    }
+    static final Map&lt;String, TtlEntry&gt; ttlCache = new HashMap&lt;&gt;();
+    static String readTtl(String key, long now) {
+        TtlEntry e = ttlCache.get(key);
+        if (e == null || now &gt;= e.expiresAtTick) return null; // treated as invalid
+        return e.value;
+    }
+
+    // Level 3: event-based invalidation across two independent caches.
+    static final Map&lt;String, String&gt; cacheInstanceA = new HashMap&lt;&gt;();
+    static final Map&lt;String, String&gt; cacheInstanceB = new HashMap&lt;&gt;();
+    static final List&lt;String&gt; eventLog = new ArrayList&lt;&gt;();
+
+    static void writeAndPublish(String key, String value) {
+        database.put(key, value);
+        cacheInstanceA.remove(key); // the writer&#x27;s own local cache
+        eventLog.add(key); // publish &quot;changed&quot; event for other instances
+    }
+    static void deliverEvents() {
+        for (String key : eventLog) {
+            cacheInstanceB.remove(key); // instance B invalidates on receiving the event
+        }
+        eventLog.clear();
+    }
+
+    public static void main(String[] args) {
+        localCache.put(&quot;user:1&quot;, &quot;Alice&quot;);
+        writeExplicit(&quot;user:1&quot;, &quot;Alice Smith&quot;);
+        System.out.println(&quot;explicit: cache after write (should be absent): &quot; + localCache.get(&quot;user:1&quot;));
+
+        ttlCache.put(&quot;price:XYZ&quot;, new TtlEntry(&quot;100&quot;, 100));
+        System.out.println(&quot;ttl: read at t=50 (valid): &quot; + readTtl(&quot;price:XYZ&quot;, 50));
+        System.out.println(&quot;ttl: read at t=150 (expired): &quot; + readTtl(&quot;price:XYZ&quot;, 150));
+
+        cacheInstanceA.put(&quot;user:2&quot;, &quot;Bob&quot;);
+        cacheInstanceB.put(&quot;user:2&quot;, &quot;Bob&quot;); // both instances start with the same cached copy
+        writeAndPublish(&quot;user:2&quot;, &quot;Bob Jones&quot;);
+        System.out.println(&quot;event: instance A right after write (invalidated locally): &quot; + cacheInstanceA.get(&quot;user:2&quot;));
+        System.out.println(&quot;event: instance B BEFORE event delivery (still stale): &quot; + cacheInstanceB.get(&quot;user:2&quot;));
+        deliverEvents();
+        System.out.println(&quot;event: instance B AFTER event delivery (now invalidated): &quot; + cacheInstanceB.get(&quot;user:2&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CacheInvalidation.java</code>, then run <code>java CacheInvalidation.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>writeExplicit</code> writes the database and removes the key from <code>localCache</code> in the same call, so the very next line shows <code>localCache.get(&quot;user:1&quot;)</code> as <code>null</code>.</li><li><code>readTtl(&quot;price:XYZ&quot;, 50)</code> sees <code>now=50 &lt; expiresAtTick=100</code>, so the entry is still valid and its value is returned.</li><li><code>readTtl(&quot;price:XYZ&quot;, 150)</code> sees <code>now=150 &gt;= expiresAtTick=100</code> and returns <code>null</code> — the entry is treated as invalid purely because time passed, with no explicit delete involved.</li><li><code>writeAndPublish(&quot;user:2&quot;, &quot;Bob Jones&quot;)</code> updates the database, invalidates <code>cacheInstanceA</code> immediately, and queues an event in <code>eventLog</code> rather than touching <code>cacheInstanceB</code> directly.</li><li>Reading <code>cacheInstanceB</code> right after the write still shows the stale <code>&quot;Bob&quot;</code>, because the event has not been delivered yet — this is the propagation delay inherent to event-based invalidation.</li><li><code>deliverEvents()</code> processes the queued event and removes <code>&quot;user:2&quot;</code> from <code>cacheInstanceB</code>; the final read confirms it is now invalidated too.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: event-based invalidation has a delivery delay — between the write and the event reaching every instance, other instances serve stale data; if the message broker is slow or drops a message, that staleness can persist far longer than intended.</blockquote>
+<ul><li>Explicit invalidation is precise and immediate, but only for the cache the writer directly controls.</li><li>TTL provides a safety net even when explicit or event-based invalidation is missed or delayed, at the cost of a guaranteed staleness window.</li><li>Related concepts: <a href="0054-cache-consistency-staleness.md">Cache consistency &amp; staleness</a> (the broader question invalidation strategy answers), <a href="0045-cache-aside-lazy-loading.md">Cache-aside (lazy loading)</a> (where explicit invalidation is most commonly applied).</li></ul>
+  <div class="nav"><a class="prv" href="0050-eviction-policies-lru-lfu-fifo-ttl.html"><span class="mini">← Previous</span>Eviction policies (LRU, LFU, FIFO, TTL)</a><a class="nxt" href="0052-hot-keys-key-distribution.html"><span class="mini">Next →</span>Hot keys & key distribution</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t51";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

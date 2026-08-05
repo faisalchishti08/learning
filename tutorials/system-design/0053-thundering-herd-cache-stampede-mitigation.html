@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Thundering herd / cache stampede & mitigation" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>"Thundering herd / cache stampede & mitigation"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>thundering herd</strong>, also called a <strong>cache stampede</strong>, happens when a popular cache entry expires (or the cache is cold-started) and a large number of concurrent requests all miss at the same instant. Every one of them independently goes to the database to reload the same data, hitting it with a sudden spike of duplicate load instead of just one reload.</p>
+<h2>2. Why &amp; when</h2>
+<p>A cache normally protects the database from repeated load. A stampede is the moment that protection briefly disappears for one key — exactly when the database can least afford it, because the spike is concentrated and sudden rather than spread out. This happens naturally to any popular, TTL-based key: the more popular the key, the more concurrent requests are waiting right when it expires, so the worse the stampede. Watch for it whenever a database sees sharp, periodic load spikes that line up with a cache TTL.</p>
+<h2>3. Core concept</h2>
+<p><strong>Why it happens:</strong> a plain cache-aside <code>get</code> has no coordination between concurrent callers. If a key is missing, every caller independently checks the cache, sees it is empty, and independently queries the database — there is nothing stopping ten simultaneous callers from doing ten simultaneous, identical database queries.</p>
+<p><strong>Mitigation: request coalescing (a.k.a. single-flight).</strong> The first caller to miss a key acquires a per-key lock and performs the reload; every other concurrent caller for that same key waits on the first caller&#x27;s in-flight result instead of independently querying the database. Once the first caller finishes, all waiters receive the same freshly loaded value.</p>
+<p><strong>Mitigation: early / jittered expiry.</strong> Instead of every reader treating a key as valid until exactly the same expiry instant, add a small random jitter to when different processes consider it worth refreshing — this spreads reloads out over time instead of concentrating them at one instant.</p>
+<p><strong>Mitigation: locking with a stale fallback.</strong> If the reload is slow, let waiting callers briefly serve the just-expired (stale) value rather than blocking, trading a moment of staleness for protecting the database entirely.</p>
+<h2>4. Diagram</h2>
+<pre><code>WITHOUT coalescing (10 concurrent requests, key just expired):
+  Req1..Req10 --miss--&gt; each independently queries Database   (10 identical queries)
+
+WITH coalescing:
+  Req1  --miss--&gt; acquires lock for key --&gt; queries Database --&gt; stores result
+  Req2..Req10 --miss--&gt; lock held --&gt; WAIT on Req1&#x27;s in-flight result
+  Req1 finishes --&gt; Req2..Req10 all receive the same result, Database queried ONCE</code></pre>
+<p>*Caption: coalescing collapses N concurrent misses for the same key into a single database query.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A naive cache where every concurrent miss independently queries the database, counting the duplicate load.</p>
+<p><strong>Level 2 — Request coalescing.</strong> The same scenario, but a per-key lock ensures only one thread queries the database; the rest wait for its result.</p>
+<p><strong>Level 3 — Concurrent load test.</strong> Run both versions with several threads racing on the same expired key to show the exact difference in database query count.</p>
+<pre><code class="lang-java">// ThunderingHerd.java
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class ThunderingHerd {
+
+    static final Map&lt;String, String&gt; database = Map.of(&quot;product:99&quot;, &quot;Widget&quot;);
+    static final AtomicInteger dbQueriesNaive = new AtomicInteger();
+    static final AtomicInteger dbQueriesCoalesced = new AtomicInteger();
+
+    static String slowDbQuery(String key, AtomicInteger counter) {
+        counter.incrementAndGet();
+        return database.get(key);
+    }
+
+    // Level 1: naive - every miss queries the database directly, no coordination.
+    static String naiveGet(String key) throws InterruptedException {
+        Thread.sleep(5); // simulate a slow query so misses overlap
+        return slowDbQuery(key, dbQueriesNaive);
+    }
+
+    // Level 2: coalesced - one in-flight Future per key, shared by all waiters.
+    static final Map&lt;String, CompletableFuture&lt;String&gt;&gt; inFlight = new ConcurrentHashMap&lt;&gt;();
+    static String coalescedGet(String key) throws Exception {
+        CompletableFuture&lt;String&gt; future = inFlight.computeIfAbsent(key, k -&gt;
+            CompletableFuture.supplyAsync(() -&gt; {
+                try { Thread.sleep(5); } catch (InterruptedException ignored) {}
+                return slowDbQuery(k, dbQueriesCoalesced);
+            })
+        );
+        String result = future.get();
+        inFlight.remove(key, future); // clear once done, so a later miss can reload again
+        return result;
+    }
+
+    public static void main(String[] args) throws Exception {
+        int concurrentRequests = 10;
+
+        // Level 3: naive version - 10 threads race on the same expired key.
+        ExecutorService pool1 = Executors.newFixedThreadPool(concurrentRequests);
+        CountDownLatch start1 = new CountDownLatch(1);
+        for (int i = 0; i &lt; concurrentRequests; i++) {
+            pool1.submit(() -&gt; {
+                try { start1.await(); naiveGet(&quot;product:99&quot;); } catch (Exception ignored) {}
+            });
+        }
+        start1.countDown();
+        pool1.shutdown();
+        pool1.awaitTermination(2, TimeUnit.SECONDS);
+        System.out.println(&quot;naive: database queries for 10 concurrent misses = &quot; + dbQueriesNaive.get());
+
+        // Same scenario, coalesced version.
+        ExecutorService pool2 = Executors.newFixedThreadPool(concurrentRequests);
+        CountDownLatch start2 = new CountDownLatch(1);
+        for (int i = 0; i &lt; concurrentRequests; i++) {
+            pool2.submit(() -&gt; {
+                try { start2.await(); coalescedGet(&quot;product:99&quot;); } catch (Exception ignored) {}
+            });
+        }
+        start2.countDown();
+        pool2.shutdown();
+        pool2.awaitTermination(2, TimeUnit.SECONDS);
+        System.out.println(&quot;coalesced: database queries for 10 concurrent misses = &quot; + dbQueriesCoalesced.get());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ThunderingHerd.java</code>, then run <code>java ThunderingHerd.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>All 10 threads in the naive pool wait on <code>start1</code>, then release together, so all 10 call <code>naiveGet(&quot;product:99&quot;)</code> at nearly the same instant.</li><li>Each <code>naiveGet</code> call sleeps briefly (simulating query latency) and then independently calls <code>slowDbQuery</code>, incrementing <code>dbQueriesNaive</code> every time — so the final count is <code>10</code>, one query per request.</li><li>In the coalesced pool, all 10 threads similarly release together and call <code>coalescedGet(&quot;product:99&quot;)</code>.</li><li><code>inFlight.computeIfAbsent</code> ensures only the *first* thread to reach that line actually creates the <code>CompletableFuture</code> (and starts the simulated query); every other thread sees the future already present and simply attaches to it via <code>future.get()</code>.</li><li>Only the one thread that created the future calls <code>slowDbQuery</code>, so <code>dbQueriesCoalesced</code> ends at <code>1</code> — the other nine threads all receive the same result once it completes, without ever touching the database.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: <code>computeIfAbsent</code> on a <code>ConcurrentHashMap</code> is what makes the coalescing atomic; using a plain <code>HashMap</code> with a separate &quot;check, then create&quot; step reintroduces a race where two threads could both create their own future, defeating the coalescing entirely.</blockquote>
+<ul><li>Coalescing turns N concurrent duplicate queries into 1, at the cost of the waiting threads&#x27; latency being bounded by the single query rather than running in parallel — which is the correct trade, since the query result is identical for all of them anyway.</li><li>Jittered expiry and coalescing address the same problem from different angles and are often combined: jitter reduces how many keys expire at the exact same instant, coalescing handles whatever concurrent misses still happen.</li><li>Related concepts: <a href="0049-refresh-ahead-cache.md">Refresh-ahead cache</a> (avoids the stampede by never letting the entry fully expire under steady traffic), <a href="0052-hot-keys-key-distribution.md">Hot keys &amp; key distribution</a> (a related but distinct problem of sustained, not momentary, overload on one key).</li></ul>
+  <div class="nav"><a class="prv" href="0052-hot-keys-key-distribution.html"><span class="mini">← Previous</span>Hot keys & key distribution</a><a class="nxt" href="0054-cache-consistency-staleness.html"><span class="mini">Next →</span>Cache consistency & staleness</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t53";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

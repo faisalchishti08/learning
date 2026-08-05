@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Write-through cache — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>Write-through cache</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>write-through cache</strong> writes every update to the cache and the database together, as one operation, before the write is considered complete. The cache is never allowed to hold a value the database does not also have, because both are updated synchronously on every write.</p>
+<h2>2. Why &amp; when</h2>
+<p>Write-through keeps the cache always consistent with the database and always warm for the data your application actually writes, so reads right after a write are guaranteed to hit the cache with fresh data. Use it when read-after-write consistency matters — a user editing their own profile and immediately viewing it — and when the extra write latency (waiting on both the cache and the database) is acceptable. It trades write latency for read safety and read speed.</p>
+<h2>3. Core concept</h2>
+<p><strong>The write path, step by step:</strong></p>
+<ol><li>The application calls <code>write(key, value)</code>.</li><li>The cache layer writes the value to the database first.</li><li>Only after the database write succeeds does the cache layer also write the value into the cache.</li><li>The call returns to the caller only once both writes have completed.</li></ol>
+<p><strong>Why the database is written first:</strong> if the cache were updated first and the database write then failed, the cache would hold a value the database never actually has — a correctness bug. Writing the database first and the cache second means a failure after step 2 simply leaves the cache stale (a cache miss on next read), which is safe, rather than the cache lying about what the database contains.</p>
+<p><strong>Contrast with write-back:</strong> write-through waits for the database write to finish before returning. Write-back (covered next) returns immediately after writing the cache and flushes to the database later, trading durability for lower write latency.</p>
+<h2>4. Diagram</h2>
+<pre><code>App --write(key,value)--&gt; Cache layer
+                              |
+                              | 1. write to Database first
+                              v
+                           Database  --OK--&gt;
+                              |
+                              | 2. only then write to Cache
+                              v
+                            Cache
+                              |
+App &lt;---------- OK -----------+     (write only completes after BOTH succeed)</code></pre>
+<p>*Caption: the database is written first; the cache is only updated once that write is confirmed.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A <code>write</code> that updates the database, then the cache, in that order.</p>
+<p><strong>Level 2 — Failure ordering.</strong> Simulate a database write failure and show the cache is correctly left untouched.</p>
+<p><strong>Level 3 — Read-after-write.</strong> Confirm a read immediately after a successful write is always a cache hit with the fresh value.</p>
+<pre><code class="lang-java">// WriteThroughCache.java
+import java.util.HashMap;
+import java.util.Map;
+
+public class WriteThroughCache {
+
+    static final Map&lt;String, String&gt; database = new HashMap&lt;&gt;();
+    static final Map&lt;String, String&gt; cache = new HashMap&lt;&gt;();
+
+    // Level 1 &amp; 2: write-through, database first, cache second.
+    static void write(String key, String value, boolean simulateDbFailure) {
+        if (simulateDbFailure) {
+            throw new RuntimeException(&quot;database write failed for &quot; + key);
+        }
+        database.put(key, value); // 1. database is the source of truth
+        cache.put(key, value);    // 2. only updated after the database confirms
+    }
+
+    static String read(String key) {
+        return cache.get(key); // reads always go through the cache
+    }
+
+    public static void main(String[] args) {
+        write(&quot;user:1&quot;, &quot;Alice&quot;, false);
+        System.out.println(&quot;read right after write: &quot; + read(&quot;user:1&quot;)); // cache hit, fresh
+
+        write(&quot;user:1&quot;, &quot;Alice Smith&quot;, false);
+        System.out.println(&quot;read after second write: &quot; + read(&quot;user:1&quot;));
+
+        // Level 2: a failed database write must not corrupt the cache.
+        try {
+            write(&quot;user:2&quot;, &quot;Bob&quot;, true);
+        } catch (RuntimeException e) {
+            System.out.println(&quot;write failed as expected: &quot; + e.getMessage());
+        }
+        System.out.println(&quot;cache for user:2 (should be null): &quot; + cache.get(&quot;user:2&quot;));
+        System.out.println(&quot;database for user:2 (should be null): &quot; + database.get(&quot;user:2&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>WriteThroughCache.java</code>, then run <code>java WriteThroughCache.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>write(&quot;user:1&quot;, &quot;Alice&quot;, false)</code> writes <code>&quot;Alice&quot;</code> to <code>database</code>, then to <code>cache</code>; both now agree.</li><li><code>read(&quot;user:1&quot;)</code> returns <code>&quot;Alice&quot;</code> straight from <code>cache</code> — a hit, with data that is guaranteed fresh because the write just completed.</li><li><code>write(&quot;user:1&quot;, &quot;Alice Smith&quot;, false)</code> repeats the same two-step write, and the following read confirms the new value is visible immediately.</li><li><code>write(&quot;user:2&quot;, &quot;Bob&quot;, true)</code> simulates the database write throwing before <code>database.put</code> runs; because the method throws before reaching <code>cache.put</code>, neither <code>database</code> nor <code>cache</code> ever contains <code>&quot;user:2&quot;</code>, so both print <code>null</code> — the cache never diverges from the database, even on failure.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: write-through only protects entries you actually write through this path; if some other process writes directly to the database and bypasses the cache layer, the cache goes stale for that key just like with any other pattern.</blockquote>
+<ul><li>Every write pays the latency of both the database and the cache, so write-through is a poor fit for write-heavy workloads where every millisecond of write latency matters.</li><li>The ordering (database, then cache) is what keeps the cache from ever holding data the database does not have.</li><li>Related concepts: <a href="0048-write-back-write-behind-cache.md">Write-back (write-behind) cache</a> (trades this consistency guarantee for lower write latency), <a href="0046-read-through-cache.md">Read-through cache</a> (the matching pattern for the read path).</li></ul>
+  <div class="nav"><a class="prv" href="0046-read-through-cache.html"><span class="mini">← Previous</span>Read-through cache</a><a class="nxt" href="0048-write-back-write-behind-cache.html"><span class="mini">Next →</span>Write-back (write-behind) cache</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t47";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
