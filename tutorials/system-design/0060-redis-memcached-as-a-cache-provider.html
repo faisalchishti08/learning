@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Redis / Memcached as a cache provider — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>Redis / Memcached as a cache provider</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Redis</strong> and <strong>Memcached</strong> are standalone, in-memory data stores commonly used as a <strong>shared cache</strong> — a cache that lives outside any single application server, so every instance of your application reads and writes the same cached data. Memcached is a simple, distributed key-value store built purely for caching. Redis is also an in-memory key-value store but supports richer data structures (lists, sets, sorted sets, hashes) and optional persistence to disk.</p>
+<h2>2. Why &amp; when</h2>
+<p>An in-process cache (a plain <code>HashMap</code> inside your application) is only visible to that one application instance; with multiple instances behind a load balancer, each one builds up its own separate, inconsistent cache, and a cache warmed on one instance is cold on every other. A shared cache like Redis or Memcached solves this: every application instance talks to the same external cache, so a value cached by one instance is immediately visible, as a hit, to every other instance. Use one whenever your application runs as more than one process or server.</p>
+<h2>3. Core concept</h2>
+<p><strong>Why a shared, external cache is necessary at scale:</strong> picture three application servers behind a load balancer, each with its own in-process cache. A request for <code>user:42</code> might hit server A (cache miss, queries the database), then a later request for the same key hits server B (also a miss — server B&#x27;s cache knows nothing about server A&#x27;s). With a shared Redis or Memcached instance instead, server A&#x27;s cache population is immediately visible to server B, C, and every other instance.</p>
+<p><strong>Memcached&#x27;s model:</strong> a simple, multi-threaded key-value store, purely in memory, with no built-in persistence — if it restarts, the cache is empty again. Its simplicity makes it fast and easy to reason about for pure caching use cases.</p>
+<p><strong>Redis&#x27;s model:</strong> also primarily in-memory, but Redis supports richer data structures beyond plain key-value pairs (useful for things like leaderboards using sorted sets, or rate limiting using counters with expiry), and can optionally persist data to disk (so a restart does not necessarily mean starting from an empty cache). This flexibility is why Redis is often chosen even for pure caching use cases, despite Memcached being simpler.</p>
+<p><strong>Network cost, still real:</strong> a shared cache removes the &quot;different instances disagree&quot; problem, but every cache access now costs a network round trip to the Redis or Memcached server, instead of an in-process memory read — still far cheaper than a database query, but not free.</p>
+<h2>4. Diagram</h2>
+<pre><code>WITHOUT a shared cache (each instance has its own):
+  App Server A: local cache { }         App Server B: local cache { }
+  Request 1 -&gt; A -&gt; MISS -&gt; DB -&gt; A&#x27;s cache: {user:42}
+  Request 2 -&gt; B -&gt; MISS (B&#x27;s cache never heard about A&#x27;s write) -&gt; DB again
+
+WITH a shared cache (Redis / Memcached):
+  App Server A ---\
+                    +---&gt; Shared Cache (Redis/Memcached) ---&gt; Database (on miss)
+  App Server B ---/
+  Request 1 -&gt; A -&gt; shared cache MISS -&gt; DB -&gt; shared cache: {user:42}
+  Request 2 -&gt; B -&gt; shared cache HIT (A&#x27;s write is visible to B immediately)</code></pre>
+<p>*Caption: a shared cache makes one instance&#x27;s cache population immediately visible to every other instance.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Simulate two application instances each with their own local cache, showing they duplicate database load.</p>
+<p><strong>Level 2 — Shared cache.</strong> The same two instances now share one external cache, showing one instance&#x27;s write becomes visible to the other.</p>
+<p><strong>Level 3 — Network cost model.</strong> Add a simulated cost per cache access, to compare total cost between the local and shared approaches.</p>
+<pre><code class="lang-java">// SharedCacheProvider.java
+import java.util.HashMap;
+import java.util.Map;
+
+public class SharedCacheProvider {
+
+    static final Map&lt;String, String&gt; database = Map.of(&quot;user:42&quot;, &quot;Alice&quot;);
+    static int databaseHits = 0;
+
+    static String queryDb(String key) {
+        databaseHits++;
+        return database.get(key);
+    }
+
+    // Level 1: each app instance has its own local, in-process cache.
+    static final Map&lt;String, String&gt; localCacheA = new HashMap&lt;&gt;();
+    static final Map&lt;String, String&gt; localCacheB = new HashMap&lt;&gt;();
+
+    static String getViaLocalCache(Map&lt;String, String&gt; localCache, String key) {
+        if (localCache.containsKey(key)) return localCache.get(key);
+        String value = queryDb(key);
+        localCache.put(key, value);
+        return value;
+    }
+
+    // Level 2: one shared cache, standing in for Redis/Memcached, used by BOTH instances.
+    static final Map&lt;String, String&gt; sharedCache = new HashMap&lt;&gt;();
+
+    static String getViaSharedCache(String key) {
+        if (sharedCache.containsKey(key)) return sharedCache.get(key);
+        String value = queryDb(key);
+        sharedCache.put(key, value);
+        return value;
+    }
+
+    public static void main(String[] args) {
+        // Level 1 &amp; 3: two isolated local caches - server B repeats server A&#x27;s database work.
+        System.out.println(&quot;local cache A: &quot; + getViaLocalCache(localCacheA, &quot;user:42&quot;)); // miss
+        System.out.println(&quot;local cache B: &quot; + getViaLocalCache(localCacheB, &quot;user:42&quot;)); // ALSO a miss
+        System.out.println(&quot;database hits with local (per-instance) caches: &quot; + databaseHits); // 2
+
+        databaseHits = 0; // reset for the shared-cache comparison
+
+        // Level 2: both &quot;instances&quot; now call the SAME shared cache.
+        System.out.println(&quot;instance A via shared cache: &quot; + getViaSharedCache(&quot;user:42&quot;)); // miss, populates shared
+        System.out.println(&quot;instance B via shared cache: &quot; + getViaSharedCache(&quot;user:42&quot;)); // HIT, A&#x27;s write is visible
+        System.out.println(&quot;database hits with a shared cache: &quot; + databaseHits); // 1
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>SharedCacheProvider.java</code>, then run <code>java SharedCacheProvider.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>getViaLocalCache(localCacheA, &quot;user:42&quot;)</code> misses (an empty <code>HashMap</code>), queries the database (<code>databaseHits</code> becomes <code>1</code>), and populates only <code>localCacheA</code>.</li><li><code>getViaLocalCache(localCacheB, &quot;user:42&quot;)</code> checks a completely separate map, <code>localCacheB</code>, which knows nothing about <code>localCacheA</code>&#x27;s write — it also misses, querying the database again (<code>databaseHits</code> becomes <code>2</code>).</li><li>This models exactly what happens with per-instance, in-process caches behind a load balancer: the same logical data gets fetched from the database once per instance, not once total.</li><li>After resetting the counter, <code>getViaSharedCache(&quot;user:42&quot;)</code> (standing in for &quot;instance A&quot;) misses once, queries the database (<code>databaseHits</code> becomes <code>1</code>), and populates <code>sharedCache</code>.</li><li><code>getViaSharedCache(&quot;user:42&quot;)</code> again (standing in for &quot;instance B&quot;) now finds the entry already present in the *same* <code>sharedCache</code> map that &quot;instance A&quot; populated, so it returns a hit — <code>databaseHits</code> stays at <code>1</code>.</li><li>The comparison shows the exact benefit: a shared cache provider turns N instances&#x27; worth of duplicate database load, for the same popular key, into a single database query shared by all of them.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a shared cache is a new single point of failure and a new network hop — if Redis or Memcached goes down or becomes slow, every application instance loses its cache at once (unlike in-process caches, which fail independently), so production deployments typically run it as a highly available cluster, not a single instance.</blockquote>
+<ul><li>A shared cache is what makes patterns like cache-aside, write-through, and eviction policies actually work consistently across multiple application servers, not just within one process.</li><li>Memcached is simpler and purely for caching; Redis trades a little simplicity for richer data structures and optional persistence, which is why it is the more common default choice today even for plain caching.</li><li>Related concepts: <a href="0061-spring-data-redis-for-distributed-caching.md">Spring Data Redis for distributed caching</a> (the Spring integration for using Redis as a <code>CacheManager</code> backend), <a href="0052-hot-keys-key-distribution.md">Hot keys &amp; key distribution</a> (a problem that appears specifically once a cache is shared and sharded across nodes).</li></ul>
+  <div class="nav"><a class="prv" href="0059-spring-cache-abstraction-cacheable-cacheevict.html"><span class="mini">← Previous</span>Spring Cache abstraction (@Cacheable / @CacheEvict)</a><a class="nxt" href="0061-spring-data-redis-for-distributed-caching.html"><span class="mini">Next →</span>Spring Data Redis for distributed caching</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t60";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

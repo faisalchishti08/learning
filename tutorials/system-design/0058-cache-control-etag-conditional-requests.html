@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Cache-Control, ETag & conditional requests" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 4. Caching & CDN</div>
+  <div class="htitle">
+    <h1>"Cache-Control, ETag & conditional requests"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong><code>Cache-Control</code></strong> is an HTTP response header that tells clients and intermediate caches (browsers, CDNs) how long a response may be reused before it must be revalidated. An <strong>ETag</strong> (entity tag) is a short, opaque identifier the server generates for a specific version of a resource. A <strong>conditional request</strong> is a follow-up request that asks the server &quot;has this changed since I last saw it?&quot; using the ETag, letting the server reply with a tiny &quot;not modified&quot; response instead of resending the whole body when nothing changed.</p>
+<h2>2. Why &amp; when</h2>
+<p><code>Cache-Control</code> and ETags exist to avoid two wasteful extremes: serving stale data forever (no caching at all would mean re-downloading everything on every request, which is also wasteful) and blindly trusting a cache for too long. Use <code>Cache-Control</code> to state how long a response is safe to reuse without even asking the server. Use ETags together with conditional requests for resources that change unpredictably, where you want the client to check in periodically but avoid re-downloading the full body if nothing actually changed.</p>
+<h2>3. Core concept</h2>
+<p><strong><code>Cache-Control</code> directives:</strong> <code>max-age=3600</code> tells the cache the response is fresh for 3600 seconds, and it may be reused with no request to the server at all during that window. <code>no-cache</code> (a confusing name) means the opposite of what it sounds like — it means &quot;you may cache this, but you must revalidate with the server before reusing it every time.&quot; <code>no-store</code> means do not cache this at all, used for sensitive data.</p>
+<p><strong>ETag generation:</strong> the server computes an ETag from the current content — often a hash of the response body, or a version identifier — and sends it as an <code>ETag</code> header alongside the response. Two responses with identical content should produce the same ETag; any change in content changes the ETag.</p>
+<p><strong>Conditional request flow (<code>If-None-Match</code>):</strong> once a client holds a cached response with its ETag, the next time it needs to check freshness, it sends <code>If-None-Match: &lt;etag&gt;</code> in the request. If the server&#x27;s current ETag for that resource still matches, it replies with <strong><code>304 Not Modified</code></strong> and an empty body — the client keeps using its cached copy. If the content changed, the server replies normally with <strong><code>200 OK</code></strong>, the new body, and a new ETag.</p>
+<p><strong>Why this saves bandwidth:</strong> a <code>304</code> response has no body at all, only headers — for a large resource (an image, a big JSON payload), this turns a full re-download into a near-free round trip whenever the content has not actually changed.</p>
+<h2>4. Diagram</h2>
+<pre><code>First request:
+  Client --GET /data----------------------&gt; Server
+  Client &lt;--200 OK, body, ETag:&quot;abc123&quot;---- Server
+  (client stores the response AND the ETag)
+
+Later, cache entry needs revalidation:
+  Client --GET /data, If-None-Match:&quot;abc123&quot;--&gt; Server
+                                                    |
+                            content unchanged?  ----+---- content changed?
+                                 |                              |
+                                 v                              v
+                   Client &lt;--304 Not Modified--   Client &lt;--200 OK, new body, ETag:&quot;xyz789&quot;--
+                   (no body sent; client reuses     (client replaces its cached copy
+                    its own cached copy)             and stores the new ETag)</code></pre>
+<p>*Caption: a conditional request either confirms the cached copy is still good (304, no body) or delivers the fresh version (200, full body).*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Compute an ETag for content and check whether a client&#x27;s cached ETag still matches.</p>
+<p><strong>Level 2 — Conditional request handling.</strong> A server-side handler that returns 304 or 200 based on <code>If-None-Match</code>.</p>
+<p><strong>Level 3 — Content change.</strong> Show the ETag changing when content changes, forcing a full 200 response on the next conditional request.</p>
+<pre><code class="lang-java">// CacheControlEtag.java
+import java.util.HashMap;
+import java.util.Map;
+
+public class CacheControlEtag {
+
+    static final Map&lt;String, String&gt; resources = new HashMap&lt;&gt;();
+
+    // Level 1: ETag is a hash of the current content.
+    static String computeEtag(String content) {
+        return &quot;\&quot;&quot; + Integer.toHexString(content.hashCode()) + &quot;\&quot;&quot;;
+    }
+
+    // Level 2 &amp; 3: simulate a server handling a conditional GET.
+    static class Response {
+        int status; String body; String etag;
+        Response(int status, String body, String etag) { this.status = status; this.body = body; this.etag = etag; }
+    }
+
+    static Response handleGet(String resourceKey, String clientEtag) {
+        String content = resources.get(resourceKey);
+        String currentEtag = computeEtag(content);
+        if (clientEtag != null &amp;&amp; clientEtag.equals(currentEtag)) {
+            return new Response(304, null, currentEtag); // Not Modified: no body sent
+        }
+        return new Response(200, content, currentEtag); // full response
+    }
+
+    public static void main(String[] args) {
+        resources.put(&quot;/data&quot;, &quot;{\&quot;count\&quot;:42}&quot;);
+
+        // First request: no ETag held yet, always a full 200.
+        Response first = handleGet(&quot;/data&quot;, null);
+        System.out.println(&quot;first request: status=&quot; + first.status + &quot; body=&quot; + first.body + &quot; etag=&quot; + first.etag);
+
+        // Second request: client sends the ETag it stored; content has not changed.
+        Response second = handleGet(&quot;/data&quot;, first.etag);
+        System.out.println(&quot;second request (unchanged): status=&quot; + second.status + &quot; body=&quot; + second.body);
+
+        // Content changes on the server.
+        resources.put(&quot;/data&quot;, &quot;{\&quot;count\&quot;:43}&quot;);
+        Response third = handleGet(&quot;/data&quot;, first.etag); // client still holds the OLD etag
+        System.out.println(&quot;third request (after change): status=&quot; + third.status + &quot; body=&quot; + third.body + &quot; etag=&quot; + third.etag);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CacheControlEtag.java</code>, then run <code>java CacheControlEtag.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The first <code>handleGet(&quot;/data&quot;, null)</code> call has no <code>clientEtag</code> to compare, so it always returns <code>200</code> with the full body and the freshly computed <code>etag</code> for <code>&quot;{\&quot;count\&quot;:42}&quot;</code>.</li><li>The client stores that ETag; the second <code>handleGet(&quot;/data&quot;, first.etag)</code> call recomputes <code>currentEtag</code> from the (unchanged) content, finds it equal to <code>clientEtag</code>, and returns <code>304</code> with a <code>null</code> body — the server confirms freshness without resending any data.</li><li><code>resources.put(&quot;/data&quot;, &quot;{\&quot;count\&quot;:43}&quot;)</code> changes the underlying content, which changes what <code>computeEtag</code> produces for it.</li><li>The third call still sends the client&#x27;s *old* ETag (<code>first.etag</code>, computed from <code>&quot;count&quot;:42</code>), which no longer matches the server&#x27;s newly computed ETag for <code>&quot;count&quot;:43</code>, so the server returns <code>200</code> with the new body and a new ETag — the client must update both its cached body and its stored ETag.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: <code>Cache-Control: no-cache</code> does not mean &quot;do not cache&quot; — that is <code>no-store</code>. <code>no-cache</code> means &quot;cache it, but always revalidate before reuse,&quot; a common source of confusion when configuring headers.</blockquote>
+<ul><li><code>max-age</code> avoids a network round trip entirely for its duration; ETags plus conditional requests still make a round trip, but skip resending the body when nothing changed — the two techniques solve different parts of the same problem and are commonly combined.</li><li>ETags are only useful if the server can cheaply recompute them and if clients reliably send <code>If-None-Match</code> on revalidation; both browsers and CDNs handle this automatically once the headers are set correctly.</li><li>Related concepts: <a href="0056-how-a-cdn-works-edge-pops.md">How a CDN works (edge PoPs)</a> (TTL, set via <code>Cache-Control</code>, is what governs edge cache freshness), <a href="0054-cache-consistency-staleness.md">Cache consistency &amp; staleness</a> (the general staleness problem these headers help bound).</li></ul>
+  <div class="nav"><a class="prv" href="0057-push-vs-pull-cdn.html"><span class="mini">← Previous</span>Push vs pull CDN</a><a class="nxt" href="0059-spring-cache-abstraction-cacheable-cacheevict.html"><span class="mini">Next →</span>Spring Cache abstraction (@Cacheable / @CacheEvict)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t58";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
