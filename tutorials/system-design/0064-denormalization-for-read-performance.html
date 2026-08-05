@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Denormalization for read performance — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 5. SQL Databases</div>
+  <div class="htitle">
+    <h1>Denormalization for read performance</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Denormalization</strong> is the deliberate act of duplicating data across tables — the opposite of normalization — in order to make reads faster, by removing the need for a query to join several tables together to answer a common question.</p>
+<h2>2. Why &amp; when</h2>
+<p>Normalization protects update consistency, but every join a query performs costs time, especially at scale with millions of rows. Denormalization is applied deliberately, after understanding the normalized design, to speed up specific read patterns that are known to be frequent and performance-sensitive — for example, showing an order&#x27;s total item count on a list page without joining and counting <code>order_items</code> every single time. Use it once you have measured that a specific join is a real bottleneck, not as a default starting design.</p>
+<h2>3. Core concept</h2>
+<p><strong>The trade being made:</strong> denormalization copies a value (or a precomputed aggregate) into a table where it can be read directly, at the cost of that copy needing to be kept in sync whenever the original changes. It reintroduces the update-anomaly risk normalization removed — this cost must be actively managed, not ignored.</p>
+<p><strong>A common pattern — a denormalized counter:</strong> instead of counting <code>order_items</code> rows every time an order&#x27;s item count is displayed, store <code>item_count</code> directly on the <code>orders</code> row, and update it (increment or decrement) every time an item is added or removed. Reads become a single-row lookup with no join and no count; writes must remember to keep the counter accurate.</p>
+<p><strong>A common pattern — a denormalized copy of frequently-joined data:</strong> instead of joining <code>orders</code> to <code>customers</code> on every query just to show the customer&#x27;s name next to their order, store <code>customer_name</code> directly on the <code>orders</code> row at the time the order is placed. This trades a join for a copy that must be updated if the customer&#x27;s name ever changes (or, often, is deliberately left as a historical snapshot of the name at order time, which is sometimes exactly what you want).</p>
+<p><strong>Keeping denormalized data in sync:</strong> every place that writes the original value must also update every denormalized copy, in the same transaction or process — this is the ongoing cost of the trade, and it is easy to forget one of the copies as a schema evolves.</p>
+<h2>4. Diagram</h2>
+<pre><code>NORMALIZED (always joins, always accurate on every write):
+  orders: | id | customer_id |        order_items: | order_id | product | qty |
+          | 1  | 42          |                       | 1        | Pen     | 3   |
+                                                       | 1        | Book    | 1   |
+  &quot;how many items in order 1?&quot; -&gt; JOIN + COUNT every time (slow at scale)
+
+DENORMALIZED (fast read, extra write work):
+  orders: | id | customer_id | item_count |
+          | 1  | 42          | 4          |   &lt;- precomputed, updated on every item add/remove
+  &quot;how many items in order 1?&quot; -&gt; single row read, no join, no count</code></pre>
+<p>*Caption: the denormalized <code>item_count</code> column answers the common question with one row read, at the cost of every write needing to keep it accurate.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A normalized model where the item count is computed by scanning <code>order_items</code> every read.</p>
+<p><strong>Level 2 — Denormalized counter.</strong> The same data, but <code>itemCount</code> is stored directly on the order and kept in sync on every add/remove.</p>
+<p><strong>Level 3 — The sync risk.</strong> Deliberately forget to update the denormalized counter on one code path, showing exactly how it drifts out of sync.</p>
+<pre><code class="lang-java">// Denormalization.java
+import java.util.*;
+
+public class Denormalization {
+
+    record OrderItem(int orderId, String product) {}
+
+    // Level 1: normalized - count computed fresh from order_items every time.
+    static int normalizedItemCount(List&lt;OrderItem&gt; items, int orderId) {
+        int count = 0;
+        for (OrderItem item : items) if (item.orderId() == orderId) count++;
+        return count; // correct, but scans every item row on every read
+    }
+
+    // Level 2 &amp; 3: denormalized - item_count is a field kept in sync on writes.
+    static class DenormalizedOrder {
+        int id;
+        int itemCount = 0;
+        DenormalizedOrder(int id) { this.id = id; }
+    }
+
+    static void addItemCorrectly(DenormalizedOrder order, List&lt;OrderItem&gt; items, String product) {
+        items.add(new OrderItem(order.id, product));
+        order.itemCount++; // kept in sync, in the same operation
+    }
+
+    static void addItemForgettingSync(DenormalizedOrder order, List&lt;OrderItem&gt; items, String product) {
+        items.add(new OrderItem(order.id, product));
+        // BUG: forgot to update order.itemCount here
+    }
+
+    public static void main(String[] args) {
+        List&lt;OrderItem&gt; items = new ArrayList&lt;&gt;();
+        items.add(new OrderItem(1, &quot;Pen&quot;));
+        items.add(new OrderItem(1, &quot;Book&quot;));
+
+        System.out.println(&quot;normalized count (scans order_items): &quot; + normalizedItemCount(items, 1));
+
+        DenormalizedOrder order = new DenormalizedOrder(1);
+        order.itemCount = normalizedItemCount(items, 1); // initialize the counter correctly
+
+        addItemCorrectly(order, items, &quot;Pencil&quot;);
+        System.out.println(&quot;after correct add - denormalized count: &quot; + order.itemCount
+            + &quot; | normalized recount (ground truth): &quot; + normalizedItemCount(items, 1));
+
+        addItemForgettingSync(order, items, &quot;Eraser&quot;);
+        System.out.println(&quot;after buggy add - denormalized count: &quot; + order.itemCount
+            + &quot; | normalized recount (ground truth): &quot; + normalizedItemCount(items, 1));
+        System.out.println(&quot;  -&gt; the denormalized counter has now DRIFTED out of sync&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>Denormalization.java</code>, then run <code>java Denormalization.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>normalizedItemCount</code> always scans the full <code>items</code> list and counts matching rows — always correct, but the cost grows with the number of items in the system, not just the one order.</li><li><code>order.itemCount</code> is initialized once from that same ground-truth count, giving <code>2</code>.</li><li><code>addItemCorrectly</code> adds a new <code>OrderItem</code> and increments <code>order.itemCount</code> in the same call — both stay in agreement, confirmed by comparing the denormalized field to a fresh <code>normalizedItemCount</code> recount, which both show <code>3</code>.</li><li><code>addItemForgettingSync</code> adds a new item to <code>items</code> but never updates <code>order.itemCount</code>, deliberately modeling a missed code path.</li><li>The final printout shows <code>order.itemCount</code> still at <code>3</code> while the ground-truth <code>normalizedItemCount</code> recount now reports <code>4</code> — the denormalized copy has drifted, exactly the failure mode denormalization risks if any write path forgets to keep it in sync.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: as shown in Level 3, a denormalized value is only as correct as every single write path that is supposed to update it; a single forgotten update site is enough to silently desynchronize it, and nothing about the schema itself will warn you — this is the real, ongoing cost of the trade.</blockquote>
+<ul><li>Denormalize deliberately, for a specific, measured read bottleneck — not by default, and not everywhere.</li><li>Every denormalized copy needs an explicit, disciplined update path (often inside the same database transaction) everywhere the original data changes.</li><li>Related concepts: <a href="0063-normalization-1nf3nf-bcnf.md">Normalization (1NF–3NF, BCNF)</a> (the baseline design this trades away from), <a href="0066-covering-indexes-index-only-scans.md">Covering indexes &amp; index-only scans</a> (another, index-based way to speed up reads without duplicating application-level data).</li></ul>
+  <div class="nav"><a class="prv" href="0063-normalization-1nf3nf-bcnf.html"><span class="mini">← Previous</span>Normalization (1NF–3NF, BCNF)</a><a class="nxt" href="0065-b-tree-hash-composite-indexes.html"><span class="mini">Next →</span>B-tree, hash & composite indexes</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t64";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

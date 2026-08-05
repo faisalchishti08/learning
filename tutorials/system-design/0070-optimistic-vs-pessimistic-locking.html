@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Optimistic vs pessimistic locking — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 5. SQL Databases</div>
+  <div class="htitle">
+    <h1>Optimistic vs pessimistic locking</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Pessimistic locking</strong> prevents a conflict before it can happen, by having a transaction acquire an exclusive lock on a row before modifying it, forcing any other transaction that wants the same row to wait. <strong>Optimistic locking</strong> allows conflicts to happen and instead detects them at commit time, using a version number (or timestamp) on the row: if the version has changed since you read it, your update is rejected and you must retry.</p>
+<h2>2. Why &amp; when</h2>
+<p>The two approaches make opposite bets about how often conflicts actually happen. Pessimistic locking pays an upfront cost (every writer waits for a lock) on every single update, whether or not a real conflict would have occurred — worthwhile when conflicts are frequent, because it avoids wasted retry work. Optimistic locking pays no upfront cost at all and only pays a retry cost on the rare occasion a real conflict happens — worthwhile when conflicts are rare, which is the common case for most web applications (two users editing the exact same row at the exact same instant is unusual).</p>
+<h2>3. Core concept</h2>
+<p><strong>Pessimistic locking, step by step:</strong> a transaction reads a row <code>SELECT ... FOR UPDATE</code>, which acquires a lock on it immediately. Any other transaction trying to read (with <code>FOR UPDATE</code>) or write that same row must wait until the first transaction commits or rolls back and releases the lock. This guarantees no other transaction can interleave a conflicting change, at the cost of that other transaction simply waiting.</p>
+<p><strong>Optimistic locking, step by step:</strong> a row carries a <code>version</code> column. A transaction reads the row (including its current version), makes changes, and on write issues an update like <code>UPDATE ... SET version = version + 1 WHERE id = ? AND version = ?</code> (the *old* version it read). If another transaction already updated the row and bumped its version, this <code>WHERE</code> clause matches zero rows, the update silently fails to apply, and the application must detect this (checking the affected row count) and retry — typically by re-reading the row and reapplying its intended change.</p>
+<p><strong>Why optimistic locking needs an explicit retry loop:</strong> unlike pessimistic locking, where the database itself handles waiting, an optimistic-locking failure is just a normal update affecting zero rows — the application must check for that and decide what to do, usually re-fetch and retry.</p>
+<h2>4. Diagram</h2>
+<pre><code>PESSIMISTIC (row locked immediately, second transaction WAITS):
+  T1: SELECT ... FOR UPDATE (acquires lock)
+  T2: SELECT ... FOR UPDATE                 &lt;- BLOCKS, waits for T1
+  T1: UPDATE ..., COMMIT (releases lock)
+  T2: (now proceeds, lock acquired, sees T1&#x27;s committed change)
+
+OPTIMISTIC (no lock; conflict detected at write time via version number):
+  T1: reads row, version=1
+  T2: reads row, version=1                  &lt;- both read the SAME version, no waiting
+  T1: UPDATE ... WHERE version=1 -&gt; succeeds, row is now version=2
+  T2: UPDATE ... WHERE version=1 -&gt; matches ZERO rows (version is now 2) -&gt; T2 must RETRY</code></pre>
+<p>*Caption: pessimistic locking makes the second writer wait; optimistic locking lets both proceed, then rejects and retries whichever one loses the race.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Pessimistic locking: a simple mutex simulates <code>SELECT ... FOR UPDATE</code>, forcing a second thread to wait.</p>
+<p><strong>Level 2 — Optimistic locking.</strong> A version-checked update that fails when the version has moved, requiring a retry.</p>
+<p><strong>Level 3 — Retry loop.</strong> A full optimistic-locking retry loop that keeps re-reading and reapplying an update until it succeeds.</p>
+<pre><code class="lang-java">// OptimisticVsPessimisticLocking.java
+import java.util.concurrent.locks.ReentrantLock;
+
+public class OptimisticVsPessimisticLocking {
+
+    // Level 1: pessimistic locking - an explicit lock, mirroring SELECT ... FOR UPDATE.
+    static final ReentrantLock rowLock = new ReentrantLock();
+    static int pessimisticBalance = 100;
+
+    static void pessimisticWithdraw(int amount) {
+        rowLock.lock(); // other callers BLOCK here until this one finishes
+        try {
+            pessimisticBalance -= amount;
+        } finally {
+            rowLock.unlock();
+        }
+    }
+
+    // Level 2 &amp; 3: optimistic locking - a version column, checked on every update.
+    static class VersionedRow {
+        int balance;
+        int version;
+        VersionedRow(int balance, int version) { this.balance = balance; this.version = version; }
+    }
+    static VersionedRow row = new VersionedRow(100, 1);
+
+    // Models: UPDATE accounts SET balance=?, version=version+1 WHERE id=? AND version=?
+    static boolean tryUpdate(int expectedVersion, int newBalance) {
+        if (row.version != expectedVersion) {
+            return false; // WHERE clause matched zero rows: someone else updated it first
+        }
+        row.balance = newBalance;
+        row.version++;
+        return true;
+    }
+
+    static void optimisticWithdrawWithRetry(int amount) {
+        while (true) {
+            int readVersion = row.version;
+            int readBalance = row.balance;
+            int newBalance = readBalance - amount;
+
+            boolean applied = tryUpdate(readVersion, newBalance);
+            if (applied) {
+                System.out.println(&quot;  optimistic withdraw of &quot; + amount + &quot; succeeded on attempt with version &quot; + readVersion);
+                return;
+            }
+            System.out.println(&quot;  optimistic withdraw of &quot; + amount + &quot; CONFLICTED at version &quot; + readVersion + &quot; - retrying&quot;);
+            // loop again: re-read the (now newer) version and balance, and retry
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;pessimistic: starting balance = &quot; + pessimisticBalance);
+        pessimisticWithdraw(30);
+        System.out.println(&quot;pessimistic: after one withdraw = &quot; + pessimisticBalance);
+
+        System.out.println(&quot;optimistic: starting balance = &quot; + row.balance + &quot;, version = &quot; + row.version);
+
+        // Simulate a conflict: another transaction updates the row BETWEEN our read and our write.
+        int ourReadVersion = row.version; // we &quot;read&quot; the row here
+        row.balance -= 10; // another transaction commits first
+        row.version++;
+        System.out.println(&quot;(another transaction committed first: balance=&quot; + row.balance + &quot;, version=&quot; + row.version + &quot;)&quot;);
+
+        boolean firstAttempt = tryUpdate(ourReadVersion, row.balance - 20); // uses our STALE version
+        System.out.println(&quot;our update using stale version &quot; + ourReadVersion + &quot; succeeded? &quot; + firstAttempt);
+
+        optimisticWithdrawWithRetry(20); // the correct way: retries automatically on conflict
+        System.out.println(&quot;optimistic: final balance = &quot; + row.balance + &quot;, version = &quot; + row.version);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>OptimisticVsPessimisticLocking.java</code>, then run <code>java OptimisticVsPessimisticLocking.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>pessimisticWithdraw(30)</code> acquires <code>rowLock</code> before touching <code>pessimisticBalance</code>; any concurrent caller would block on <code>rowLock.lock()</code> until this one calls <code>unlock()</code> — mirroring <code>SELECT ... FOR UPDATE</code> forcing a second transaction to wait.</li><li><code>ourReadVersion</code> captures <code>row.version</code> (<code>1</code>) as if a transaction had just read the row.</li><li><code>row.balance -= 10; row.version++</code> simulates a *different* transaction committing a change first, moving the row to <code>version=2</code>.</li><li><code>tryUpdate(ourReadVersion, ...)</code> uses the now-stale <code>ourReadVersion=1</code>, but <code>row.version</code> is now <code>2</code> — the check <code>row.version != expectedVersion</code> is true, so the update is rejected and <code>firstAttempt</code> is <code>false</code>, exactly like an <code>UPDATE ... WHERE version=1</code> matching zero rows in the database.</li><li><code>optimisticWithdrawWithRetry(20)</code> shows the correct pattern: it re-reads the current version and balance on every loop iteration, so its first attempt uses the *current* version (<code>2</code>), succeeds immediately, and prints the success message without ever hitting a conflict itself — because the retry loop always reads fresh state.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: optimistic locking without a retry loop is a bug waiting to happen — the failed update quietly does nothing (zero rows affected) unless the application explicitly checks the affected-row count and retries; forgetting that check means a user&#x27;s change can silently vanish.</blockquote>
+<ul><li>Pessimistic locking guarantees no wasted work but makes every writer to a contended row wait, even when most attempts would not have actually conflicted.</li><li>Optimistic locking does no waiting at all and scales better under low contention, but requires the application to detect and retry conflicts explicitly.</li><li>Related concepts: <a href="0069-isolation-levels-read-committed-repeatable-read-serializable.md">Isolation levels (read-committed, repeatable-read, serializable)</a> (the underlying guarantees these locking strategies build on), <a href="0068-acid-properties.md">ACID properties</a> (the transactional foundation both strategies operate within).</li></ul>
+  <div class="nav"><a class="prv" href="0069-isolation-levels-read-committed-repeatable-read-serializable.html"><span class="mini">← Previous</span>Isolation levels (read-committed, repeatable-read, serializable)</a><a class="nxt" href="0071-connection-pooling.html"><span class="mini">Next →</span>Connection pooling</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t70";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

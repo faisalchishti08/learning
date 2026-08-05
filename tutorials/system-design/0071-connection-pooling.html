@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Connection pooling — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 5. SQL Databases</div>
+  <div class="htitle">
+    <h1>Connection pooling</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>connection pool</strong> is a fixed set of already-open database connections that an application reuses across requests, instead of opening a brand-new connection for every single database operation and closing it afterward.</p>
+<h2>2. Why &amp; when</h2>
+<p>Opening a database connection is expensive — it involves a network handshake, authentication, and setting up session state — expensive enough that doing it fresh for every query would dominate a request&#x27;s total time. A pool pays that connection-setup cost once, up front, for a batch of connections, and every request thereafter just borrows one for the duration of its query and returns it. Use a connection pool in essentially every production application that talks to a database; it is the default in frameworks like Spring Boot (via HikariCP) rather than an optional extra.</p>
+<h2>3. Core concept</h2>
+<p><strong>Borrow and return, not open and close:</strong> application code asks the pool for a connection (<code>pool.getConnection()</code>), uses it to run one or more queries, and then returns it to the pool (<code>connection.close()</code> — which, with pooling, does not actually close the underlying network connection, only marks it available again).</p>
+<p><strong>Pool size — a fixed, bounded resource:</strong> a pool is configured with a maximum size (say, 20 connections). If all 20 are currently borrowed and a 21st request needs one, that request waits until a connection is returned to the pool, up to a configurable timeout. This bounds how many concurrent database connections your application can ever open, protecting the database from being overwhelmed by connection count alone.</p>
+<p><strong>Why unbounded connections hurt the database, not just the application:</strong> a database server has its own limit on how many concurrent connections it can handle efficiently; each open connection consumes the database&#x27;s own memory. An application opening a fresh connection per request, under load, can exhaust the database&#x27;s connection limit even if each individual query is fast.</p>
+<p><strong>Sizing the pool:</strong> too small a pool means requests queue up waiting for a connection even when the database itself has spare capacity; too large a pool can overwhelm the database or waste memory on idle connections. Pool size is typically tuned based on measured concurrent query load, not guessed.</p>
+<h2>4. Diagram</h2>
+<pre><code>WITHOUT pooling (a new connection per request):
+  Request 1 -&gt; open connection (slow handshake) -&gt; query -&gt; close connection
+  Request 2 -&gt; open connection (slow handshake) -&gt; query -&gt; close connection
+  ... repeated handshake cost on every single request
+
+WITH pooling (connections opened once, reused):
+  Startup: pool opens 20 connections up front (handshake cost paid once, in a batch)
+  Request 1 -&gt; borrow connection #3 -&gt; query -&gt; return connection #3 to pool
+  Request 2 -&gt; borrow connection #3 (reused!) -&gt; query -&gt; return connection #3 to pool
+  Request 21 (pool full, all 20 borrowed) -&gt; WAITS until one is returned</code></pre>
+<p>*Caption: pooling pays the expensive connection-setup cost once per connection, then reuses each connection across many requests.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A pool of pre-created &quot;connections,&quot; borrowed and returned, compared against a naive open-per-request approach.</p>
+<p><strong>Level 2 — Bounded pool, waiting.</strong> A pool with a fixed maximum size that forces a caller to wait when it is exhausted.</p>
+<p><strong>Level 3 — Cost comparison.</strong> Count simulated &quot;handshakes&quot; under both approaches across many requests.</p>
+<pre><code class="lang-java">// ConnectionPooling.java
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class ConnectionPooling {
+
+    static final AtomicInteger handshakesWithoutPooling = new AtomicInteger();
+    static final AtomicInteger handshakesWithPooling = new AtomicInteger();
+
+    static class FakeConnection {
+        final int id;
+        FakeConnection(int id, AtomicInteger handshakeCounter) {
+            this.id = id;
+            handshakeCounter.incrementAndGet(); // models the expensive handshake, paid on CREATION
+        }
+    }
+
+    // Level 1 (no pool): every request opens and &quot;closes&quot; (discards) its own connection.
+    static void requestWithoutPooling(int requestNum) {
+        FakeConnection conn = new FakeConnection(requestNum, handshakesWithoutPooling); // handshake EVERY time
+        // ... use conn for a query ...
+        // connection is discarded here, not reused
+    }
+
+    // Level 2 &amp; 3: a bounded pool, connections created once, borrowed and returned via a BlockingQueue.
+    static class ConnectionPool {
+        private final BlockingQueue&lt;FakeConnection&gt; available;
+
+        ConnectionPool(int size) {
+            available = new ArrayBlockingQueue&lt;&gt;(size);
+            for (int i = 0; i &lt; size; i++) {
+                available.add(new FakeConnection(i, handshakesWithPooling)); // handshake ONCE per connection, at startup
+            }
+        }
+
+        FakeConnection borrow() throws InterruptedException {
+            return available.take(); // waits here if the pool is currently exhausted
+        }
+        void giveBack(FakeConnection conn) {
+            available.offer(conn); // returned to the pool, ready for the NEXT request to reuse
+        }
+    }
+
+    static void requestWithPooling(ConnectionPool pool, int requestNum) throws InterruptedException {
+        FakeConnection conn = pool.borrow(); // reuses an existing connection, NO new handshake
+        // ... use conn for a query ...
+        pool.giveBack(conn);
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        int totalRequests = 50;
+
+        for (int i = 0; i &lt; totalRequests; i++) {
+            requestWithoutPooling(i);
+        }
+        System.out.println(&quot;WITHOUT pooling: &quot; + totalRequests + &quot; requests -&gt; &quot; + handshakesWithoutPooling.get() + &quot; handshakes&quot;);
+
+        ConnectionPool pool = new ConnectionPool(5); // pool of 5 reusable connections
+        for (int i = 0; i &lt; totalRequests; i++) {
+            requestWithPooling(pool, i);
+        }
+        System.out.println(&quot;WITH pooling (size 5): &quot; + totalRequests + &quot; requests -&gt; &quot; + handshakesWithPooling.get() + &quot; handshakes&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ConnectionPooling.java</code>, then run <code>java ConnectionPooling.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Each call to <code>requestWithoutPooling</code> constructs a brand-new <code>FakeConnection</code>, and the <code>FakeConnection</code> constructor itself increments <code>handshakesWithoutPooling</code> — so 50 calls produce exactly 50 handshakes.</li><li><code>new ConnectionPool(5)</code> constructs exactly five <code>FakeConnection</code> objects up front, incrementing <code>handshakesWithPooling</code> five times total, during pool creation — before any request has even happened.</li><li>Each <code>requestWithPooling</code> call borrows an existing connection via <code>pool.borrow()</code> (which blocks if none are currently available, then returns immediately once one is available) and returns it via <code>pool.giveBack()</code> — no new <code>FakeConnection</code> is ever created during these calls.</li><li>After 50 requests through the pool, <code>handshakesWithPooling</code> is still <code>5</code> — the same five connections were reused across all 50 requests, each one borrowed and returned many times.</li><li>The final comparison — 50 handshakes without pooling versus 5 with pooling — is the direct, measurable saving pooling provides, and the gap widens further as request volume grows, since the pooled cost stays fixed at the pool size while the unpooled cost scales linearly with request count.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: forgetting to return a borrowed connection (a &quot;connection leak,&quot; often from a missing <code>finally</code> block or <code>try-with-resources</code>) slowly shrinks the pool&#x27;s available connections until every request starts blocking indefinitely, even though the database itself may be completely healthy — this is a common, hard-to-diagnose production issue.</blockquote>
+<ul><li>Connection pooling amortizes the expensive connection-setup cost across many requests, and bounds how many concurrent connections your application ever opens against the database.</li><li>Pool size is a real capacity limit: too small causes requests to wait unnecessarily, too large risks overwhelming the database — size it from measured concurrent query load.</li><li>Always release a borrowed connection in a <code>finally</code> block (or use try-with-resources), since a leaked connection is a slow, silent failure.</li><li>Related concepts: <a href="0072-spring-data-jpa-repositories.md">Spring Data JPA &amp; repositories</a> (Spring Boot configures a connection pool, HikariCP, automatically behind every JPA repository).</li></ul>
+  <div class="nav"><a class="prv" href="0070-optimistic-vs-pessimistic-locking.html"><span class="mini">← Previous</span>Optimistic vs pessimistic locking</a><a class="nxt" href="0072-spring-data-jpa-repositories.html"><span class="mini">Next →</span>Spring Data JPA & repositories</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t71";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

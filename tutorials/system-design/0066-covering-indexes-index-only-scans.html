@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Covering indexes & index-only scans" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 5. SQL Databases</div>
+  <div class="htitle">
+    <h1>"Covering indexes & index-only scans"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>covering index</strong> is an index that includes every column a specific query needs, not just the column(s) used to filter or sort. When a query&#x27;s needs are fully met by the index itself, the database can perform an <strong>index-only scan</strong> — answering the query directly from the index, without ever reading the underlying table rows.</p>
+<h2>2. Why &amp; when</h2>
+<p>A normal index lookup is a two-step process: find the matching entries in the index, then follow a pointer back to the full row in the table to read any other requested column — that second step is an extra disk or memory read per row. A covering index removes that second step entirely for queries whose needed columns are all present in the index. Use it for frequent, narrow, performance-critical queries (a dashboard query run thousands of times a minute) where that second lookup is measurably costly.</p>
+<h2>3. Core concept</h2>
+<p><strong>The normal (non-covering) path:</strong> an index on <code>email</code> speeds up <code>WHERE email = ?</code>, but if the query also selects <code>name</code>, the database still has to follow a pointer from the matching index entry back to the full table row, just to read <code>name</code> — this extra step is called a <strong>heap fetch</strong> (or &quot;bookmark lookup&quot;).</p>
+<p><strong>The covering path:</strong> if the index is instead built on <code>(email, name)</code> — or the database&#x27;s index supports an &quot;included columns&quot; feature to attach <code>name</code> without making it part of the sort key — then a query selecting only <code>email</code> and <code>name</code> finds everything it needs directly in the index entry itself, with no heap fetch required.</p>
+<p><strong>Why this matters at scale:</strong> the heap fetch is often the more expensive part of the whole operation, especially when the matching rows are scattered across many different physical table pages. Removing it via a covering index can turn a query that touches many random disk pages into one that only reads a compact, sequential index structure.</p>
+<p><strong>The trade-off:</strong> a covering index is wider (more columns) than a minimal index, so it costs more storage and more work to keep updated on every write. It only pays off for queries that are frequent and performance-sensitive enough to justify that cost.</p>
+<h2>4. Diagram</h2>
+<pre><code>NON-COVERING index on (email) only:
+  Index: email=&#x27;b@x.com&#x27; -&gt; row pointer #482
+                                  |
+                                  v  HEAP FETCH: follow pointer, read the full row
+  Table: row #482 -&gt; {id, email, name, address, created_at, ...}
+  Query needs &quot;name&quot; -&gt; must do the heap fetch to get it
+
+COVERING index on (email, name):
+  Index: email=&#x27;b@x.com&#x27;, name=&#x27;Bob&#x27; -&gt; (row pointer, unused)
+  Query needs only email + name -&gt; answered directly from the index entry
+                                    NO heap fetch, NO table row read at all</code></pre>
+<p>*Caption: a covering index stores every column the query needs, so the database can skip the extra trip back to the full table row.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A non-covering index: matching entries require a follow-up &quot;heap fetch&quot; to another map to get extra columns, counted explicitly.</p>
+<p><strong>Level 2 — Covering index.</strong> The same query answered by an index that already stores every needed column, with zero heap fetches.</p>
+<p><strong>Level 3 — Cost comparison.</strong> Run the same query pattern many times under each approach and compare heap-fetch counts.</p>
+<pre><code class="lang-java">// CoveringIndex.java
+import java.util.*;
+
+public class CoveringIndex {
+
+    record UserRow(int id, String email, String name, String address) {}
+
+    static final Map&lt;Integer, UserRow&gt; table = new HashMap&lt;&gt;();
+    static int heapFetches = 0;
+
+    static UserRow heapFetch(int rowPointer) {
+        heapFetches++; // models an extra disk/memory read back to the full row
+        return table.get(rowPointer);
+    }
+
+    public static void main(String[] args) {
+        table.put(1, new UserRow(1, &quot;amy@x.com&quot;, &quot;Amy&quot;, &quot;1 Main St&quot;));
+        table.put(2, new UserRow(2, &quot;bob@x.com&quot;, &quot;Bob&quot;, &quot;2 Oak Ave&quot;));
+        table.put(3, new UserRow(3, &quot;cid@x.com&quot;, &quot;Cid&quot;, &quot;3 Elm Rd&quot;));
+
+        // Level 1: NON-COVERING index - only maps email -&gt; row pointer.
+        Map&lt;String, Integer&gt; nonCoveringIndex = new HashMap&lt;&gt;();
+        for (UserRow r : table.values()) nonCoveringIndex.put(r.email(), r.id());
+
+        System.out.println(&quot;--- non-covering: query needs email + name ---&quot;);
+        for (String email : List.of(&quot;amy@x.com&quot;, &quot;bob@x.com&quot;, &quot;cid@x.com&quot;)) {
+            Integer pointer = nonCoveringIndex.get(email); // index-only step: fast
+            UserRow row = heapFetch(pointer); // extra step: follow pointer to get &quot;name&quot;
+            System.out.println(&quot;  &quot; + email + &quot; -&gt; &quot; + row.name());
+        }
+        System.out.println(&quot;heap fetches with non-covering index: &quot; + heapFetches);
+
+        heapFetches = 0; // reset for the covering-index comparison
+
+        // Level 2: COVERING index - stores (email, name) directly, no pointer-follow needed.
+        record CoveringEntry(String email, String name) {}
+        List&lt;CoveringEntry&gt; coveringIndex = new ArrayList&lt;&gt;();
+        for (UserRow r : table.values()) coveringIndex.add(new CoveringEntry(r.email(), r.name()));
+
+        System.out.println(&quot;--- covering: query needs email + name ---&quot;);
+        for (String email : List.of(&quot;amy@x.com&quot;, &quot;bob@x.com&quot;, &quot;cid@x.com&quot;)) {
+            for (CoveringEntry e : coveringIndex) {
+                if (e.email().equals(email)) {
+                    System.out.println(&quot;  &quot; + email + &quot; -&gt; &quot; + e.name()); // answered from the index alone
+                    break;
+                }
+            }
+        }
+        System.out.println(&quot;heap fetches with covering index: &quot; + heapFetches); // stays 0
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CoveringIndex.java</code>, then run <code>java CoveringIndex.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>nonCoveringIndex</code> maps only <code>email</code> to a row pointer (<code>id</code>) — it does not store <code>name</code>.</li><li>For each email, <code>nonCoveringIndex.get(email)</code> is a fast index lookup, but getting <code>name</code> requires calling <code>heapFetch(pointer)</code>, which reads the full row from <code>table</code> — incrementing <code>heapFetches</code> once per query.</li><li>After three queries, <code>heapFetches</code> is <code>3</code> — one extra read per query, on top of the index lookup itself.</li><li><code>coveringIndex</code> instead stores <code>email</code> and <code>name</code> together, directly, with nothing pointing back to <code>table</code>.</li><li>The same three queries now find both <code>email</code> and <code>name</code> directly within <code>coveringIndex</code>&#x27;s own entries — <code>heapFetch</code> is never called, so <code>heapFetches</code> stays at <code>0</code> for the entire second run.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: adding a column to a covering index to serve one query makes that index wider and more expensive to update on every write to that column; a covering index is a targeted optimization for a specific, known, frequent query — not something to apply to every index by default.</blockquote>
+<ul><li>A covering index eliminates the heap fetch entirely for queries whose needed columns are all present in the index, which can be a major cost saving under heavy read load.</li><li>The trade-off is storage and write cost: every additional column in the index must be kept up to date on every insert, update, and delete that touches it.</li><li>Related concepts: <a href="0065-b-tree-hash-composite-indexes.md">B-tree, hash &amp; composite indexes</a> (the underlying index structures a covering index builds on), <a href="0067-query-planning-the-n-1-problem.md">Query planning &amp; the N+1 problem</a> (how the query planner decides whether an index-only scan is even possible).</li></ul>
+  <div class="nav"><a class="prv" href="0065-b-tree-hash-composite-indexes.html"><span class="mini">← Previous</span>B-tree, hash & composite indexes</a><a class="nxt" href="0067-query-planning-the-n-1-problem.html"><span class="mini">Next →</span>Query planning & the N+1 problem</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t66";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Query planning & the N+1 problem" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 5. SQL Databases</div>
+  <div class="htitle">
+    <h1>"Query planning & the N+1 problem"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>query planner</strong> (or optimizer) is the part of a database that decides *how* to execute a SQL query — which indexes to use, which order to join tables in — before actually running it. The <strong>N+1 problem</strong> is a common application-level performance bug: fetching a list of N parent records with one query, then issuing one additional query *per parent* to fetch its related data, resulting in N+1 total queries instead of a single join.</p>
+<h2>2. Why &amp; when</h2>
+<p>The query planner matters because the same SQL query can be executed many different ways with very different costs, and the planner&#x27;s choice is invisible unless you explicitly inspect it. The N+1 problem matters because it is easy to write by accident — especially with an object-relational mapper (ORM) like JPA/Hibernate, where accessing a related object in code looks identical whether it triggers a fresh query or not. Watch for it whenever an application feels slow specifically in proportion to how many items are on a list page.</p>
+<h2>3. Core concept</h2>
+<p><strong>What the query planner does:</strong> given a query, the planner considers the available indexes, estimates how many rows each possible approach would touch (using statistics about the data), and picks the plan it estimates is cheapest — for example, choosing whether to use an index or a full table scan, based on whether the filter is expected to match a small or a large fraction of the table.</p>
+<p><strong><code>EXPLAIN</code> reveals the chosen plan:</strong> every major SQL database supports an <code>EXPLAIN</code> command that shows the plan actually chosen for a query — which indexes it uses, in what order it joins tables, and its estimated cost — the primary tool for diagnosing why a query is slow.</p>
+<p><strong>How the N+1 problem happens:</strong> code that loops over a list of parents and, inside the loop, separately loads each parent&#x27;s related children (<code>for (order : orders) { loadItems(order.id) }</code>) issues one query for the list, then one more query per item in that list — for 100 orders, that is 101 queries instead of 1 or 2.</p>
+<p><strong>The fix — eager loading via a join:</strong> replace the per-parent queries with a single query that joins the parent and child tables together (or, in an ORM, an explicit &quot;fetch join&quot; / eager-loading hint), retrieving all the data needed in one round trip instead of N+1.</p>
+<h2>4. Diagram</h2>
+<pre><code>N+1 PROBLEM (100 orders):
+  Query 1: SELECT * FROM orders                       -&gt; 100 orders
+  Query 2..101: SELECT * FROM order_items WHERE order_id = ?   (once PER order)
+  Total: 101 queries
+
+FIXED (single join):
+  Query 1: SELECT o.*, i.* FROM orders o
+           JOIN order_items i ON i.order_id = o.id     -&gt; all orders + items, ONE query
+  Total: 1 query</code></pre>
+<p>*Caption: N+1 issues one extra query per parent row; a join fetches everything needed in a single round trip.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Simulate the N+1 pattern: a query per order, counted explicitly.</p>
+<p><strong>Level 2 — The fix.</strong> The same data fetched with a single simulated join query.</p>
+<p><strong>Level 3 — Cost comparison at scale.</strong> Run both approaches over a growing number of orders and compare total query counts.</p>
+<pre><code class="lang-java">// QueryPlanningNPlus1.java
+import java.util.*;
+
+public class QueryPlanningNPlus1 {
+
+    record Order(int id) {}
+    record OrderItem(int orderId, String product) {}
+
+    static final List&lt;Order&gt; allOrders = new ArrayList&lt;&gt;();
+    static final List&lt;OrderItem&gt; allItems = new ArrayList&lt;&gt;();
+    static int queryCount = 0;
+
+    static List&lt;Order&gt; queryOrders() {
+        queryCount++;
+        return new ArrayList&lt;&gt;(allOrders);
+    }
+
+    // Level 1: N+1 - one extra query PER order to fetch its items.
+    static List&lt;OrderItem&gt; queryItemsForOrder(int orderId) {
+        queryCount++;
+        List&lt;OrderItem&gt; result = new ArrayList&lt;&gt;();
+        for (OrderItem item : allItems) if (item.orderId() == orderId) result.add(item);
+        return result;
+    }
+
+    // Level 2: the fix - one single joined query for everything.
+    static Map&lt;Integer, List&lt;OrderItem&gt;&gt; queryOrdersWithItemsJoined() {
+        queryCount++; // exactly one query, regardless of how many orders exist
+        Map&lt;Integer, List&lt;OrderItem&gt;&gt; itemsByOrder = new HashMap&lt;&gt;();
+        for (OrderItem item : allItems) {
+            itemsByOrder.computeIfAbsent(item.orderId(), k -&gt; new ArrayList&lt;&gt;()).add(item);
+        }
+        return itemsByOrder;
+    }
+
+    public static void main(String[] args) {
+        // Level 3: set up 5 orders, each with 2 items.
+        for (int i = 1; i &lt;= 5; i++) {
+            allOrders.add(new Order(i));
+            allItems.add(new OrderItem(i, &quot;item-A-of-order-&quot; + i));
+            allItems.add(new OrderItem(i, &quot;item-B-of-order-&quot; + i));
+        }
+
+        // N+1 approach.
+        queryCount = 0;
+        List&lt;Order&gt; orders = queryOrders(); // query 1
+        for (Order o : orders) {
+            queryItemsForOrder(o.id()); // one MORE query per order
+        }
+        System.out.println(&quot;N+1 approach: &quot; + orders.size() + &quot; orders -&gt; &quot; + queryCount + &quot; total queries&quot;);
+
+        // Fixed, single-join approach.
+        queryCount = 0;
+        Map&lt;Integer, List&lt;OrderItem&gt;&gt; ordersWithItems = queryOrdersWithItemsJoined();
+        System.out.println(&quot;joined approach: &quot; + ordersWithItems.size() + &quot; orders -&gt; &quot; + queryCount + &quot; total query&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>QueryPlanningNPlus1.java</code>, then run <code>java QueryPlanningNPlus1.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>queryOrders()</code> runs once and increments <code>queryCount</code> to <code>1</code>, returning all five orders — this models the initial <code>SELECT * FROM orders</code>.</li><li>The <code>for (Order o : orders)</code> loop calls <code>queryItemsForOrder(o.id())</code> once per order, and each call increments <code>queryCount</code> — after five orders, <code>queryCount</code> is <code>1 + 5 = 6</code>, the &quot;N+1&quot; pattern for N=5.</li><li><code>queryOrdersWithItemsJoined()</code> instead scans <code>allItems</code> once and groups them by <code>orderId</code> into a single <code>Map</code>, incrementing <code>queryCount</code> only once total, no matter how many orders exist — this models a single <code>JOIN</code> query.</li><li>The final printout contrasts <code>6</code> total queries for the N+1 approach against <code>1</code> total query for the joined approach, over the exact same underlying data — and the gap between the two only widens as the number of orders grows, since N+1 scales linearly with N while the joined approach stays constant at 1.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: with an ORM like JPA/Hibernate, N+1 often hides behind <strong>lazy loading</strong> — accessing <code>order.getItems()</code> inside a loop looks like a normal method call in code, but if the association is lazily loaded, it silently triggers a fresh database query on every single access; the fix is switching to eager fetching (a fetch join) for access patterns known to need the related data.</blockquote>
+<ul><li>N+1 is invisible in code review unless you know to look for a query-triggering call inside a loop; the fastest way to catch it is by logging or counting actual queries issued during a request, or reading the query plan.</li><li><code>EXPLAIN</code> is the primary tool for understanding what a database actually did with a query — always check it before assuming an index is being used.</li><li>Related concepts: <a href="0072-spring-data-jpa-repositories.md">Spring Data JPA &amp; repositories</a> (where the N+1 problem most commonly appears in Spring applications), <a href="0066-covering-indexes-index-only-scans.md">Covering indexes &amp; index-only scans</a> (a separate optimization the planner can choose to apply once N+1 is already fixed).</li></ul>
+  <div class="nav"><a class="prv" href="0066-covering-indexes-index-only-scans.html"><span class="mini">← Previous</span>Covering indexes & index-only scans</a><a class="nxt" href="0068-acid-properties.html"><span class="mini">Next →</span>ACID properties</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t67";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
