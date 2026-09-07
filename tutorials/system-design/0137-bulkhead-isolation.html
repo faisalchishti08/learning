@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bulkhead isolation — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 11. Reliability, Availability & Resiliency</div>
+  <div class="htitle">
+    <h1>Bulkhead isolation</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Bulkhead isolation</strong> partitions a system&#x27;s resources (thread pools, connection pools, or entire service instances) so that a failure or slowdown in one part cannot exhaust the resources needed by another, unrelated part. The name comes from a ship&#x27;s bulkheads: watertight compartments that keep a hull breach in one section from flooding and sinking the entire ship.</p>
+<h2>2. Why &amp; when</h2>
+<p>Without isolation, one slow or failing dependency can silently take down completely unrelated functionality, simply by consuming a resource everything else also depends on — for example, if all outgoing calls share one thread pool, calls to a slow &quot;recommendations&quot; service can occupy every thread in that pool while they wait, leaving zero threads available for a completely unrelated, healthy &quot;checkout&quot; call. Use bulkheads whenever a single service makes calls to multiple, independent dependencies, so that one dependency&#x27;s problems stay contained to the functionality that actually depends on it.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Shared resource pool (no isolation):</strong> all outgoing calls, regardless of destination, draw from one thread pool or one connection pool — a slowdown in any single dependency can consume the whole pool.</li><li><strong>Per-dependency isolation:</strong> give each dependency (or each category of functionality) its own dedicated, separately-sized pool. A slow &quot;recommendations&quot; call can exhaust *its own* small pool, but the &quot;checkout&quot; pool remains completely untouched and fully available.</li><li><strong>Sizing each bulkhead:</strong> size each pool according to that specific dependency&#x27;s expected load and how much resource exhaustion in that one area is acceptable to tolerate — a critical dependency might get a generous pool; a non-essential one gets a small, tightly-bounded pool.</li><li><strong>Combines naturally with circuit breakers:</strong> a <a href="0136-circuit-breaker.md">circuit breaker</a> can be applied per bulkhead, so a struggling dependency&#x27;s own isolated pool trips its own breaker, independent of any other dependency&#x27;s health.</li><li><strong>Isolation can also apply at a coarser level:</strong> entire service instances, or even entire clusters, can be partitioned by customer tier or by feature, so a problem in one partition does not affect another — the same principle applied at a larger scale.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>NO ISOLATION (shared pool):            BULKHEAD ISOLATION (separate pools):
+
+  Shared thread pool (10 threads)       Recommendations pool (3 threads)
+       |         |                            |
+  Recommendations  Checkout                Recommendations calls
+  calls (SLOW,     calls                   (all 3 threads stuck,
+   hang, use 9      (only 1                 but ONLY these 3)
+   of 10 threads)   thread left)
+                                          Checkout pool (7 threads, SEPARATE)
+  -&gt; checkout starves too, even                |
+     though checkout itself is healthy    Checkout calls proceed normally,
+                                           completely unaffected</code></pre>
+<p>*Caption: without isolation, one slow dependency can starve resources needed by unrelated, healthy functionality; separate pools contain the damage to just the affected area.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A shared thread pool lets a slow dependency&#x27;s calls starve resources needed by an unrelated, healthy call.</p>
+<p><strong>Level 2 — Bulkhead isolation.</strong> Give each dependency its own pool, so the slow one&#x27;s exhaustion does not affect the other.</p>
+<p><strong>Level 3 — Sizing bulkheads appropriately.</strong> Show a correctly-sized bulkhead absorbing a burst without affecting other pools.</p>
+<pre><code class="lang-java">// BulkheadIsolation.java
+import java.util.concurrent.*;
+import java.util.*;
+
+public class BulkheadIsolation {
+
+    public static void main(String[] args) throws Exception {
+        // Level 1: shared pool - a slow dependency&#x27;s calls can consume all available threads.
+        ExecutorService sharedPool = Executors.newFixedThreadPool(4);
+        List&lt;Future&lt;String&gt;&gt; slowCallsShared = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 4; i++) { // occupy ALL 4 threads with slow &quot;recommendations&quot; calls
+            slowCallsShared.add(sharedPool.submit(() -&gt; { Thread.sleep(2000); return &quot;recommendations result&quot;; }));
+        }
+        Future&lt;String&gt; checkoutCallShared = sharedPool.submit(() -&gt; &quot;checkout result&quot;); // no thread free for this!
+        try {
+            String result = checkoutCallShared.get(200, TimeUnit.MILLISECONDS); // short wait to prove it&#x27;s stuck
+            System.out.println(&quot;shared pool - checkout result: &quot; + result);
+        } catch (TimeoutException e) {
+            System.out.println(&quot;shared pool - checkout call STUCK waiting: all threads consumed by slow recommendations calls&quot;);
+        }
+        sharedPool.shutdownNow();
+
+        // Level 2: bulkhead isolation - separate pools per dependency.
+        ExecutorService recommendationsPool = Executors.newFixedThreadPool(4); // its own dedicated pool
+        ExecutorService checkoutPool = Executors.newFixedThreadPool(2);        // separate, isolated pool
+
+        List&lt;Future&lt;String&gt;&gt; slowCallsIsolated = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 4; i++) { // saturate recommendationsPool entirely
+            slowCallsIsolated.add(recommendationsPool.submit(() -&gt; { Thread.sleep(2000); return &quot;recommendations result&quot;; }));
+        }
+        Future&lt;String&gt; checkoutCallIsolated = checkoutPool.submit(() -&gt; &quot;checkout result&quot;); // uses a SEPARATE pool
+        String isolatedResult = checkoutCallIsolated.get(200, TimeUnit.MILLISECONDS); // succeeds immediately
+        System.out.println(&quot;isolated pools - checkout result: &quot; + isolatedResult + &quot; (completely unaffected by recommendations being saturated)&quot;);
+
+        recommendationsPool.shutdownNow();
+        checkoutPool.shutdown();
+
+        // Level 3: correctly-sized bulkhead absorbs a burst within its own pool, without affecting others.
+        ExecutorService searchPool = Executors.newFixedThreadPool(3); // sized for expected search burst
+        int burstSize = 3;
+        List&lt;Future&lt;String&gt;&gt; searchBurst = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; burstSize; i++) {
+            int id = i;
+            searchBurst.add(searchPool.submit(() -&gt; &quot;search result &quot; + id));
+        }
+        for (Future&lt;String&gt; f : searchBurst) System.out.println(&quot;search pool handled: &quot; + f.get());
+        System.out.println(&quot;search pool absorbed the full burst of &quot; + burstSize + &quot; within its own dedicated capacity&quot;);
+        searchPool.shutdown();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>BulkheadIsolation.java</code>, then run <code>java BulkheadIsolation.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Level 1 submits 4 slow, 2-second tasks to a single <code>sharedPool</code> of exactly 4 threads, fully occupying it, then submits an unrelated, fast <code>checkoutCallShared</code> task to the same pool.</li><li>Because all 4 threads are busy sleeping on the slow tasks, <code>checkoutCallShared.get(200, ...)</code> times out — the checkout call is stuck in the queue, not because checkout itself is slow, but purely because it shares a resource pool with the struggling recommendations calls.</li><li>Level 2 repeats the exact same scenario, but with <code>recommendationsPool</code> and <code>checkoutPool</code> as two entirely separate <code>ExecutorService</code> instances. The 4 slow tasks saturate <code>recommendationsPool</code> exactly as before.</li><li>This time, <code>checkoutCallIsolated</code> is submitted to <code>checkoutPool</code>, a completely different pool with its own threads; <code>checkoutCallIsolated.get(200, ...)</code> succeeds immediately, since its pool was never touched by the recommendations slowdown.</li><li>Level 3 shows a <code>searchPool</code> sized generously enough (3 threads) to handle an expected burst of exactly 3 concurrent search requests, all completing successfully within that pool&#x27;s own dedicated capacity — reinforcing that correct bulkhead sizing, not just the presence of separate pools, is what actually prevents resource exhaustion within a given bulkhead itself.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: bulkheads only isolate the specific resource they partition (e.g. a thread pool); if two &quot;isolated&quot; dependencies still share something else critical — the same underlying database connection pool, the same downstream network link — a failure there can still cross the boundary the thread-pool bulkhead was meant to enforce. Trace every shared resource, not just the most obvious one, when designing isolation boundaries.</blockquote>
+<ul><li>Bulkhead isolation partitions resources (thread pools, connection pools) per dependency, so one dependency&#x27;s failure or slowness cannot exhaust resources needed by unrelated, healthy functionality.</li><li>Sizing each bulkhead appropriately for its own expected load is what determines whether it actually absorbs bursts and failures without either starving itself or wastefully over-provisioning.</li><li>Bulkheads and circuit breakers combine naturally: each isolated pool can have its own breaker, tripping independently based on that specific dependency&#x27;s health.</li><li>Related concepts: <a href="0136-circuit-breaker.md">Circuit breaker</a> (commonly applied per-bulkhead), <a href="0128-connection-reuse-pooling.md">Connection reuse &amp; pooling</a> (the kind of resource a bulkhead often partitions), <a href="0133-single-points-of-failure-elimination.md">Single points of failure elimination</a> (the broader review discipline bulkheads support).</li></ul>
+  <div class="nav"><a class="prv" href="0136-circuit-breaker.html"><span class="mini">← Previous</span>Circuit breaker</a><a class="nxt" href="0138-fallbacks-graceful-degradation.html"><span class="mini">Next →</span>Fallbacks & graceful degradation</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t137";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

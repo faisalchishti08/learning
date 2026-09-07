@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Retries with exponential backoff & jitter — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 11. Reliability, Availability & Resiliency</div>
+  <div class="htitle">
+    <h1>Retries with exponential backoff & jitter</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>retry</strong> simply tries a failed operation again, on the theory that many failures are transient (a brief network blip, a momentarily overloaded server) and will succeed on a second attempt. <strong>Exponential backoff</strong> waits progressively longer between each retry attempt (e.g. 1s, 2s, 4s, 8s), instead of retrying immediately or at a fixed interval, giving a struggling dependency time to recover rather than hitting it again right away. <strong>Jitter</strong> adds a small random amount to each wait time, so that many clients retrying the same failed dependency do not all retry at exactly the same moment.</p>
+<h2>2. Why &amp; when</h2>
+<p>Retrying immediately, with no backoff, against a dependency that is failing because it is overloaded makes the overload worse, not better — every failed caller immediately tries again, adding more load to an already-struggling system. Exponential backoff gives the dependency breathing room to recover, with each retry spaced further apart. Jitter solves a second, more subtle problem: if a dependency fails for every caller at once (a brief outage) and every caller retries using the exact same backoff schedule, all their retries land at the same synchronized moments, creating repeated load spikes instead of smoothly spread-out load. Use retries specifically for failures believed to be transient (network timeouts, a 503 response); never retry an error you know is permanent (a 400 Bad Request, a validation failure) since it will simply fail again identically.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Only retry transient, idempotent-safe operations:</strong> retrying an operation that has a side effect (charging a card) needs <a href="0116-idempotent-consumers.md">idempotency</a> to be safe; retrying a clearly permanent failure (invalid input) wastes an attempt on a call guaranteed to fail again.</li><li><strong>Exponential backoff formula:</strong> wait time typically doubles each attempt, e.g. <code>baseDelay * 2^attemptNumber</code>, often capped at a maximum delay so retries do not eventually wait absurdly long.</li><li><strong>Jitter:</strong> add a random amount to the computed backoff delay (e.g. a random value between 0 and the computed delay, known as &quot;full jitter&quot;), so simultaneous callers&#x27; retries spread out over time instead of clustering.</li><li><strong>Maximum retry count:</strong> retries must be bounded — an operation that keeps failing after several retries should stop retrying and surface the failure (or move to a <a href="0138-fallbacks-graceful-degradation.md">fallback</a> or a <a href="0118-dead-letter-queues-poison-messages.md">dead-letter queue</a>), not retry forever.</li><li><strong>The retry storm risk:</strong> many independent clients retrying the same failing dependency, especially without backoff or jitter, can itself cause or prolong an outage — this is a well-documented cause of real production incidents.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>NO BACKOFF (retry storm risk):        EXPONENTIAL BACKOFF + JITTER:
+
+  fail -&gt; retry immediately            fail -&gt; wait ~1s (0.5-1.5s w/ jitter) -&gt; retry
+  fail -&gt; retry immediately            fail -&gt; wait ~2s (1-3s w/ jitter) -&gt; retry
+  fail -&gt; retry immediately            fail -&gt; wait ~4s (2-6s w/ jitter) -&gt; retry
+  (hammering an already-struggling     (dependency gets increasing breathing
+   dependency, no relief)               room; jitter spreads many clients&#x27;
+                                         retries instead of clustering them)</code></pre>
+<p>*Caption: exponential backoff spaces out retries increasingly; jitter prevents many clients&#x27; retries from landing at the same synchronized moments.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Retry a failing operation a bounded number of times with a fixed delay.</p>
+<p><strong>Level 2 — Exponential backoff.</strong> Increase the delay between each retry attempt.</p>
+<p><strong>Level 3 — Add jitter.</strong> Randomize the delay so multiple simulated clients&#x27; retries do not all land at the same moment.</p>
+<pre><code class="lang-java">// RetriesBackoffJitter.java
+import java.util.*;
+
+public class RetriesBackoffJitter {
+
+    static int attemptsUntilSuccess = 3; // this simulated call succeeds on the 3rd attempt
+
+    static boolean attemptCall(int attemptNumber) {
+        return attemptNumber &gt;= attemptsUntilSuccess;
+    }
+
+    public static void main(String[] args) {
+        // Level 1 &amp; 2: exponential backoff - delay doubles each attempt, capped at a maximum.
+        int maxRetries = 5;
+        long baseDelayMs = 500;
+        long maxDelayMs = 8000;
+
+        System.out.println(&quot;--- exponential backoff (no jitter) ---&quot;);
+        for (int attempt = 1; attempt &lt;= maxRetries; attempt++) {
+            boolean success = attemptCall(attempt);
+            if (success) { System.out.println(&quot;attempt &quot; + attempt + &quot;: SUCCESS&quot;); break; }
+            long delay = Math.min(baseDelayMs * (1L &lt;&lt; (attempt - 1)), maxDelayMs); // baseDelay * 2^(attempt-1), capped
+            System.out.println(&quot;attempt &quot; + attempt + &quot;: FAILED, waiting &quot; + delay + &quot;ms before retry&quot;);
+        }
+
+        // Level 3: add jitter - randomize the delay so simultaneous clients don&#x27;t retry in lockstep.
+        System.out.println(&quot;--- exponential backoff WITH jitter, 3 simulated clients ---&quot;);
+        Random rand = new Random(7);
+        for (int client = 1; client &lt;= 3; client++) {
+            long computedDelay = Math.min(baseDelayMs * (1L &lt;&lt; 1), maxDelayMs); // e.g. attempt 2&#x27;s delay
+            long jitteredDelay = (long) (rand.nextDouble() * computedDelay); // &quot;full jitter&quot;: random between 0 and computedDelay
+            System.out.println(&quot;client &quot; + client + &quot;: computed backoff=&quot; + computedDelay + &quot;ms, jittered delay=&quot; + jitteredDelay + &quot;ms&quot;);
+        }
+        System.out.println(&quot;-&gt; each client waits a DIFFERENT amount, spreading their retries instead of all landing at &quot; + (baseDelayMs * 2) + &quot;ms together&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>RetriesBackoffJitter.java</code>, then run <code>java RetriesBackoffJitter.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>attemptCall</code> simulates a call that only succeeds once <code>attemptNumber</code> reaches <code>attemptsUntilSuccess</code> (3), modeling a transient failure that resolves after a couple of tries.</li><li>The Level 1/2 loop computes <code>delay = baseDelayMs * 2^(attempt-1)</code>, capped at <code>maxDelayMs</code>; attempt 1 fails and waits <code>500ms</code>, attempt 2 fails and waits <code>1000ms</code>, and attempt 3 succeeds — showing the delay growing exponentially between failed attempts, and stopping the moment the call finally succeeds.</li><li>Level 3 computes the same backoff delay (for a fixed attempt number, to keep the comparison clear) for 3 separate simulated clients, but then multiplies it by a random fraction between 0 and 1 to get <code>jitteredDelay</code>.</li><li>Each client&#x27;s printed <code>jitteredDelay</code> comes out to a different value, even though they all started from the identical <code>computedDelay</code> — this is jitter doing its job: spreading what would otherwise be simultaneous, synchronized retry attempts across a range of actual times.</li><li>The final note makes the payoff explicit: without jitter, all 3 clients would retry at exactly the same <code>computedDelay</code> moment, creating a load spike; with jitter, their retries land at different times, smoothing the load the recovering dependency actually experiences.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: retrying an operation that is not idempotent (see <a href="0116-idempotent-consumers.md">idempotent consumers</a>) can cause the same side effect to happen multiple times if the original attempt actually succeeded but its success response was lost before the caller saw it — always confirm an operation is safe to repeat before wrapping it in a retry loop.</blockquote>
+<ul><li>Retries handle transient failures by trying again, but should never be used for failures known to be permanent.</li><li>Exponential backoff spaces out retry attempts increasingly, giving a struggling dependency room to recover instead of being hit again immediately.</li><li>Jitter randomizes each retry&#x27;s delay, preventing many simultaneous clients from retrying in lockstep and causing a synchronized load spike.</li><li>Related concepts: <a href="0134-timeouts.md">Timeouts</a> (what typically triggers the failure a retry responds to), <a href="0116-idempotent-consumers.md">Idempotent consumers</a> (a prerequisite for safely retrying an operation with side effects), <a href="0136-circuit-breaker.md">Circuit breaker</a> (stops retries altogether once a dependency is clearly down, rather than retrying forever).</li></ul>
+  <div class="nav"><a class="prv" href="0134-timeouts.html"><span class="mini">← Previous</span>Timeouts</a><a class="nxt" href="0136-circuit-breaker.html"><span class="mini">Next →</span>Circuit breaker</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t135";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

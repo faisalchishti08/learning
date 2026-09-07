@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Health checks & heartbeats — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 11. Reliability, Availability & Resiliency</div>
+  <div class="htitle">
+    <h1>Health checks & heartbeats</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>health check</strong> is a request sent to a service specifically to ask &quot;are you working correctly right now?&quot; — typically a lightweight HTTP endpoint (like <code>/health</code>) that returns a simple healthy/unhealthy status. A <strong>heartbeat</strong> is the same idea from the opposite direction: instead of being asked, a node periodically announces &quot;I am still alive&quot; on its own, and the absence of an expected heartbeat is treated as a failure signal.</p>
+<h2>2. Why &amp; when</h2>
+<p>Redundancy (running multiple instances) only helps if the system actually knows *which* instances are currently healthy — otherwise a load balancer keeps sending traffic to a crashed or hung instance, and a failover system never knows a primary has died. Health checks and heartbeats are how a system detects failure in the first place, which is the necessary first step before any redundancy, failover, or <a href="0136-circuit-breaker.md">circuit breaker</a> mechanism can react to it. Use health checks for anything a load balancer or orchestrator (Kubernetes, a cloud load balancer) routes traffic to. Use heartbeats for components that need to actively signal liveness to a monitor, such as nodes in a cluster that need to detect a peer&#x27;s failure.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Liveness check:</strong> &quot;is the process even running?&quot; — a minimal check, often just &quot;did the process respond at all.&quot;</li><li><strong>Readiness check:</strong> &quot;is this instance ready to serve real traffic right now?&quot; — a deeper check that might verify the instance&#x27;s own dependencies (its database connection, a warmed-up cache) are actually working, since a running process is not necessarily a *useful* one.</li><li><strong>Active health checks:</strong> the load balancer or orchestrator periodically polls each instance&#x27;s health endpoint itself.</li><li><strong>Heartbeats (passive-style):</strong> each node periodically sends a signal to a central monitor (or to its peers); if a heartbeat is missed for longer than a threshold, the node is presumed failed.</li><li><strong>Failure detection timing trade-off:</strong> checking too frequently adds overhead and network traffic; checking too infrequently means a failure takes longer to detect, during which traffic keeps flowing to a dead instance. The check interval and failure threshold (e.g. &quot;3 consecutive failed checks&quot;) must be tuned to this trade-off.</li><li><strong>Avoiding false positives:</strong> a single missed check due to a transient network blip should not immediately declare an instance dead — most systems require multiple consecutive failures before acting, to avoid unnecessarily failing over a healthy instance.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>ACTIVE HEALTH CHECK:                   HEARTBEAT:
+
+  Load Balancer                        Node A --&quot;I&#x27;m alive&quot;--&gt; Monitor (every 5s)
+    | GET /health (every 5s)           Node A --&quot;I&#x27;m alive&quot;--&gt; Monitor
+    v                                  Node A --&quot;I&#x27;m alive&quot;--&gt; Monitor
+  Instance 1: 200 OK (healthy)         Node A: [CRASHES]
+  Instance 2: 200 OK (healthy)         Monitor waits... no heartbeat for 15s
+  Instance 3: TIMEOUT (unhealthy)          -&gt; Node A presumed FAILED
+       |
+  removed from rotation</code></pre>
+<p>*Caption: an active health check polls outward to ask if a node is healthy; a heartbeat has the node itself announce liveness, with silence treated as failure.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Poll each instance&#x27;s health check and route traffic only to healthy ones.</p>
+<p><strong>Level 2 — Heartbeat-based failure detection.</strong> A monitor tracks the last heartbeat time per node and flags any node overdue past a threshold.</p>
+<p><strong>Level 3 — Avoiding false positives.</strong> Require multiple consecutive failures before marking an instance unhealthy, tolerating one transient blip.</p>
+<pre><code class="lang-java">// HealthChecksHeartbeats.java
+import java.util.*;
+
+public class HealthChecksHeartbeats {
+
+    record Instance(String name, boolean respondsHealthy) {}
+
+    static List&lt;String&gt; activeHealthCheck(List&lt;Instance&gt; instances) {
+        List&lt;String&gt; healthy = new ArrayList&lt;&gt;();
+        for (Instance i : instances) {
+            System.out.println(&quot;polling &quot; + i.name() + &quot; -&gt; &quot; + (i.respondsHealthy() ? &quot;200 OK&quot; : &quot;TIMEOUT/error&quot;));
+            if (i.respondsHealthy()) healthy.add(i.name());
+        }
+        return healthy;
+    }
+
+    public static void main(String[] args) {
+        // Level 1: active health checks - poll each instance, route traffic only to healthy ones.
+        List&lt;Instance&gt; instances = List.of(
+            new Instance(&quot;instance-1&quot;, true),
+            new Instance(&quot;instance-2&quot;, true),
+            new Instance(&quot;instance-3&quot;, false) // this one is unhealthy
+        );
+        List&lt;String&gt; healthyInstances = activeHealthCheck(instances);
+        System.out.println(&quot;load balancer routes traffic only to: &quot; + healthyInstances);
+
+        // Level 2: heartbeat-based detection - a monitor tracks last-seen time, flags overdue nodes.
+        Map&lt;String, Long&gt; lastHeartbeat = new HashMap&lt;&gt;();
+        long now = 100_000L; // simulated current time in ms
+        lastHeartbeat.put(&quot;node-A&quot;, now - 5_000);  // heartbeat 5s ago - fine
+        lastHeartbeat.put(&quot;node-B&quot;, now - 20_000); // heartbeat 20s ago - overdue
+
+        long heartbeatTimeoutMs = 15_000;
+        for (var entry : lastHeartbeat.entrySet()) {
+            long sinceLastHeartbeat = now - entry.getValue();
+            boolean presumedFailed = sinceLastHeartbeat &gt; heartbeatTimeoutMs;
+            System.out.println(entry.getKey() + &quot;: last heartbeat &quot; + sinceLastHeartbeat + &quot;ms ago -&gt; &quot;
+                + (presumedFailed ? &quot;PRESUMED FAILED&quot; : &quot;alive&quot;));
+        }
+
+        // Level 3: avoid false positives - require multiple consecutive failures before acting.
+        List&lt;Boolean&gt; recentChecks = List.of(true, true, false, true, true); // one transient blip in the middle
+        int consecutiveFailureThreshold = 3;
+        int currentConsecutiveFailures = 0;
+        int maxConsecutiveFailuresSeen = 0;
+        for (boolean checkPassed : recentChecks) {
+            currentConsecutiveFailures = checkPassed ? 0 : currentConsecutiveFailures + 1;
+            maxConsecutiveFailuresSeen = Math.max(maxConsecutiveFailuresSeen, currentConsecutiveFailures);
+        }
+        boolean shouldMarkUnhealthy = maxConsecutiveFailuresSeen &gt;= consecutiveFailureThreshold;
+        System.out.println(&quot;check history: &quot; + recentChecks + &quot;, max consecutive failures: &quot; + maxConsecutiveFailuresSeen);
+        System.out.println(&quot;mark unhealthy? &quot; + shouldMarkUnhealthy + &quot; (single transient blip did not trigger a false failover)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>HealthChecksHeartbeats.java</code>, then run <code>java HealthChecksHeartbeats.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>activeHealthCheck</code> iterates every instance, prints the simulated poll result, and collects only the ones reporting healthy; <code>instance-3</code>&#x27;s <code>respondsHealthy() == false</code> excludes it from <code>healthyInstances</code>.</li><li>The final print of <code>healthyInstances</code> shows only <code>instance-1</code> and <code>instance-2</code> — exactly the set a real load balancer would keep routing traffic to, having removed the unhealthy <code>instance-3</code> from rotation.</li><li>Level 2 checks each node&#x27;s <code>sinceLastHeartbeat</code> against <code>heartbeatTimeoutMs</code>; <code>node-A</code>&#x27;s 5-second gap is well under the 15-second threshold, so it is reported alive, while <code>node-B</code>&#x27;s 20-second gap exceeds it and is reported as presumed failed.</li><li>Level 3 processes a sequence of 5 recent check results with one isolated <code>false</code> in the middle; <code>currentConsecutiveFailures</code> resets to <code>0</code> on every <code>true</code> and only increments on consecutive <code>false</code> results, so <code>maxConsecutiveFailuresSeen</code> ends up at <code>1</code>, not enough to reach <code>consecutiveFailureThreshold = 3</code>.</li><li><code>shouldMarkUnhealthy</code> comes out <code>false</code>, confirming that a single transient blip surrounded by successful checks does not trigger a false failover — this is the direct mechanism that protects a genuinely healthy instance from being wrongly pulled out of rotation due to one flaky check.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a readiness check that only verifies &quot;the process responds to a request&quot; (a liveness check) can report healthy even when the instance&#x27;s actual dependencies (its database connection, a required downstream service) are broken — traffic gets routed to an instance that will fail every real request. Use a genuine readiness check that verifies the instance&#x27;s actual ability to do its job, not just that the process is running.</blockquote>
+<ul><li>Health checks let external systems (load balancers, orchestrators) actively verify an instance&#x27;s status; heartbeats let a node proactively announce its own liveness, with silence treated as failure.</li><li>Liveness checks confirm a process is running; readiness checks confirm it can actually serve real requests correctly — the two are not the same, and both matter.</li><li>Requiring multiple consecutive failures before acting avoids a single transient blip triggering an unnecessary, disruptive failover.</li><li>Related concepts: <a href="0130-redundancy-replication.md">Redundancy &amp; replication</a> (what health checks decide how to route around), <a href="0131-active-active-vs-active-passive-failover.md">Active-active vs active-passive failover</a> (the failover process health checks and heartbeats trigger).</li></ul>
+  <div class="nav"><a class="prv" href="0131-active-active-vs-active-passive-failover.html"><span class="mini">← Previous</span>Active-active vs active-passive failover</a><a class="nxt" href="0133-single-points-of-failure-elimination.html"><span class="mini">Next →</span>Single points of failure elimination</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t132";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

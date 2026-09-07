@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Active-active vs active-passive failover — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 11. Reliability, Availability & Resiliency</div>
+  <div class="htitle">
+    <h1>Active-active vs active-passive failover</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Active-passive failover</strong> keeps a standby copy of a system (or a whole data center) idle, ready to take over only if the primary fails. <strong>Active-active</strong> runs multiple copies simultaneously, all actively serving real traffic at the same time, with none of them sitting idle as a pure backup. Both are redundancy strategies, but they differ in whether the backup capacity is used during normal operation or held in reserve.</p>
+<h2>2. Why &amp; when</h2>
+<p>Active-passive is simpler: the passive side does not need to handle real traffic or worry about being kept perfectly in sync in real time, only well enough to take over during a failure. But its standby capacity sits unused most of the time, and the failover process (detecting the failure and promoting the standby) takes some time, during which the system is degraded or down. Active-active uses all capacity all the time — no resource sits idle — and failing over is instant, since the other side is already actively serving traffic. Use active-passive when simplicity matters more than failover speed, or when running a full duplicate active system is not cost-justified. Use active-active when you need the fastest possible failover (effectively zero downtime) and can handle the added complexity of keeping multiple active sides consistent.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Active-passive:</strong> one primary handles all traffic; a standby replica stays synchronized (usually via <a href="0101-synchronous-vs-asynchronous-replication.md">asynchronous replication</a>) but serves nothing until a failover promotes it.</li><li><strong>Failover time (active-passive):</strong> detecting the primary&#x27;s failure, then promoting the standby, takes real time — often seconds to minutes — during which the system may be unavailable or serving stale data.</li><li><strong>Active-active:</strong> multiple nodes (or data centers) all serve live traffic simultaneously; if one fails, the others are already handling requests, so users see no interruption at all for that failure.</li><li><strong>Active-active&#x27;s consistency cost:</strong> since multiple active sides can accept writes independently, active-active for data typically needs <a href="0099-multi-leader-replication.md">multi-leader</a> or <a href="0100-leaderless-replication-dynamo-style.md">leaderless replication</a>, with the conflict-resolution complexity that comes with them.</li><li><strong>Choosing between them:</strong> active-passive trades failover speed and resource utilization for operational simplicity; active-active trades operational complexity (conflict resolution, keeping multiple actives truly consistent) for near-zero failover time and full resource utilization.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>ACTIVE-PASSIVE:                       ACTIVE-ACTIVE:
+
+  [Primary] &lt;- ALL traffic             [Node A] &lt;- some traffic
+     |                                 [Node B] &lt;- some traffic    (both serving
+  replicates to                        [Node C] &lt;- some traffic     live traffic
+     v                                                               simultaneously)
+  [Standby] (idle, not serving)
+                                       Node B fails:
+  Primary fails:                      [Node A] &lt;- traffic shifts
+  [Standby] promoted -&gt;               [Node C] &lt;- traffic shifts    (instant,
+  takes over (failover delay)                                        no promotion
+                                                                       needed)</code></pre>
+<p>*Caption: active-passive&#x27;s standby sits idle until promoted, with a delay; active-active&#x27;s surviving nodes are already serving traffic the instant one fails.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Model active-passive: the standby is idle, and a failover has a measurable delay.</p>
+<p><strong>Level 2 — Active-active.</strong> All nodes serve live traffic; one failing simply redistributes load among survivors, with no promotion delay.</p>
+<p><strong>Level 3 — Compare downtime.</strong> Measure the effective downtime window for both strategies under the same failure.</p>
+<pre><code class="lang-java">// FailoverStrategies.java
+import java.util.*;
+
+public class FailoverStrategies {
+
+    public static void main(String[] args) {
+        // Level 1: active-passive - standby is idle until promoted.
+        String primary = &quot;primary-server&quot;;
+        String standby = &quot;standby-server (idle)&quot;;
+        System.out.println(&quot;normal operation: ALL traffic -&gt; &quot; + primary + &quot;, &quot; + standby + &quot; serving nothing&quot;);
+
+        boolean primaryFailed = true;
+        int failoverDetectionMs = 3000; // time to detect the failure
+        int failoverPromotionMs = 2000; // time to promote the standby
+        int totalFailoverDelayMs = failoverDetectionMs + failoverPromotionMs;
+        System.out.println(&quot;primary fails! detecting failure: &quot; + failoverDetectionMs + &quot;ms, promoting standby: &quot; + failoverPromotionMs + &quot;ms&quot;);
+        System.out.println(&quot;total downtime during active-passive failover: &quot; + totalFailoverDelayMs + &quot;ms&quot;);
+        System.out.println(&quot;after failover: ALL traffic -&gt; &quot; + standby + &quot; (now promoted to primary)&quot;);
+
+        // Level 2: active-active - all nodes already serving traffic; one fails, load redistributes instantly.
+        List&lt;String&gt; activeNodes = new ArrayList&lt;&gt;(List.of(&quot;node-A&quot;, &quot;node-B&quot;, &quot;node-C&quot;));
+        Map&lt;String, Integer&gt; trafficShare = new LinkedHashMap&lt;&gt;();
+        for (String node : activeNodes) trafficShare.put(node, 100 / activeNodes.size()); // ~33% each
+        System.out.println(&quot;--- active-active, normal operation ---&quot;);
+        System.out.println(&quot;traffic distribution: &quot; + trafficShare);
+
+        activeNodes.remove(&quot;node-B&quot;); // node-B fails
+        trafficShare.clear();
+        for (String node : activeNodes) trafficShare.put(node, 100 / activeNodes.size()); // instantly recalculated
+        System.out.println(&quot;node-B fails -&gt; traffic redistributes IMMEDIATELY: &quot; + trafficShare);
+        System.out.println(&quot;downtime during active-active failover: 0ms (survivors were already serving live traffic)&quot;);
+
+        // Level 3: direct downtime comparison for the same failure event.
+        System.out.println(&quot;--- summary ---&quot;);
+        System.out.println(&quot;active-passive downtime for this failure: &quot; + totalFailoverDelayMs + &quot;ms&quot;);
+        System.out.println(&quot;active-active downtime for this failure: 0ms&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>FailoverStrategies.java</code>, then run <code>java FailoverStrategies.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Level 1 models <code>standby</code> as explicitly idle during normal operation; when <code>primaryFailed</code> becomes <code>true</code>, the code sums <code>failoverDetectionMs</code> and <code>failoverPromotionMs</code> into a <code>totalFailoverDelayMs</code> — this delay is real, measurable downtime that occurs before traffic can move to the now-promoted standby.</li><li>Level 2 starts with 3 active nodes each already receiving roughly a third of traffic; when <code>node-B</code> is removed from <code>activeNodes</code> (modeling its failure), the traffic distribution is recalculated across the remaining two nodes.</li><li>Because <code>node-A</code> and <code>node-C</code> were already serving live traffic before the failure, there is no &quot;promotion&quot; step needed at all — the recalculation of <code>trafficShare</code> happens immediately, in the same statement, with no artificial delay modeled, unlike the active-passive case&#x27;s explicit <code>totalFailoverDelayMs</code>.</li><li>The Level 3 summary directly contrasts the two numbers: the active-passive scenario&#x27;s <code>totalFailoverDelayMs</code> (5000ms in this example) against active-active&#x27;s <code>0ms</code> — quantifying the core trade-off these two strategies make.</li><li>This comparison is the central lesson: active-active is not simply &quot;more redundant&quot; than active-passive, it specifically eliminates the failover *delay*, at the cost of needing every active side to already be correctly serving traffic and staying consistent with the others.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: active-passive&#x27;s standby is often the most under-tested part of the whole system, precisely because it never serves real traffic during normal operation — a subtle bug or misconfiguration in the standby can go completely unnoticed until the moment a real failover is needed, when it is too late to catch. Regularly test failover to the standby (a &quot;game day&quot; drill) rather than assuming it works.</blockquote>
+<ul><li>Active-passive keeps a standby idle until a failure triggers a promotion, which takes real, measurable time; active-active keeps every node serving live traffic, so a failure causes no promotion delay at all.</li><li>Active-active fully utilizes its capacity during normal operation, unlike active-passive&#x27;s idle standby.</li><li>The trade-off is complexity: active-active generally needs multi-leader or leaderless replication and conflict resolution, while active-passive can use simpler single-leader replication.</li><li>Related concepts: <a href="0130-redundancy-replication.md">Redundancy &amp; replication</a> (the general principle both strategies implement), <a href="0099-multi-leader-replication.md">Multi-leader replication</a> (commonly needed to support an active-active data layer).</li></ul>
+  <div class="nav"><a class="prv" href="0130-redundancy-replication.html"><span class="mini">← Previous</span>Redundancy & replication</a><a class="nxt" href="0132-health-checks-heartbeats.html"><span class="mini">Next →</span>Health checks & heartbeats</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t131";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
