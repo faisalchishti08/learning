@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Connection reuse & pooling — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 10. Scalability & Performance</div>
+  <div class="htitle">
+    <h1>Connection reuse & pooling</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>Establishing a network connection (a TCP handshake, and for HTTPS, a TLS handshake on top) has a real, fixed cost before any actual data is exchanged. <strong>Connection reuse</strong> means keeping a connection open and sending multiple requests over it, instead of opening a fresh one for every request. <strong>Connection pooling</strong> manages a set of pre-established, reusable connections (to a database, or an HTTP server), handing one out to a caller when needed and returning it to the pool afterward instead of closing it.</p>
+<h2>2. Why &amp; when</h2>
+<p>Opening a new connection for every single request pays that connection-setup cost every single time, even when talking to the same server repeatedly. This overhead can dwarf the actual work being done for small, frequent requests. Reuse and pooling amortize that setup cost across many requests. Use connection reuse (like HTTP keep-alive) whenever a client makes repeated requests to the same server. Use a connection pool specifically for expensive-to-establish, stateful connections — most notably database connections — where you want to bound the maximum number of concurrent connections while still avoiding the cost of establishing a fresh one per request.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Connection setup cost:</strong> a TCP handshake takes at least one round trip; adding TLS on top adds more round trips for the cryptographic handshake — all before a single byte of your actual request is sent.</li><li><strong>HTTP keep-alive:</strong> modern HTTP defaults to keeping a TCP connection open after a response, so the *next* request to the same server can reuse it directly, skipping the handshake entirely for that request.</li><li><strong>Connection pool:</strong> a fixed-size (or bounded) set of already-open connections; a caller &quot;borrows&quot; one, uses it, and returns it to the pool rather than closing it — the next caller reuses that same, already-established connection.</li><li><strong>Pool size as a resource limit:</strong> the pool&#x27;s maximum size also caps how many concurrent operations can happen against that resource (e.g. a database), which protects the resource from being overwhelmed by too many simultaneous connections — see <a href="0074-hikaricp-connection-pool-defaults-in-spring-boot.md">connection pooling and HikariCP defaults</a> for a concrete example.</li><li><strong>Borrow/return discipline:</strong> a connection must always be returned (even if the operation using it failed), or the pool slowly runs out of available connections — a common resource leak.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>WITHOUT REUSE (new connection every request):
+
+  Request 1: [TCP handshake][TLS handshake][actual request/response][close]
+  Request 2: [TCP handshake][TLS handshake][actual request/response][close]
+  -&gt; handshake cost paid on EVERY request
+
+WITH POOLING/REUSE:
+
+  Pool: [conn1][conn2][conn3]  (established once, up front)
+
+  Request 1: borrow conn1 -&gt; [actual request/response] -&gt; return conn1
+  Request 2: borrow conn1 (reused!) -&gt; [actual request/response] -&gt; return conn1
+  -&gt; handshake cost paid ONCE per connection, amortized across many requests</code></pre>
+<p>*Caption: a pool pays the connection-setup cost once per connection, then that connection serves many requests before ever needing to be re-established.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Compare total cost of establishing a new connection per request versus reusing one connection.</p>
+<p><strong>Level 2 — Connection pool.</strong> Model borrowing and returning connections from a fixed-size pool across concurrent callers.</p>
+<p><strong>Level 3 — Pool exhaustion.</strong> Show what happens when more callers need a connection than the pool has available.</p>
+<pre><code class="lang-java">// ConnectionPooling.java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class ConnectionPooling {
+
+    static int handshakeCostMs = 15;
+    static int requestCostMs = 2;
+
+    public static void main(String[] args) throws InterruptedException {
+        // Level 1: cost of a new connection per request, vs reusing one connection for many requests.
+        int numRequests = 10;
+        int costWithoutReuse = numRequests * (handshakeCostMs + requestCostMs);
+        int costWithReuse = handshakeCostMs + (numRequests * requestCostMs); // handshake paid ONCE
+        System.out.println(&quot;without reuse: &quot; + numRequests + &quot; requests = &quot; + costWithoutReuse + &quot;ms total&quot;);
+        System.out.println(&quot;with reuse: &quot; + numRequests + &quot; requests = &quot; + costWithReuse + &quot;ms total (handshake paid once)&quot;);
+
+        // Level 2: a bounded connection pool, borrowed and returned by concurrent callers.
+        BlockingQueue&lt;String&gt; pool = new LinkedBlockingQueue&lt;&gt;();
+        int poolSize = 3;
+        for (int i = 1; i &lt;= poolSize; i++) pool.put(&quot;conn&quot; + i); // pre-established connections
+
+        ExecutorService callers = Executors.newFixedThreadPool(5);
+        List&lt;Future&lt;String&gt;&gt; futures = new ArrayList&lt;&gt;();
+        for (int i = 1; i &lt;= 5; i++) {
+            int callerId = i;
+            futures.add(callers.submit(() -&gt; {
+                String conn = pool.poll(1, TimeUnit.SECONDS); // borrow (waits if none available)
+                if (conn == null) return &quot;caller-&quot; + callerId + &quot;: TIMED OUT waiting for a connection&quot;;
+                String result = &quot;caller-&quot; + callerId + &quot; used &quot; + conn;
+                pool.put(conn); // return the connection for reuse by someone else
+                return result;
+            }));
+        }
+        for (Future&lt;String&gt; f : futures) System.out.println(f.get());
+        callers.shutdown();
+        System.out.println(&quot;pool still has &quot; + pool.size() + &quot; connections available (all borrowed connections were returned)&quot;);
+
+        // Level 3: pool exhaustion - callers exceed pool size AND hold connections without returning promptly.
+        BlockingQueue&lt;String&gt; smallPool = new LinkedBlockingQueue&lt;&gt;();
+        smallPool.put(&quot;conn1&quot;); // pool of size 1
+        String held = smallPool.poll(); // one caller borrows and does NOT return it yet
+        System.out.println(&quot;pool size after one caller borrows without returning: &quot; + smallPool.size());
+        String secondBorrow = smallPool.poll(200, TimeUnit.MILLISECONDS); // a second caller tries to borrow
+        System.out.println(&quot;second caller&#x27;s borrow attempt result: &quot; + (secondBorrow == null ? &quot;TIMED OUT - pool exhausted&quot; : secondBorrow));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ConnectionPooling.java</code>, then run <code>java ConnectionPooling.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Level 1 computes <code>costWithoutReuse</code> by multiplying the full per-request cost (handshake plus request) by <code>numRequests</code>, versus <code>costWithReuse</code>, which pays the handshake cost exactly once and only multiplies the smaller <code>requestCostMs</code> by <code>numRequests</code> — the reused total comes out far lower.</li><li>Level 2 pre-fills a <code>BlockingQueue</code>-based pool with 3 connection identifiers, then submits 5 concurrent callers, each of which polls a connection, &quot;uses&quot; it, and immediately returns it with <code>pool.put(conn)</code>.</li><li>Because each caller promptly returns its connection, later callers can successfully borrow one that an earlier caller already finished with — the pool never needs more than its original 3 connections to serve all 5 callers, just possibly with some callers waiting briefly.</li><li>The final <code>pool.size()</code> check confirms all 3 connections are back in the pool once every caller has finished — proper borrow/return discipline leaves the pool exactly as full as it started.</li><li>Level 3 sets up a pool of size 1, has one caller borrow it without ever calling <code>put</code> to return it, then has a second caller attempt <code>poll</code> with a timeout. Since the only connection is still held, the second <code>poll</code> call times out and returns <code>null</code>, printed as &quot;TIMED OUT - pool exhausted&quot; — this models exactly what happens in production when a connection leak (a borrowed connection never returned, often due to a missed <code>finally</code> block) slowly starves a pool of available connections.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a connection that is borrowed but never returned — commonly because an exception is thrown before the return call, and there was no <code>try</code>/<code>finally</code> (or try-with-resources) guarding it — slowly shrinks the pool&#x27;s effective size over time, eventually starving every caller, even though the pool&#x27;s configured maximum size never changed. Always return (or close) a pooled connection in a <code>finally</code> block.</blockquote>
+<ul><li>Connection reuse and pooling amortize the fixed cost of establishing a network connection across many requests, instead of paying it every time.</li><li>A connection pool also serves as a concurrency limit on the resource it protects, bounding how many simultaneous connections a database or server must handle.</li><li>Borrowed connections must always be returned, even on failure, or the pool slowly shrinks until callers start timing out waiting for one.</li><li>Related concepts: <a href="0071-connection-pooling.md">Connection pooling</a> and <a href="0074-hikaricp-connection-pool-defaults-in-spring-boot.md">HikariCP connection pool defaults in Spring Boot</a> (a concrete, widely used implementation of this idea), <a href="0127-batching-request-coalescing.md">Batching &amp; request coalescing</a> (another technique for amortizing fixed per-operation overhead).</li></ul>
+  <div class="nav"><a class="prv" href="0127-batching-request-coalescing.html"><span class="mini">← Previous</span>Batching & request coalescing</a><a class="nxt" href="0129-profiling-finding-bottlenecks.html"><span class="mini">Next →</span>Profiling & finding bottlenecks</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t128";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

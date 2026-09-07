@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Batching & request coalescing — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 10. Scalability & Performance</div>
+  <div class="htitle">
+    <h1>Batching & request coalescing</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Batching</strong> groups multiple individual operations into one combined operation, processed together — for example, writing 100 database rows in a single <code>INSERT</code> statement instead of 100 separate ones. <strong>Request coalescing</strong> is a related idea: when multiple callers ask for the exact same thing at nearly the same time, combine them into a single underlying request, and give all the callers the one result, instead of making the same expensive call multiple times redundantly.</p>
+<h2>2. Why &amp; when</h2>
+<p>Each individual operation — a network round trip, a database statement, a disk write — carries fixed overhead on top of its actual work. Doing 100 of them separately pays that fixed overhead 100 times; batching them pays it once. Use batching whenever you have many small, similar operations that could be combined, and the added latency of waiting briefly to form a batch is acceptable (see <a href="0125-throughput-vs-latency.md">throughput vs latency</a> for that trade-off). Use request coalescing specifically when multiple concurrent callers might ask for the identical piece of data or trigger the identical expensive computation at nearly the same time — a classic case is many requests hitting a cold cache for the same key simultaneously.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Batching by size or time:</strong> collect requests until either a maximum batch size is reached, or a maximum wait time elapses (whichever comes first), then process the whole batch together.</li><li><strong>Amortized overhead:</strong> the fixed cost of a round trip or transaction is paid once per batch instead of once per item, so the *per-item* cost drops as the batch grows.</li><li><strong>Request coalescing (the &quot;thundering herd&quot; fix):</strong> if 50 concurrent requests all ask for the same uncached value, coalescing ensures only the *first* one triggers the actual expensive work; the other 49 wait for that one result and all receive it, rather than 50 independent computations of the same answer.</li><li><strong>In-flight request tracking:</strong> coalescing needs a way to recognize &quot;a request for this exact key is already in progress&quot; — typically a map from key to a pending result (a <code>Future</code> or <code>CompletableFuture</code>) that later callers can simply attach to.</li><li><strong>Batching APIs:</strong> many systems provide native batch operations (a <code>BatchGetItem</code> in DynamoDB, a JDBC batch <code>executeBatch()</code>) specifically because batching is common enough to deserve first-class support.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>BATCHING:                              REQUEST COALESCING:
+
+  write(row1)  \                        50 concurrent requests for key &quot;user-42&quot;
+  write(row2)   \                              |  |  |  ... (50 of them)
+  write(row3)    +-- collected into ONE          v  v  v
+  ...           /    batch write               all attach to the SAME
+  write(row100)/     (1 round trip,             in-flight request
+               instead of 100)                          |
+                                                          v
+                                                  ONE actual fetch of &quot;user-42&quot;
+                                                          |
+                                              +-----------+-----------+
+                                              v                       v
+                                       all 50 callers          result cached for
+                                       receive the SAME         any FUTURE request
+                                       single result</code></pre>
+<p>*Caption: batching combines many operations into one round trip; coalescing combines many concurrent identical requests into one underlying computation.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Batch several writes into one combined operation instead of many separate ones.</p>
+<p><strong>Level 2 — Request coalescing.</strong> Multiple concurrent callers for the same key trigger only one actual fetch.</p>
+<p><strong>Level 3 — Time-or-size batch trigger.</strong> A batch flushes either when full or after a maximum wait, whichever comes first.</p>
+<pre><code class="lang-java">// BatchingCoalescing.java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class BatchingCoalescing {
+
+    static int simulatedRoundTripCostMs = 20; // fixed overhead per round trip, paid once per batch or call
+
+    public static void main(String[] args) throws Exception {
+        // Level 1: batching - combine 100 writes into batches of 10, instead of 100 individual round trips.
+        int numWrites = 100, batchSize = 10;
+        int individualRoundTrips = numWrites; // one round trip per write, unbatched
+        int batchedRoundTrips = (int) Math.ceil((double) numWrites / batchSize);
+        System.out.println(&quot;unbatched: &quot; + individualRoundTrips + &quot; round trips x &quot; + simulatedRoundTripCostMs
+            + &quot;ms = &quot; + (individualRoundTrips * simulatedRoundTripCostMs) + &quot;ms total overhead&quot;);
+        System.out.println(&quot;batched (size=&quot; + batchSize + &quot;): &quot; + batchedRoundTrips + &quot; round trips x &quot; + simulatedRoundTripCostMs
+            + &quot;ms = &quot; + (batchedRoundTrips * simulatedRoundTripCostMs) + &quot;ms total overhead&quot;);
+
+        // Level 2: request coalescing - many concurrent callers for the same key share ONE underlying fetch.
+        Map&lt;String, CompletableFuture&lt;String&gt;&gt; inFlight = new ConcurrentHashMap&lt;&gt;();
+        int[] actualFetchCount = {0};
+
+        java.util.function.Function&lt;String, CompletableFuture&lt;String&gt;&gt; fetchCoalesced = key -&gt;
+            inFlight.computeIfAbsent(key, k -&gt; CompletableFuture.supplyAsync(() -&gt; {
+                actualFetchCount[0]++;
+                return &quot;value-for-&quot; + k; // the real, expensive fetch happens only here
+            }));
+
+        ExecutorService pool = Executors.newFixedThreadPool(10);
+        List&lt;Future&lt;String&gt;&gt; results = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 50; i++) {
+            results.add(pool.submit(() -&gt; fetchCoalesced.apply(&quot;user-42&quot;).get()));
+        }
+        for (Future&lt;String&gt; f : results) f.get(); // wait for all 50 callers
+        pool.shutdown();
+
+        System.out.println(&quot;50 concurrent requests for the same key -&gt; actual fetches performed: &quot; + actualFetchCount[0]);
+
+        // Level 3: batch flushes on whichever comes first - size limit, or a max wait time.
+        List&lt;String&gt; pendingBatch = new ArrayList&lt;&gt;();
+        int maxBatchSize = 5;
+        long batchStartTime = System.currentTimeMillis();
+        long maxWaitMs = 50;
+
+        String[] incoming = {&quot;item1&quot;, &quot;item2&quot;, &quot;item3&quot;}; // fewer than maxBatchSize arrive
+        for (String item : incoming) pendingBatch.add(item);
+
+        boolean sizeTriggered = pendingBatch.size() &gt;= maxBatchSize;
+        boolean timeTriggered = (System.currentTimeMillis() - batchStartTime) &gt;= maxWaitMs;
+        System.out.println(&quot;batch has &quot; + pendingBatch.size() + &quot; items after a short wait; size trigger=&quot; + sizeTriggered + &quot;, time trigger=&quot; + timeTriggered);
+        System.out.println(&quot;-&gt; in a real system, this batch would flush once maxWaitMs elapses, even though it never filled up&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>BatchingCoalescing.java</code>, then run <code>java BatchingCoalescing.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Level 1 compares <code>individualRoundTrips</code> (100, one per write) against <code>batchedRoundTrips</code> (10, one per group of 10 writes); multiplying each by the fixed <code>simulatedRoundTripCostMs</code> shows the batched total overhead is a tenth of the unbatched total — the direct payoff of amortizing fixed per-round-trip cost across more items.</li><li>Level 2&#x27;s <code>fetchCoalesced</code> uses <code>inFlight.computeIfAbsent</code>, which atomically checks whether a <code>CompletableFuture</code> for a key already exists; if not, it creates one that runs the actual fetch and increments <code>actualFetchCount</code>. If a future for that key already exists, <code>computeIfAbsent</code> returns the *existing* future instead of creating a new one.</li><li>Fifty threads all call <code>fetchCoalesced.apply(&quot;user-42&quot;)</code> concurrently; because they all share the same key, only the very first one to reach <code>computeIfAbsent</code> triggers the real fetch — every other caller receives the same, already-in-flight <code>CompletableFuture</code>.</li><li>The final printed <code>actualFetchCount[0]</code> is <code>1</code>, not <code>50</code> — confirming that all 50 concurrent callers were coalesced into a single underlying fetch, and all 50 received that one result once it completed.</li><li>Level 3 models a batch that only received 3 of its <code>maxBatchSize = 5</code> items before a check runs; <code>sizeTriggered</code> is <code>false</code> since the batch is not full, and in a real implementation, <code>timeTriggered</code> becoming <code>true</code> after <code>maxWaitMs</code> elapses would be what forces the batch to flush anyway, ensuring items are never held indefinitely just because a batch never fully fills.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: request coalescing only works correctly for read-like operations where identical requests should genuinely produce an identical, shareable result. Coalescing writes (e.g. two different &quot;increment this counter&quot; requests) would silently drop one of the operations, since only the first one actually runs — never coalesce requests whose individual side effects need to happen independently.</blockquote>
+<ul><li>Batching amortizes the fixed overhead of a round trip or transaction across many items, raising throughput at some cost to individual item latency.</li><li>Request coalescing collapses multiple concurrent identical requests into one underlying operation, directly preventing redundant, duplicated work (a &quot;thundering herd&quot;).</li><li>A batch should flush on whichever comes first — reaching its size limit or a maximum wait time — so items are never held indefinitely.</li><li>Related concepts: <a href="0125-throughput-vs-latency.md">Throughput vs latency</a> (the trade-off batching makes explicit), <a href="0128-connection-reuse-pooling.md">Connection reuse &amp; pooling</a> (another technique for amortizing fixed per-operation overhead).</li></ul>
+  <div class="nav"><a class="prv" href="0126-tail-latency-percentiles-p50-p95-p99.html"><span class="mini">← Previous</span>Tail latency & percentiles (p50/p95/p99)</a><a class="nxt" href="0128-connection-reuse-pooling.html"><span class="mini">Next →</span>Connection reuse & pooling</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t127";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

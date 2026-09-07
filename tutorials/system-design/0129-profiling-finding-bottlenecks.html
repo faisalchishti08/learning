@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Profiling & finding bottlenecks — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 10. Scalability & Performance</div>
+  <div class="htitle">
+    <h1>Profiling & finding bottlenecks</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Profiling</strong> is measuring where a program actually spends its time and resources, rather than guessing. A <strong>bottleneck</strong> is the specific part of a system that limits its overall speed or throughput — improving anything else does nothing for overall performance until the bottleneck itself is addressed, since the whole system can only go as fast as its slowest constrained part.</p>
+<h2>2. Why &amp; when</h2>
+<p>Performance intuition is frequently wrong: the part of the code that &quot;feels slow&quot; to read is often not where the actual time goes, while an innocuous-looking line (an unindexed database query run in a loop) can dominate total runtime. Profiling replaces guessing with measurement, showing exactly where time and resources are spent. Profile before optimizing anything — optimizing a part of the system that is not the bottleneck wastes effort and can even make the code more complex for zero performance gain.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>CPU profiling:</strong> measures which functions consume the most CPU time, either by sampling the call stack periodically or by instrumenting every function call; identifies computationally expensive code.</li><li><strong>Memory profiling:</strong> measures allocation patterns and object retention, useful for finding memory leaks or excessive garbage-collection pressure from creating too many short-lived objects.</li><li><strong>Database query profiling:</strong> measures which queries are slow, or run far more often than expected (a classic case: an &quot;N+1 query&quot; problem, where a loop unintentionally issues one query per iteration instead of one query total).</li><li><strong>Distributed tracing:</strong> for a request spanning multiple services, traces show how much time was spent in each service and each network hop, revealing which specific service or call is the actual bottleneck in a multi-service request.</li><li><strong>The bottleneck principle (Theory of Constraints):</strong> a system&#x27;s overall throughput is capped by its single most constrained resource; speeding up any non-bottleneck part has no effect on overall throughput until the bottleneck itself moves.</li><li><strong>Measure again after fixing:</strong> once you address one bottleneck, a *different* part of the system becomes the new bottleneck — profiling is an iterative process, not a one-time task.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>Request timeline, broken down by where time is actually spent:
+
+  [ Parse request: 1ms ]
+  [ Business logic: 3ms ]
+  [ Database query (in a loop, N+1 problem): 180ms ]  &lt;- THE BOTTLENECK
+  [ Serialize response: 2ms ]
+
+  Total request time: 186ms
+
+  Optimizing &quot;parse request&quot; from 1ms to 0.1ms saves 0.9ms total (0.5%).
+  Fixing the N+1 query (180ms -&gt; 15ms) saves 165ms total (89%).
+
+  -&gt; effort should go where the profiler points, not where code &quot;looks slow&quot;.</code></pre>
+<p>*Caption: a profiler reveals which part of the timeline actually dominates total time — usually not the part that looks complex or interesting to optimize.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Time each stage of a request manually to find where time actually goes.</p>
+<p><strong>Level 2 — Reveal an N+1 query pattern.</strong> Compare a naive per-item query loop against one batched query.</p>
+<p><strong>Level 3 — Confirm the fix by re-measuring, and check the new bottleneck.</strong></p>
+<pre><code class="lang-java">// ProfilingBottlenecks.java
+import java.util.*;
+
+public class ProfilingBottlenecks {
+
+    static Map&lt;Integer, String&gt; simulatedDatabase = new HashMap&lt;&gt;();
+    static { for (int i = 1; i &lt;= 20; i++) simulatedDatabase.put(i, &quot;item-&quot; + i); }
+
+    static String queryOne(int id) {
+        try { Thread.sleep(2); } catch (InterruptedException ignored) {} // simulated per-query latency
+        return simulatedDatabase.get(id);
+    }
+
+    static List&lt;String&gt; queryBatch(List&lt;Integer&gt; ids) {
+        try { Thread.sleep(5); } catch (InterruptedException ignored) {} // ONE round trip, regardless of batch size
+        List&lt;String&gt; results = new ArrayList&lt;&gt;();
+        for (int id : ids) results.add(simulatedDatabase.get(id));
+        return results;
+    }
+
+    public static void main(String[] args) {
+        // Level 1: time each stage of handling one &quot;request&quot; to find where time actually goes.
+        long t0 = System.nanoTime();
+        String parsed = &quot;request-payload&quot;; // parsing: trivial
+        long t1 = System.nanoTime();
+
+        List&lt;Integer&gt; idsToFetch = new ArrayList&lt;&gt;();
+        for (int i = 1; i &lt;= 20; i++) idsToFetch.add(i);
+
+        List&lt;String&gt; naiveResults = new ArrayList&lt;&gt;();
+        for (int id : idsToFetch) naiveResults.add(queryOne(id)); // Level 2: N+1 pattern - one query PER item
+        long t2 = System.nanoTime();
+
+        String serialized = naiveResults.toString(); // serializing: trivial
+        long t3 = System.nanoTime();
+
+        double parseMs = (t1 - t0) / 1_000_000.0;
+        double queryMs = (t2 - t1) / 1_000_000.0;
+        double serializeMs = (t3 - t2) / 1_000_000.0;
+        System.out.printf(&quot;parse: %.1fms, database (N+1 loop): %.1fms, serialize: %.1fms%n&quot;, parseMs, queryMs, serializeMs);
+        System.out.println(&quot;-&gt; the database stage clearly dominates: THIS is the bottleneck, not parsing or serializing&quot;);
+
+        // Level 3: fix the N+1 pattern with one batched query, then re-measure to confirm the fix.
+        long t4 = System.nanoTime();
+        List&lt;String&gt; batchedResults = queryBatch(idsToFetch); // ONE query for all 20 ids
+        long t5 = System.nanoTime();
+        double batchedQueryMs = (t5 - t4) / 1_000_000.0;
+
+        System.out.printf(&quot;after fix - database (batched): %.1fms (was %.1fms)%n&quot;, batchedQueryMs, queryMs);
+        System.out.println(&quot;results match: &quot; + naiveResults.equals(batchedResults));
+        System.out.println(&quot;-&gt; now re-profile: with the database fixed, check whether parse/serialize (still ~&quot;
+            + String.format(&quot;%.1f&quot;, parseMs + serializeMs) + &quot;ms combined) has become the new relative bottleneck&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ProfilingBottlenecks.java</code>, then run <code>java ProfilingBottlenecks.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The code records timestamps (<code>t0</code> through <code>t3</code>) around each logical stage of handling a request: parsing, the database loop, and serialization — this is the manual equivalent of what a profiler automates.</li><li><code>queryOne</code> is called once per id inside the loop over <code>idsToFetch</code>, each call paying a simulated <code>2ms</code> round trip; with 20 ids, this alone costs roughly <code>40ms</code> — the classic N+1 pattern, where a loop issues one query per item instead of a single query for all of them.</li><li>The printed per-stage breakdown shows the database stage taking dramatically longer than parsing or serialization, both of which are near-instant by comparison — pointing clearly and specifically at where optimization effort should go.</li><li>Level 3&#x27;s <code>queryBatch</code> fetches all 20 ids in a single simulated round trip costing <code>5ms</code> total, regardless of how many ids are requested — replacing 20 round trips with 1.</li><li>The final comparison prints the batched query&#x27;s time (<code>~5ms</code>) against the original N+1 loop&#x27;s time (<code>~40ms</code>), and confirms <code>naiveResults.equals(batchedResults)</code> is <code>true</code> — the fix produced the identical correct result, just far faster — while the closing note explicitly reminds you that after fixing this bottleneck, the next profiling pass should check whether a different stage (parsing, serialization) is now the relatively largest cost.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: profiling a code path under unrealistic test conditions (a tiny dataset, an empty cache that would normally be warm, a single user instead of realistic concurrency) can point at the wrong bottleneck entirely — a query that looks trivially fast against 20 test rows might be the dominant cost against 20 million real rows. Profile against production-like data volume and concurrency whenever possible.</blockquote>
+<ul><li>Profiling measures where a system actually spends time and resources, replacing guesswork with evidence before you optimize anything.</li><li>A bottleneck is the single most constrained part of a system; fixing anything else does not improve overall performance until the bottleneck itself is addressed.</li><li>The N+1 query pattern — one query per loop iteration instead of one batched query — is a common, high-impact bottleneck that profiling reliably reveals.</li><li>Related concepts: <a href="0127-batching-request-coalescing.md">Batching &amp; request coalescing</a> (the direct fix demonstrated here), <a href="0125-throughput-vs-latency.md">Throughput vs latency</a> (the metrics profiling is ultimately in service of improving).</li></ul>
+  <div class="nav"><a class="prv" href="0128-connection-reuse-pooling.html"><span class="mini">← Previous</span>Connection reuse & pooling</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t129";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

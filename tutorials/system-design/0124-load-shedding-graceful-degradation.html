@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Load shedding & graceful degradation — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 10. Scalability & Performance</div>
+  <div class="htitle">
+    <h1>Load shedding & graceful degradation</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Load shedding</strong> deliberately rejects some incoming requests when a system is at or near capacity, so it can keep serving the requests it does accept well, instead of accepting everything and serving all of them badly (or crashing). <strong>Graceful degradation</strong> is serving a reduced, simpler version of a response under heavy load — skipping a non-essential feature — rather than either a full response or an outright failure.</p>
+<h2>2. Why &amp; when</h2>
+<p>A system with no limit on accepted work degrades badly under overload: queues grow unboundedly, response times climb for every request including ones that could have been served quickly, and eventually the whole system can crash, serving nobody. Deliberately rejecting the excess (load shedding) or simplifying the response (graceful degradation) protects the requests the system *can* still handle well. Use load shedding at the edge of a system (an API gateway, a load balancer) to prevent overload from reaching internal services in the first place. Use graceful degradation inside a service, for features that are valuable but not essential to the core request — showing a product page without personalized recommendations rather than failing the whole page load.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Load shedding — reject excess requests:</strong> once a system is at capacity (measured by queue depth, CPU, or concurrent request count), new requests are rejected immediately with a clear response (e.g. HTTP 503 Service Unavailable), rather than queued indefinitely.</li><li><strong>Shedding strategy — which requests to reject:</strong> a common approach is to prioritize: reject low-priority or non-critical requests (background sync jobs) before rejecting high-priority ones (a checkout request), rather than shedding randomly.</li><li><strong>Graceful degradation — simplify, don&#x27;t fail:</strong> identify non-essential parts of a response (a &quot;related products&quot; widget, a real-time counter) and skip them under load, returning the essential parts fast rather than failing the entire request waiting for a slow, non-essential dependency.</li><li><strong>Circuit breaking as a trigger:</strong> a failing or slow downstream dependency often triggers graceful degradation directly — if a recommendations service times out, skip it and return the response without recommendations rather than waiting or failing.</li><li><strong>Fast failure over slow failure:</strong> rejecting a request immediately, with a clear error, is far better for the caller (and for the system) than accepting it and taking a very long time to eventually fail — a fast, clean rejection lets the caller retry elsewhere or back off promptly.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>                     Incoming requests (rate rising)
+                              |
+                    Is the system at capacity?
+                     /                    \
+                   NO                     YES
+                    |                       |
+              process normally    Is this request low-priority?
+                                     /              \
+                                   YES               NO
+                                    |                 |
+                          REJECT (503,          Try graceful degradation:
+                          shed the load)         skip non-essential parts,
+                                                  return a reduced response</code></pre>
+<p>*Caption: at capacity, low-priority requests are shed outright; essential requests get a reduced, faster response instead of a full failure.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Reject new requests once a simple concurrency limit is reached.</p>
+<p><strong>Level 2 — Priority-aware shedding.</strong> Shed only low-priority requests first when near capacity, protecting high-priority ones.</p>
+<p><strong>Level 3 — Graceful degradation.</strong> Serve a reduced response by skipping a slow, non-essential dependency instead of failing the whole request.</p>
+<pre><code class="lang-java">// LoadSheddingDemo.java
+import java.util.*;
+
+public class LoadSheddingDemo {
+
+    static int capacity = 3;
+    static int currentLoad = 0;
+
+    record Request(String id, String priority) {}
+
+    static String handleRequest(Request req) {
+        if (currentLoad &gt;= capacity) {
+            return &quot;503 REJECTED (at capacity)&quot;;
+        }
+        currentLoad++;
+        return &quot;200 OK (processed)&quot;;
+    }
+
+    // Level 2: priority-aware shedding - reject low-priority requests first when near capacity.
+    static String handleWithPriority(Request req, int nearCapacityThreshold) {
+        if (currentLoad &gt;= capacity) return &quot;503 REJECTED (fully at capacity)&quot;;
+        if (currentLoad &gt;= nearCapacityThreshold &amp;&amp; req.priority().equals(&quot;low&quot;)) {
+            return &quot;503 REJECTED (low-priority shed, nearing capacity)&quot;;
+        }
+        currentLoad++;
+        return &quot;200 OK (processed, priority=&quot; + req.priority() + &quot;)&quot;;
+    }
+
+    public static void main(String[] args) {
+        // Level 1: plain capacity limit.
+        List&lt;Request&gt; requests = List.of(
+            new Request(&quot;r1&quot;, &quot;normal&quot;), new Request(&quot;r2&quot;, &quot;normal&quot;),
+            new Request(&quot;r3&quot;, &quot;normal&quot;), new Request(&quot;r4&quot;, &quot;normal&quot;) // 4th request exceeds capacity=3
+        );
+        for (Request r : requests) System.out.println(r.id() + &quot;: &quot; + handleRequest(r));
+
+        // Level 2: reset load; near capacity, shed low-priority requests before high-priority ones.
+        currentLoad = 0;
+        List&lt;Request&gt; mixedRequests = List.of(
+            new Request(&quot;checkout-1&quot;, &quot;high&quot;), new Request(&quot;background-sync-1&quot;, &quot;low&quot;),
+            new Request(&quot;checkout-2&quot;, &quot;high&quot;), new Request(&quot;background-sync-2&quot;, &quot;low&quot;)
+        );
+        int nearCapacityThreshold = 2;
+        System.out.println(&quot;--- priority-aware shedding, threshold=&quot; + nearCapacityThreshold + &quot; ---&quot;);
+        for (Request r : mixedRequests) System.out.println(r.id() + &quot; (&quot; + r.priority() + &quot;): &quot; + handleWithPriority(r, nearCapacityThreshold));
+
+        // Level 3: graceful degradation - skip a slow, non-essential dependency instead of failing.
+        boolean recommendationsServiceHealthy = false; // simulating a slow/failing downstream dependency
+        String productPageCore = &quot;Product: Wireless Mouse, $25.99&quot;;
+        String response;
+        if (recommendationsServiceHealthy) {
+            response = productPageCore + &quot; | Recommended: Mouse Pad, USB Hub&quot;;
+        } else {
+            response = productPageCore + &quot; | (recommendations unavailable, showing core content only)&quot;;
+        }
+        System.out.println(&quot;product page response under degraded mode: &quot; + response);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>LoadSheddingDemo.java</code>, then run <code>java LoadSheddingDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Level 1&#x27;s <code>handleRequest</code> checks <code>currentLoad &gt;= capacity</code> before accepting; the first three requests succeed and raise <code>currentLoad</code> to <code>3</code>, so the fourth request is rejected outright with a <code>503</code>.</li><li>Level 2&#x27;s <code>handleWithPriority</code> adds a second check: once <code>currentLoad</code> reaches <code>nearCapacityThreshold</code> (here, <code>2</code>), any further <code>&quot;low&quot;</code> priority request is rejected even though the hard <code>capacity</code> limit has not been hit yet — this protects room for <code>&quot;high&quot;</code> priority requests still to come.</li><li>Running the mixed list shows both <code>checkout-1</code> and <code>checkout-2</code> (high priority) getting processed, while <code>background-sync-1</code> and <code>background-sync-2</code> (low priority) are shed once the threshold is reached — exactly the prioritized shedding strategy, protecting the requests that matter most.</li><li>Level 3 sets <code>recommendationsServiceHealthy = false</code>, modeling a slow or failing downstream dependency; the code branches to build a response with <code>productPageCore</code> alone, explicitly noting recommendations are unavailable.</li><li>The final printed response shows the essential product information still delivered successfully, with the non-essential recommendations section simply omitted — this is graceful degradation: the request as a whole succeeds, just with reduced functionality, rather than failing entirely while waiting on (or erroring from) the slow dependency.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: load shedding only helps if the rejection itself is cheap. If checking &quot;should I shed this request?&quot; requires as much work as actually processing it (e.g. a database lookup to check a user&#x27;s priority tier), the shedding logic itself can become the new bottleneck under the exact overload conditions it was meant to protect against. Keep the shed-or-accept decision fast and based on already-available information.</blockquote>
+<ul><li>Load shedding rejects excess requests outright once a system nears capacity, protecting the requests it can still serve well.</li><li>Prioritized shedding rejects lower-priority work first, preserving capacity for the requests that matter most.</li><li>Graceful degradation keeps a request succeeding by skipping non-essential parts of the response, rather than failing the whole request over a slow or failing non-critical dependency.</li><li>Related concepts: <a href="0117-backpressure-flow-control.md">Backpressure &amp; flow control</a> (a related mechanism operating earlier, on the buffering layer), <a href="0125-throughput-vs-latency.md">Throughput vs latency</a> (the trade-off shedding directly protects).</li></ul>
+  <div class="nav"><a class="prv" href="0123-stateless-services-externalized-state.html"><span class="mini">← Previous</span>Stateless services & externalized state</a><a class="nxt" href="0125-throughput-vs-latency.html"><span class="mini">Next →</span>Throughput vs latency</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t124";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

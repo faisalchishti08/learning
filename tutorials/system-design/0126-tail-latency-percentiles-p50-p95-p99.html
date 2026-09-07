@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tail latency & percentiles (p50/p95/p99) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 10. Scalability & Performance</div>
+  <div class="htitle">
+    <h1>Tail latency & percentiles (p50/p95/p99)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>latency percentile</strong> describes what fraction of requests finished at or below a given time. <strong>p50</strong> (the median) is the latency below which 50% of requests finish. <strong>p95</strong> is the latency below which 95% finish. <strong>p99</strong> is the same for 99%. <strong>Tail latency</strong> refers specifically to the slower end — p95, p99, and beyond — the requests that take noticeably longer than typical.</p>
+<h2>2. Why &amp; when</h2>
+<p>An average latency hides exactly the information that matters most: it can look perfectly healthy even while a meaningful number of real users experience a slow, frustrating request. A handful of very slow outliers barely move an average, but they show up clearly at p95 or p99. Track tail latency, not just averages, any time you care about the actual experience of real users, since even 1% of requests being slow means 1 in 100 users has a bad time — and at scale, that can be thousands of people per day.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Average is misleading:</strong> one request taking 10 seconds among 99 requests taking 10ms barely changes the average (about 108ms), but it is a genuinely terrible experience for that one user, and hints at a real, recurring problem if it happens regularly.</li><li><strong>p50 (median):</strong> the &quot;typical&quot; experience — useful as a baseline, but says nothing about how bad the worst experiences are.</li><li><strong>p95 / p99:</strong> the slower tail — these tell you what your less-lucky users, or your less-lucky requests (larger inputs, cache misses, contended locks), actually experience.</li><li><strong>Why tails matter more at scale:</strong> if a service is called multiple times to render one page (search results calling five backend services), the odds that *at least one* of those calls lands in the slow tail rise quickly — a single slow p99 call can dominate the overall page&#x27;s latency even though it&#x27;s &quot;only&quot; 1% of calls.</li><li><strong>SLOs (Service Level Objectives) are usually stated at a percentile:</strong> &quot;p99 latency under 200ms&quot; is a far more meaningful target than &quot;average latency under 50ms&quot;, because it bounds the experience of the worst-affected users directly, not just the typical one.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>100 sorted request latencies (fastest to slowest), in ms:
+
+  [10, 11, 12, 13, ... , 15 (this is p50/median, position 50) ...
+   ... , 40 (this is p95, position 95) ...
+   ... , 95 (this is p99, position 99), 5000 (position 100, an outlier)]
+
+  AVERAGE of all 100 = ~62ms   &lt;- distorted upward by the one 5000ms outlier
+  p50 = 15ms   &lt;- the typical request
+  p95 = 40ms   &lt;- 95% of requests are this fast or faster
+  p99 = 95ms   &lt;- the slowest 1% start here</code></pre>
+<p>*Caption: percentiles describe the actual distribution&#x27;s shape; a single extreme outlier can distort an average far more than it distorts p50 or even p99.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Compute p50, p95, and p99 from a sorted list of latencies.</p>
+<p><strong>Level 2 — Average vs percentile.</strong> Show how one outlier distorts the average far more than it distorts p99.</p>
+<p><strong>Level 3 — Compound tail risk.</strong> Simulate a page that calls 5 backend services, and compute the odds at least one call is slow.</p>
+<pre><code class="lang-java">// TailLatency.java
+import java.util.*;
+
+public class TailLatency {
+
+    static double percentile(List&lt;Integer&gt; sortedLatencies, double p) {
+        int index = (int) Math.ceil(p / 100.0 * sortedLatencies.size()) - 1;
+        index = Math.max(0, Math.min(index, sortedLatencies.size() - 1));
+        return sortedLatencies.get(index);
+    }
+
+    public static void main(String[] args) {
+        // Level 1: 100 latencies, mostly fast, a few slower - compute percentiles.
+        List&lt;Integer&gt; latencies = new ArrayList&lt;&gt;();
+        Random rand = new Random(42);
+        for (int i = 0; i &lt; 95; i++) latencies.add(10 + rand.nextInt(20)); // most requests: 10-30ms
+        for (int i = 0; i &lt; 4; i++) latencies.add(80 + rand.nextInt(40));  // a slower tail: 80-120ms
+        latencies.add(5000); // one extreme outlier
+
+        Collections.sort(latencies);
+        System.out.println(&quot;p50 (median): &quot; + percentile(latencies, 50) + &quot;ms&quot;);
+        System.out.println(&quot;p95: &quot; + percentile(latencies, 95) + &quot;ms&quot;);
+        System.out.println(&quot;p99: &quot; + percentile(latencies, 99) + &quot;ms&quot;);
+
+        // Level 2: compare to the average - see how much the single outlier distorts it.
+        double average = latencies.stream().mapToInt(Integer::intValue).average().orElse(0);
+        System.out.printf(&quot;average: %.1fms (distorted upward by the single 5000ms outlier)%n&quot;, average);
+        System.out.println(&quot;-&gt; average looks much worse than p50/p95, yet says nothing about how MANY users are affected&quot;);
+
+        // Level 3: compound tail risk - a page calling 5 backend services, each with a 1% chance of a slow (p99) response.
+        double chanceOneCallIsSlow = 0.01; // 1% of calls land in the p99+ tail
+        int numCalls = 5;
+        double chanceAllCallsFast = Math.pow(1 - chanceOneCallIsSlow, numCalls);
+        double chanceAtLeastOneSlow = 1 - chanceAllCallsFast;
+        System.out.printf(&quot;with %d backend calls per page, each with a %.0f%% chance of hitting the slow tail:%n&quot;, numCalls, chanceOneCallIsSlow * 100);
+        System.out.printf(&quot;chance the WHOLE PAGE is slow (at least one call is slow) = %.1f%%%n&quot;, chanceAtLeastOneSlow * 100);
+        System.out.println(&quot;-&gt; a 1% per-call tail becomes a much bigger risk once several calls are combined into one page&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>TailLatency.java</code>, then run <code>java TailLatency.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>latencies</code> is built to resemble a realistic distribution: 95 fast requests (10–30ms), 4 moderately slow ones (80–120ms), and one extreme outlier (5000ms) — then sorted ascending.</li><li><code>percentile</code> finds the value at the position corresponding to a given percentage of the sorted list; <code>percentile(latencies, 50)</code> lands inside the fast group, <code>percentile(latencies, 95)</code> lands near the boundary of the fast/slow groups, and <code>percentile(latencies, 99)</code> lands inside the moderately-slow group.</li><li>The <code>average</code> calculation sums all 101 values and divides by the count; because it includes the single <code>5000ms</code> value, it comes out noticeably higher than even p95 or p99 — despite only one of 101 requests actually being that slow.</li><li>This directly illustrates the gotcha: a system whose average looks concerning might actually have excellent p50/p95/p99, if the average is being pulled by one rare, extreme value, while a system with fine-looking averages could have a genuinely bad p99 affecting many more users.</li><li>Level 3 computes <code>chanceAtLeastOneSlow</code> using the complement rule: the probability all 5 independent calls are fast, subtracted from 1. Even with only a 1% per-call chance of hitting the slow tail, combining 5 calls raises the chance that the overall page experience is slow to roughly 4.9% — showing why tail latency compounds and matters even more in systems with many internal calls per user-facing request.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: percentiles computed by simply averaging percentiles from multiple servers (e.g. &quot;average of each server&#x27;s own p99&quot;) are not mathematically valid — you cannot average percentiles like you can average simple sums. Percentiles must be computed from the full, combined set of raw latency values across all servers, not from an average of each server&#x27;s separately computed percentile.</blockquote>
+<ul><li>Percentiles describe the shape of a latency distribution; p50 shows the typical case, while p95 and p99 reveal the tail experience an average can hide entirely.</li><li>A single extreme outlier can distort an average far more than it distorts even a high percentile, making averages a poor tool for judging user experience.</li><li>Combining several calls into one user-facing operation compounds tail risk: even a small per-call chance of hitting the slow tail becomes a much larger chance that the whole operation is slow.</li><li>Related concepts: <a href="0125-throughput-vs-latency.md">Throughput vs latency</a> (the broader trade-off percentiles help you evaluate correctly), <a href="0124-load-shedding-graceful-degradation.md">Load shedding &amp; graceful degradation</a> (a common response to protecting tail latency under load).</li></ul>
+  <div class="nav"><a class="prv" href="0125-throughput-vs-latency.html"><span class="mini">← Previous</span>Throughput vs latency</a><a class="nxt" href="0127-batching-request-coalescing.html"><span class="mini">Next →</span>Batching & request coalescing</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t126";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
