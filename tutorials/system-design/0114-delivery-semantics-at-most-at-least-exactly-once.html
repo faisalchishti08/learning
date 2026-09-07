@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Delivery semantics (at-most / at-least / exactly-once) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 9. Messaging & Async Processing</div>
+  <div class="htitle">
+    <h1>Delivery semantics (at-most / at-least / exactly-once)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Delivery semantics</strong> describe how many times a message can be delivered to (and processed by) a consumer, given that networks and processes can fail at any point. <strong>At-most-once</strong> means a message is delivered zero or one times — it might be lost, but never duplicated. <strong>At-least-once</strong> means a message is delivered one or more times — it is never lost, but might be duplicated. <strong>Exactly-once</strong> means a message is delivered and processed exactly one time, with no loss and no duplication — the hardest and most expensive guarantee to actually provide.</p>
+<h2>2. Why &amp; when</h2>
+<p>The order a consumer does two things — process the message, and acknowledge it to the broker — combined with the possibility of a crash between them, is what determines which semantic you get. If you acknowledge *before* processing, a crash after the acknowledgment but before finishing means the message is gone forever without being handled: at-most-once. If you acknowledge *after* processing, a crash after finishing but before the acknowledgment reaches the broker means the broker redelivers it: at-least-once, since your consumer might process it again. Choose at-most-once only where losing an occasional message is truly fine (a metrics ping); choose at-least-once (the common default) combined with <a href="0116-idempotent-consumers.md">idempotent consumers</a> for almost everything else; reach for a true exactly-once pipeline (transactional writes tying the consume and produce steps together) only when duplication is unacceptable and the messaging system directly supports it.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>At-most-once:</strong> acknowledge first, process second. A crash between the two loses the message; it is never retried, since the broker already thinks it was handled.</li><li><strong>At-least-once:</strong> process first, acknowledge second. A crash between the two means the broker times out waiting for the acknowledgment and redelivers the message — the consumer may see it again after having already processed it once.</li><li><strong>Exactly-once (why it&#x27;s hard):</strong> requires the &quot;process&quot; step and the &quot;acknowledge&quot; step to be atomic together, as if they were a single, indivisible operation — no possible crash point can leave them out of sync. Real systems achieve this only with specific support, like transactional writes that commit the processing result and the offset acknowledgment in one atomic step.</li><li><strong>The practical default:</strong> most systems choose at-least-once, because it is achievable with ordinary retries, and then rely on <a href="0116-idempotent-consumers.md">idempotent consumers</a> to make duplicate delivery harmless — this combination behaves like exactly-once from the application&#x27;s point of view, without needing the messaging system to provide a true exactly-once guarantee itself.</li><li><strong>Delivery vs processing:</strong> these terms describe what the consumer&#x27;s business logic experiences (was the order shipped once, or twice?) — a message technically &quot;delivered twice&quot; but processed idempotently produces the same end effect as being processed exactly once.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>AT-MOST-ONCE (ack before process):
+  receive -&gt; ACK -&gt; [CRASH HERE] -&gt; process never runs -&gt; message LOST
+
+AT-LEAST-ONCE (process before ack):
+  receive -&gt; process -&gt; [CRASH HERE] -&gt; ack never sent -&gt; broker
+  redelivers -&gt; consumer processes AGAIN -&gt; message DUPLICATED
+
+EXACTLY-ONCE (atomic together):
+  receive -&gt; [process + ack as ONE atomic unit] -&gt; no crash point
+  can leave them mismatched -&gt; processed exactly once</code></pre>
+<p>*Caption: the order of &quot;process&quot; versus &quot;acknowledge&quot;, and whether a crash can land between them, determines which delivery guarantee a consumer actually gets.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Simulate at-most-once: acknowledge before processing, then a crash loses the message.</p>
+<p><strong>Level 2 — At-least-once.</strong> Process before acknowledging; a crash before the ack causes redelivery and duplicate processing.</p>
+<p><strong>Level 3 — Exactly-once effect via idempotency.</strong> Combine at-least-once redelivery with a processed-ids check, so the duplicate delivery has no duplicate effect.</p>
+<pre><code class="lang-java">// DeliverySemantics.java
+import java.util.*;
+
+public class DeliverySemantics {
+
+    static int accountBalance = 100;
+
+    public static void main(String[] args) {
+        // Level 1: at-most-once - ack BEFORE processing; a crash after ack means processing never happens.
+        System.out.println(&quot;--- at-most-once ---&quot;);
+        boolean acked = true; // broker marks the message as delivered
+        boolean crashedBeforeProcessing = true; // simulated crash right after the ack
+        if (acked &amp;&amp; !crashedBeforeProcessing) {
+            accountBalance += 50; // this line never runs in this scenario
+        }
+        System.out.println(&quot;balance after at-most-once crash: &quot; + accountBalance + &quot; (deposit of 50 was LOST, never applied)&quot;);
+
+        // Level 2: at-least-once - process BEFORE ack; a crash before ack means redelivery and reprocessing.
+        System.out.println(&quot;--- at-least-once ---&quot;);
+        accountBalance += 50; // process the deposit
+        boolean ackReachedBroker = false; // simulated crash before the ack was sent
+        if (!ackReachedBroker) {
+            System.out.println(&quot;ack lost, broker will redeliver the same message&quot;);
+            accountBalance += 50; // consumer processes the SAME message again on redelivery
+        }
+        System.out.println(&quot;balance after at-least-once redelivery: &quot; + accountBalance + &quot; (deposit applied TWICE - a duplicate)&quot;);
+
+        // Level 3: at-least-once + idempotency = exactly-once effect.
+        System.out.println(&quot;--- at-least-once with idempotent processing ---&quot;);
+        accountBalance = 100; // reset for a clean comparison
+        Set&lt;String&gt; processedMessageIds = new HashSet&lt;&gt;();
+
+        String messageId = &quot;deposit-msg-77&quot;;
+        // first delivery
+        if (!processedMessageIds.contains(messageId)) {
+            accountBalance += 50;
+            processedMessageIds.add(messageId);
+        }
+        System.out.println(&quot;balance after first delivery: &quot; + accountBalance);
+
+        // redelivery of the SAME message id (simulating the at-least-once retry)
+        if (!processedMessageIds.contains(messageId)) {
+            accountBalance += 50; // this is correctly skipped
+        } else {
+            System.out.println(&quot;message &quot; + messageId + &quot; already processed - skipping duplicate, no double-deposit&quot;);
+        }
+        System.out.println(&quot;balance after redelivery: &quot; + accountBalance + &quot; (unchanged - exactly-once EFFECT achieved)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>DeliverySemantics.java</code>, then run <code>java DeliverySemantics.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The at-most-once section sets <code>acked = true</code> and <code>crashedBeforeProcessing = true</code> *before* the <code>if</code> block runs the actual deposit logic — modeling the acknowledgment having already happened while the crash prevents the deposit from ever executing. The balance stays at its original value, and the deposit is permanently lost.</li><li>The at-least-once section runs <code>accountBalance += 50</code> first, then checks <code>ackReachedBroker</code>, which is <code>false</code> — modeling the acknowledgment being lost after processing already completed. Because the broker never got the ack, it redelivers, and the code applies <code>accountBalance += 50</code> a second time.</li><li>The printed balance after this section (<code>200</code> instead of the correct <code>150</code>) shows the duplicate-processing problem at-least-once alone can cause.</li><li>Level 3 resets the balance and introduces <code>processedMessageIds</code>, a set tracking which message ids have already been handled. The first delivery of <code>&quot;deposit-msg-77&quot;</code> is not in the set, so it applies the deposit and records the id.</li><li>The simulated redelivery of the exact same message id now finds it already in <code>processedMessageIds</code>, so it skips the deposit entirely — the final balance (<code>150</code>) is correct, showing that at-least-once delivery combined with an idempotency check produces the same end result as a true exactly-once guarantee, without needing the messaging system itself to provide one.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: &quot;exactly-once&quot; is often advertised by a messaging system but usually only covers a specific scope, like delivery within that one system — the moment your consumer&#x27;s processing has any side effect *outside* that system (writing to a different database, calling another service), true end-to-end exactly-once requires that external step to also be part of the same atomic guarantee, which most systems do not provide. Idempotent processing is almost always still the safer, more portable choice.</blockquote>
+<ul><li>At-most-once can lose messages; at-least-once can duplicate them; true exactly-once, which does neither, is hard and needs specific transactional support.</li><li>The order of &quot;process&quot; versus &quot;acknowledge&quot;, and where a crash lands between them, is exactly what determines which semantic a consumer actually gets.</li><li>The common, practical pattern is at-least-once delivery combined with idempotent processing, which produces an exactly-once *effect* without needing exactly-once *delivery*.</li><li>Related concepts: <a href="0116-idempotent-consumers.md">Idempotent consumers</a> (the technique used in Level 3), <a href="0115-message-ordering-guarantees.md">Message ordering guarantees</a> (a related but distinct guarantee about sequence, not duplication).</li></ul>
+  <div class="nav"><a class="prv" href="0113-brokers-topics-partitions.html"><span class="mini">← Previous</span>Brokers & topics/partitions</a><a class="nxt" href="0115-message-ordering-guarantees.html"><span class="mini">Next →</span>Message ordering guarantees</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t114";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

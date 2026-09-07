@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dead-letter queues & poison messages — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 9. Messaging & Async Processing</div>
+  <div class="htitle">
+    <h1>Dead-letter queues & poison messages</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>poison message</strong> is a message that a consumer can never successfully process, no matter how many times it is retried — perhaps its data is malformed, or it triggers a bug every time. A <strong>dead-letter queue (DLQ)</strong> is a separate queue where such messages are moved after they exceed a maximum retry count, instead of being retried forever (which would block the queue) or silently discarded (which would lose the failure entirely).</p>
+<h2>2. Why &amp; when</h2>
+<p>Under <a href="0114-delivery-semantics-at-most-at-least-exactly-once.md">at-least-once delivery</a>, a consumer that fails to process a message typically causes the broker to redeliver it. If the failure is permanent — not a transient blip like a brief database outage — the same message will fail forever, and if it sits at the front of an ordered queue, it can block every message behind it from ever being processed. A dead-letter queue solves this: after a bounded number of retries, the poison message is moved aside, letting the main queue continue processing everything else, while preserving the failed message for investigation instead of losing it. Use a DLQ any time a consumer&#x27;s failure could plausibly be permanent (bad data, a bug), not just transient.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Retry count tracking:</strong> each message (or its processing attempt) tracks how many times it has been retried since it was first delivered.</li><li><strong>Retry threshold:</strong> after a configured maximum (e.g. 5 attempts), the message is considered poison rather than transiently failing.</li><li><strong>Move to DLQ, not discard:</strong> the poison message is moved to a separate DLQ, not deleted — this preserves it for manual inspection, alerting, or a fix-and-replay later, unlike simply dropping it.</li><li><strong>The main queue keeps moving:</strong> once a poison message is moved out, the consumer can proceed to the next message instead of being stuck retrying the same one forever.</li><li><strong>Alerting on the DLQ:</strong> since a poison message usually indicates a real bug or bad data upstream, systems typically alert an on-call engineer whenever a message lands in the DLQ, rather than letting it sit unnoticed.</li><li><strong>Distinguishing transient from permanent failures:</strong> a well-designed consumer should retry transient errors (a temporary network timeout) more times, or with backoff, before giving up, and fail fast to the DLQ for clearly permanent errors (malformed data that will never parse).</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>Main queue: [msg1][msg2 (poison)][msg3][msg4]
+
+  Consumer processes msg1: OK, acknowledged, removed.
+  Consumer processes msg2: FAILS. Retry 1: FAILS. Retry 2: FAILS.
+  ... Retry 5: FAILS (max retries reached)
+      -&gt; msg2 moved to Dead-Letter Queue, alert fired.
+
+Main queue now: [msg3][msg4]   &lt;- consumer can proceed immediately
+
+Dead-Letter Queue: [msg2]   &lt;- preserved for investigation, not lost</code></pre>
+<p>*Caption: a poison message is moved aside after exceeding its retry limit, so it cannot block the rest of the queue, and is preserved rather than discarded.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A consumer retries a failing message up to a maximum count.</p>
+<p><strong>Level 2 — Move to DLQ.</strong> Once retries are exhausted, move the message to a dead-letter queue and continue processing the rest.</p>
+<p><strong>Level 3 — Alerting and replay.</strong> Fire an alert when a message lands in the DLQ, and show fixing the data and replaying it back into the main queue.</p>
+<pre><code class="lang-java">// DeadLetterQueue.java
+import java.util.*;
+
+public class DeadLetterQueue {
+
+    record Message(String id, String payload) {}
+
+    static int maxRetries = 3;
+
+    static boolean tryProcess(Message msg) {
+        // simulates a permanently broken message: this specific payload always fails to parse.
+        return !msg.payload().equals(&quot;CORRUPTED_DATA&quot;);
+    }
+
+    public static void main(String[] args) {
+        Queue&lt;Message&gt; mainQueue = new LinkedList&lt;&gt;(List.of(
+            new Message(&quot;msg1&quot;, &quot;valid-order-1&quot;),
+            new Message(&quot;msg2&quot;, &quot;CORRUPTED_DATA&quot;), // this one will fail every time
+            new Message(&quot;msg3&quot;, &quot;valid-order-2&quot;)
+        ));
+        Queue&lt;Message&gt; deadLetterQueue = new LinkedList&lt;&gt;();
+
+        // Level 1 &amp; 2: process the queue; retry failures up to maxRetries, then move to DLQ.
+        while (!mainQueue.isEmpty()) {
+            Message msg = mainQueue.poll();
+            int attempts = 0;
+            boolean success = false;
+            while (attempts &lt; maxRetries &amp;&amp; !success) {
+                attempts++;
+                success = tryProcess(msg);
+                System.out.println(&quot;processing &quot; + msg.id() + &quot;, attempt &quot; + attempts + &quot;: &quot; + (success ? &quot;OK&quot; : &quot;FAILED&quot;));
+            }
+            if (!success) {
+                deadLetterQueue.add(msg);
+                System.out.println(&quot;ALERT: &quot; + msg.id() + &quot; exceeded &quot; + maxRetries + &quot; retries -&gt; moved to dead-letter queue&quot;);
+            } else {
+                System.out.println(msg.id() + &quot; processed successfully, acknowledged&quot;);
+            }
+        }
+
+        System.out.println(&quot;main queue processing complete. dead-letter queue contains: &quot; + deadLetterQueue);
+        System.out.println(&quot;-&gt; msg3 was still processed normally, even though msg2 failed permanently&quot;);
+
+        // Level 3: investigate, fix, and replay the poisoned message back into the main queue.
+        Message poisoned = deadLetterQueue.poll();
+        Message fixed = new Message(poisoned.id(), &quot;valid-order-1-corrected&quot;); // data corrected after investigation
+        boolean replaySuccess = tryProcess(fixed);
+        System.out.println(&quot;replaying fixed &quot; + fixed.id() + &quot;: &quot; + (replaySuccess ? &quot;OK, now processed&quot; : &quot;still failing&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>DeadLetterQueue.java</code>, then run <code>java DeadLetterQueue.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The main loop polls each message and calls <code>tryProcess</code> up to <code>maxRetries</code> times; for <code>msg1</code> and <code>msg3</code>, <code>tryProcess</code> returns <code>true</code> on the first attempt, since their payloads are not <code>&quot;CORRUPTED_DATA&quot;</code>.</li><li>For <code>msg2</code>, <code>tryProcess</code> always returns <code>false</code>, since its payload is exactly <code>&quot;CORRUPTED_DATA&quot;</code>; the inner <code>while</code> loop runs all 3 allowed attempts, each printed as <code>FAILED</code>.</li><li>After exhausting <code>maxRetries</code> with no success, the code adds <code>msg2</code> to <code>deadLetterQueue</code> and prints an alert — this is the moment a transient-looking retry loop gives up and treats the message as poison.</li><li>Crucially, the outer loop then continues to <code>msg3</code> and processes it normally — <code>msg2</code>&#x27;s permanent failure never blocked <code>msg3</code> from being handled, which is the entire point of moving it aside instead of retrying it forever in place.</li><li>Level 3 pulls <code>msg2</code> back out of the dead-letter queue, constructs a <code>fixed</code> version with corrected data, and calls <code>tryProcess</code> on it directly — since the corrected payload is no longer <code>&quot;CORRUPTED_DATA&quot;</code>, it succeeds, demonstrating the DLQ&#x27;s role as a holding area for messages that can be inspected, fixed, and replayed rather than being lost forever.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a dead-letter queue is only useful if something actually looks at it. A DLQ that silently accumulates poison messages with no alerting or monitoring is barely better than discarding them outright — the entire value of a DLQ is that a human (or an automated process) eventually investigates and resolves what landed there.</blockquote>
+<ul><li>A dead-letter queue holds messages that exceeded their retry limit, preventing one permanently failing message from blocking every message behind it.</li><li>Moving to a DLQ preserves the failed message for investigation and possible replay, rather than losing it via a silent discard.</li><li>A DLQ needs active alerting or monitoring to be genuinely useful — messages should be investigated and either fixed-and-replayed or intentionally discarded, not left indefinitely.</li><li>Related concepts: <a href="0114-delivery-semantics-at-most-at-least-exactly-once.md">Delivery semantics (at-most / at-least / exactly-once)</a> (the retry behavior that leads a message toward a DLQ), <a href="0116-idempotent-consumers.md">Idempotent consumers</a> (relevant when a replayed DLQ message might have partially succeeded before).</li></ul>
+  <div class="nav"><a class="prv" href="0117-backpressure-flow-control.html"><span class="mini">← Previous</span>Backpressure & flow control</a><a class="nxt" href="0119-spring-for-apache-kafka-kafkatemplate-kafkalistener.html"><span class="mini">Next →</span>Spring for Apache Kafka (KafkaTemplate / @KafkaListener)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t118";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

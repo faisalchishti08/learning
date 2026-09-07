@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Idempotent consumers — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 9. Messaging & Async Processing</div>
+  <div class="htitle">
+    <h1>Idempotent consumers</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>An <strong>idempotent consumer</strong> produces the same end result no matter how many times it processes the same message. Processing a duplicate delivery once, twice, or ten times leaves the system in exactly the same state as processing it once — the extra attempts have no additional effect. This directly answers the duplication risk of <a href="0114-delivery-semantics-at-most-at-least-exactly-once.md">at-least-once delivery</a>, where a message can genuinely be delivered more than once.</p>
+<h2>2. Why &amp; when</h2>
+<p>At-least-once delivery is the practical default for most messaging systems, because it never loses a message — but it can deliver the same message twice (for example, if a consumer crashes right after processing but before acknowledging). If a consumer&#x27;s processing has a side effect that is not naturally safe to repeat — charging a credit card, incrementing a counter, sending an email — a duplicate delivery causes a duplicate side effect: a double charge, a wrong count, a spammy second email. Make a consumer idempotent any time its processing has such a side effect and the messaging system provides at-least-once (not a true, verified exactly-once) delivery — which is almost always.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Track processed message ids:</strong> record the id of every message once it has been successfully processed (in a database table, a cache, or a dedicated dedup store); before processing a new message, check whether its id is already recorded, and skip it if so.</li><li><strong>Naturally idempotent operations:</strong> some operations are already safe to repeat without any extra tracking — <code>SET balance = 100</code> gives the same result no matter how many times it runs, unlike <code>balance += 50</code>, which is not naturally idempotent.</li><li><strong>Use a unique, stable message id:</strong> the id used for deduplication must be the same across all deliveries of the same logical message — usually a business-meaningful id (an <code>orderId</code>, a <code>paymentId</code>) rather than a broker-generated delivery id, which might differ between the original delivery and a redelivery.</li><li><strong>The check-and-record must be atomic with the effect:</strong> if &quot;check if processed&quot; and &quot;apply the effect and record it&quot; are two separate steps that are not transactional together, a crash between them can still let a duplicate slip through — the two must be combined into one atomic database transaction where possible.</li><li><strong>Time-bounded deduplication windows:</strong> tracking every message id forever is not always practical; many systems keep a deduplication record only for a bounded window (e.g. 24 hours), long enough to catch realistic redeliveries without unbounded storage growth.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>Non-idempotent consumer:            Idempotent consumer:
+
+  delivery 1: balance += 50           delivery 1: check id &quot;pay-77&quot; -&gt; not seen
+              (balance: 100 -&gt; 150)                apply: balance += 50, record id &quot;pay-77&quot;
+                                                     (balance: 100 -&gt; 150)
+  delivery 2 (duplicate):             delivery 2 (duplicate):
+              balance += 50                          check id &quot;pay-77&quot; -&gt; ALREADY SEEN
+              (balance: 150 -&gt; 200)                  SKIP - no additional effect
+                                                     (balance stays 150)
+
+  WRONG: customer charged/credited    CORRECT: duplicate delivery has
+  twice for one real event.           zero additional effect.</code></pre>
+<p>*Caption: tracking a message&#x27;s unique id and skipping already-processed ones turns a duplicate delivery into a harmless no-op.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A naive, non-idempotent consumer applies an effect twice when the message is delivered twice.</p>
+<p><strong>Level 2 — Idempotent fix.</strong> Track processed message ids and skip a duplicate.</p>
+<p><strong>Level 3 — Naturally idempotent operation.</strong> Rewrite the effect itself (a &quot;set&quot; instead of an &quot;add&quot;) so it needs no tracking at all.</p>
+<pre><code class="lang-java">// IdempotentConsumer.java
+import java.util.*;
+
+public class IdempotentConsumer {
+
+    record PaymentMessage(String paymentId, int amount) {}
+
+    public static void main(String[] args) {
+        // Level 1: naive consumer - NOT idempotent, applies the effect every time it&#x27;s called.
+        int naiveBalance = 100;
+        PaymentMessage msg = new PaymentMessage(&quot;pay-77&quot;, 50);
+
+        naiveBalance += msg.amount(); // first delivery
+        System.out.println(&quot;naive consumer after delivery 1: balance=&quot; + naiveBalance);
+        naiveBalance += msg.amount(); // duplicate redelivery of the SAME message
+        System.out.println(&quot;naive consumer after delivery 2 (duplicate): balance=&quot; + naiveBalance + &quot; (WRONG - charged twice)&quot;);
+
+        // Level 2: idempotent consumer - tracks processed ids, skips duplicates.
+        int idempotentBalance = 100;
+        Set&lt;String&gt; processedIds = new HashSet&lt;&gt;();
+
+        idempotentBalance = processIfNew(msg, idempotentBalance, processedIds);
+        System.out.println(&quot;idempotent consumer after delivery 1: balance=&quot; + idempotentBalance);
+        idempotentBalance = processIfNew(msg, idempotentBalance, processedIds); // duplicate redelivery
+        System.out.println(&quot;idempotent consumer after delivery 2 (duplicate): balance=&quot; + idempotentBalance + &quot; (correct - unchanged)&quot;);
+
+        // Level 3: naturally idempotent operation - a &quot;set&quot; instead of an &quot;add&quot; needs no id tracking.
+        record BalanceSnapshot(String accountId, int newBalance) {}
+        Map&lt;String, Integer&gt; accountBalances = new HashMap&lt;&gt;();
+        BalanceSnapshot snapshot = new BalanceSnapshot(&quot;acc-1&quot;, 150); // &quot;the balance IS now 150&quot;, not &quot;add 50&quot;
+
+        accountBalances.put(snapshot.accountId(), snapshot.newBalance()); // delivery 1
+        accountBalances.put(snapshot.accountId(), snapshot.newBalance()); // duplicate delivery 2 - harmless, same result
+        System.out.println(&quot;naturally idempotent &#x27;set&#x27; after 2 deliveries: &quot; + accountBalances.get(&quot;acc-1&quot;) + &quot; (still correct, no tracking needed)&quot;);
+    }
+
+    static int processIfNew(PaymentMessage msg, int currentBalance, Set&lt;String&gt; processedIds) {
+        if (processedIds.contains(msg.paymentId())) {
+            System.out.println(&quot;payment &quot; + msg.paymentId() + &quot; already processed - skipping duplicate&quot;);
+            return currentBalance; // no additional effect
+        }
+        processedIds.add(msg.paymentId());
+        return currentBalance + msg.amount();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>IdempotentConsumer.java</code>, then run <code>java IdempotentConsumer.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Level 1 calls <code>naiveBalance += msg.amount()</code> twice in a row, simulating the same message being delivered twice; the balance goes from <code>100</code> to <code>150</code> to <code>200</code> — a clear, wrong double-application of the same payment.</li><li>Level 2&#x27;s <code>processIfNew</code> checks <code>processedIds.contains(msg.paymentId())</code> before applying any effect. On the first call, <code>&quot;pay-77&quot;</code> is not in the set, so it applies the amount and records the id.</li><li>On the second call — the duplicate redelivery of the exact same <code>msg</code> — <code>&quot;pay-77&quot;</code> is now found in <code>processedIds</code>, so the function returns <code>currentBalance</code> unchanged, printing that it skipped a duplicate.</li><li>The idempotent balance ends at <code>150</code> after both deliveries, correctly reflecting the payment applied exactly once, regardless of how many times the message was actually delivered.</li><li>Level 3 shows an entirely different way to reach safety: instead of an incrementing effect (<code>+= amount</code>), the message carries the *resulting* value directly (<code>newBalance = 150</code>). Applying <code>accountBalances.put(...)</code> with the same snapshot any number of times always leaves the same final value — no id tracking is needed at all, because the operation is naturally idempotent by construction.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: deduplicating by a broker-assigned delivery id instead of a business-meaningful id (like <code>paymentId</code>) does not actually protect against duplicates, because a genuine redelivery of the same logical message can arrive with a *different* delivery id. Always dedupe on an id that stays the same across every delivery of the same real-world event.</blockquote>
+<ul><li>An idempotent consumer produces the same result whether a message is processed once or many times, directly neutralizing the duplication risk of at-least-once delivery.</li><li>Tracking processed message ids (using a stable, business-meaningful id) is the general-purpose technique; designing the operation itself as a &quot;set&quot; rather than an &quot;add&quot; avoids needing tracking at all when possible.</li><li>The check for &quot;already processed&quot; and the effect itself must be atomic together, or a crash between them can still let a duplicate through.</li><li>Related concepts: <a href="0114-delivery-semantics-at-most-at-least-exactly-once.md">Delivery semantics (at-most / at-least / exactly-once)</a> (the delivery guarantee that makes this necessary), <a href="0118-dead-letter-queues-poison-messages.md">Dead-letter queues &amp; poison messages</a> (handling messages that fail no matter how many times they are retried).</li></ul>
+  <div class="nav"><a class="prv" href="0115-message-ordering-guarantees.html"><span class="mini">← Previous</span>Message ordering guarantees</a><a class="nxt" href="0117-backpressure-flow-control.html"><span class="mini">Next →</span>Backpressure & flow control</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t116";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
