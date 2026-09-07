@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conflict resolution (last-write-wins, vector clocks, CRDTs) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 8. Replication & Consistency</div>
+  <div class="htitle">
+    <h1>Conflict resolution (last-write-wins, vector clocks, CRDTs)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Conflict resolution</strong> is how a replicated system decides what to do when two writes to the same key happen concurrently, on different nodes, without either node knowing about the other&#x27;s write at the time. Three common strategies are: <strong>last-write-wins (LWW)</strong>, which keeps whichever write has the later timestamp and discards the other; <strong>vector clocks</strong>, which detect and preserve the fact that two writes were concurrent instead of guessing an order; and <strong>CRDTs</strong> (Conflict-free Replicated Data Types), which are data structures specifically designed so concurrent updates can always be merged automatically, without losing information.</p>
+<h2>2. Why &amp; when</h2>
+<p>Any system with more than one node that can accept writes independently — <a href="0099-multi-leader-replication.md">multi-leader replication</a> or <a href="0100-leaderless-replication-dynamo-style.md">leaderless replication</a> — will eventually have two nodes accept different writes to the same key before either has heard from the other. Something must decide the final value once both writes are known to all replicas. Use last-write-wins when losing one of the two writes is an acceptable trade-off for simplicity (a &quot;last seen at&quot; timestamp, a cache entry). Use vector clocks when you need to *detect* a genuine conflict and hand it to the application or the user to resolve (a shopping cart, a document edit). Use a CRDT when the data type allows a merge that keeps information from both writes automatically (a counter, a set, a collaboratively edited list).</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Last-write-wins (LWW):</strong> attach a timestamp to every write; when two versions of a key are found, keep the one with the higher timestamp, discard the other. Simple, but silently loses data — the discarded write is gone with no trace.</li><li><strong>Vector clocks:</strong> each node keeps a counter per node (e.g. <code>{nodeA: 2, nodeB: 1}</code>). A write increments the writing node&#x27;s own counter. Comparing two vector clocks tells you if one clock is *strictly greater* than the other in every position (meaning one write causally followed the other, so no conflict), or if neither dominates the other (meaning the writes were truly concurrent — a real conflict to surface).</li><li><strong>Surfacing conflicts:</strong> once a vector clock detects a real conflict, the system keeps *both* versions and returns both to the application (or the user) to resolve — for example, a shopping cart showing &quot;you had item A on one device and item B on another; here&#x27;s the merge&quot;.</li><li><strong>CRDTs:</strong> data types with a merge operation that is mathematically guaranteed to produce the same result no matter what order updates are applied in. A grow-only counter CRDT, for example, tracks each node&#x27;s own increments separately and sums them — merging two nodes&#x27; counters can never lose an increment, unlike a plain integer with last-write-wins.</li><li><strong>Choosing between them:</strong> LWW is easiest but loses data silently; vector clocks preserve information about the conflict but push the resolution work onto the application; CRDTs need a data-type-specific design but resolve automatically with no data loss and no manual step.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>LAST-WRITE-WINS:                    VECTOR CLOCKS:
+  Write A: value=5, t=100              Write A: {nodeA:1} on nodeA
+  Write B: value=9, t=101              Write B: {nodeB:1} on nodeB
+  -&gt; keep B (9), DISCARD A silently    -&gt; neither dominates -&gt; CONFLICT detected,
+                                           both versions kept, given to app to merge
+
+CRDT (grow-only counter):
+  nodeA increments its own slot: {nodeA:3, nodeB:0}
+  nodeB increments its own slot: {nodeA:0, nodeB:2}
+  MERGE (take max per slot): {nodeA:3, nodeB:2} -&gt; total = 5
+  -&gt; both increments preserved, no data lost, no manual step needed</code></pre>
+<p>*Caption: LWW discards one write; vector clocks detect and preserve the conflict for manual resolution; CRDTs merge automatically with no loss.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Last-write-wins: compare two timestamped writes and keep the later one.</p>
+<p><strong>Level 2 — Vector clocks.</strong> Detect whether two writes are causally ordered or truly concurrent.</p>
+<p><strong>Level 3 — CRDT counter.</strong> Merge two nodes&#x27; independent increments into a correct total with no data loss.</p>
+<pre><code class="lang-java">// ConflictResolution.java
+import java.util.*;
+
+public class ConflictResolution {
+
+    // Level 1: last-write-wins.
+    record TimestampedWrite(int value, long timestamp) {}
+
+    static TimestampedWrite lastWriteWins(TimestampedWrite a, TimestampedWrite b) {
+        return a.timestamp() &gt;= b.timestamp() ? a : b; // the other write is silently discarded
+    }
+
+    // Level 2: vector clocks - compare {nodeId -&gt; counter} maps.
+    enum Order { A_BEFORE_B, B_BEFORE_A, CONCURRENT }
+
+    static Order compareVectorClocks(Map&lt;String, Integer&gt; a, Map&lt;String, Integer&gt; b) {
+        boolean aLessOrEqual = true, bLessOrEqual = true;
+        Set&lt;String&gt; allNodes = new TreeSet&lt;&gt;();
+        allNodes.addAll(a.keySet()); allNodes.addAll(b.keySet());
+        for (String node : allNodes) {
+            int av = a.getOrDefault(node, 0), bv = b.getOrDefault(node, 0);
+            if (av &gt; bv) bLessOrEqual = false;
+            if (bv &gt; av) aLessOrEqual = false;
+        }
+        if (aLessOrEqual &amp;&amp; !bLessOrEqual) return Order.A_BEFORE_B;
+        if (bLessOrEqual &amp;&amp; !aLessOrEqual) return Order.B_BEFORE_A;
+        return Order.CONCURRENT; // neither dominates - a genuine conflict
+    }
+
+    public static void main(String[] args) {
+        // Level 1: LWW keeps the later write, silently drops the other.
+        TimestampedWrite writeA = new TimestampedWrite(5, 100);
+        TimestampedWrite writeB = new TimestampedWrite(9, 101);
+        TimestampedWrite winner = lastWriteWins(writeA, writeB);
+        System.out.println(&quot;LWW result: &quot; + winner.value() + &quot; (write with value=5 was silently discarded)&quot;);
+
+        // Level 2: vector clocks detect a genuine conflict between two independent writes.
+        Map&lt;String, Integer&gt; clockA = Map.of(&quot;nodeA&quot;, 1); // write happened only on nodeA, its first write
+        Map&lt;String, Integer&gt; clockB = Map.of(&quot;nodeB&quot;, 1); // write happened only on nodeB, its first write
+        Order order = compareVectorClocks(clockA, clockB);
+        System.out.println(&quot;comparing &quot; + clockA + &quot; vs &quot; + clockB + &quot; -&gt; &quot; + order);
+        if (order == Order.CONCURRENT) {
+            System.out.println(&quot;-&gt; a real conflict: BOTH versions are kept and handed to the application to merge&quot;);
+        }
+
+        // A causally-ordered pair, for contrast: B&#x27;s clock strictly dominates A&#x27;s.
+        Map&lt;String, Integer&gt; clockC = Map.of(&quot;nodeA&quot;, 1);
+        Map&lt;String, Integer&gt; clockD = Map.of(&quot;nodeA&quot;, 1, &quot;nodeB&quot;, 1); // saw A&#x27;s write, then added its own
+        System.out.println(&quot;comparing &quot; + clockC + &quot; vs &quot; + clockD + &quot; -&gt; &quot; + compareVectorClocks(clockC, clockD));
+
+        // Level 3: CRDT grow-only counter - merge two nodes&#x27; independent increments, losing nothing.
+        Map&lt;String, Integer&gt; counterOnNodeA = Map.of(&quot;nodeA&quot;, 3, &quot;nodeB&quot;, 0); // nodeA incremented 3 times locally
+        Map&lt;String, Integer&gt; counterOnNodeB = Map.of(&quot;nodeA&quot;, 0, &quot;nodeB&quot;, 2); // nodeB incremented 2 times locally
+        Map&lt;String, Integer&gt; merged = new TreeMap&lt;&gt;();
+        for (String node : Set.of(&quot;nodeA&quot;, &quot;nodeB&quot;)) {
+            merged.put(node, Math.max(counterOnNodeA.getOrDefault(node, 0), counterOnNodeB.getOrDefault(node, 0)));
+        }
+        int total = merged.values().stream().mapToInt(Integer::intValue).sum();
+        System.out.println(&quot;CRDT merge of per-node slots: &quot; + merged + &quot; -&gt; total = &quot; + total + &quot; (both nodes&#x27; increments preserved)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ConflictResolution.java</code>, then run <code>java ConflictResolution.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>lastWriteWins</code> compares <code>writeA</code> (timestamp 100) and <code>writeB</code> (timestamp 101) and returns <code>writeB</code>; the printed line notes that <code>writeA</code>&#x27;s value (<code>5</code>) is now gone entirely — LWW&#x27;s defining trade-off.</li><li><code>compareVectorClocks(clockA, clockB)</code> checks each node&#x27;s counter across both clocks: <code>nodeA</code>&#x27;s counter is higher in <code>clockA</code>, but <code>nodeB</code>&#x27;s counter is higher in <code>clockB</code>, so neither clock dominates the other — the function returns <code>CONCURRENT</code>, correctly identifying a genuine, unresolved conflict.</li><li>The contrasting pair, <code>clockC</code> versus <code>clockD</code>, has <code>clockD</code> matching <code>clockC</code>&#x27;s <code>nodeA</code> count *and* adding its own <code>nodeB</code> increment — <code>clockC</code> is less-than-or-equal to <code>clockD</code> in every position, so the function returns <code>A_BEFORE_B</code>, correctly identifying that <code>clockD</code>&#x27;s write causally followed <code>clockC</code>&#x27;s, not a conflict at all.</li><li>Level 3 models a CRDT counter as a map of per-node increment counts; <code>counterOnNodeA</code> recorded 3 increments from <code>nodeA</code> (and knows nothing yet about <code>nodeB</code>&#x27;s), while <code>counterOnNodeB</code> recorded 2 increments from <code>nodeB</code>.</li><li>The merge takes the maximum of each node&#x27;s slot across both copies (<code>{nodeA: 3, nodeB: 2}</code>), then sums them to <code>5</code> — both nodes&#x27; independent increments survive the merge intact, unlike LWW, which would have kept only one node&#x27;s count and lost the other&#x27;s entirely.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: vector clocks tell you *that* two writes conflicted, but they do not tell you *how* to merge them — that decision is pushed to the application (or the user), and if the application does not handle the <code>CONCURRENT</code> case explicitly, it is easy to accidentally fall back to picking one arbitrarily, silently reintroducing LWW&#x27;s data-loss problem anyway.</blockquote>
+<ul><li>Last-write-wins is the simplest strategy but silently discards one of two conflicting writes.</li><li>Vector clocks correctly distinguish real concurrency from causal ordering, but only detect conflicts — they do not resolve them.</li><li>CRDTs bake a safe, automatic merge directly into the data type, so no information is lost and no manual resolution step is needed, at the cost of only working for data types that have a valid CRDT design.</li><li>Related concepts: <a href="0099-multi-leader-replication.md">Multi-leader replication</a> and <a href="0100-leaderless-replication-dynamo-style.md">Leaderless replication (Dynamo-style)</a> (the replication styles that create these conflicts), <a href="0105-causal-monotonic-consistency.md">Causal &amp; monotonic consistency</a> (built on the same causal-ordering idea vector clocks use).</li></ul>
+  <div class="nav"><a class="prv" href="0108-pacelc-theorem.html"><span class="mini">← Previous</span>PACELC theorem</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t109";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

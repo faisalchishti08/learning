@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Causal & monotonic consistency — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 8. Replication & Consistency</div>
+  <div class="htitle">
+    <h1>Causal & monotonic consistency</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Causal consistency</strong> guarantees that if one operation *causally depends* on another — for example, a reply to a comment can only exist after the comment itself — every node shows them in that same cause-and-effect order. It does not order unrelated operations relative to each other, only ones that are actually connected. <strong>Monotonic reads</strong> is a narrower, simpler guarantee: once a user has read a value, they will never read an *older* value than that on a later read, even if they hit a different replica. Both sit between the strict ordering of <a href="0103-strong-consistency.md">strong consistency</a> and the &quot;no ordering promises at all&quot; of plain <a href="0104-eventual-consistency.md">eventual consistency</a>.</p>
+<h2>2. Why &amp; when</h2>
+<p>Plain eventual consistency can produce results that look outright broken to a user, even though no data was lost: seeing a reply to a comment before the comment itself appears, because the reply happened to replicate faster on the path the reader took. Causal consistency fixes exactly this class of bug, without paying the full coordination cost of strong consistency, by only ordering things that are genuinely related. Monotonic reads fixes a related annoyance: a user refreshing a page and seeing their friend list shrink back down, because a later read landed on a replica that is further behind than the one an earlier read hit. Use causal consistency for systems with visible cause-and-effect relationships (comments, chat threads, social feeds); use monotonic reads whenever a user might issue several reads in a row and should never see time run backwards.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Causal consistency — the &quot;happens-before&quot; relationship:</strong> operation B causally depends on operation A if B could only have been created after A was known (a reply references a comment; a &quot;like&quot; references a post). Causally related operations must be seen everywhere in that order.</li><li><strong>Concurrent (unrelated) operations are unordered:</strong> two users each posting an unrelated comment at the same time have no causal relationship, so different nodes may show them in either order — this is fine and expected.</li><li><strong>How it&#x27;s tracked:</strong> systems commonly attach a marker to each write recording which prior writes it depended on (a vector clock or a simple &quot;last seen version&quot; token), so a replica can check &quot;have I applied everything this write depends on?&quot; before showing it.</li><li><strong>Monotonic reads — per-user replica pinning:</strong> the simplest implementation is routing all of one user&#x27;s reads to the same replica for their session, so their replica&#x27;s data only ever moves forward in time from their own perspective, never backward.</li><li><strong>Monotonic reads via a version floor:</strong> alternatively, the client remembers the highest version number it has seen and rejects (or retries elsewhere) any read that would return something older than that.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>CAUSAL CONSISTENCY:
+  Comment &quot;Great post!&quot; (op A) posted first.
+  Reply &quot;Thanks!&quot; (op B) posted second, causally depends on A.
+
+  Every node MUST show A before B:
+    Node1: [A, B]   Node2: [A, B]   -- correct, causal order preserved
+    Node3: [B, A]   -- WRONG: reply shown before the comment it replies to
+
+MONOTONIC READS:
+  User&#x27;s read #1 (from Replica X, caught up to v10): sees 10 friends.
+  User&#x27;s read #2 (from Replica Y, only caught up to v7): would see 8 friends.
+  Monotonic reads REJECTS read #2&#x27;s stale result / redirects it,
+  so the user never sees their friend count go backward.</code></pre>
+<p>*Caption: causal consistency orders only related events correctly; monotonic reads stops a user&#x27;s own view of the data from moving backward in time.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Model causal dependency between a comment and its reply, and reject an order that violates it.</p>
+<p><strong>Level 2 — Monotonic reads.</strong> A user&#x27;s reads track the highest version seen, and reject a replica&#x27;s stale answer.</p>
+<p><strong>Level 3 — Concurrent, unrelated writes stay unordered.</strong> Two unrelated comments have no causal link, so either order is valid.</p>
+<pre><code class="lang-java">// CausalMonotonicConsistency.java
+import java.util.*;
+
+public class CausalMonotonicConsistency {
+
+    record Op(String id, String content, String dependsOn, long version) {} // dependsOn = null if no causal parent
+
+    static boolean isValidOrder(List&lt;Op&gt; observedOrder) {
+        Set&lt;String&gt; seen = new HashSet&lt;&gt;();
+        for (Op op : observedOrder) {
+            if (op.dependsOn() != null &amp;&amp; !seen.contains(op.dependsOn())) {
+                return false; // dependency not seen yet - causal order violated
+            }
+            seen.add(op.id());
+        }
+        return true;
+    }
+
+    public static void main(String[] args) {
+        // Level 1: causal consistency - a reply depends on its comment.
+        Op comment = new Op(&quot;c1&quot;, &quot;Great post!&quot;, null, 1);
+        Op reply = new Op(&quot;r1&quot;, &quot;Thanks!&quot;, &quot;c1&quot;, 2);
+
+        System.out.println(&quot;order [comment, reply] valid? &quot; + isValidOrder(List.of(comment, reply)));
+        System.out.println(&quot;order [reply, comment] valid? &quot; + isValidOrder(List.of(reply, comment)));
+        System.out.println(&quot;-&gt; the second order violates causal consistency: reply shown before its dependency&quot;);
+
+        // Level 2: monotonic reads - track the highest version this user has seen.
+        long userHighestVersionSeen = 0;
+        Map&lt;String, Long&gt; replicaXState = Map.of(&quot;friendCount&quot;, 10L);
+        Map&lt;Long, Long&gt; replicaXVersion = Map.of(10L, 10L); // replica X is caught up to version 10
+
+        long replicaXVersionNow = 10;
+        userHighestVersionSeen = Math.max(userHighestVersionSeen, replicaXVersionNow);
+        System.out.println(&quot;read #1 from replica X (v&quot; + replicaXVersionNow + &quot;): friendCount=10, user&#x27;s high-water mark now v&quot; + userHighestVersionSeen);
+
+        long replicaYVersionNow = 7; // replica Y is behind
+        if (replicaYVersionNow &lt; userHighestVersionSeen) {
+            System.out.println(&quot;read #2 from replica Y (v&quot; + replicaYVersionNow + &quot;) REJECTED: older than user&#x27;s high-water mark v&quot; + userHighestVersionSeen);
+            System.out.println(&quot;-&gt; client retries against a more caught-up replica instead of showing stale data&quot;);
+        }
+
+        // Level 3: two unrelated comments, posted concurrently, have no causal link - either order is valid.
+        Op commentA = new Op(&quot;cA&quot;, &quot;Nice weather today&quot;, null, 3);
+        Op commentB = new Op(&quot;cB&quot;, &quot;Anyone tried the new cafe?&quot;, null, 4);
+        System.out.println(&quot;order [A, B] valid? &quot; + isValidOrder(List.of(commentA, commentB)));
+        System.out.println(&quot;order [B, A] valid? &quot; + isValidOrder(List.of(commentB, commentA)));
+        System.out.println(&quot;-&gt; both orders are valid: A and B are unrelated, so causal consistency makes no promise about their order&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CausalMonotonicConsistency.java</code>, then run <code>java CausalMonotonicConsistency.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>isValidOrder</code> walks a list of operations, tracking which ids it has already &quot;seen&quot;; if it reaches an operation whose <code>dependsOn</code> has not been seen yet, the order is invalid.</li><li><code>[comment, reply]</code> passes, because <code>comment</code> (<code>c1</code>) is seen before <code>reply</code> (which depends on <code>c1</code>) is checked. <code>[reply, comment]</code> fails, because when <code>reply</code> is checked first, <code>c1</code> is not yet in <code>seen</code>.</li><li>Level 2 models monotonic reads: after reading from replica X at version 10, the user&#x27;s <code>userHighestVersionSeen</code> becomes 10. When a second read would come from replica Y, which is only at version 7, the code detects <code>7 &lt; 10</code> and rejects that stale answer rather than showing it.</li><li>This rejection is the concrete mechanism behind &quot;the user never sees their friend count go backward&quot; — the stale read is caught before it reaches the user.</li><li>Level 3 checks two unrelated comments, <code>commentA</code> and <code>commentB</code>, neither depending on the other; <code>isValidOrder</code> returns <code>true</code> for *both* possible orderings, showing causal consistency correctly leaves genuinely unrelated events unordered, unlike strong consistency which would force one global order on everything.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: causal consistency only orders operations that have an explicit, tracked dependency. If your system fails to record a real dependency (for example, a &quot;like&quot; that references a post but isn&#x27;t tagged as depending on it), causal consistency cannot protect that relationship — the guarantee is only as good as the dependency tracking behind it.</blockquote>
+<ul><li>Causal consistency preserves cause-and-effect order for related operations, while leaving unrelated, concurrent operations free to appear in any order on different nodes.</li><li>Monotonic reads guarantees a single user&#x27;s sequence of reads never goes backward in time, typically via replica pinning or a version high-water mark.</li><li>Both sit between strong consistency&#x27;s full ordering guarantee and eventual consistency&#x27;s lack of any ordering guarantee, at a lower coordination cost than strong consistency.</li><li>Related concepts: <a href="0104-eventual-consistency.md">Eventual consistency</a> (the weaker baseline these guarantees improve on), <a href="0103-strong-consistency.md">Strong consistency</a> (the stricter guarantee these avoid the full cost of), <a href="0109-conflict-resolution-last-write-wins-vector-clocks-crdts.md">Conflict resolution</a> (vector clocks, used to track causal dependencies).</li></ul>
+  <div class="nav"><a class="prv" href="0104-eventual-consistency.html"><span class="mini">← Previous</span>Eventual consistency</a><a class="nxt" href="0106-quorum-reads-writes-r-w-n.html"><span class="mini">Next →</span>Quorum reads/writes (R + W > N)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t105";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

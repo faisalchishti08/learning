@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leaderless replication (Dynamo-style) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 8. Replication & Consistency</div>
+  <div class="htitle">
+    <h1>Leaderless replication (Dynamo-style)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Leaderless replication</strong> has no designated leader at all — any node can accept a read or a write for any key. The client (or a coordinator on its behalf) sends the write to several nodes directly, and sends reads to several nodes too, comparing their answers to figure out the current value. This style is named after Amazon&#x27;s Dynamo paper and is used by databases like Cassandra and Riak. It is like asking three different friends for an address instead of relying on one designated record-keeper — if most of them agree, you trust the answer.</p>
+<h2>2. Why &amp; when</h2>
+<p>Leader-based systems (<a href="0098-leader-follower-primary-replica-replication.md">leader-follower</a> or <a href="0099-multi-leader-replication.md">multi-leader</a>) have leaders as availability-critical nodes: if a leader is unreachable, writes for its shard stop until failover completes. Leaderless replication avoids this single point of write failure entirely, since a client can write to whichever nodes are currently reachable, and the write still succeeds as long as enough of them respond. Use it for workloads that must accept writes even during partial node or network failures, at the cost of needing an explicit strategy to keep replicas consistent, since there is no leader whose log defines the &quot;correct&quot; order of writes.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>N, W, R:</strong> the key parameters. <code>N</code> = number of nodes that store a replica of the data. <code>W</code> = number of nodes that must acknowledge a write before it is considered successful. <code>R</code> = number of nodes a read must contact before returning an answer.</li><li><strong>Write path:</strong> the client sends the write to all <code>N</code> replica nodes, but only waits for <code>W</code> of them to acknowledge before declaring success — the rest apply the write when they can.</li><li><strong>Read path:</strong> the client reads from <code>R</code> replica nodes and compares their values, since some may not have the latest write yet.</li><li><strong>Read repair:</strong> if a read finds that some of the <code>R</code> nodes returned a stale value, it writes the latest value back to those stale nodes, quietly fixing them.</li><li><strong>Quorums:</strong> choosing <code>W</code> and <code>R</code> so that <code>W + R &gt; N</code> guarantees every read overlaps with at least one node that has the latest write — see <a href="0106-quorum-reads-writes-r-w-n.md">Quorum reads/writes</a> for the full reasoning.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>N = 3 replica nodes for key &quot;item-42&quot;: Node1, Node2, Node3
+
+WRITE (W=2): client sends write to all 3, waits for 2 acks.
+  Node1: ACK (fast)     Node2: ACK (fast)     Node3: (slow, not yet)
+  -&gt; write succeeds once 2 acks arrive, Node3 catches up later.
+
+READ (R=2): client reads from 2 of the 3 nodes.
+  Node1: value=v2 (latest)   Node3: value=v1 (stale, hadn&#x27;t gotten the write yet)
+  -&gt; client sees the disagreement, returns the latest (v2), and read-repairs Node3.</code></pre>
+<p>*Caption: writes and reads each only need to reach a subset of nodes; reads reconcile any disagreement and repair stale replicas.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Model N=3 replica nodes; a write only needs W=2 acknowledgments to succeed.</p>
+<p><strong>Level 2 — Read from R nodes and detect disagreement.</strong> One node is behind; the read compares values from R nodes.</p>
+<p><strong>Level 3 — Read repair.</strong> The read pushes the latest value to the stale node it found.</p>
+<pre><code class="lang-java">// LeaderlessReplication.java
+import java.util.*;
+
+public class LeaderlessReplication {
+
+    record Versioned(String value, long version) {}
+
+    static Map&lt;String, Versioned&gt; node1 = new HashMap&lt;&gt;();
+    static Map&lt;String, Versioned&gt; node2 = new HashMap&lt;&gt;();
+    static Map&lt;String, Versioned&gt; node3 = new HashMap&lt;&gt;();
+    static List&lt;Map&lt;String, Versioned&gt;&gt; allNodes = List.of(node1, node2, node3);
+
+    static void write(String key, String value, long version, int w) {
+        int acks = 0;
+        for (Map&lt;String, Versioned&gt; node : allNodes) {
+            if (acks &lt; w) { node.put(key, new Versioned(value, version)); acks++; } // only first W nodes ack &quot;in time&quot;
+        }
+        System.out.println(&quot;write &#x27;&quot; + value + &quot;&#x27; (v&quot; + version + &quot;) acknowledged by &quot; + acks + &quot; of &quot; + allNodes.size() + &quot; nodes (W=&quot; + w + &quot;)&quot;);
+    }
+
+    static String readWithRepair(String key, int r) {
+        List&lt;Map&lt;String, Versioned&gt;&gt; contacted = allNodes.subList(0, r); // read from R nodes
+        Versioned latest = null;
+        for (var node : contacted) {
+            Versioned v = node.get(key);
+            if (v != null &amp;&amp; (latest == null || v.version() &gt; latest.version())) latest = v;
+        }
+        for (var node : contacted) { // read repair: push the latest value to any stale node among those contacted
+            Versioned v = node.get(key);
+            if (v == null || v.version() &lt; latest.version()) node.put(key, latest);
+        }
+        return latest.value();
+    }
+
+    public static void main(String[] args) {
+        // Level 1: N=3, W=2 - write succeeds once 2 of 3 nodes ack; node3 is left behind.
+        int acksNeeded = 2;
+        node1.put(&quot;item-42&quot;, new Versioned(&quot;old-price&quot;, 1));
+        node2.put(&quot;item-42&quot;, new Versioned(&quot;old-price&quot;, 1));
+        node3.put(&quot;item-42&quot;, new Versioned(&quot;old-price&quot;, 1));
+        write(&quot;item-42&quot;, &quot;new-price&quot;, 2, acksNeeded); // only node1, node2 get the new write &quot;in time&quot;
+
+        System.out.println(&quot;node1: &quot; + node1.get(&quot;item-42&quot;));
+        System.out.println(&quot;node2: &quot; + node2.get(&quot;item-42&quot;));
+        System.out.println(&quot;node3 (behind): &quot; + node3.get(&quot;item-42&quot;));
+
+        // Level 2 &amp; 3: read with R=2, from node1 and node2 - both agree, no repair needed here.
+        System.out.println(&quot;read (R=2, from node1/node2): &quot; + readWithRepair(&quot;item-42&quot;, 2));
+
+        // Now read across all 3 nodes (R=3) - node3 is stale, gets detected and repaired.
+        String result = readWithRepair(&quot;item-42&quot;, 3);
+        System.out.println(&quot;read (R=3, includes stale node3): &quot; + result);
+        System.out.println(&quot;node3 after read repair: &quot; + node3.get(&quot;item-42&quot;) + &quot; (now caught up)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>LeaderlessReplication.java</code>, then run <code>java LeaderlessReplication.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>write</code> sends the new value to every node in <code>allNodes</code>, but only counts an &quot;ack&quot; for the first <code>w</code> of them — modeling <code>node3</code> being slow or unreachable and not getting the write in time, while the write still succeeds because <code>W=2</code> nodes acknowledged.</li><li>Printing each node&#x27;s stored value shows <code>node1</code> and <code>node2</code> at version 2 (<code>&quot;new-price&quot;</code>), while <code>node3</code> is stuck at version 1 (<code>&quot;old-price&quot;</code>) — exactly the divergence leaderless replication must tolerate.</li><li><code>readWithRepair(&quot;item-42&quot;, 2)</code> reads only <code>node1</code> and <code>node2</code>; both agree on version 2, so the read returns <code>&quot;new-price&quot;</code> with nothing to repair.</li><li><code>readWithRepair(&quot;item-42&quot;, 3)</code> reads all three nodes, including the stale <code>node3</code>. It finds <code>node3</code>&#x27;s version (1) is lower than the latest seen (version 2), so it identifies the disagreement and returns the correct, latest value.</li><li>The read-repair loop then writes the latest <code>Versioned</code> value directly into <code>node3</code>, so the final printed line shows <code>node3</code> now holding version 2 — the stale replica has quietly caught up as a side effect of being read.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: read repair only fixes a stale replica when it happens to be one of the <code>R</code> nodes contacted by a read. A stale replica that is never read (because it wasn&#x27;t randomly chosen, or because W was low) can drift indefinitely; production systems run a background &quot;anti-entropy&quot; process to compare and repair all replicas periodically, not just the ones a live read happens to touch.</blockquote>
+<ul><li>Leaderless replication removes the single-leader dependency, letting writes and reads succeed against any subset of nodes.</li><li>Choosing <code>W</code> and <code>R</code> controls the durability-versus-latency and consistency-versus-latency trade-offs; <code>W + R &gt; N</code> guarantees a read always sees the latest acknowledged write.</li><li>Read repair opportunistically fixes stale replicas encountered during a read; background anti-entropy fixes the ones that aren&#x27;t.</li><li>Related concepts: <a href="0106-quorum-reads-writes-r-w-n.md">Quorum reads/writes (R + W &gt; N)</a> (the formal guarantee behind this scheme), <a href="0104-eventual-consistency.md">Eventual consistency</a> (the consistency model leaderless systems typically provide).</li></ul>
+  <div class="nav"><a class="prv" href="0099-multi-leader-replication.html"><span class="mini">← Previous</span>Multi-leader replication</a><a class="nxt" href="0101-synchronous-vs-asynchronous-replication.html"><span class="mini">Next →</span>Synchronous vs asynchronous replication</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t100";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

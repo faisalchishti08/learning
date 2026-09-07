@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leader-follower (primary-replica) replication — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 8. Replication & Consistency</div>
+  <div class="htitle">
+    <h1>Leader-follower (primary-replica) replication</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Leader-follower replication</strong> (also called primary-replica replication) keeps copies of the same data on multiple database nodes, but only one node — the <strong>leader</strong> — accepts writes. The leader streams every change to the other nodes — the <strong>followers</strong> — which apply the same changes and can serve reads. It is like a teacher (the leader) dictating notes that several students (the followers) copy down identically.</p>
+<h2>2. Why &amp; when</h2>
+<p>A single database node can only handle so many reads before it becomes the bottleneck. Leader-follower replication lets you add followers purely to serve more read traffic, without touching how writes work, since all writes still go to one place. It also gives you a standby copy of the data: if the leader fails, a follower can be promoted to take over, improving availability. Use it when your workload is read-heavy and you need to scale reads, or when you need a hot standby for failover, and you can tolerate followers being a small amount of time behind the leader.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Single writer:</strong> only the leader accepts write requests (<code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>). This avoids the coordination problem of two nodes trying to write the same row differently.</li><li><strong>Change propagation:</strong> the leader records every write in a log (often called a write-ahead log or binlog) and streams that log to each follower.</li><li><strong>Followers apply the log in order:</strong> each follower replays the log entries in the same order the leader wrote them, so its data eventually matches the leader&#x27;s.</li><li><strong>Reads can go anywhere:</strong> an application can send read queries to the leader or to any follower, spreading read load across all of them.</li><li><strong>Failover:</strong> if the leader crashes, the system (or an operator) promotes one follower to be the new leader, and the other followers start replicating from it instead.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>              WRITE &quot;set balance = 90&quot;
+                        |
+                        v
+                  +-----------+
+                  |  LEADER   |  (only node that accepts writes)
+                  +-----------+
+                    |       |
+          replication log stream
+                    |       |
+                    v       v
+            +-----------+ +-----------+
+            | FOLLOWER 1| | FOLLOWER 2|  (apply the same log, serve reads)
+            +-----------+ +-----------+
+
+  READ requests can go to LEADER, FOLLOWER 1, or FOLLOWER 2.</code></pre>
+<p>*Caption: writes flow one-way from the leader; reads can be served by the leader or any follower.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Model a leader and one follower; writes go to the leader, then replicate to the follower.</p>
+<p><strong>Level 2 — Multiple followers, reads spread across them.</strong> Add a second follower and route reads round-robin across all followers.</p>
+<p><strong>Level 3 — Leader failover.</strong> Simulate the leader failing and promoting a follower to take its place.</p>
+<pre><code class="lang-java">// LeaderFollowerReplication.java
+import java.util.*;
+
+public class LeaderFollowerReplication {
+
+    static class Node {
+        String name;
+        Map&lt;String, Integer&gt; data = new HashMap&lt;&gt;();
+        Node(String name) { this.name = name; }
+    }
+
+    static Node leader = new Node(&quot;leader&quot;);
+    static List&lt;Node&gt; followers = new ArrayList&lt;&gt;(List.of(new Node(&quot;follower1&quot;), new Node(&quot;follower2&quot;)));
+
+    static void write(String key, int value) {
+        leader.data.put(key, value); // only the leader accepts writes
+        for (Node f : followers) f.data.put(key, value); // replication log applied to each follower
+    }
+
+    static int readRoundRobin(String key, int requestIndex) {
+        Node target = followers.get(requestIndex % followers.size()); // spread reads across followers
+        return target.data.get(key);
+    }
+
+    public static void main(String[] args) {
+        // Level 1: a write on the leader propagates to followers.
+        write(&quot;balance&quot;, 100);
+        System.out.println(&quot;leader balance: &quot; + leader.data.get(&quot;balance&quot;));
+        System.out.println(&quot;follower1 balance: &quot; + followers.get(0).data.get(&quot;balance&quot;));
+
+        // Level 2: reads spread across both followers.
+        write(&quot;balance&quot;, 90);
+        for (int i = 0; i &lt; 4; i++) {
+            int val = readRoundRobin(&quot;balance&quot;, i);
+            System.out.println(&quot;read #&quot; + i + &quot; served by &quot; + followers.get(i % followers.size()).name + &quot; -&gt; balance=&quot; + val);
+        }
+
+        // Level 3: leader fails - promote follower1 to be the new leader.
+        System.out.println(&quot;leader has failed! promoting follower1...&quot;);
+        Node newLeader = followers.remove(0);
+        newLeader.name = &quot;leader (promoted)&quot;;
+        leader = newLeader;
+        write(&quot;balance&quot;, 80); // new leader now accepts writes
+        System.out.println(&quot;new leader balance: &quot; + leader.data.get(&quot;balance&quot;));
+        System.out.println(&quot;remaining follower balance: &quot; + followers.get(0).data.get(&quot;balance&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>LeaderFollowerReplication.java</code>, then run <code>java LeaderFollowerReplication.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>write(&quot;balance&quot;, 100)</code> updates <code>leader.data</code> first, then loops over <code>followers</code>, applying the same update to each — modeling the leader streaming its log to every follower.</li><li>The printed leader and follower values match, confirming the replication succeeded.</li><li>Level 2 writes <code>balance = 90</code>, then issues four reads using <code>readRoundRobin</code>, which alternates between <code>follower1</code> and <code>follower2</code> by index — showing read traffic spread across multiple followers instead of hitting one node.</li><li>Level 3 simulates a leader crash: <code>followers.remove(0)</code> takes <code>follower1</code> out of the follower list and reassigns it to the <code>leader</code> variable, modeling a promotion.</li><li>The next <code>write(&quot;balance&quot;, 80)</code> now updates this newly promoted leader and the one remaining follower — confirming the system keeps accepting writes after failover, just through a different node.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: because replication takes some time, a follower can briefly serve stale data right after a write — this is <a href="0102-replication-lag-read-your-writes.md">replication lag</a>. A user who writes their own data and immediately reads it from a lagging follower might not see their own change yet, a common and confusing bug if not designed for explicitly.</blockquote>
+<ul><li>Leader-follower replication uses one leader for all writes and any number of followers for reads, scaling read capacity without complicating writes.</li><li>Followers replay the leader&#x27;s write log in order, and any follower can be promoted to leader if the original leader fails.</li><li>Reads from followers can be stale by a small amount of time, since replication is not instantaneous.</li><li>Related concepts: <a href="0101-synchronous-vs-asynchronous-replication.md">Synchronous vs asynchronous replication</a> (how strictly the leader waits for followers), <a href="0102-replication-lag-read-your-writes.md">Replication lag &amp; read-your-writes</a> (the staleness problem this scheme creates).</li></ul>
+  <div class="nav"><a class="prv" href="0097-cross-shard-joins-queries.html"><span class="mini">← Previous</span>Cross-shard joins & queries</a><a class="nxt" href="0099-multi-leader-replication.html"><span class="mini">Next →</span>Multi-leader replication</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t98";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

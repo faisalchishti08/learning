@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Eventual consistency — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 8. Replication & Consistency</div>
+  <div class="htitle">
+    <h1>Eventual consistency</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Eventual consistency</strong> guarantees that if no new writes happen to a piece of data, every replica of it will *eventually* converge to the same value — but it makes no promise about how long that convergence takes, or what a read will see in the meantime. Unlike <a href="0103-strong-consistency.md">strong consistency</a>, a read immediately after a write may return an old value; eventual consistency only promises the staleness is temporary.</p>
+<h2>2. Why &amp; when</h2>
+<p>Guaranteeing every read sees the latest write (<a href="0103-strong-consistency.md">strong consistency</a>) requires coordination, which costs latency and can force a system to refuse requests during a network problem. Eventual consistency drops that guarantee in exchange for every node being able to answer reads and writes independently, immediately, without checking with anyone else. Use it for data where a brief window of staleness is harmless — a social media &quot;like&quot; count, a product view counter, a DNS record, a cache — and where you need high availability and low latency more than an always-current answer.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>No coordination on the read or write path:</strong> any replica can answer a read with whatever value it currently has, and any replica can accept a write and propagate it in the background.</li><li><strong>Convergence, not correctness-at-every-instant:</strong> the guarantee is only that replicas *will* agree once writes stop and propagation finishes — not that they agree right now.</li><li><strong>Propagation mechanisms:</strong> asynchronous replication (see <a href="0101-synchronous-vs-asynchronous-replication.md">synchronous vs asynchronous replication</a>), gossip protocols, or background anti-entropy processes all move writes from where they landed to every other replica over time.</li><li><strong>Conflicting concurrent writes still need resolution:</strong> if two replicas each accept a different write to the same key before either has heard from the other, eventual consistency alone does not say which one wins — a resolution rule like last-write-wins or a CRDT is still needed (see <a href="0109-conflict-resolution-last-write-wins-vector-clocks-crdts.md">conflict resolution</a>).</li><li><strong>Bounded staleness (a stronger variant):</strong> some systems promise a maximum lag, e.g. &quot;no replica is more than 5 seconds behind&quot;, giving a predictable upper bound instead of an unspecified &quot;eventually&quot;.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>t=0: write &quot;likes = 100&quot; lands on Node A only.
+
+t=0 (immediately after): read from Node B -&gt; &quot;likes = 99&quot; (stale, but valid answer)
+t=0 (immediately after): read from Node C -&gt; &quot;likes = 99&quot; (stale, but valid answer)
+
+t=1: background replication propagates the write to Node B.
+t=2: background replication propagates the write to Node C.
+
+t=2 (no new writes since t=0): read from ANY node -&gt; &quot;likes = 100&quot;
+   -&gt; all nodes have now CONVERGED to the same value.</code></pre>
+<p>*Caption: reads may briefly disagree right after a write, but once propagation finishes, every node converges to the same answer.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Three nodes; a write lands on one node and reads from the others are briefly stale.</p>
+<p><strong>Level 2 — Convergence over time.</strong> Simulate propagation delay, then confirm all nodes agree once it completes.</p>
+<p><strong>Level 3 — Concurrent writes needing resolution.</strong> Two nodes each accept a different write before hearing from each other; resolve so both converge.</p>
+<pre><code class="lang-java">// EventualConsistency.java
+import java.util.*;
+
+public class EventualConsistency {
+
+    static Map&lt;String, Integer&gt; nodeA = new HashMap&lt;&gt;();
+    static Map&lt;String, Integer&gt; nodeB = new HashMap&lt;&gt;();
+    static Map&lt;String, Integer&gt; nodeC = new HashMap&lt;&gt;();
+    static List&lt;Map&lt;String, Integer&gt;&gt; allNodes = List.of(nodeA, nodeB, nodeC);
+
+    public static void main(String[] args) {
+        // Level 1: write lands on nodeA only; nodeB and nodeC still have the old value.
+        nodeA.put(&quot;likes&quot;, 99);
+        nodeB.put(&quot;likes&quot;, 99);
+        nodeC.put(&quot;likes&quot;, 99);
+        nodeA.put(&quot;likes&quot;, 100); // new write, only applied to nodeA so far
+
+        System.out.println(&quot;immediately after write -&gt; nodeA: &quot; + nodeA.get(&quot;likes&quot;)
+            + &quot;, nodeB: &quot; + nodeB.get(&quot;likes&quot;) + &quot;, nodeC: &quot; + nodeC.get(&quot;likes&quot;));
+        System.out.println(&quot;-&gt; nodeB and nodeC are stale, but this is expected and temporary&quot;);
+
+        // Level 2: background propagation runs, one node at a time, simulating a delay.
+        System.out.println(&quot;propagating to nodeB...&quot;);
+        nodeB.put(&quot;likes&quot;, nodeA.get(&quot;likes&quot;));
+        System.out.println(&quot;propagating to nodeC...&quot;);
+        nodeC.put(&quot;likes&quot;, nodeA.get(&quot;likes&quot;));
+
+        boolean converged = allNodes.stream().allMatch(n -&gt; n.get(&quot;likes&quot;).equals(nodeA.get(&quot;likes&quot;)));
+        System.out.println(&quot;all nodes now: &quot; + nodeA.get(&quot;likes&quot;) + &quot;, &quot; + nodeB.get(&quot;likes&quot;) + &quot;, &quot; + nodeC.get(&quot;likes&quot;));
+        System.out.println(&quot;converged: &quot; + converged);
+
+        // Level 3: concurrent writes on 2 nodes before either hears from the other.
+        record Versioned(int value, long timestamp) {}
+        Map&lt;String, Versioned&gt; nodeX = new HashMap&lt;&gt;();
+        Map&lt;String, Versioned&gt; nodeY = new HashMap&lt;&gt;();
+        nodeX.put(&quot;counter&quot;, new Versioned(41, 1000)); // nodeX accepts a write at t=1000
+        nodeY.put(&quot;counter&quot;, new Versioned(42, 1001)); // nodeY accepts a DIFFERENT write, slightly later
+
+        System.out.println(&quot;before resolution -&gt; nodeX: &quot; + nodeX.get(&quot;counter&quot;).value() + &quot;, nodeY: &quot; + nodeY.get(&quot;counter&quot;).value());
+
+        // resolution rule: last-write-wins by timestamp, applied once each node hears the other&#x27;s write.
+        Versioned xVal = nodeX.get(&quot;counter&quot;), yVal = nodeY.get(&quot;counter&quot;);
+        Versioned resolved = xVal.timestamp() &gt;= yVal.timestamp() ? xVal : yVal;
+        nodeX.put(&quot;counter&quot;, resolved);
+        nodeY.put(&quot;counter&quot;, resolved);
+
+        System.out.println(&quot;after resolution -&gt; nodeX: &quot; + nodeX.get(&quot;counter&quot;).value() + &quot;, nodeY: &quot; + nodeY.get(&quot;counter&quot;).value());
+        System.out.println(&quot;-&gt; both converged on the value with the later timestamp&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>EventualConsistency.java</code>, then run <code>java EventualConsistency.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The write <code>nodeA.put(&quot;likes&quot;, 100)</code> only updates <code>nodeA</code>; <code>nodeB</code> and <code>nodeC</code> still hold <code>99</code> because no propagation has happened yet — the first print line shows this three-way disagreement directly.</li><li>The propagation lines copy <code>nodeA</code>&#x27;s current value into <code>nodeB</code>, then into <code>nodeC</code>, one at a time, modeling the delay real asynchronous replication or a gossip protocol would take.</li><li>After both propagation steps run, the <code>converged</code> check confirms all three nodes now hold the identical value <code>100</code> — the eventual-consistency guarantee has been fulfilled, since no further writes happened during propagation.</li><li>Level 3 sets up a harder case: <code>nodeX</code> and <code>nodeY</code> each independently accept a *different* write to the same key, at close but different timestamps, before either has heard from the other — a genuine conflict, not just staleness.</li><li>The resolution step picks whichever <code>Versioned</code> value has the higher timestamp (<code>42</code> at <code>1001</code>) and applies it to both nodes; the final print confirms both <code>nodeX</code> and <code>nodeY</code> now agree, showing that eventual consistency&#x27;s convergence promise still needs an explicit conflict-resolution rule when writes genuinely raced.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: eventual consistency promises convergence only once writes stop. Under continuous, ongoing writes (a busy counter, a hot key), replicas may never actually catch up to each other in practice, even though the formal guarantee is technically not violated. Do not treat &quot;eventually&quot; as a bounded or short time window unless your specific system also documents a concrete staleness bound.</blockquote>
+<ul><li>Eventual consistency lets every replica answer reads and writes immediately and independently, at the cost of temporary disagreement between replicas.</li><li>The only formal guarantee is convergence after writes stop; it says nothing about how long convergence takes.</li><li>Concurrent conflicting writes still need an explicit resolution rule (like last-write-wins) for replicas to actually converge to the same value.</li><li>Related concepts: <a href="0103-strong-consistency.md">Strong consistency</a> (the opposite trade-off), <a href="0109-conflict-resolution-last-write-wins-vector-clocks-crdts.md">Conflict resolution</a> (how concurrent writes are reconciled), <a href="0107-cap-theorem.md">CAP theorem</a> (the formal framing of this trade-off).</li></ul>
+  <div class="nav"><a class="prv" href="0103-strong-consistency.html"><span class="mini">← Previous</span>Strong consistency</a><a class="nxt" href="0105-causal-monotonic-consistency.html"><span class="mini">Next →</span>Causal & monotonic consistency</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t104";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

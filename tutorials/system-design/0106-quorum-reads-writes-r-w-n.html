@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quorum reads/writes (R + W > N) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 8. Replication & Consistency</div>
+  <div class="htitle">
+    <h1>Quorum reads/writes (R + W > N)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>quorum</strong> is the minimum number of replica nodes that must participate in a read or write for it to count as successful. With <code>N</code> replicas total, a write needs <code>W</code> acknowledgments and a read needs <code>R</code> responses. The key rule, <strong>W + R &gt; N</strong>, guarantees that every read quorum and every write quorum must share at least one common node — so any read is mathematically guaranteed to overlap with the latest successful write.</p>
+<h2>2. Why &amp; when</h2>
+<p>Waiting for all <code>N</code> replicas on every write (as full synchronous replication would) is slow and fragile — one slow or down node blocks everything. Waiting for only 1 replica risks missing the latest write entirely on a later read. Quorums let you tune this trade-off precisely: pick <code>W</code> and <code>R</code> so their sum exceeds <code>N</code>, and you get a mathematical guarantee that reads see the latest write, without needing every single node to participate in every operation. Use quorums in leaderless or multi-node replicated systems (Dynamo-style databases like Cassandra) where you want tunable consistency without a single leader as a bottleneck.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>The overlap guarantee:</strong> if <code>W + R &gt; N</code>, then any set of <code>W</code> nodes that acknowledged a write and any set of <code>R</code> nodes contacted by a read must share at least one node in common — this is simple pigeonhole reasoning: two subsets of an <code>N</code>-sized set whose sizes sum to more than <code>N</code> cannot be disjoint.</li><li><strong>Common configurations:</strong> <code>N=3, W=2, R=2</code> (a frequent default: tolerates one node being down for either a read or a write, and <code>2+2=4 &gt; 3</code>). <code>N=3, W=3, R=1</code> (strong write, fast read). <code>N=3, W=1, R=3</code> (fast write, strong read).</li><li><strong>Tuning the trade-off:</strong> a higher <code>W</code> makes writes slower but reads can be faster (and vice versa for a higher <code>R</code>); either can be raised to strengthen the guarantee at the cost of that operation&#x27;s latency and availability.</li><li><strong>Not a full substitute for strong consistency:</strong> quorums guarantee a read overlaps with the *latest acknowledged* write, but concurrent writes racing each other still need conflict resolution (see <a href="0109-conflict-resolution-last-write-wins-vector-clocks-crdts.md">conflict resolution</a>), and a read might see multiple different &quot;latest&quot; candidates if writes are still in flight.</li><li><strong>Sloppy quorums (an availability escape valve):</strong> some systems allow a write to succeed on any <code>W</code> reachable nodes, even ones outside the &quot;correct&quot; replica set for that key, to keep writes available during a partition — trading some consistency guarantees for availability.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>N = 5 replica nodes:  [1] [2] [3] [4] [5]
+
+Write with W=3: write reaches nodes {1, 2, 4}  (any 3 of 5)
+Read with R=3:  read contacts nodes {2, 3, 5}  (any 3 of 5)
+
+Overlap check: {1,2,4} ∩ {2,3,5} = {2}  -- node 2 is in BOTH sets.
+Since W + R = 6 &gt; N = 5, this overlap is GUARANTEED for any choice
+of which 3 nodes each operation happens to use.</code></pre>
+<p>*Caption: any W-sized write set and any R-sized read set must share a node whenever W + R &gt; N — this is what guarantees the read sees the write.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Model N=5 nodes; perform a quorum write to W=3 of them, then a quorum read from R=3, and find the overlapping node.</p>
+<p><strong>Level 2 — Verify the guarantee exhaustively.</strong> Check every possible combination of write-set and read-set for a given N, W, R and confirm they always overlap.</p>
+<p><strong>Level 3 — Show the guarantee breaking when W + R &lt;= N.</strong> Pick a combination that violates the rule and find a write/read pair with no overlap.</p>
+<pre><code class="lang-java">// QuorumReplication.java
+import java.util.*;
+
+public class QuorumReplication {
+
+    static Set&lt;Integer&gt; overlap(Set&lt;Integer&gt; writeSet, Set&lt;Integer&gt; readSet) {
+        Set&lt;Integer&gt; result = new TreeSet&lt;&gt;(writeSet);
+        result.retainAll(readSet);
+        return result;
+    }
+
+    // generate all size-k subsets of {0, 1, ..., n-1}
+    static List&lt;Set&lt;Integer&gt;&gt; subsetsOfSize(int n, int k) {
+        List&lt;Set&lt;Integer&gt;&gt; result = new ArrayList&lt;&gt;();
+        combine(n, k, 0, new TreeSet&lt;&gt;(), result);
+        return result;
+    }
+
+    static void combine(int n, int k, int start, Set&lt;Integer&gt; current, List&lt;Set&lt;Integer&gt;&gt; result) {
+        if (current.size() == k) { result.add(new TreeSet&lt;&gt;(current)); return; }
+        for (int i = start; i &lt; n; i++) {
+            current.add(i);
+            combine(n, k, i + 1, current, result);
+            current.remove(i);
+        }
+    }
+
+    static boolean allCombinationsOverlap(int n, int w, int r) {
+        for (Set&lt;Integer&gt; writeSet : subsetsOfSize(n, w)) {
+            for (Set&lt;Integer&gt; readSet : subsetsOfSize(n, r)) {
+                if (overlap(writeSet, readSet).isEmpty()) return false;
+            }
+        }
+        return true;
+    }
+
+    public static void main(String[] args) {
+        // Level 1: N=5, W=3, R=3 - a concrete write set and read set, find their overlap.
+        Set&lt;Integer&gt; writeSet = Set.of(0, 1, 3); // nodes 1, 2, 4 (0-indexed)
+        Set&lt;Integer&gt; readSet = Set.of(1, 2, 4);  // nodes 2, 3, 5 (0-indexed)
+        System.out.println(&quot;write reached nodes: &quot; + writeSet);
+        System.out.println(&quot;read contacted nodes: &quot; + readSet);
+        System.out.println(&quot;overlap: &quot; + overlap(writeSet, readSet) + &quot; -&gt; read is guaranteed to see the write&quot;);
+
+        // Level 2: verify N=5, W=3, R=3 overlaps for EVERY possible pair of write/read sets.
+        int n = 5, w = 3, r = 3;
+        boolean guaranteed = allCombinationsOverlap(n, w, r);
+        System.out.println(&quot;N=&quot; + n + &quot;, W=&quot; + w + &quot;, R=&quot; + r + &quot; (W+R=&quot; + (w + r) + &quot; &gt; N=&quot; + n + &quot;): &quot;
+            + &quot;overlap guaranteed for ALL combinations? &quot; + guaranteed);
+
+        // Level 3: N=5, W=2, R=2 - W+R=4 is NOT &gt; N=5, so the guarantee should fail for some combination.
+        int w2 = 2, r2 = 2;
+        boolean guaranteed2 = allCombinationsOverlap(n, w2, r2);
+        System.out.println(&quot;N=&quot; + n + &quot;, W=&quot; + w2 + &quot;, R=&quot; + r2 + &quot; (W+R=&quot; + (w2 + r2) + &quot;, NOT &gt; N=&quot; + n + &quot;): &quot;
+            + &quot;overlap guaranteed for ALL combinations? &quot; + guaranteed2);
+        if (!guaranteed2) {
+            for (Set&lt;Integer&gt; ws : subsetsOfSize(n, w2)) {
+                for (Set&lt;Integer&gt; rs : subsetsOfSize(n, r2)) {
+                    if (overlap(ws, rs).isEmpty()) {
+                        System.out.println(&quot;counterexample with no overlap: write=&quot; + ws + &quot;, read=&quot; + rs);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>QuorumReplication.java</code>, then run <code>java QuorumReplication.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Level 1 picks one concrete write set (<code>{0,1,3}</code>) and read set (<code>{1,2,4}</code>) out of 5 nodes; <code>overlap</code> intersects them and finds node <code>1</code> in both, confirming the read is guaranteed to see the write for this particular pair.</li><li>Level 2&#x27;s <code>allCombinationsOverlap</code> exhaustively generates *every* possible 3-node write set and *every* possible 3-node read set out of 5 nodes, and checks that all of them intersect — proving the <code>W+R&gt;N</code> guarantee holds not just for one lucky pair, but for every possible pair, which is what makes it a mathematical guarantee rather than a coincidence.</li><li>The printed result for <code>N=5, W=3, R=3</code> (where <code>W+R=6 &gt; 5</code>) confirms <code>guaranteed = true</code>.</li><li>Level 3 deliberately picks <code>W=2, R=2</code> where <code>W+R=4</code> is *not* greater than <code>N=5</code>, and the same exhaustive check now returns <code>false</code>.</li><li>The code then searches for and prints a concrete counterexample — a write set and read set that do not overlap at all — demonstrating exactly why the <code>W+R&gt;N</code> inequality matters: without it, a read can genuinely miss every node that has the latest write.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: the <code>W+R&gt;N</code> guarantee only covers whether a read *can* see the latest acknowledged write — it does not resolve what happens when two writes race each other concurrently. A read that overlaps with two different, concurrent writes still needs a conflict-resolution rule to decide which value to report.</blockquote>
+<ul><li>A quorum requires only <code>W</code> (of <code>N</code>) nodes to acknowledge a write and <code>R</code> (of <code>N</code>) nodes to answer a read, avoiding the cost of contacting every node on every operation.</li><li>The rule <code>W + R &gt; N</code> guarantees every read quorum overlaps with every write quorum, by simple counting: two subsets of size summing past <code>N</code> cannot be disjoint.</li><li>Raising <code>W</code> or <code>R</code> strengthens that operation&#x27;s guarantee but costs it latency and availability; the values are tunable per system.</li><li>Related concepts: <a href="0100-leaderless-replication-dynamo-style.md">Leaderless replication (Dynamo-style)</a> (the system style that popularized this pattern), <a href="0103-strong-consistency.md">Strong consistency</a> (what a well-chosen quorum can approximate), <a href="0107-cap-theorem.md">CAP theorem</a> (the broader trade-off quorum tuning navigates).</li></ul>
+  <div class="nav"><a class="prv" href="0105-causal-monotonic-consistency.html"><span class="mini">← Previous</span>Causal & monotonic consistency</a><a class="nxt" href="0107-cap-theorem.html"><span class="mini">Next →</span>CAP theorem</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t106";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

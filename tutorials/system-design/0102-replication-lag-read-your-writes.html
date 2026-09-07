@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Replication lag & read-your-writes — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 8. Replication & Consistency</div>
+  <div class="htitle">
+    <h1>Replication lag & read-your-writes</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Replication lag</strong> is the delay between a write landing on the leader and that same write becoming visible on a follower. <strong>Read-your-writes consistency</strong> is a guarantee that a user who just made a write will always see that write in their own subsequent reads, even if replication lag would otherwise let them read stale data from a follower.</p>
+<h2>2. Why &amp; when</h2>
+<p>Replication lag is unavoidable with <a href="0101-synchronous-vs-asynchronous-replication.md">asynchronous replication</a>: followers always take some non-zero time to catch up. This becomes a visible bug when a user updates their own profile, then immediately reloads the page and sees their *old* profile, because the read was served by a follower that had not yet applied the write. You need a read-your-writes strategy any time users perform a write and then, in the same session, expect to see the result of that write — which is most interactive applications.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>The bug scenario:</strong> user writes to the leader, the leader confirms, the write starts replicating; a read immediately after is routed to a follower that has not received it yet; the user sees stale data.</li><li><strong>Fix 1 — read your own writes from the leader:</strong> for a short window after a user&#x27;s write, route that user&#x27;s reads to the leader instead of a follower, since the leader always has the latest data.</li><li><strong>Fix 2 — track a replication position:</strong> the client remembers a marker (e.g. a log sequence number) from its last write; a read is only served by a follower once that follower has caught up to at least that marker.</li><li><strong>Fix 3 — session stickiness:</strong> route all of a user&#x27;s requests, for some window of time, to the same follower they last wrote through — while this does not eliminate lag, it means the user&#x27;s later reads at least come from a node that is consistently catching up, not different followers with different lag amounts.</li><li><strong>The trade-off:</strong> any read-your-writes fix pushes some reads (or all of one user&#x27;s reads) away from the load-balanced pool of followers, reducing some of replication&#x27;s read-scaling benefit for that traffic.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>Without read-your-writes:
+  t=0: user writes &quot;bio = X&quot; to Leader. Leader confirms.
+  t=1: user reloads page. Read routed to Follower (lag: not caught up yet).
+       Follower still shows &quot;bio = (old value)&quot; -&gt; confusing to the user.
+
+With read-your-writes (marker-based):
+  t=0: user writes &quot;bio = X&quot; to Leader. Leader confirms with marker=57.
+  t=1: user reloads page. Read checks: has Follower reached marker &gt;= 57?
+       NO -&gt; route this read to the Leader instead (or wait briefly).
+       User sees &quot;bio = X&quot; correctly.</code></pre>
+<p>*Caption: a read-your-writes check compares a follower&#x27;s replication progress to the user&#x27;s own last-write marker before trusting it.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Model replication lag: a follower&#x27;s data lags behind the leader by a delay counter.</p>
+<p><strong>Level 2 — Detecting the bug.</strong> Read immediately after a write from a lagging follower and observe stale data.</p>
+<p><strong>Level 3 — Read-your-writes fix.</strong> Track each write&#x27;s marker, and route the read to the leader when the follower has not caught up.</p>
+<pre><code class="lang-java">// ReplicationLag.java
+import java.util.*;
+
+public class ReplicationLag {
+
+    static Map&lt;String, String&gt; leaderData = new HashMap&lt;&gt;();
+    static Map&lt;String, String&gt; followerData = new HashMap&lt;&gt;();
+    static long leaderMarker = 0;
+    static long followerAppliedMarker = 0;
+
+    static long write(String key, String value) {
+        leaderData.put(key, value);
+        leaderMarker++;
+        return leaderMarker; // the marker the client should remember for read-your-writes
+    }
+
+    static void followerCatchesUpTo(long marker) { // simulates replication finally applying up to this marker
+        followerData.putAll(leaderData);
+        followerAppliedMarker = marker;
+    }
+
+    static String readNaive(String key) {
+        return followerData.get(key); // always reads from the follower, ignoring lag
+    }
+
+    static String readYourWrites(String key, long myLastWriteMarker) {
+        if (followerAppliedMarker &gt;= myLastWriteMarker) {
+            return followerData.get(key); // follower is caught up enough for this user&#x27;s own writes
+        }
+        return leaderData.get(key); // not caught up yet - fall back to the leader for correctness
+    }
+
+    public static void main(String[] args) {
+        // Level 1 &amp; 2: write, then read immediately before replication has caught up.
+        long marker = write(&quot;bio&quot;, &quot;Loves hiking&quot;);
+        System.out.println(&quot;write confirmed, marker=&quot; + marker);
+        System.out.println(&quot;naive read (from lagging follower) right after write: &quot; + readNaive(&quot;bio&quot;));
+        System.out.println(&quot;-&gt; stale! follower has not applied marker &quot; + marker + &quot; yet&quot;);
+
+        // Level 3: read-your-writes fix - detect the lag and fall back to the leader.
+        System.out.println(&quot;read-your-writes result: &quot; + readYourWrites(&quot;bio&quot;, marker));
+        System.out.println(&quot;-&gt; correct, served from the leader since the follower was behind&quot;);
+
+        // Now let replication actually catch up.
+        followerCatchesUpTo(marker);
+        System.out.println(&quot;after replication catches up, naive read: &quot; + readNaive(&quot;bio&quot;));
+        System.out.println(&quot;read-your-writes result now: &quot; + readYourWrites(&quot;bio&quot;, marker) + &quot; (follower is trusted again)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ReplicationLag.java</code>, then run <code>java ReplicationLag.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>write(&quot;bio&quot;, &quot;Loves hiking&quot;)</code> updates <code>leaderData</code> and increments <code>leaderMarker</code> to <code>1</code>, returning that marker to represent &quot;the point in the replication stream this write happened at&quot;.</li><li><code>readNaive(&quot;bio&quot;)</code> reads directly from <code>followerData</code>, which is still empty at this point, because <code>followerCatchesUpTo</code> has not run yet — this reproduces the stale-read bug plainly.</li><li><code>readYourWrites(&quot;bio&quot;, marker)</code> compares <code>followerAppliedMarker</code> (still <code>0</code>) against the write&#x27;s <code>marker</code> (<code>1</code>); since the follower has not caught up, it falls back to reading <code>leaderData</code>, returning the correct, fresh value.</li><li><code>followerCatchesUpTo(marker)</code> then copies all of <code>leaderData</code> into <code>followerData</code> and sets <code>followerAppliedMarker</code> to <code>1</code>, simulating replication finally applying that write.</li><li>Both <code>readNaive</code> and <code>readYourWrites</code> now return the correct value from the follower — showing the read-your-writes check is only a temporary detour to the leader, used exactly while the follower is behind, and it stops being necessary once replication catches up.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: read-your-writes only protects *the user who made the write* from seeing their own stale data — it says nothing about other users. A second user reading the same key from the same lagging follower will still see the old value, since they have no &quot;last write marker&quot; of their own referencing this update. Read-your-writes is a per-user guarantee, not a system-wide one.</blockquote>
+<ul><li>Replication lag is the normal, expected delay between a write on the leader and its visibility on a follower under asynchronous replication.</li><li>Read-your-writes consistency specifically fixes the case where a user&#x27;s own read follows their own write too quickly for a follower to have caught up.</li><li>Common fixes track a replication marker or route a user&#x27;s own reads to the leader for a short window after their write.</li><li>Related concepts: <a href="0101-synchronous-vs-asynchronous-replication.md">Synchronous vs asynchronous replication</a> (the root cause of lag), <a href="0104-eventual-consistency.md">Eventual consistency</a> (the broader consistency model this staleness falls under).</li></ul>
+  <div class="nav"><a class="prv" href="0101-synchronous-vs-asynchronous-replication.html"><span class="mini">← Previous</span>Synchronous vs asynchronous replication</a><a class="nxt" href="0103-strong-consistency.html"><span class="mini">Next →</span>Strong consistency</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t102";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
