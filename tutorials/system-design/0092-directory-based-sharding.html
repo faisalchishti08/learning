@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Directory-based sharding — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 7. Data Partitioning & Sharding</div>
+  <div class="htitle">
+    <h1>Directory-based sharding</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Directory-based sharding</strong> looks up each key&#x27;s shard in an explicit lookup table (the &quot;directory&quot;), instead of computing it from a formula like a range check or a hash. The directory is itself a small, fast data store mapping <code>key -&gt; shardId</code> (or <code>keyGroup -&gt; shardId</code>) directly. Think of it as a phone operator who checks a switchboard list for exactly which line to connect you to, rather than working it out from your name.</p>
+<h2>2. Why &amp; when</h2>
+<p>Use directory-based sharding when you need full control over exactly where each piece of data lives — for example, to move one specific customer&#x27;s data to a dedicated shard for compliance reasons, or to rebalance load by moving only a few hot keys, without touching a formula that affects every key at once. It is more flexible than range or hash sharding because moving one key only means updating one row in the directory, not recomputing a range boundary or rehashing everything. The cost is the directory itself: every request now needs an extra lookup, and the directory must be fast, and highly available, since it sits in front of every query.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>The directory:</strong> a mapping table, often a small and heavily cached key-value store, e.g. <code>{&quot;cust-42&quot;: shard3, &quot;cust-99&quot;: shard1, ...}</code>.</li><li><strong>Lookup-then-route:</strong> every request first asks the directory &quot;which shard owns this key?&quot;, then sends the actual query to that shard.</li><li><strong>Arbitrary placement:</strong> unlike range or hash sharding, any key can be placed on any shard, for any reason — load balancing, compliance (data residency), or isolating a noisy customer onto their own shard.</li><li><strong>Fine-grained rebalancing:</strong> moving load off an overloaded shard means updating only the directory entries for the keys you choose to move, then migrating just those rows — not the whole shard&#x27;s range or every hashed key.</li><li><strong>New failure point:</strong> the directory becomes critical infrastructure. If it is slow or unavailable, no query can be routed at all, so it is usually replicated and cached aggressively.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>                +----------------------+
+   Query for    |      Directory       |
+   &quot;cust-42&quot; -&gt; | cust-42 -&gt; Shard 3   | -&gt; route actual query to Shard 3
+                | cust-99 -&gt; Shard 1   |
+                | cust-7  -&gt; Shard 3   |
+                +----------------------+
+
+  Rebalance: move cust-7 off overloaded Shard 3 -&gt;
+  update ONE row: cust-7 -&gt; Shard 2. No range or hash formula touched.</code></pre>
+<p>*Caption: every request is routed by a table lookup, not a formula — so moving one key is a one-row update.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Build a directory map from key to shard, and route a lookup through it.</p>
+<p><strong>Level 2 — Targeted rebalancing.</strong> Move a single hot key to a different shard by updating only its directory entry.</p>
+<p><strong>Level 3 — Directory-driven isolation.</strong> Give one customer a dedicated shard, and confirm no other key is affected.</p>
+<pre><code class="lang-java">// DirectorySharding.java
+import java.util.*;
+
+public class DirectorySharding {
+
+    static final Map&lt;String, Integer&gt; directory = new HashMap&lt;&gt;();
+
+    static int routeKey(String key) {
+        Integer shard = directory.get(key);
+        if (shard == null) throw new NoSuchElementException(&quot;key not in directory: &quot; + key);
+        return shard;
+    }
+
+    public static void main(String[] args) {
+        // Level 1: initial placement, decided freely (not by a formula).
+        directory.put(&quot;cust-42&quot;, 3);
+        directory.put(&quot;cust-99&quot;, 1);
+        directory.put(&quot;cust-7&quot;, 3);
+        directory.put(&quot;cust-15&quot;, 1);
+
+        System.out.println(&quot;cust-42 routes to shard &quot; + routeKey(&quot;cust-42&quot;));
+        System.out.println(&quot;cust-7 routes to shard &quot; + routeKey(&quot;cust-7&quot;));
+
+        // Level 2: shard 3 is overloaded (2 keys); move only cust-7 off it.
+        System.out.println(&quot;before rebalance, shard 3 holds: cust-42, cust-7&quot;);
+        directory.put(&quot;cust-7&quot;, 2); // single-row update, no formula recomputation
+        System.out.println(&quot;cust-7 now routes to shard &quot; + routeKey(&quot;cust-7&quot;));
+        System.out.println(&quot;cust-42 still routes to shard &quot; + routeKey(&quot;cust-42&quot;) + &quot; (untouched)&quot;);
+
+        // Level 3: give a sensitive customer a fully dedicated shard for isolation.
+        directory.put(&quot;cust-compliance-1&quot;, 9); // shard 9 reserved solely for this customer
+        System.out.println(&quot;cust-compliance-1 isolated on shard &quot; + routeKey(&quot;cust-compliance-1&quot;));
+        System.out.println(&quot;all other keys unaffected: cust-99 -&gt; &quot; + routeKey(&quot;cust-99&quot;)
+            + &quot;, cust-15 -&gt; &quot; + routeKey(&quot;cust-15&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>DirectorySharding.java</code>, then run <code>java DirectorySharding.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>directory</code> starts with four keys pointing at shards <code>3</code>, <code>1</code>, <code>3</code>, <code>1</code> — placements chosen directly, not derived from a range or a hash.</li><li><code>routeKey(&quot;cust-42&quot;)</code> and <code>routeKey(&quot;cust-7&quot;)</code> both look up the map and return <code>3</code>, confirming both keys currently live on the same shard.</li><li>Because shard 3 now holds two keys and is treated as overloaded, the program updates only <code>cust-7</code>&#x27;s directory entry to point at shard <code>2</code> — a single map write, with no recomputation of any formula.</li><li>Re-routing <code>cust-7</code> now returns <code>2</code>, while <code>cust-42</code> still returns <code>3</code> unchanged — proof that moving one key did not disturb any other key&#x27;s placement.</li><li>Finally, <code>cust-compliance-1</code> is placed on a dedicated shard <code>9</code>, and the other keys (<code>cust-99</code>, <code>cust-15</code>) are re-checked to confirm they still route exactly where they did before — directory-based sharding lets you make one-off placement decisions without any ripple effect.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: the directory sits in front of every single query, so if it is slow, unavailable, or its own storage becomes a bottleneck, the entire system stops routing requests. Production directories are usually small, heavily replicated, and cached at every application server to avoid becoming a single point of failure.</blockquote>
+<ul><li>Directory-based sharding routes by an explicit lookup table, giving full, arbitrary control over where each key lives.</li><li>Moving or isolating individual keys costs one directory update, not a range split or a full rehash.</li><li>The directory itself becomes critical shared infrastructure and must be fast and highly available.</li><li>Related concepts: <a href="0090-range-based-sharding.md">Range-based sharding</a> and <a href="0091-hash-based-sharding.md">Hash-based sharding</a> (formula-based alternatives with less flexibility), <a href="0096-rebalancing-resharding.md">Rebalancing &amp; resharding</a> (the general problem directory sharding makes easier for individual keys).</li></ul>
+  <div class="nav"><a class="prv" href="0091-hash-based-sharding.html"><span class="mini">← Previous</span>Hash-based sharding</a><a class="nxt" href="0093-geo-entity-based-sharding.html"><span class="mini">Next →</span>Geo / entity-based sharding</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t92";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

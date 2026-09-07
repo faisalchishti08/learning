@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Range-based sharding — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 7. Data Partitioning & Sharding</div>
+  <div class="htitle">
+    <h1>Range-based sharding</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Range-based sharding</strong> assigns rows to shards based on which contiguous range of the partition key&#x27;s values they fall into. If the key is a user id, shard 1 might hold ids 1–1,000,000, shard 2 holds 1,000,001–2,000,000, and so on. It is like splitting a phone book into physical volumes by last-name range: &quot;A–F&quot;, &quot;G–M&quot;, &quot;N–S&quot;, &quot;T–Z&quot;.</p>
+<h2>2. Why &amp; when</h2>
+<p>Use range-based sharding when your queries commonly need a contiguous range of keys — for example, &quot;all events between 9am and 10am&quot;, or &quot;all users with ids 1 to 100&quot;. Because keys near each other in value live on the same shard, a range query can be served by a small number of shards instead of scanning all of them. Avoid it when the partition key&#x27;s write pattern is not evenly spread across its value range — for example, an auto-incrementing id or a timestamp — because every new row lands on the same &quot;latest&quot; shard, creating a hot spot.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Shard map:</strong> a table listing which key range belongs to which shard, e.g. <code>[1–1M) -&gt; shard0</code>, <code>[1M–2M) -&gt; shard1</code>.</li><li><strong>Routing:</strong> to find a row, look up its key in the shard map and go directly to that shard. No need to ask every shard.</li><li><strong>Range queries are cheap:</strong> <code>WHERE id BETWEEN 500000 AND 600000</code> touches only the shard(s) covering that range.</li><li><strong>Growth means splitting a range:</strong> when one shard grows too large, its range is split into two smaller ranges, each moved to (or kept as) its own shard. This requires updating the shard map and moving data — see <a href="0096-rebalancing-resharding.md">Rebalancing &amp; resharding</a>.</li><li><strong>The hot-spot risk:</strong> if keys are monotonically increasing (auto-increment ids, timestamps), all new writes land in the highest range, overloading one shard while others sit idle. See <a href="0095-hot-spots-skew.md">Hot spots &amp; skew</a>.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>Shard map:
+  [    1 -  1,000,000)  -&gt;  Shard 0
+  [1,000,001 - 2,000,000)  -&gt;  Shard 1
+  [2,000,001 - 3,000,000)  -&gt;  Shard 2
+
+Query: SELECT * FROM users WHERE id BETWEEN 1,500,000 AND 1,600,000
+
+  Router looks up range -&gt; only Shard 1 is contacted:
+
+  Shard 0            Shard 1 (queried)         Shard 2
+  [idle]             [range scan here]         [idle]</code></pre>
+<p>*Caption: a range query touches only the shard(s) whose key range overlaps the query — the other shards are never contacted.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Build a shard map of key ranges, and route a single key lookup to its shard.</p>
+<p><strong>Level 2 — Range query.</strong> Route a range query to only the shards that overlap it.</p>
+<p><strong>Level 3 — Hot-spot exposure.</strong> Show how a monotonically increasing key concentrates all new writes on one shard.</p>
+<pre><code class="lang-java">// RangeSharding.java
+import java.util.*;
+
+public class RangeSharding {
+
+    record Range(long lo, long hiExclusive, int shardId) {
+        boolean contains(long key) { return key &gt;= lo &amp;&amp; key &lt; hiExclusive; }
+        boolean overlaps(long qLo, long qHi) { return lo &lt; qHi &amp;&amp; qLo &lt; hiExclusive; }
+    }
+
+    static final List&lt;Range&gt; shardMap = List.of(
+        new Range(1, 1_000_001, 0),
+        new Range(1_000_001, 2_000_001, 1),
+        new Range(2_000_001, 3_000_001, 2)
+    );
+
+    static int routeKey(long key) {
+        for (Range r : shardMap) if (r.contains(key)) return r.shardId();
+        throw new IllegalArgumentException(&quot;key out of range: &quot; + key);
+    }
+
+    static List&lt;Integer&gt; routeRange(long qLo, long qHi) {
+        List&lt;Integer&gt; shards = new ArrayList&lt;&gt;();
+        for (Range r : shardMap) if (r.overlaps(qLo, qHi)) shards.add(r.shardId());
+        return shards;
+    }
+
+    public static void main(String[] args) {
+        // Level 1: single-key lookup.
+        System.out.println(&quot;key 1,500,000 routes to shard &quot; + routeKey(1_500_000));
+
+        // Level 2: range query touches only overlapping shards.
+        System.out.println(&quot;range [1,500,000, 1,600,000) routes to shards &quot; + routeRange(1_500_000, 1_600_000));
+        System.out.println(&quot;range [900,000, 2,100,000) routes to shards &quot; + routeRange(900_000, 2_100_000));
+
+        // Level 3: monotonically increasing key -&gt; hot spot.
+        Map&lt;Integer, Integer&gt; writesPerShard = new TreeMap&lt;&gt;();
+        long nextId = 2_900_000; // near the top of the current range
+        for (int i = 0; i &lt; 5; i++) {
+            int shard = routeKey(nextId);
+            writesPerShard.merge(shard, 1, Integer::sum);
+            nextId++; // auto-increment: every new row&#x27;s key is higher than the last
+        }
+        System.out.println(&quot;writes per shard for 5 consecutive auto-increment inserts: &quot; + writesPerShard);
+        System.out.println(&quot;-&gt; all 5 writes land on shard 2 alone, the other shards get none: a hot spot&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>RangeSharding.java</code>, then run <code>java RangeSharding.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>shardMap</code> lists three contiguous, non-overlapping key ranges, each pointing to one shard id.</li><li><code>routeKey(1_500_000)</code> scans the map and returns <code>1</code>, because <code>1,500,000</code> falls inside shard 1&#x27;s range — this models a single-row lookup going directly to one shard.</li><li><code>routeRange(1_500_000, 1_600_000)</code> returns only <code>[1]</code>, since that whole query range sits inside shard 1. <code>routeRange(900_000, 2_100_000)</code> returns <code>[0, 1, 2]</code>, since that wider range spans all three shards — a query is only ever sent to the shards it actually overlaps.</li><li>The Level 3 loop inserts 5 rows with consecutive, increasing keys (<code>2,900,000</code> upward), simulating an auto-increment primary key. Every single one routes to shard 2, because increasing keys always fall into the highest range.</li><li>The final map (<code>{2=5}</code>) shows all five writes concentrated on one shard — this is the hot-spot problem range-based sharding creates when the key grows monotonically instead of being spread across the key space.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: range-based sharding is excellent for range queries but terrible for monotonically increasing keys, because every new row is written to whichever shard currently owns the highest range. If your key is a timestamp or an auto-increment id, consider <a href="0091-hash-based-sharding.md">hash-based sharding</a> instead, or a key design that spreads writes (e.g. prefixing with a random or reversed component).</blockquote>
+<ul><li>Range-based sharding keeps a shard map of contiguous key ranges, and routes both single-key lookups and range queries directly to the shard(s) that own the relevant range.</li><li>It makes range queries cheap because they touch only a few shards, not all of them.</li><li>It creates a hot spot when the key increases monotonically, because all new writes land on the same &quot;latest&quot; shard.</li><li>Related concepts: <a href="0091-hash-based-sharding.md">Hash-based sharding</a> (spreads writes evenly, but loses cheap range queries), <a href="0096-rebalancing-resharding.md">Rebalancing &amp; resharding</a> (how a shard map&#x27;s ranges are split as data grows).</li></ul>
+  <div class="nav"><a class="prv" href="0089-functional-partitioning-by-service.html"><span class="mini">← Previous</span>Functional partitioning by service</a><a class="nxt" href="0091-hash-based-sharding.html"><span class="mini">Next →</span>Hash-based sharding</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t90";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

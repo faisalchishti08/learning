@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cross-shard joins & queries — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 7. Data Partitioning & Sharding</div>
+  <div class="htitle">
+    <h1>Cross-shard joins & queries</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>cross-shard join or query</strong> is a query that needs data spread across more than one shard — for example, joining an <code>orders</code> row on shard 2 with a <code>users</code> row on shard 5, or asking &quot;how many total orders were placed today&quot; when orders are spread across every shard. Unlike a single-shard query, the database (or the application) must contact multiple shards and combine their results itself, because no single shard has the full picture.</p>
+<h2>2. Why &amp; when</h2>
+<p>Sharding is chosen to make single-shard queries fast by keeping most requests inside one shard, but real systems still have some queries that genuinely need data from several shards at once — analytics, aggregate reports, or a join between two entities that were sharded by different keys. Recognizing when a query is cross-shard matters because it changes what you can optimize: a well-designed schema minimizes how often this happens (see <a href="0093-geo-entity-based-sharding.md">entity-based sharding</a>, which keeps a tenant&#x27;s own data together specifically to avoid this), but it can rarely eliminate it entirely, especially for global aggregates.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Scatter-gather:</strong> the application (or a query router) sends the same query to every shard (&quot;scatter&quot;), then combines the partial results (&quot;gather&quot;) — e.g. summing a <code>COUNT</code> from each shard, or merging and re-sorting rows from each shard for a paginated result.</li><li><strong>Application-side join:</strong> to join across shards, first query one shard for the base rows, then query the other shard(s) for the related rows by the keys just fetched, and join the two result sets in application code, since the database engine on either shard cannot see the other shard&#x27;s data.</li><li><strong>Denormalization avoids the join:</strong> duplicating the needed fields onto the same shard, at write time, so the read never needs a second shard at all — the most common real-world fix.</li><li><strong>Materialized/precomputed views:</strong> for expensive aggregates run often (e.g. &quot;total sales per day&quot;), precompute the cross-shard aggregate on a schedule or on each write, and read the precomputed answer instead of scattering the query live.</li><li><strong>Cost:</strong> scatter-gather queries are slower (bounded by the slowest shard) and place load on every shard at once, unlike a normal query that touches only one.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>Query: &quot;total order count today&quot; (orders sharded by orders id across 3 shards)
+
+        Application / Query Router
+         /         |          \
+        v          v           v
+   Shard 0     Shard 1      Shard 2
+   count=120   count=95     count=140      &lt;- each shard counts only its own rows
+        \          |          /
+         \         |         /
+          +--------+--------+
+                   |
+             gather + sum = 355            &lt;- combined in the application</code></pre>
+<p>*Caption: a cross-shard aggregate is scattered to every shard, then the partial results are gathered and combined by the application.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Scatter a count query across shards and gather the total.</p>
+<p><strong>Level 2 — Application-side join.</strong> Fetch base rows from one shard, then fetch related rows from another shard, and join them in code.</p>
+<p><strong>Level 3 — Denormalized avoidance.</strong> Show the same read served with zero cross-shard calls, because the needed field was duplicated at write time.</p>
+<pre><code class="lang-java">// CrossShardQuery.java
+import java.util.*;
+
+public class CrossShardQuery {
+
+    record Order(String orderId, String userId, double amount) {}
+    record User(String userId, String name) {}
+
+    // Orders sharded by orderId across 3 shards.
+    static List&lt;List&lt;Order&gt;&gt; orderShards = List.of(
+        List.of(new Order(&quot;o1&quot;, &quot;u1&quot;, 20.0), new Order(&quot;o2&quot;, &quot;u2&quot;, 15.0)),
+        List.of(new Order(&quot;o3&quot;, &quot;u1&quot;, 30.0)),
+        List.of(new Order(&quot;o4&quot;, &quot;u3&quot;, 10.0))
+    );
+
+    // Users sharded separately by userId, on a different shard boundary than orders.
+    static Map&lt;String, User&gt; usersShard = Map.of(
+        &quot;u1&quot;, new User(&quot;u1&quot;, &quot;Asha&quot;),
+        &quot;u2&quot;, new User(&quot;u2&quot;, &quot;Rahul&quot;),
+        &quot;u3&quot;, new User(&quot;u3&quot;, &quot;Mei&quot;)
+    );
+
+    public static void main(String[] args) {
+        // Level 1: scatter-gather a count across all order shards.
+        int total = 0;
+        for (List&lt;Order&gt; shard : orderShards) total += shard.size();
+        System.out.println(&quot;scatter-gather total order count: &quot; + total);
+
+        // Level 2: application-side join - fetch orders from shard 0, then join to users by userId.
+        List&lt;Order&gt; ordersFromShard0 = orderShards.get(0);
+        System.out.println(&quot;orders from shard 0: &quot; + ordersFromShard0);
+        for (Order o : ordersFromShard0) {
+            User u = usersShard.get(o.userId()); // second call: a separate lookup into the users shard
+            System.out.println(&quot;joined in application code: order &quot; + o.orderId() + &quot; belongs to &quot; + u.name());
+        }
+
+        // Level 3: denormalized avoidance - orders store the user&#x27;s name directly, no join needed.
+        record DenormalizedOrder(String orderId, String userId, String userName, double amount) {}
+        List&lt;DenormalizedOrder&gt; denormalized = List.of(
+            new DenormalizedOrder(&quot;o1&quot;, &quot;u1&quot;, &quot;Asha&quot;, 20.0), // &quot;Asha&quot; was copied in at write time
+            new DenormalizedOrder(&quot;o2&quot;, &quot;u2&quot;, &quot;Rahul&quot;, 15.0)
+        );
+        for (DenormalizedOrder d : denormalized) {
+            System.out.println(&quot;read with zero cross-shard calls: order &quot; + d.orderId() + &quot; for &quot; + d.userName());
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CrossShardQuery.java</code>, then run <code>java CrossShardQuery.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>orderShards</code> models orders spread across 3 shards; the Level 1 loop sums each shard&#x27;s own <code>size()</code> — this is the scatter step (each shard counts its own rows) followed by the gather step (adding the partial counts together) to reach the true total.</li><li>Level 2 first fetches <code>ordersFromShard0</code> from the orders shard, then for each order looks up its <code>userId</code> in the separate <code>usersShard</code> map — two distinct lookups against two different shards, joined together in application code because neither shard alone has both pieces.</li><li>The printed lines show each order paired with its user&#x27;s name, confirming the join succeeded, but at the cost of one extra lookup per order.</li><li>Level 3 defines <code>DenormalizedOrder</code>, which already carries <code>userName</code> alongside <code>userId</code>, because that name was copied in at the time the order was written.</li><li>Reading a <code>DenormalizedOrder</code> needs no second shard call at all — the trade is a small amount of duplicated, potentially-stale data (the user&#x27;s name could change later) in exchange for a strictly single-shard, fast read.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: scatter-gather queries are only as fast as the slowest shard involved, and they load every shard at once, even ones that hold no relevant rows for a specific request. Reserve them for genuine cross-shard needs (analytics, aggregates); for a query pattern you can predict in advance, denormalize the needed field instead so the read stays single-shard.</blockquote>
+<ul><li>A cross-shard query needs data from more than one shard, so it must be scattered out and its partial results gathered back together, usually by the application.</li><li>Application-side joins across shards work but need a separate round trip per shard involved, unlike a join a single database can do internally.</li><li>Denormalizing the needed field at write time, or precomputing an aggregate, are the standard ways to avoid paying the cross-shard cost on every read.</li><li>Related concepts: <a href="0081-denormalization-data-duplication.md">Denormalization &amp; data duplication</a> (the main technique for avoiding cross-shard reads), <a href="0093-geo-entity-based-sharding.md">Geo / entity-based sharding</a> (a sharding scheme chosen specifically to minimize cross-shard queries for one entity&#x27;s own data).</li></ul>
+  <div class="nav"><a class="prv" href="0096-rebalancing-resharding.html"><span class="mini">← Previous</span>Rebalancing & resharding</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t97";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

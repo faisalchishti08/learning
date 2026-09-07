@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hash-based sharding — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 7. Data Partitioning & Sharding</div>
+  <div class="htitle">
+    <h1>Hash-based sharding</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Hash-based sharding</strong> decides a row&#x27;s shard by running its partition key through a hash function, then taking the result modulo the number of shards: <code>shard = hash(key) % numShards</code>. Because a good hash function scatters similar or sequential keys across very different output values, rows land on shards in an evenly spread, unpredictable pattern — unlike range-based sharding, where nearby keys stay together.</p>
+<h2>2. Why &amp; when</h2>
+<p>Use hash-based sharding when your write pattern would otherwise create a hot spot with range-based sharding — for example, an auto-incrementing id or a timestamp, where every new row&#x27;s key is higher than the last. Hashing spreads those sequential keys uniformly across every shard, so no single shard absorbs all new writes. The trade-off: because the hash scrambles key order, a range query (&quot;all ids between 100 and 200&quot;) can no longer be served by a few shards — it must be sent to every shard, since rows in that range are now scattered everywhere.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Hash function:</strong> takes the key (e.g. a <code>userId</code> string) and produces a number, e.g. via <code>key.hashCode()</code> or a cryptographic hash like MD5.</li><li><strong>Modulo routing:</strong> <code>shardId = hash(key) % numShards</code> picks one of <code>numShards</code> shards.</li><li><strong>Even distribution:</strong> a good hash function spreads outputs roughly uniformly, so shards get roughly equal row counts even if the input keys were sequential.</li><li><strong>The resharding problem:</strong> if you change <code>numShards</code> (say from 4 to 5), the modulo result changes for almost every key, meaning almost every row must move to a different shard. This is the central weakness hash sharding must solve — see <a href="0094-consistent-hashing-virtual-nodes.md">Consistent hashing &amp; virtual nodes</a>.</li><li><strong>No cheap range queries:</strong> since hashing destroys key ordering, a range scan must fan out to every shard and merge results, unlike range-based sharding.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>numShards = 4
+
+  key &quot;user-1&quot;  -&gt; hash = 91  -&gt; 91 % 4 = 3  -&gt; Shard 3
+  key &quot;user-2&quot;  -&gt; hash = 44  -&gt; 44 % 4 = 0  -&gt; Shard 0
+  key &quot;user-3&quot;  -&gt; hash = 77  -&gt; 77 % 4 = 1  -&gt; Shard 1
+  key &quot;user-4&quot;  -&gt; hash = 12  -&gt; 12 % 4 = 0  -&gt; Shard 0
+
+  Sequential keys (user-1, user-2, user-3, user-4) land on DIFFERENT,
+  unpredictable shards - no hot spot, but &quot;give me user-1..user-4 in
+  order&quot; now needs all 4 shards, not one contiguous range.</code></pre>
+<p>*Caption: hashing scatters sequential keys evenly across shards, trading away cheap range scans for even write distribution.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Hash a set of sequential keys and route each to a shard using modulo.</p>
+<p><strong>Level 2 — Even distribution.</strong> Insert many sequential keys and count rows per shard, comparing to the range-sharding hot spot.</p>
+<p><strong>Level 3 — Resharding pain.</strong> Change <code>numShards</code> and show how many keys move to a different shard as a result.</p>
+<pre><code class="lang-java">// HashSharding.java
+import java.util.*;
+
+public class HashSharding {
+
+    static int routeKey(String key, int numShards) {
+        int h = Math.abs(key.hashCode());
+        return h % numShards;
+    }
+
+    public static void main(String[] args) {
+        // Level 1: route a few sequential keys.
+        for (int i = 1; i &lt;= 4; i++) {
+            String key = &quot;user-&quot; + i;
+            System.out.println(key + &quot; -&gt; shard &quot; + routeKey(key, 4));
+        }
+
+        // Level 2: distribution over many sequential inserts (contrast with range sharding&#x27;s hot spot).
+        int numShards = 4;
+        Map&lt;Integer, Integer&gt; counts = new TreeMap&lt;&gt;();
+        for (int i = 1; i &lt;= 10_000; i++) {
+            int shard = routeKey(&quot;user-&quot; + i, numShards);
+            counts.merge(shard, 1, Integer::sum);
+        }
+        System.out.println(&quot;row counts per shard for 10,000 sequential inserts: &quot; + counts);
+        System.out.println(&quot;-&gt; roughly even across all shards, unlike range sharding&#x27;s single hot shard&quot;);
+
+        // Level 3: resharding from 4 to 5 shards - count how many keys change shard.
+        int oldShards = 4, newShards = 5;
+        int moved = 0;
+        for (int i = 1; i &lt;= 10_000; i++) {
+            String key = &quot;user-&quot; + i;
+            if (routeKey(key, oldShards) != routeKey(key, newShards)) moved++;
+        }
+        System.out.println(&quot;keys that must move when going from &quot; + oldShards + &quot; to &quot; + newShards + &quot; shards: &quot;
+            + moved + &quot; out of 10,000 (&quot; + (moved / 100) + &quot;%)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>HashSharding.java</code>, then run <code>java HashSharding.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>routeKey</code> hashes the key&#x27;s string with <code>hashCode()</code>, takes the absolute value to avoid a negative result, then applies <code>% numShards</code> to pick a shard.</li><li>Level 1 routes <code>&quot;user-1&quot;</code> through <code>&quot;user-4&quot;</code> — four sequential keys — and prints their shards, which land in a scattered, non-sequential order (unlike range sharding, where they would stay adjacent).</li><li>Level 2 inserts 10,000 sequential keys and tallies how many land on each of 4 shards. The counts come out close to 2,500 each, showing the hash spreads sequential writes evenly instead of piling them onto one shard.</li><li>Level 3 recomputes every key&#x27;s shard under <code>numShards = 5</code> instead of <code>4</code>, and counts how many keys now get a *different* answer than before.</li><li>The result shows the vast majority of keys move to a new shard purely because the shard count changed — this is the expensive resharding problem that plain modulo hashing has, and that consistent hashing is designed to avoid.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: plain <code>hash(key) % numShards</code> makes adding or removing a shard extremely expensive, because almost every key&#x27;s target shard changes at once, forcing a near-total data reshuffle. Production systems that expect to grow their shard count use <a href="0094-consistent-hashing-virtual-nodes.md">consistent hashing</a> instead, which moves only a small fraction of keys per resize.</blockquote>
+<ul><li>Hash-based sharding spreads writes evenly, fixing the hot-spot problem that sequential keys cause under range-based sharding.</li><li>It gives up cheap range queries: since key order is scrambled, a range scan must contact every shard.</li><li>Changing the shard count under plain modulo hashing reshuffles almost all data — a serious operational cost.</li><li>Related concepts: <a href="0090-range-based-sharding.md">Range-based sharding</a> (the opposite trade-off), <a href="0094-consistent-hashing-virtual-nodes.md">Consistent hashing &amp; virtual nodes</a> (fixes the resharding cost).</li></ul>
+  <div class="nav"><a class="prv" href="0090-range-based-sharding.html"><span class="mini">← Previous</span>Range-based sharding</a><a class="nxt" href="0092-directory-based-sharding.html"><span class="mini">Next →</span>Directory-based sharding</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t91";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

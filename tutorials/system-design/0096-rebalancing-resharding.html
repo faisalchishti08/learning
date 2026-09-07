@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rebalancing & resharding — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 7. Data Partitioning & Sharding</div>
+  <div class="htitle">
+    <h1>Rebalancing & resharding</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Rebalancing</strong> is the process of moving data between existing shards so that load is spread more evenly. <strong>Resharding</strong> is the broader process of changing the sharding scheme itself — usually adding or removing shards — and moving the affected data to match the new scheme. Both are operational processes that happen while the system stays live and serving traffic: you cannot simply stop the database to move data around.</p>
+<h2>2. Why &amp; when</h2>
+<p>A system needs rebalancing or resharding whenever its shards drift out of balance: one shard grows faster than the rest (organic growth), a hot spot develops (see <a href="0095-hot-spots-skew.md">hot spots &amp; skew</a>), or the total dataset outgrows the current shard count and needs more shards added. The trigger is usually a monitoring alert: one shard&#x27;s storage, CPU, or request rate is far above the others, or a shard is approaching a hard capacity limit.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Live migration:</strong> data must move from its old shard to its new shard while both reads and writes for that data keep working, usually via a copy-then-cutover process: copy existing rows to the new shard, then start dual-writing new changes to both shards, then switch reads to the new shard, then stop writing to the old one.</li><li><strong>Range splitting:</strong> under <a href="0090-range-based-sharding.md">range-based sharding</a>, rebalancing usually means splitting one large range into two smaller ranges, each becoming its own shard.</li><li><strong>Consistent hashing minimizes the blast radius:</strong> under <a href="0094-consistent-hashing-virtual-nodes.md">consistent hashing</a>, adding a shard only moves the keys in the ring segment next to it — a small, bounded migration, not a full reshuffle.</li><li><strong>Directory updates:</strong> under <a href="0092-directory-based-sharding.md">directory-based sharding</a>, rebalancing a single key is just a one-row update in the directory, followed by moving that one key&#x27;s data.</li><li><strong>Throttling the migration:</strong> moving data generates extra load on both the source and destination shard, so migrations are usually throttled (moved in small batches) to avoid overwhelming either shard mid-migration.</li><li><strong>Verification before cutover:</strong> the new shard&#x27;s copy of the data is checked against the old shard before traffic switches over, to catch any missed or corrupted rows.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>Rebalancing timeline for moving key range [X, Y) from Shard A to new Shard B:
+
+  1. COPY:        Shard A (source, live) ---copies rows [X,Y)---&gt; Shard B (new)
+                  reads/writes still go to Shard A only
+
+  2. DUAL-WRITE:  new writes to [X,Y) go to BOTH Shard A and Shard B
+                  reads still go to Shard A only
+
+  3. CUTOVER:     reads for [X,Y) switch to Shard B
+                  writes for [X,Y) switch to Shard B only
+
+  4. CLEANUP:     Shard A drops its now-unused copy of [X,Y)</code></pre>
+<p>*Caption: a live migration moves through copy, dual-write, cutover, and cleanup, so no read or write is ever lost mid-move.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Model two shards and copy a key range from one to the other.</p>
+<p><strong>Level 2 — Dual-write phase.</strong> During migration, write to both shards; read from the old shard only.</p>
+<p><strong>Level 3 — Cutover.</strong> Switch reads and writes to the new shard, then clean up the old copy.</p>
+<pre><code class="lang-java">// Rebalancing.java
+import java.util.*;
+
+public class Rebalancing {
+
+    static Map&lt;String, Integer&gt; shardA = new HashMap&lt;&gt;();
+    static Map&lt;String, Integer&gt; shardB = new HashMap&lt;&gt;();
+    static boolean dualWriteActive = false;
+    static boolean cutoverDone = false;
+
+    static void write(String key, int value) {
+        if (!cutoverDone) shardA.put(key, value); // Shard A is still the writer of record
+        if (dualWriteActive || cutoverDone) shardB.put(key, value); // mirror to Shard B once dual-write starts
+    }
+
+    static Integer read(String key) {
+        return cutoverDone ? shardB.get(key) : shardA.get(key); // reads follow whichever shard is authoritative
+    }
+
+    public static void main(String[] args) {
+        // Level 1: initial state and copy phase - Shard A has existing data, bulk-copy it to Shard B.
+        shardA.put(&quot;k1&quot;, 100);
+        shardA.put(&quot;k2&quot;, 200);
+        shardB.putAll(shardA); // one-time bulk copy of existing rows
+        System.out.println(&quot;after copy phase, shardB has: &quot; + shardB);
+
+        // Level 2: dual-write phase - new writes go to both shards; reads still come from Shard A.
+        dualWriteActive = true;
+        write(&quot;k3&quot;, 300);
+        System.out.println(&quot;after dual-write of k3 -&gt; shardA: &quot; + shardA + &quot;, shardB: &quot; + shardB);
+        System.out.println(&quot;read during dual-write still comes from shardA: k3 = &quot; + read(&quot;k3&quot;));
+
+        // Level 3: cutover - switch reads and writes to Shard B, then clean up Shard A.
+        cutoverDone = true;
+        write(&quot;k4&quot;, 400); // this write now only lands on shardB
+        System.out.println(&quot;read after cutover comes from shardB: k4 = &quot; + read(&quot;k4&quot;));
+        System.out.println(&quot;k1 still readable from shardB after cutover: &quot; + read(&quot;k1&quot;));
+
+        shardA.clear(); // cleanup: old shard&#x27;s copy is no longer needed
+        System.out.println(&quot;shardA cleaned up: &quot; + shardA + &quot; (shardB is now sole owner)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>Rebalancing.java</code>, then run <code>java Rebalancing.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The program starts with <code>shardA</code> holding two existing rows, then bulk-copies them into <code>shardB</code> — modeling the initial COPY phase of the migration.</li><li><code>dualWriteActive</code> is set to <code>true</code>, and <code>write(&quot;k3&quot;, 300)</code> lands in both <code>shardA</code> and <code>shardB</code> — the DUAL-WRITE phase, where the migration keeps both copies current.</li><li><code>read(&quot;k3&quot;)</code> still returns from <code>shardA</code>, since <code>cutoverDone</code> is still <code>false</code> — reads have not moved yet, only writes are being mirrored.</li><li><code>cutoverDone</code> flips to <code>true</code>, and <code>write(&quot;k4&quot;, 400)</code> now lands only in <code>shardB</code> (the <code>if (!cutoverDone)</code> guard skips <code>shardA</code>) — this is the CUTOVER, where Shard B becomes authoritative.</li><li><code>read(&quot;k4&quot;)</code> and <code>read(&quot;k1&quot;)</code> both now come from <code>shardB</code>, confirming the switch is complete; <code>shardA.clear()</code> models the final CLEANUP step, discarding the old shard&#x27;s now-redundant copy.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: skipping the dual-write phase and cutting over reads and writes in one atomic step looks simpler, but any write that arrives during the brief copy-to-cutover window is silently lost if it only reached the old shard. The dual-write phase exists specifically to close that window — never remove it to &quot;save a step&quot;.</blockquote>
+<ul><li>Rebalancing moves data between existing shards; resharding changes the shard count or scheme itself and moves whatever data that implies.</li><li>A live migration typically goes through copy, dual-write, cutover, and cleanup, so no read or write is ever unavailable or lost mid-move.</li><li>The specific mechanics differ by sharding scheme: range splitting for range-based, a bounded ring-segment move for consistent hashing, a one-row update for directory-based.</li><li>Related concepts: <a href="0094-consistent-hashing-virtual-nodes.md">Consistent hashing &amp; virtual nodes</a> (minimizes how much data a resharding event must move), <a href="0095-hot-spots-skew.md">Hot spots &amp; skew</a> (the usual trigger for rebalancing).</li></ul>
+  <div class="nav"><a class="prv" href="0095-hot-spots-skew.html"><span class="mini">← Previous</span>Hot spots & skew</a><a class="nxt" href="0097-cross-shard-joins-queries.html"><span class="mini">Next →</span>Cross-shard joins & queries</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t96";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
