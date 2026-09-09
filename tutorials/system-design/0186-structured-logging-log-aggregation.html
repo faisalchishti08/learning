@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Structured logging & log aggregation — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 17. Observability</div>
+  <div class="htitle">
+    <h1>Structured logging & log aggregation</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Structured logging</strong> writes log entries as machine-parseable data (typically JSON), with consistent named fields (<code>timestamp</code>, <code>level</code>, <code>service</code>, <code>userId</code>, <code>message</code>), instead of a free-form human-readable sentence. <strong>Log aggregation</strong> collects these structured logs from every server and service instance into one centralized, searchable store (like Elasticsearch or a managed logging service), so you can search and filter across your whole fleet at once, instead of SSH-ing into individual machines to grep local log files.</p>
+<h2>2. Why &amp; when</h2>
+<p>A plain-text log line like <code>&quot;User 17 failed to log in at 10:32&quot;</code> is easy for a human to read once, but hard to reliably search, filter, or aggregate across millions of similar lines — you cannot cleanly query &quot;show me every failed login for user 17 in the last hour&quot; without fragile text parsing. Structured logging with consistent field names turns every log entry into a queryable record instead. Log aggregation is essential the moment you have more than one server: without it, diagnosing an issue means manually checking logs on every individual machine that might have handled the relevant request, which does not scale. Use both together for any system running more than a handful of instances, or where operational log analysis is a regular need.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Structured fields, not free text:</strong> every log entry has a level (<code>INFO</code>, <code>ERROR</code>), a timestamp, a service name, and any relevant contextual fields (a user ID, an order ID, a request ID) — all as separate, named fields, not embedded inside a sentence.</li><li><strong>Correlation ID / request ID:</strong> a unique ID generated at the start of a request and included in every log line produced while handling it, letting you retrieve every log entry related to one specific request across every service it touched — the foundation <a href="0188-distributed-tracing-correlation-ids.md">distributed tracing</a> builds on.</li><li><strong>Log levels used consistently:</strong> <code>DEBUG</code> for fine-grained diagnostic detail, <code>INFO</code> for normal operational events, <code>WARN</code> for recoverable problems, <code>ERROR</code> for failures needing attention — using these consistently is what makes filtering by severity actually useful.</li><li><strong>Centralized ingestion pipeline:</strong> logs are shipped (via an agent, or written directly) from every instance into a central aggregation system, which indexes them for fast search across the whole fleet.</li><li><strong>Retention and cost tradeoff:</strong> storing every log line forever is expensive; most systems apply retention policies (keep detailed logs for days, summarized/sampled data for longer) similar to <a href="0157-hot-warm-cold-storage-tiers.md">storage tiering</a>.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   service-A               service-B               service-C
+      |                       |                       |
+      | log: {ts, level,      | log: {ts, level,      | log: {ts, level,
+      |  requestId: &quot;r1&quot;,     |  requestId: &quot;r1&quot;,     |  requestId: &quot;r1&quot;,
+      |  message: &quot;...&quot;}      |  message: &quot;...&quot;}      |  message: &quot;...&quot;}
+      |                       |                       |
+      +-----------------------+-----------------------+
+                              |
+                    centralized log aggregator (indexed, searchable)
+                              |
+              query: &quot;requestId = r1&quot; -&gt; every log line from EVERY
+                                          service that touched this
+                                          one request, in order</code></pre>
+<p>*Caption: every log entry carries the same request ID as it flows through multiple services, letting a single query reconstruct the full story of one request.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Write a structured log entry as a JSON-shaped record instead of a free-text sentence.</p>
+<p><strong>Level 2 — Include a correlation ID across multiple services.</strong> Tag every log line from one request with the same ID.</p>
+<p><strong>Level 3 — Query the aggregated logs by correlation ID and by severity.</strong> Reconstruct a single request&#x27;s full story across services.</p>
+<pre><code class="lang-java">// StructuredLoggingDemo.java
+import java.util.*;
+
+public class StructuredLoggingDemo {
+
+    static class LogEntry {
+        final long timestamp;
+        final String level, service, requestId, message;
+        LogEntry(long ts, String level, String service, String requestId, String message) {
+            this.timestamp = ts; this.level = level; this.service = service; this.requestId = requestId; this.message = message;
+        }
+        public String toString() {
+            return &quot;{ts=&quot; + timestamp + &quot;, level=&quot; + level + &quot;, service=&quot; + service + &quot;, requestId=&quot; + requestId + &quot;, message=\&quot;&quot; + message + &quot;\&quot;}&quot;;
+        }
+    }
+
+    // Level 1: the centralized log aggregator - a simple, growing, queryable list.
+    static List&lt;LogEntry&gt; aggregatedLogs = new ArrayList&lt;&gt;();
+
+    static void log(long ts, String level, String service, String requestId, String message) {
+        LogEntry entry = new LogEntry(ts, level, service, requestId, message);
+        aggregatedLogs.add(entry); // Level 1: shipped to the central aggregator, not left on a local disk
+    }
+
+    // Level 3: query by correlation ID - reconstruct one request&#x27;s full story across every service.
+    static List&lt;LogEntry&gt; queryByRequestId(String requestId) {
+        List&lt;LogEntry&gt; results = new ArrayList&lt;&gt;();
+        for (LogEntry entry : aggregatedLogs) if (entry.requestId.equals(requestId)) results.add(entry);
+        results.sort((a, b) -&gt; Long.compare(a.timestamp, b.timestamp));
+        return results;
+    }
+
+    static List&lt;LogEntry&gt; queryByLevel(String level) {
+        List&lt;LogEntry&gt; results = new ArrayList&lt;&gt;();
+        for (LogEntry entry : aggregatedLogs) if (entry.level.equals(level)) results.add(entry);
+        return results;
+    }
+
+    public static void main(String[] args) {
+        // Level 2: the SAME requestId, &quot;r1&quot;, flows across three different services handling one user request.
+        String requestId = &quot;r1&quot;;
+        log(100, &quot;INFO&quot;, &quot;api-gateway&quot;, requestId, &quot;received request for /checkout&quot;);
+        log(105, &quot;INFO&quot;, &quot;orders-service&quot;, requestId, &quot;creating order for user-17&quot;);
+        log(110, &quot;WARN&quot;, &quot;payments-service&quot;, requestId, &quot;payment provider responded slowly (2100ms)&quot;);
+        log(115, &quot;INFO&quot;, &quot;payments-service&quot;, requestId, &quot;payment charged successfully&quot;);
+        log(120, &quot;INFO&quot;, &quot;api-gateway&quot;, requestId, &quot;returned 200 OK to client&quot;);
+
+        // An UNRELATED request, &quot;r2&quot;, also logged around the same time - must not get mixed into r1&#x27;s story.
+        log(102, &quot;ERROR&quot;, &quot;orders-service&quot;, &quot;r2&quot;, &quot;failed to create order: inventory service timeout&quot;);
+
+        System.out.println(&quot;all logs for requestId=r1, in order:&quot;);
+        for (LogEntry entry : queryByRequestId(&quot;r1&quot;)) System.out.println(&quot;  &quot; + entry);
+
+        System.out.println(&quot;all WARN-or-worse logs across the whole fleet (level=WARN):&quot;);
+        for (LogEntry entry : queryByLevel(&quot;WARN&quot;)) System.out.println(&quot;  &quot; + entry);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>StructuredLoggingDemo.java</code>, then run <code>java StructuredLoggingDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Each call to <code>log(...)</code> constructs a <code>LogEntry</code> with explicit, separate fields (<code>level</code>, <code>service</code>, <code>requestId</code>, <code>message</code>) and appends it to <code>aggregatedLogs</code> — this models every log line being structured data from the moment it is created, and immediately shipped to a central store rather than staying on a per-service local disk.</li><li>Five log entries are written with <code>requestId = &quot;r1&quot;</code>, from three different &quot;services&quot; (<code>api-gateway</code>, <code>orders-service</code>, <code>payments-service</code>), each at a slightly later timestamp — modeling one real user request flowing through multiple services, each contributing its own log lines to the same shared aggregator.</li><li>A sixth entry uses a different <code>requestId</code>, <code>&quot;r2&quot;</code>, representing a completely unrelated request that happens to be logged around the same time — this tests that querying will not accidentally mix unrelated requests together.</li><li><code>queryByRequestId(&quot;r1&quot;)</code> filters <code>aggregatedLogs</code> down to only entries whose <code>requestId</code> equals <code>&quot;r1&quot;</code>, then sorts by <code>timestamp</code>; the result is exactly the five <code>r1</code> entries, in chronological order, correctly excluding the <code>r2</code> entry entirely — reconstructing this one request&#x27;s complete, ordered story across all three services from a single query.</li><li><code>queryByLevel(&quot;WARN&quot;)</code> filters instead by severity, finding only the single <code>payments-service</code> entry about the slow provider response — demonstrating a completely different, orthogonal way to slice the same aggregated log data, impossible to do reliably against unstructured free-text log lines.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: generating the correlation ID *inside* each individual service, rather than once at the entry point and passing it through every downstream call, produces a different, unrelated ID per service for what is really one logical request — defeating the entire purpose of correlation. The ID must be generated (or received from an incoming header) at the very first point of entry, and explicitly propagated to every downstream call from there.</blockquote>
+<ul><li>Structured logging turns log lines into queryable, filterable data instead of free text that only a human can meaningfully read.</li><li>A correlation/request ID, propagated consistently across every service a request touches, is what lets you reconstruct one request&#x27;s full story from aggregated logs.</li><li>Centralized aggregation is what makes cross-fleet log search practical at all, once a system runs more than a handful of instances.</li><li>Related concepts: <a href="0188-distributed-tracing-correlation-ids.md">Distributed tracing &amp; correlation IDs</a> (the more structured, timing-aware evolution of this same correlation idea), <a href="0187-metrics-counters-gauges-histograms.md">Metrics (counters, gauges, histograms)</a> (a complementary observability signal, aggregated numerically rather than searched as individual events), <a href="0193-micrometer-tracing-opentelemetry.md">Micrometer Tracing (OpenTelemetry)</a> (a concrete Java implementation of correlation-ID propagation).</li></ul>
+  <div class="nav"><a class="prv" href="0185-spring-cloud-vault-for-secrets.html"><span class="mini">← Previous</span>Spring Cloud Vault for secrets</a><a class="nxt" href="0187-metrics-counters-gauges-histograms.html"><span class="mini">Next →</span>Metrics (counters, gauges, histograms)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t186";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

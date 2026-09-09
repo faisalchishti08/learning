@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Distributed tracing & correlation IDs — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 17. Observability</div>
+  <div class="htitle">
+    <h1>Distributed tracing & correlation IDs</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Distributed tracing</strong> tracks a single request as it flows through multiple services, recording a <strong>span</strong> for each unit of work (a service call, a database query) with its start time, duration, and a link to its parent span, all sharing one <strong>trace ID</strong> for the whole request. A <strong>correlation ID</strong> is the simpler foundation this builds on: a single ID attached to every <a href="0186-structured-logging-log-aggregation.md">log</a> line and passed along to every downstream call, so you can find every log entry for one request — tracing adds structured timing and parent-child relationships on top of that same idea.</p>
+<h2>2. Why &amp; when</h2>
+<p>In a microservices system, a single user-facing request might touch five, ten, or more separate services before returning a response. When something is slow or fails, you need to know *which* of those services was the actual bottleneck or point of failure — a correlation ID lets you find the relevant log lines, but distributed tracing goes further, showing you the exact timing breakdown: how long each service spent, which calls happened in parallel versus in sequence, and where the time actually went. Use correlation IDs as a baseline for any system with more than one service; add full distributed tracing once you need to understand *timing* relationships across services, not just find related log lines.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Trace ID:</strong> one ID generated for the entire request, shared by every span within it, letting you retrieve the complete trace as a single unit.</li><li><strong>Span:</strong> a single unit of work within the trace — one service call, one database query — with its own start time, duration, and a <code>spanId</code>; it also records its <code>parentSpanId</code>, linking it to whatever span triggered it.</li><li><strong>Trace context propagation:</strong> the trace ID and current span ID must be passed along with every outgoing call (typically as HTTP headers) so the next service can create its own child span linked to the correct parent, rather than starting an unrelated, disconnected trace.</li><li><strong>Waterfall visualization:</strong> a trace is commonly displayed as a waterfall diagram, showing each span as a horizontal bar positioned by its start time and sized by its duration, immediately revealing which spans ran in parallel and which one was the slowest.</li><li><strong>Sampling:</strong> tracing every single request in a very high-traffic system can be expensive to store; many systems sample only a fraction of requests (e.g. 1%) for full tracing, while still logging every request at a lighter level.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   trace-id: t1
+
+   span: api-gateway         [=========================================] 0-500ms
+     span: orders-service      [==========================]              50-350ms
+       span: db-query-orders      [======]                                60-110ms
+       span: payments-service        [==================]                140-330ms
+         span: db-query-payments        [====]                            160-200ms
+
+   waterfall reveals: payments-service (190ms) is the actual bottleneck,
+   NOT the top-level api-gateway call itself</code></pre>
+<p>*Caption: nested spans, all sharing one trace ID, show exactly how much time each service and sub-call consumed, and which ones overlapped.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Generate a trace ID and create a span with a start and end time.</p>
+<p><strong>Level 2 — Propagate the trace context to child spans.</strong> Nest spans with parent-child links across simulated service calls.</p>
+<p><strong>Level 3 — Build a waterfall view and identify the bottleneck span.</strong> Find the span that consumed the most of the total request time.</p>
+<pre><code class="lang-java">// DistributedTracingDemo.java
+import java.util.*;
+
+public class DistributedTracingDemo {
+
+    static class Span {
+        final String traceId, spanId, parentSpanId, serviceName;
+        final long startMs;
+        long endMs = -1;
+        Span(String traceId, String spanId, String parentSpanId, String serviceName, long startMs) {
+            this.traceId = traceId; this.spanId = spanId; this.parentSpanId = parentSpanId;
+            this.serviceName = serviceName; this.startMs = startMs;
+        }
+        long durationMs() { return endMs - startMs; }
+    }
+
+    static List&lt;Span&gt; allSpans = new ArrayList&lt;&gt;();
+    static int spanCounter = 0;
+
+    // Level 1 &amp; 2: start a new span, linked to its parent (null for the root span).
+    static Span startSpan(String traceId, String parentSpanId, String serviceName, long nowMs) {
+        Span span = new Span(traceId, &quot;span-&quot; + (++spanCounter), parentSpanId, serviceName, nowMs);
+        allSpans.add(span);
+        System.out.println(&quot;  started span &quot; + span.spanId + &quot; (&quot; + serviceName + &quot;), parent=&quot; + parentSpanId);
+        return span;
+    }
+
+    static void endSpan(Span span, long nowMs) {
+        span.endMs = nowMs;
+        System.out.println(&quot;  ended span &quot; + span.spanId + &quot; (&quot; + span.serviceName + &quot;), duration=&quot; + span.durationMs() + &quot;ms&quot;);
+    }
+
+    // Level 3: find the span within a trace that took the longest - the actual bottleneck.
+    static Span findBottleneck(String traceId) {
+        Span slowest = null;
+        for (Span s : allSpans) {
+            if (s.traceId.equals(traceId) &amp;&amp; (slowest == null || s.durationMs() &gt; slowest.durationMs())) slowest = s;
+        }
+        return slowest;
+    }
+
+    public static void main(String[] args) {
+        String traceId = &quot;trace-t1&quot;;
+
+        // Level 2: propagate the trace context - each downstream call creates a CHILD span of its caller.
+        Span gatewaySpan = startSpan(traceId, null, &quot;api-gateway&quot;, 0);
+        Span ordersSpan = startSpan(traceId, gatewaySpan.spanId, &quot;orders-service&quot;, 50);
+        Span dbOrdersSpan = startSpan(traceId, ordersSpan.spanId, &quot;db-query-orders&quot;, 60);
+        endSpan(dbOrdersSpan, 110);
+        Span paymentsSpan = startSpan(traceId, ordersSpan.spanId, &quot;payments-service&quot;, 140);
+        Span dbPaymentsSpan = startSpan(traceId, paymentsSpan.spanId, &quot;db-query-payments&quot;, 160);
+        endSpan(dbPaymentsSpan, 200);
+        endSpan(paymentsSpan, 330);
+        endSpan(ordersSpan, 350);
+        endSpan(gatewaySpan, 500);
+
+        System.out.println(&quot;total request duration: &quot; + gatewaySpan.durationMs() + &quot;ms&quot;);
+        Span bottleneck = findBottleneck(traceId);
+        System.out.println(&quot;bottleneck span: &quot; + bottleneck.serviceName + &quot; (&quot; + bottleneck.durationMs() + &quot;ms) - not the top-level gateway span itself&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>DistributedTracingDemo.java</code>, then run <code>java DistributedTracingDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>startSpan(traceId, null, &quot;api-gateway&quot;, 0)</code> creates the root span, <code>gatewaySpan</code>, with <code>parentSpanId = null</code> — it has no parent, since it is the entry point of the whole trace.</li><li><code>startSpan(traceId, gatewaySpan.spanId, &quot;orders-service&quot;, 50)</code> creates <code>ordersSpan</code>, explicitly passing <code>gatewaySpan.spanId</code> as its parent — this models the trace context (trace ID plus current span ID) being propagated from the gateway to the orders service on the outgoing call, so the new span is correctly linked as a child rather than starting an unrelated trace.</li><li><code>dbOrdersSpan</code> and <code>paymentsSpan</code> are both created as children of <code>ordersSpan</code> (both pass <code>ordersSpan.spanId</code> as their parent), modeling the orders service making two separate downstream calls — one to its own database, and one to the payments service — both nested under the same parent.</li><li><code>dbPaymentsSpan</code> is created as a child of <code>paymentsSpan</code>, one level deeper still, modeling the payments service&#x27;s own database call; <code>endSpan</code> calls at each level record the actual end time, so each span&#x27;s <code>durationMs()</code> reflects real elapsed time for that specific unit of work: <code>dbOrdersSpan</code> took <code>110-60=50ms</code>, while <code>paymentsSpan</code> took <code>330-140=190ms</code>.</li><li><code>findBottleneck(traceId)</code> scans every span sharing this <code>traceId</code> and returns whichever has the largest <code>durationMs()</code>; despite <code>gatewaySpan</code> having the longest *absolute* duration (500ms, since it spans the entire request), the bottleneck search correctly identifies <code>paymentsSpan</code> (190ms) as the true bottleneck among the actual units of work — exactly the kind of insight a waterfall trace view is built to surface, which neither a single log line nor a top-level total-duration number could reveal on its own.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a service that fails to propagate the incoming trace context to its own outgoing calls (forgetting to pass the trace ID and parent span ID header along) causes the trace to silently &quot;break&quot; at that point — the downstream calls still happen and still get logged, but they start a brand-new, disconnected trace instead of continuing the original one, making it look (incorrectly) like that part of the request never happened, from the trace&#x27;s point of view.</blockquote>
+<ul><li>Distributed tracing extends correlation IDs with structured timing and parent-child span relationships, showing exactly where time was spent across a multi-service request.</li><li>Trace context (trace ID plus current span ID) must be explicitly propagated on every outgoing call, or the trace breaks at that point.</li><li>The slowest individual span, not the top-level request duration, is usually what actually needs investigation when diagnosing latency.</li><li>Related concepts: <a href="0186-structured-logging-log-aggregation.md">Structured logging &amp; log aggregation</a> (the simpler correlation-ID foundation this builds on), <a href="0193-micrometer-tracing-opentelemetry.md">Micrometer Tracing (OpenTelemetry)</a> (a concrete Java implementation of this exact propagation), <a href="0126-tail-latency-percentiles-p50-p95-p99.md">Tail latency &amp; percentiles (p50/p95/p99)</a> (traces are often what you drill into once a percentile metric flags a problem).</li></ul>
+  <div class="nav"><a class="prv" href="0187-metrics-counters-gauges-histograms.html"><span class="mini">← Previous</span>Metrics (counters, gauges, histograms)</a><a class="nxt" href="0189-the-red-use-methods.html"><span class="mini">Next →</span>The RED & USE methods</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t188";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
