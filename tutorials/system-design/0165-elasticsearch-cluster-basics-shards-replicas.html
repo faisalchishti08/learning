@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Elasticsearch cluster basics (shards & replicas) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 14. Search & Indexing</div>
+  <div class="htitle">
+    <h1>Elasticsearch cluster basics (shards & replicas)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>An Elasticsearch <strong>index</strong> (a named collection of documents, roughly like a database table) is split into <strong>shards</strong> — independent, self-contained pieces of the index, each holding a subset of its documents — spread across the machines (nodes) in a cluster. Each shard can have one or more <strong>replicas</strong>, full copies of that shard kept on other nodes for durability and to serve more concurrent read traffic. This is the mechanism that lets an <a href="0159-inverted-index.md">inverted index</a> scale across many machines instead of living on just one.</p>
+<h2>2. Why &amp; when</h2>
+<p>A single Elasticsearch node has finite CPU, memory, and disk — a huge index eventually will not fit on, or be searchable fast enough by, one machine alone. Splitting the index into shards spreads both the storage and the search workload across multiple nodes, and replicas provide both a copy to serve reads from (increasing search throughput) and a backup if a node holding a primary shard fails. Understand this when sizing an Elasticsearch cluster for a real workload, or when diagnosing why search performance or resilience does not match expectations.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Primary shard:</strong> one independent slice of the index&#x27;s total document set; a document is routed to exactly one primary shard (commonly by hashing its ID), and every primary shard together makes up the whole index.</li><li><strong>Shard count is fixed at index creation (in older Elasticsearch versions):</strong> choosing too few shards limits how much you can scale out later; choosing too many adds per-shard overhead — this makes shard count a real up-front sizing decision.</li><li><strong>Replica shard:</strong> a full copy of a primary shard, kept on a different node; replicas serve read (search) traffic too, so more replicas mean more read throughput, at the cost of more storage and indexing overhead (every write must also update every replica).</li><li><strong>A search request fans out to every relevant shard:</strong> a query against the index is sent to (at least) one copy of every shard, each shard searches its own subset of documents, and the coordinating node merges and re-ranks the combined results before returning them.</li><li><strong>Failure tolerance:</strong> if a node holding a primary shard fails, Elasticsearch promotes one of that shard&#x27;s replicas (on a surviving node) to become the new primary — no data is lost as long as at least one copy (primary or replica) of every shard survives.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   index &quot;products&quot; — 3 primary shards, 1 replica each
+
+   node-A: shard-0 (primary)   shard-1 (replica)
+   node-B: shard-1 (primary)   shard-2 (replica)
+   node-C: shard-2 (primary)   shard-0 (replica)
+
+   search request for &quot;laptop&quot;
+        |
+        v
+   coordinating node fans the query out to ONE copy of shard-0, shard-1, shard-2
+        |
+        v
+   each shard searches its own documents -&gt; partial results
+        |
+        v
+   coordinating node merges + re-ranks all partial results -&gt; final response</code></pre>
+<p>*Caption: every shard holds a different subset of documents; a search must reach one copy of every shard, then the results are merged into one ranked response.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Route documents to shards by hashing their ID, and store each shard&#x27;s documents separately.</p>
+<p><strong>Level 2 — Fan-out search across all shards and merge results.</strong> Model a coordinating node querying every shard and combining the responses.</p>
+<p><strong>Level 3 — Simulate a node failure and promote a replica.</strong> Show the cluster staying searchable and durable after losing a primary shard&#x27;s node.</p>
+<pre><code class="lang-java">// ElasticsearchClusterDemo.java
+import java.util.*;
+import java.util.stream.*;
+
+public class ElasticsearchClusterDemo {
+
+    static final int SHARD_COUNT = 3;
+
+    static class Doc {
+        String id, text;
+        Doc(String id, String text) { this.id = id; this.text = text; }
+    }
+
+    // Level 1: route a document to a shard by hashing its ID.
+    static int shardFor(String docId) {
+        return Math.abs(docId.hashCode()) % SHARD_COUNT;
+    }
+
+    static Map&lt;Integer, List&lt;Doc&gt;&gt; primaryShards = new HashMap&lt;&gt;();
+    static Map&lt;Integer, List&lt;Doc&gt;&gt; replicaShards = new HashMap&lt;&gt;(); // Level 3: full copies, kept in sync
+    static Set&lt;Integer&gt; failedPrimaryShardNodes = new HashSet&lt;&gt;();  // which shard&#x27;s PRIMARY node is down
+
+    static void indexDocument(Doc doc) {
+        int shard = shardFor(doc.id);
+        primaryShards.computeIfAbsent(shard, s -&gt; new ArrayList&lt;&gt;()).add(doc);
+        replicaShards.computeIfAbsent(shard, s -&gt; new ArrayList&lt;&gt;()).add(doc); // replica stays in sync
+    }
+
+    // Level 2: fan out to every shard, searching whichever copy (primary, or replica if primary is down) is available.
+    static List&lt;Doc&gt; search(String keyword) {
+        List&lt;Doc&gt; merged = new ArrayList&lt;&gt;();
+        for (int shard = 0; shard &lt; SHARD_COUNT; shard++) {
+            List&lt;Doc&gt; shardData = failedPrimaryShardNodes.contains(shard)
+                ? replicaShards.getOrDefault(shard, List.of())   // Level 3: primary down, use the replica
+                : primaryShards.getOrDefault(shard, List.of());
+            List&lt;Doc&gt; matches = shardData.stream().filter(d -&gt; d.text.contains(keyword)).collect(Collectors.toList());
+            System.out.println(&quot;  shard &quot; + shard + &quot; (&quot; + (failedPrimaryShardNodes.contains(shard) ? &quot;via replica&quot; : &quot;via primary&quot;) + &quot;): &quot; + matches.size() + &quot; matches&quot;);
+            merged.addAll(matches);
+        }
+        return merged;
+    }
+
+    public static void main(String[] args) {
+        indexDocument(new Doc(&quot;p1&quot;, &quot;gaming laptop&quot;));
+        indexDocument(new Doc(&quot;p2&quot;, &quot;office laptop&quot;));
+        indexDocument(new Doc(&quot;p3&quot;, &quot;wireless mouse&quot;));
+        indexDocument(new Doc(&quot;p4&quot;, &quot;laptop sleeve&quot;));
+        indexDocument(new Doc(&quot;p5&quot;, &quot;gaming mouse&quot;));
+
+        System.out.println(&quot;searching \&quot;laptop\&quot; (all primaries healthy):&quot;);
+        System.out.println(&quot;total matches: &quot; + search(&quot;laptop&quot;).size());
+
+        // Level 3: the node holding shard 1&#x27;s PRIMARY fails - Elasticsearch would promote its replica.
+        int failedShard = 1;
+        System.out.println(&quot;node holding shard &quot; + failedShard + &quot;&#x27;s primary FAILED - promoting its replica...&quot;);
+        failedPrimaryShardNodes.add(failedShard);
+
+        System.out.println(&quot;searching \&quot;laptop\&quot; again (shard &quot; + failedShard + &quot; now served by its replica):&quot;);
+        System.out.println(&quot;total matches: &quot; + search(&quot;laptop&quot;).size());
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ElasticsearchClusterDemo.java</code>, then run <code>java ElasticsearchClusterDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Each <code>indexDocument</code> call computes <code>shardFor(doc.id)</code> by hashing the document&#x27;s ID, then stores the document in both <code>primaryShards</code> and <code>replicaShards</code> under that shard number — modeling how every write updates both the primary and its replica to keep them in sync.</li><li>The first <code>search(&quot;laptop&quot;)</code> call loops over all three shards; since <code>failedPrimaryShardNodes</code> is empty, every shard is searched &quot;via primary&quot;, and each shard&#x27;s own subset of documents is filtered independently for the keyword.</li><li>The per-shard match counts are printed, then all matches are merged into one <code>List&lt;Doc&gt;</code> — this models the coordinating node combining every shard&#x27;s partial results into a single response, exactly as a real search request would.</li><li><code>failedPrimaryShardNodes.add(1)</code> simulates shard 1&#x27;s primary-holding node going down; nothing is removed from <code>primaryShards</code> itself (this demo does not model actual node loss of the data), but the search logic now treats shard 1 specially.</li><li>The second <code>search(&quot;laptop&quot;)</code> call reaches the <code>failedPrimaryShardNodes.contains(shard)</code> branch for shard 1, and reads from <code>replicaShards.get(1)</code> instead of <code>primaryShards.get(1)</code> — printing &quot;via replica&quot; for that shard — while shards 0 and 2 are unaffected and still search their primaries; the total match count stays the same as before the failure, demonstrating that the replica fully preserved both the data and the cluster&#x27;s ability to keep serving search requests.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: increasing the number of primary shards on an index that is already too small for the workload does not help, and can hurt — more shards means more per-shard overhead (each shard has its own resource cost) and more work for the coordinating node to merge results from, so shard count should be sized to the expected data volume and query load, not maximized blindly.</blockquote>
+<ul><li>Shards split an index&#x27;s documents across nodes for scale; replicas copy each shard for durability and extra read throughput.</li><li>A search request must reach at least one copy (primary or replica) of every shard, then merges the partial results — the coordinating node&#x27;s merge step is essential, not optional.</li><li>Losing a primary shard&#x27;s node is survivable exactly because a replica holds the same data and can be promoted, keeping the cluster both durable and searchable.</li><li>Related concepts: <a href="0159-inverted-index.md">Inverted index</a> (what each shard actually stores internally), <a href="0130-redundancy-replication.md">Redundancy &amp; replication</a> (the general durability pattern replica shards implement), <a href="0091-hash-based-sharding.md">Hash-based sharding</a> (the general partitioning concept shards are a specific application of).</li></ul>
+  <div class="nav"><a class="prv" href="0164-spring-data-elasticsearch.html"><span class="mini">← Previous</span>Spring Data Elasticsearch</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t165";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
