@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rate-limit response headers & 429 handling — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 12. Rate Limiting & Throttling</div>
+  <div class="htitle">
+    <h1>Rate-limit response headers & 429 handling</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Rate-limit response headers</strong> are HTTP headers a server adds to every response, telling the caller how many requests they have left, when their quota resets, and (when rejected) how long to wait before trying again. <strong>429 Too Many Requests</strong> is the standard HTTP status code a server returns when a client has exceeded its rate limit. Together, these turn a rate limiter from a silent wall into a self-describing contract the caller can program against.</p>
+<h2>2. Why &amp; when</h2>
+<p>Without headers, a client that gets rejected has no idea whether to retry in one second or one hour, or how close it was to the limit before it got rejected at all — it can only guess, which usually means retrying too aggressively (making the problem worse) or giving up too early. Standard headers let a well-behaved client back off exactly as long as needed, and even avoid hitting the limit in the first place by watching how many requests remain. Any public or internal API that enforces a rate limit should return these headers on every response, not only on rejections, so clients can self-regulate proactively.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong><code>X-RateLimit-Limit</code>:</strong> the total number of requests allowed in the current window (or bucket capacity).</li><li><strong><code>X-RateLimit-Remaining</code>:</strong> how many requests the client has left before hitting the limit, as of this response.</li><li><strong><code>X-RateLimit-Reset</code>:</strong> when the limit resets, usually as a Unix timestamp or seconds-from-now.</li><li><strong><code>Retry-After</code>:</strong> on a <code>429</code> response specifically, the standard HTTP header telling the client exactly how many seconds to wait before its next attempt — this is the header a correct client retry loop should honor.</li><li><strong>Send headers on every response, not just rejections:</strong> a client watching <code>X-RateLimit-Remaining</code> drop toward zero on *successful* responses can slow itself down proactively, before ever receiving a <code>429</code>.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   client request
+        |
+        v
+   +-----------------------------------------------+
+   | server: check limiter                          |
+   | allowed? -- yes --&gt; 200 OK                     |
+   |   headers: X-RateLimit-Limit: 100               |
+   |            X-RateLimit-Remaining: 37             |
+   |            X-RateLimit-Reset: 1717000060           |
+   |                                                 |
+   | allowed? -- no --&gt; 429 Too Many Requests        |
+   |   headers: X-RateLimit-Remaining: 0                |
+   |            Retry-After: 23        &lt;- seconds       |
+   +-----------------------------------------------+
+        |
+        v
+   client reads Retry-After, sleeps 23s, then retries</code></pre>
+<p>*Caption: every response carries enough information for the client to know exactly how close it is to the limit, and exactly how long to wait if it gets rejected.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A rate limiter that computes the header values alongside its allow/reject decision.</p>
+<p><strong>Level 2 — Build the actual header map for a response.</strong> Model the response as a status code plus a header map, the way a servlet filter would build it.</p>
+<p><strong>Level 3 — Client-side handling.</strong> A retry loop that reads <code>Retry-After</code> from a <code>429</code> response and waits exactly that long before retrying, instead of guessing.</p>
+<pre><code class="lang-java">// RateLimitHeadersDemo.java
+import java.util.*;
+
+public class RateLimitHeadersDemo {
+
+    static class RateLimitResult {
+        final boolean allowed;
+        final int limit, remaining;
+        final long resetEpochSeconds;
+        final int retryAfterSeconds; // only meaningful when !allowed
+
+        RateLimitResult(boolean allowed, int limit, int remaining, long resetEpochSeconds, int retryAfterSeconds) {
+            this.allowed = allowed;
+            this.limit = limit;
+            this.remaining = remaining;
+            this.resetEpochSeconds = resetEpochSeconds;
+            this.retryAfterSeconds = retryAfterSeconds;
+        }
+    }
+
+    // Level 1: a fixed-window limiter that also reports remaining count and reset time.
+    static class HeaderAwareLimiter {
+        final int limit;
+        final long windowSeconds;
+        int count = 0;
+        long windowStartSeconds;
+
+        HeaderAwareLimiter(int limit, long windowSeconds, long nowSeconds) {
+            this.limit = limit;
+            this.windowSeconds = windowSeconds;
+            this.windowStartSeconds = nowSeconds;
+        }
+
+        RateLimitResult check(long nowSeconds) {
+            if (nowSeconds - windowStartSeconds &gt;= windowSeconds) {
+                windowStartSeconds = nowSeconds;
+                count = 0;
+            }
+            long resetAt = windowStartSeconds + windowSeconds;
+            if (count &gt;= limit) {
+                int retryAfter = (int) (resetAt - nowSeconds);
+                return new RateLimitResult(false, limit, 0, resetAt, retryAfter);
+            }
+            count++;
+            return new RateLimitResult(true, limit, limit - count, resetAt, 0);
+        }
+    }
+
+    // Level 2: build the actual HTTP status + header map, the way a server would.
+    static Map&lt;String, String&gt; buildResponseHeaders(RateLimitResult r) {
+        Map&lt;String, String&gt; headers = new LinkedHashMap&lt;&gt;();
+        headers.put(&quot;X-RateLimit-Limit&quot;, String.valueOf(r.limit));
+        headers.put(&quot;X-RateLimit-Remaining&quot;, String.valueOf(r.remaining));
+        headers.put(&quot;X-RateLimit-Reset&quot;, String.valueOf(r.resetEpochSeconds));
+        if (!r.allowed) {
+            headers.put(&quot;Retry-After&quot;, String.valueOf(r.retryAfterSeconds));
+        }
+        return headers;
+    }
+
+    // Level 3: client-side retry loop that honors Retry-After instead of guessing.
+    static void simulateClientCall(HeaderAwareLimiter limiter, long nowSeconds) {
+        RateLimitResult result = limiter.check(nowSeconds);
+        Map&lt;String, String&gt; headers = buildResponseHeaders(result);
+        int status = result.allowed ? 200 : 429;
+        System.out.println(&quot;t=&quot; + nowSeconds + &quot;s -&gt; &quot; + status + &quot; &quot; + (result.allowed ? &quot;OK&quot; : &quot;Too Many Requests&quot;) + &quot; &quot; + headers);
+        if (!result.allowed) {
+            int waitSeconds = Integer.parseInt(headers.get(&quot;Retry-After&quot;));
+            System.out.println(&quot;  client: honoring Retry-After, will wait &quot; + waitSeconds + &quot;s before retrying&quot;);
+        }
+    }
+
+    public static void main(String[] args) {
+        long start = 1_000_000L;
+        HeaderAwareLimiter limiter = new HeaderAwareLimiter(3, 10, start); // 3 requests per 10s window
+
+        for (long t = start; t &lt; start + 4; t++) {
+            simulateClientCall(limiter, t); // 4 calls in 4 seconds - the 4th exceeds the limit of 3
+        }
+        // Client waited out the window; the next call after reset succeeds again.
+        simulateClientCall(limiter, start + 10);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>RateLimitHeadersDemo.java</code>, then run <code>java RateLimitHeadersDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>At <code>t=1000000</code>, <code>check</code> finds the window just started, allows the request, and returns <code>remaining = limit - count = 3 - 1 = 2</code>; <code>buildResponseHeaders</code> produces a <code>200</code>-style header map with <code>X-RateLimit-Remaining: 2</code>.</li><li>At <code>t+1</code> and <code>t+2</code>, the same happens, with <code>remaining</code> dropping to 1 then 0 as <code>count</code> climbs to 2 then 3.</li><li>At <code>t+3</code>, <code>check</code> finds <code>count = 3 &gt;= limit = 3</code>, so it computes <code>retryAfter = resetAt - nowSeconds</code> (the window resets at <code>windowStartSeconds + 10</code>, and only 3 seconds have elapsed, so <code>retryAfter = 7</code>), and returns an unallowed result.</li><li><code>buildResponseHeaders</code> sees <code>!r.allowed</code> and adds the <code>Retry-After</code> header on top of the usual three, and <code>simulateClientCall</code> prints the <code>429</code> status along with the client&#x27;s decision to wait exactly <code>7</code> seconds — not an arbitrary guess.</li><li>The final call at <code>t+10</code> lands exactly at the window boundary; <code>check</code> finds <code>nowSeconds - windowStartSeconds &gt;= windowSeconds</code> is true, resets <code>count</code> to 0, and allows the request again — showing the client&#x27;s wait, guided by the earlier <code>Retry-After</code> value, was exactly long enough.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a client that ignores <code>Retry-After</code> and instead retries immediately (or on a fixed short delay) after a <code>429</code> will often get rejected again and again, adding load to an already-throttling server for no benefit — always parse and honor <code>Retry-After</code> in retry logic, ideally combined with the <a href="0135-retries-with-exponential-backoff-jitter.md">exponential backoff and jitter</a> pattern for the case where the header is absent.</blockquote>
+<ul><li>Standard rate-limit headers turn a rejection into actionable information: how many requests are left, and exactly how long to wait.</li><li>Sending these headers on *every* response, not just on <code>429</code>s, lets well-behaved clients self-throttle before ever being rejected.</li><li><code>Retry-After</code> is the one header a client&#x27;s retry logic must actually read and obey — guessing the wait time defeats the purpose of the header existing.</li><li>Related concepts: <a href="0135-retries-with-exponential-backoff-jitter.md">Retries with exponential backoff &amp; jitter</a> (what to do when <code>Retry-After</code> is missing), <a href="0145-fixed-window-counter.md">Fixed-window counter</a> and <a href="0143-token-bucket.md">Token bucket</a> (the limiters whose internal state these headers expose), <a href="0151-spring-cloud-gateway-requestratelimiter-redis.md">Spring Cloud Gateway RequestRateLimiter (Redis)</a> (a gateway that sets these headers automatically).</li></ul>
+  <div class="nav"><a class="prv" href="0148-per-user-vs-global-quotas.html"><span class="mini">← Previous</span>Per-user vs global quotas</a><a class="nxt" href="0150-bucket4j-for-token-bucket-rate-limiting.html"><span class="mini">Next →</span>Bucket4j for token-bucket rate limiting</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t149";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Centralized counter (Redis) rate limiting — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 12. Rate Limiting & Throttling</div>
+  <div class="htitle">
+    <h1>Centralized counter (Redis) rate limiting</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>centralized counter</strong> rate limiter stores each client&#x27;s request count in one shared, fast store — almost always Redis — instead of in the memory of a single application server. Every instance of your service, no matter which one receives a given request, checks and increments the same counter in Redis. This makes the rate limit correct across a whole fleet of servers, not just correct on one machine.</p>
+<h2>2. Why &amp; when</h2>
+<p>An in-process counter, like the ones shown for the <a href="0143-token-bucket.md">token bucket</a> or <a href="0145-fixed-window-counter.md">fixed-window counter</a>, only limits requests that land on that one server. If a client&#x27;s requests are load-balanced across ten servers, an in-process limiter set to &quot;100 requests per minute&quot; actually allows up to 1,000 requests per minute, ten times over — because each server tracks its own separate count. A centralized counter fixes this by making all ten servers check and update the same number. Use it whenever your service runs more than one instance and needs a rate limit that holds true across the whole fleet, which is true for nearly every production API.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Shared state, not local state:</strong> the count lives in Redis (or a similar fast, shared store), keyed by client ID plus the current window, so every app server sees the same number.</li><li><strong>Atomicity is essential:</strong> a naive &quot;read count, check limit, write count+1&quot; done as three separate steps has a race condition — two servers can both read the count just under the limit at the same instant, and both allow a request that together exceeds it. The check-and-increment must happen as a single atomic operation.</li><li><strong><code>INCR</code> + <code>EXPIRE</code>:</strong> Redis&#x27;s <code>INCR</code> command atomically increments a counter and returns the new value in one step; pairing it with <code>EXPIRE</code> on the key makes old windows clean themselves up automatically.</li><li><strong>Lua scripts for multi-step atomicity:</strong> when the logic needs more than a single atomic command (e.g. checking a limit before incrementing, or implementing a token bucket in Redis), a Lua script run via Redis&#x27;s scripting feature executes multiple commands as one atomic unit, closing the race condition.</li><li><strong>Latency tradeoff:</strong> every request now needs a network round trip to Redis, adding latency compared to an in-process check — this cost buys you correctness across the fleet, which local counters cannot provide.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   server A  \
+   server B   &gt;---- INCR ratelimit:{client}:{window} ----&gt; Redis
+   server C  /              (atomic, shared counter)          |
+                                                          EXPIRE at
+                                                          window end
+
+   Without Redis: each server has its OWN counter -&gt; limit effectively x N servers.
+   With Redis: all servers share ONE counter -&gt; the limit is enforced correctly, fleet-wide.</code></pre>
+<p>*Caption: every server instance increments the same Redis key atomically, so the rate limit is correct no matter which server a request lands on.*</p>
+<h2>5. Runnable example</h2>
+<p>This models the interaction with Redis in-process (no live Redis server needed to read the mechanism); the &quot;How to run&quot; note below shows what a real Redis client call looks like.</p>
+<p><strong>Level 1 — Basic.</strong> Model <code>INCR</code> as a single atomic operation shared across simulated &quot;servers&quot;.</p>
+<p><strong>Level 2 — Add <code>EXPIRE</code>-style window cleanup.</strong> Old windows are cleared so the counter does not grow forever.</p>
+<p><strong>Level 3 — Atomic check-then-increment via a &quot;Lua script&quot;.</strong> Combine the limit check and the increment into one atomic step, closing the race condition a naive two-step check has.</p>
+<pre><code class="lang-java">// CentralizedCounterDemo.java
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class CentralizedCounterDemo {
+
+    // Models a single shared Redis instance that every &quot;server&quot; talks to.
+    static class FakeRedis {
+        final Map&lt;String, AtomicInteger&gt; counters = new ConcurrentHashMap&lt;&gt;();
+        final Map&lt;String, Long&gt; expiresAtMillis = new ConcurrentHashMap&lt;&gt;();
+
+        // Level 3: models an atomic Lua script - &quot;check limit, then INCR&quot; as one step.
+        synchronized boolean incrAndCheckLimit(String key, int limit, long windowMillis, long now) {
+            Long expiry = expiresAtMillis.get(key);
+            if (expiry == null || now &gt;= expiry) {
+                counters.put(key, new AtomicInteger(0)); // Level 2: window expired, reset
+                expiresAtMillis.put(key, now + windowMillis);
+            }
+            int newCount = counters.get(key).incrementAndGet();
+            return newCount &lt;= limit; // atomic: no other server can slip in between check and incr
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        FakeRedis redis = new FakeRedis();
+        String clientKey = &quot;ratelimit:client-42:window-0&quot;;
+        int limit = 5;
+        long windowMillis = 1000;
+        long now = System.currentTimeMillis();
+
+        // Level 1: three separate &quot;server&quot; threads all hit the SAME Redis key.
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+        AtomicInteger allowedCount = new AtomicInteger(0);
+        List&lt;Future&lt;?&gt;&gt; futures = new ArrayList&lt;&gt;();
+        for (int server = 1; server &lt;= 3; server++) {
+            final int serverId = server;
+            futures.add(pool.submit(() -&gt; {
+                for (int i = 0; i &lt; 3; i++) { // each server tries 3 requests -&gt; 9 total, limit is 5
+                    boolean allowed = redis.incrAndCheckLimit(clientKey, limit, windowMillis, now);
+                    if (allowed) allowedCount.incrementAndGet();
+                    System.out.println(&quot;server-&quot; + serverId + &quot; request &quot; + i + &quot;: &quot; + (allowed ? &quot;ALLOWED&quot; : &quot;REJECTED (429)&quot;));
+                }
+            }));
+        }
+        for (Future&lt;?&gt; f : futures) f.get();
+        pool.shutdown();
+
+        System.out.println(&quot;total allowed across all servers: &quot; + allowedCount.get() + &quot; (limit was &quot; + limit + &quot;)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CentralizedCounterDemo.java</code>, then run <code>java CentralizedCounterDemo.java</code>. (A real service would use a Redis client, e.g. Spring Data Redis&#x27;s <code>RedisTemplate</code>, and call <code>redisTemplate.execute(luaScript, List.of(key), limit, windowMillis)</code>, with the Lua script doing the same check-and-increment against the real Redis server.)</p>
+<h2>6. Walkthrough</h2>
+<ol><li>Three server threads are started, each simulating a different application instance receiving traffic for the same client, <code>client-42</code>.</li><li>Each thread calls <code>redis.incrAndCheckLimit</code> with the exact same <code>clientKey</code>, so every increment lands on the one shared <code>AtomicInteger</code> inside <code>FakeRedis.counters</code>, regardless of which &quot;server&quot; thread called it.</li><li>The <code>synchronized</code> keyword on <code>incrAndCheckLimit</code> models Redis&#x27;s own single-threaded, atomic command execution: only one caller&#x27;s check-and-increment can run at a time, so no two servers can both read the count as &quot;4, under the limit of 5&quot; and both increment past it.</li><li>As the 9 total requests (3 servers times 3 requests) run, the shared counter climbs from 0 up to 9, but <code>newCount &lt;= limit</code> only stays true for the first 5 calls to actually execute, regardless of which server thread happened to get there first — the other 4 are rejected.</li><li>The final printed total confirms exactly 5 requests were allowed across all three servers combined, matching the configured <code>limit</code> — proving the rate limit held fleet-wide, not per-server (an in-process-only limiter would have allowed up to 5 per server, 15 total).</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: implementing this as separate &quot;read the count&quot;, &quot;check the limit&quot;, &quot;write count+1&quot; calls to Redis (three round trips) reintroduces the exact race condition a centralized counter is meant to fix — two servers can interleave those three steps and both slip a request through over the limit. Always use a single atomic Redis command (<code>INCR</code>) or a Lua script for anything needing more than one step.</blockquote>
+<ul><li>A rate limit is only correct across a fleet of servers if the counter lives in one shared, atomically-updated place — an in-process counter silently multiplies the limit by the number of servers.</li><li>Redis&#x27;s <code>INCR</code> is atomic by itself; anything needing a check *before* the increment needs a Lua script (or a similarly atomic primitive) to avoid a race condition.</li><li>The cost of correctness is a network round trip to Redis on every rate-limit check, which is a real latency tradeoff to account for.</li><li>Related concepts: <a href="0148-per-user-vs-global-quotas.md">Per-user vs global quotas</a> (deciding what key this counter is keyed by), <a href="0150-bucket4j-for-token-bucket-rate-limiting.md">Bucket4j for token-bucket rate limiting</a> (a library with a Redis-backed distributed mode), <a href="0151-spring-cloud-gateway-requestratelimiter-redis.md">Spring Cloud Gateway RequestRateLimiter (Redis)</a> (this exact pattern, pre-built at the gateway layer).</li></ul>
+  <div class="nav"><a class="prv" href="0146-sliding-window-log-sliding-window-counter.html"><span class="mini">← Previous</span>Sliding-window log & sliding-window counter</a><a class="nxt" href="0148-per-user-vs-global-quotas.html"><span class="mini">Next →</span>Per-user vs global quotas</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t147";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fixed-window counter — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 12. Rate Limiting & Throttling</div>
+  <div class="htitle">
+    <h1>Fixed-window counter</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>fixed-window counter</strong> algorithm divides time into fixed-size windows (e.g. every 60 seconds) and counts how many requests a client makes within the current window. Once the count reaches the limit, further requests in that same window are rejected. When the window ends, the counter resets to zero and a fresh window begins. It works like a ticket booth that only sells 100 tickets per hour, then locks the window and reopens it, freshly restocked, at the top of the next hour.</p>
+<h2>2. Why &amp; when</h2>
+<p>A fixed-window counter is the simplest possible rate limiter: one integer counter and one timestamp per client, checked and incremented on every request. It is cheap to implement and reason about, and works well when you only need an approximate cap on requests per time period, and do not need a perfectly smooth rate. Use it for simple internal quotas or first-pass API protection, where implementation simplicity matters more than precision — but be aware of its boundary-burst weakness, covered below.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Window size:</strong> a fixed duration, such as 1 minute; the current window is determined by dividing the current time by the window size (e.g. <code>windowStart = (now / windowSizeMillis) * windowSizeMillis</code>).</li><li><strong>Per-window counter:</strong> a single integer, incremented on every request that falls inside the current window.</li><li><strong>Reset on window change:</strong> when a request arrives in a new window (its computed <code>windowStart</code> differs from the stored one), the counter resets to zero before counting that request.</li><li><strong>Limit check:</strong> if the counter would exceed the configured limit, the request is rejected; otherwise it is allowed and the counter increments.</li><li><strong>The boundary-burst problem:</strong> because the counter fully resets at the window edge, a client can send the full limit right at the very end of one window, then immediately send the full limit again right at the start of the next — twice the intended limit in a very short real time span, even though each window individually stayed under the cap.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   window 1 [0s -------------------- 60s]   window 2 [60s ------------------- 120s]
+              ^                        ^      ^
+              |                        |      |
+        counter resets to 0      59.9s: 100   60.1s: counter resets to 0 again,
+                                  requests     100 MORE requests allowed instantly
+                                  allowed
+                                  (at the limit)
+              \_______________________/\_________________________/
+                     up to 200 requests can land in this ~0.2s span,
+                     even though the limit is &quot;100 per window&quot;</code></pre>
+<p>*Caption: the counter resets sharply at each window boundary, so a client can double up right at the edge between two windows.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A single counter with a limit, reset manually.</p>
+<p><strong>Level 2 — Time-based windows.</strong> Compute the current window from a timestamp and reset automatically when the window changes.</p>
+<p><strong>Level 3 — Demonstrate the boundary-burst weakness.</strong> Show a client legally sending double the per-window limit across a window boundary.</p>
+<pre><code class="lang-java">// FixedWindowCounterDemo.java
+public class FixedWindowCounterDemo {
+
+    static class FixedWindowLimiter {
+        final int limit;
+        final long windowSizeMillis;
+        long currentWindowStart;
+        int count;
+
+        FixedWindowLimiter(int limit, long windowSizeMillis) {
+            this.limit = limit;
+            this.windowSizeMillis = windowSizeMillis;
+            this.currentWindowStart = -1;
+        }
+
+        // Level 2: figure out which window &quot;now&quot; belongs to, resetting on change.
+        boolean allow(long nowMillis) {
+            long windowStart = (nowMillis / windowSizeMillis) * windowSizeMillis;
+            if (windowStart != currentWindowStart) {
+                currentWindowStart = windowStart;
+                count = 0; // Level 1: reset the counter for the new window
+            }
+            if (count &gt;= limit) {
+                return false;
+            }
+            count++;
+            return true;
+        }
+    }
+
+    public static void main(String[] args) {
+        // limit 3 requests per 1000ms window
+        FixedWindowLimiter limiter = new FixedWindowLimiter(3, 1000);
+
+        // Level 3: send 3 requests right at the end of window 1 (t=900..990ms)...
+        long[] windowOneTimestamps = {900, 950, 990};
+        for (long t : windowOneTimestamps) {
+            System.out.println(&quot;t=&quot; + t + &quot;ms (window 1): &quot; + (limiter.allow(t) ? &quot;ALLOWED&quot; : &quot;REJECTED&quot;));
+        }
+
+        // ...then 3 MORE requests right at the start of window 2 (t=1005..1050ms).
+        long[] windowTwoTimestamps = {1005, 1020, 1050};
+        for (long t : windowTwoTimestamps) {
+            System.out.println(&quot;t=&quot; + t + &quot;ms (window 2): &quot; + (limiter.allow(t) ? &quot;ALLOWED&quot; : &quot;REJECTED&quot;));
+        }
+        System.out.println(&quot;6 requests allowed within a ~150ms span, despite a limit of 3 per 1000ms window.&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>FixedWindowCounterDemo.java</code>, then run <code>java FixedWindowCounterDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>For <code>t=900</code>, <code>allow</code> computes <code>windowStart = (900 / 1000) * 1000 = 0</code>; since <code>currentWindowStart</code> starts at <code>-1</code>, it resets <code>count</code> to 0, then allows the request and sets <code>count = 1</code>.</li><li><code>t=950</code> and <code>t=990</code> both compute the same <code>windowStart = 0</code>, so no reset happens; <code>count</code> climbs to 2, then 3, and both are allowed since <code>count &lt; limit</code> at the time of each check.</li><li>For <code>t=1005</code>, <code>allow</code> computes <code>windowStart = (1005 / 1000) * 1000 = 1000</code>, which differs from the stored <code>currentWindowStart</code> of <code>0</code>; this triggers a reset of <code>count</code> back to 0 before checking the limit, so the request is allowed even though window 1&#x27;s count had already reached the limit moments earlier.</li><li><code>t=1020</code> and <code>t=1050</code> also fall in <code>windowStart = 1000</code>, and since <code>count</code> only just reset, both are allowed too, bringing the total to 3 more requests.</li><li>All 6 requests across both windows are printed as &quot;ALLOWED&quot;, even though only roughly 150 milliseconds of real time separate the first and last request — the fixed window&#x27;s hard reset at the boundary let a full second window&#x27;s worth of traffic through twice in quick succession, which is exactly the weakness a <a href="0146-sliding-window-log-sliding-window-counter.md">sliding window</a> approach fixes.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: the boundary-burst problem is not a bug in this implementation — it is inherent to the fixed-window algorithm itself. Any fixed-window counter can be pushed to roughly double its stated limit by a client timing its requests around a window edge, so never use it where a hard, precise cap actually matters.</blockquote>
+<ul><li>A fixed-window counter is simple: one integer and one window-start timestamp, reset when the window changes.</li><li>Its simplicity is also its weakness: a client can burst up to double the limit across a window boundary.</li><li>It is a reasonable choice for loose, approximate quotas, but not for strict rate enforcement.</li><li>Related concepts: <a href="0146-sliding-window-log-sliding-window-counter.md">Sliding-window log &amp; sliding-window counter</a> (fixes the boundary-burst problem), <a href="0143-token-bucket.md">Token bucket</a> (allows controlled bursts by design instead of by accident), <a href="0148-per-user-vs-global-quotas.md">Per-user vs global quotas</a> (deciding what a counter like this should be keyed by).</li></ul>
+  <div class="nav"><a class="prv" href="0144-leaky-bucket.html"><span class="mini">← Previous</span>Leaky bucket</a><a class="nxt" href="0146-sliding-window-log-sliding-window-counter.html"><span class="mini">Next →</span>Sliding-window log & sliding-window counter</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t145";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

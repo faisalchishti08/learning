@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Token bucket — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 12. Rate Limiting & Throttling</div>
+  <div class="htitle">
+    <h1>Token bucket</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>token bucket</strong> algorithm limits how many requests a client can make by giving it a bucket that holds a fixed number of tokens. Each request must remove one token from the bucket to proceed; if the bucket is empty, the request is rejected or delayed. Tokens refill at a steady rate, up to the bucket&#x27;s maximum size. Think of it like a subway turnstile that only lets people through if they have a token, and a machine slowly drops fresh tokens into a tray all day.</p>
+<h2>2. Why &amp; when</h2>
+<p>A service must stop any single client from sending so many requests that it starves other clients or overloads a downstream dependency. A naive counter that resets every second either blocks all traffic instantly once the count is hit, or allows a sudden burst right at the boundary between two windows. The token bucket fixes both problems: it allows short bursts up to the bucket size, while still enforcing a steady average rate over time. Use it for API rate limiting, controlling outbound calls to a third-party API with a strict quota, or shaping network traffic.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Bucket capacity:</strong> the maximum number of tokens the bucket can hold, which is also the largest burst a client can send instantly.</li><li><strong>Refill rate:</strong> tokens are added at a fixed rate (e.g. 10 tokens per second), modeling the sustained average rate you want to allow.</li><li><strong>Consume on request:</strong> each incoming request tries to remove one (or more, for a weighted request) token; if enough tokens exist, the request proceeds and the tokens are removed; otherwise the request is rejected or queued.</li><li><strong>Lazy refill:</strong> most real implementations do not run a background timer. Instead, on each request they compute how much time passed since the last check, and add <code>elapsed_time * refill_rate</code> tokens, capped at the bucket capacity.</li><li><strong>Bursts, bounded by capacity:</strong> because tokens accumulate while idle, a client that has not made requests for a while can burst up to the full bucket capacity, then must slow to the refill rate.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   refill rate: 2 tokens/sec              capacity: 5 tokens
+        |                                        |
+        v                                        v
+   +---------------------------------------------+
+   |  ***  ***  ***  ***  ***                    |   &lt;- tokens (max 5)
+   +---------------------------------------------+
+                     |
+              request arrives
+                     |
+              enough tokens? --- yes --&gt; remove 1 token, request proceeds
+                     |
+                     no --&gt; request rejected (429) or queued</code></pre>
+<p>*Caption: tokens drip in at a steady rate; a request only proceeds if it can take a token out, and the bucket never overflows past its capacity.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A bucket with a fixed capacity and refill rate, consuming one token per request.</p>
+<p><strong>Level 2 — Lazy refill by elapsed time.</strong> Compute tokens to add based on real elapsed time instead of a background thread.</p>
+<p><strong>Level 3 — Weighted requests.</strong> Allow a request to cost more than one token, for operations that are more expensive to serve.</p>
+<pre><code class="lang-java">// TokenBucketDemo.java
+public class TokenBucketDemo {
+
+    static class TokenBucket {
+        final long capacity;
+        final double refillTokensPerSecond;
+        double availableTokens;
+        long lastRefillTimeNanos;
+
+        TokenBucket(long capacity, double refillTokensPerSecond) {
+            this.capacity = capacity;
+            this.refillTokensPerSecond = refillTokensPerSecond;
+            this.availableTokens = capacity; // start full
+            this.lastRefillTimeNanos = System.nanoTime();
+        }
+
+        // Level 2: lazily refill based on elapsed time since the last check.
+        private void refill() {
+            long now = System.nanoTime();
+            double elapsedSeconds = (now - lastRefillTimeNanos) / 1_000_000_000.0;
+            double tokensToAdd = elapsedSeconds * refillTokensPerSecond;
+            availableTokens = Math.min(capacity, availableTokens + tokensToAdd);
+            lastRefillTimeNanos = now;
+        }
+
+        // Level 3: allow a request to consume more than one token.
+        boolean tryConsume(int tokensRequested) {
+            refill();
+            if (availableTokens &gt;= tokensRequested) {
+                availableTokens -= tokensRequested;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        // capacity 5, refills 2 tokens/sec
+        TokenBucket bucket = new TokenBucket(5, 2.0);
+
+        // Level 1: burst of 5 cheap requests drains the full bucket instantly.
+        for (int i = 1; i &lt;= 6; i++) {
+            boolean allowed = bucket.tryConsume(1);
+            System.out.println(&quot;request &quot; + i + &quot; (cost 1): &quot; + (allowed ? &quot;ALLOWED&quot; : &quot;REJECTED (429)&quot;));
+        }
+
+        System.out.println(&quot;waiting 1 second for refill...&quot;);
+        Thread.sleep(1000);
+
+        // Level 3: a weighted request costing 2 tokens after partial refill.
+        boolean allowedHeavy = bucket.tryConsume(2);
+        System.out.println(&quot;heavy request (cost 2) after refill: &quot; + (allowedHeavy ? &quot;ALLOWED&quot; : &quot;REJECTED (429)&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>TokenBucketDemo.java</code>, then run <code>java TokenBucketDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The bucket starts full, with <code>availableTokens = 5</code> (its <code>capacity</code>).</li><li>Requests 1 through 5 each call <code>tryConsume(1)</code>; <code>refill()</code> adds almost no tokens since almost no time has passed, so each request removes 1 token and <code>availableTokens</code> drops from 5 to 0.</li><li>Request 6 arrives with <code>availableTokens</code> at 0; <code>tryConsume</code> finds <code>availableTokens &lt; tokensRequested</code> and returns <code>false</code>, so the demo prints &quot;REJECTED (429)&quot;.</li><li>After sleeping 1 second, the next call to <code>refill()</code> computes <code>elapsedSeconds ≈ 1.0</code> and <code>tokensToAdd = 1.0 * 2.0 = 2.0</code>, raising <code>availableTokens</code> to 2 (capped at <code>capacity</code>, which does not bind here).</li><li>The heavy request asks for 2 tokens with <code>tryConsume(2)</code>; since <code>availableTokens</code> is now 2, the check passes, both tokens are removed, and the request is allowed — demonstrating that a weighted request is rejected unless enough accumulated tokens cover its full cost.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: computing the refill using floating-point elapsed time on every request, without ever capping at <code>capacity</code>, lets tiny timing inconsistencies (a very long gap between requests) hand out far more tokens than the bucket was designed to hold — always clamp <code>availableTokens</code> to <code>capacity</code> after adding the refill, exactly as <code>Math.min(capacity, ...)</code> does here.</blockquote>
+<ul><li>The token bucket allows a burst up to the bucket&#x27;s capacity, then throttles down to the steady refill rate — this is its key advantage over a hard fixed-window counter.</li><li>Lazy refill (computing elapsed time on each request) avoids running a background thread just to add tokens, and scales to many independent buckets (e.g. one per user) cheaply.</li><li>Weighting requests by token cost lets you rate-limit by real resource cost, not just request count.</li><li>Related concepts: <a href="0144-leaky-bucket.md">Leaky bucket</a> (a stricter alternative that smooths output instead of allowing bursts), <a href="0150-bucket4j-for-token-bucket-rate-limiting.md">Bucket4j for token-bucket rate limiting</a> (a production Java library implementing this exact algorithm), <a href="0149-rate-limit-response-headers-429-handling.md">Rate-limit response headers &amp; 429 handling</a> (what a rejected request should tell the caller).</li></ul>
+  <div class="nav"><a class="prv" href="0142-spring-boot-actuator-health-indicators.html"><span class="mini">← Previous</span>Spring Boot Actuator health indicators</a><a class="nxt" href="0144-leaky-bucket.html"><span class="mini">Next →</span>Leaky bucket</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t143";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

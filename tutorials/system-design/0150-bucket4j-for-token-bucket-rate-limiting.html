@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bucket4j for token-bucket rate limiting — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 12. Rate Limiting & Throttling</div>
+  <div class="htitle">
+    <h1>Bucket4j for token-bucket rate limiting</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Bucket4j</strong> is a Java library that implements the <a href="0143-token-bucket.md">token bucket</a> algorithm as a tested, ready-to-use component, with both a purely in-memory mode and a distributed mode backed by Redis, Hazelcast, or another shared store. Instead of hand-writing the refill math and thread-safety shown in the token bucket&#x27;s own example, you configure a <code>Bandwidth</code> (the bucket&#x27;s capacity and refill rate) and ask Bucket4j whether to allow each request.</p>
+<h2>2. Why &amp; when</h2>
+<p>Hand-rolled token bucket code is easy to get subtly wrong under concurrency — two threads both reading <code>availableTokens</code> and both deciding they can proceed, when only one token was actually left. Bucket4j solves this with proper atomic and thread-safe implementations, and adds features a hand-written version usually skips: multiple bandwidths on one bucket (e.g. a burst limit AND a sustained limit together), and a distributed mode so the bucket&#x27;s state is correct across many application servers, similar in spirit to a <a href="0147-centralized-counter-redis-rate-limiting.md">centralized Redis counter</a> but purpose-built for the token bucket algorithm specifically. Use it in any real Java or Spring Boot service instead of hand-writing bucket logic.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong><code>Bandwidth</code>:</strong> defines one capacity-and-refill-rate rule, e.g. <code>Bandwidth.classic(100, Refill.intervally(100, Duration.ofMinutes(1)))</code> — 100 tokens, refilling fully every minute.</li><li><strong><code>Bucket</code>:</strong> the runtime object you call per request; built from a <code>BucketConfiguration</code> holding one or more <code>Bandwidth</code> rules.</li><li><strong><code>tryConsume(n)</code>:</strong> attempts to remove <code>n</code> tokens; returns <code>true</code>/<code>false</code> immediately, mirroring the hand-written bucket&#x27;s <code>tryConsume</code> but with production-grade thread safety.</li><li><strong>Multiple bandwidths on one bucket:</strong> you can combine a tight burst limit (e.g. 20 tokens refilling instantly every second) with a looser sustained limit (e.g. 1,000 tokens refilling over an hour) on the *same* bucket — a request must satisfy every configured bandwidth to be allowed.</li><li><strong>Distributed mode:</strong> backing the bucket with a <code>ProxyManager</code> over Redis or Hazelcast makes the same bucket state visible and atomically updated across every server instance, the same correctness property a centralized Redis counter provides, but implemented specifically for this algorithm.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   BucketConfiguration
+     bandwidth 1: burst  = 20 tokens / 1 second   &lt;- stops short spikes
+     bandwidth 2: sustained = 1000 tokens / 1 hour &lt;- stops sustained abuse
+
+   request -&gt; bucket.tryConsume(1)
+                 |
+        check bandwidth 1 AND bandwidth 2
+                 |
+        BOTH must have a token available
+                 |
+         yes -&gt; allow, remove 1 token from each bandwidth
+         no  -&gt; reject (whichever bandwidth is exhausted)</code></pre>
+<p>*Caption: a single Bucket4j bucket can enforce more than one rate rule at once — a request must pass every configured bandwidth, not just one.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Model a single-bandwidth bucket, mirroring Bucket4j&#x27;s <code>tryConsume</code> API.</p>
+<p><strong>Level 2 — Multiple bandwidths.</strong> Combine a tight burst limit with a looser sustained limit on the same bucket.</p>
+<p><strong>Level 3 — Thread-safe concurrent access.</strong> Show the bucket giving a correct total under concurrent access from multiple threads, the property real Bucket4j provides out of the box.</p>
+<pre><code class="lang-java">// Bucket4jDemo.java
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class Bucket4jDemo {
+
+    // Models one Bucket4j &quot;Bandwidth&quot;: a capacity that refills over time.
+    static class Bandwidth {
+        final long capacity;
+        final double refillPerMillis;
+        double available;
+        long lastRefillMillis;
+
+        Bandwidth(long capacity, long refillAmount, long refillPeriodMillis, long nowMillis) {
+            this.capacity = capacity;
+            this.refillPerMillis = refillAmount / (double) refillPeriodMillis;
+            this.available = capacity;
+            this.lastRefillMillis = nowMillis;
+        }
+
+        synchronized boolean tryConsume(int tokens, long nowMillis) {
+            available = Math.min(capacity, available + (nowMillis - lastRefillMillis) * refillPerMillis);
+            lastRefillMillis = nowMillis;
+            if (available &gt;= tokens) {
+                available -= tokens;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    // Models a Bucket4j &quot;Bucket&quot;: all configured bandwidths must allow the request.
+    static class Bucket {
+        final List&lt;Bandwidth&gt; bandwidths;
+        Bucket(List&lt;Bandwidth&gt; bandwidths) { this.bandwidths = bandwidths; }
+
+        // Level 2: every bandwidth must have capacity, or the whole request is rejected.
+        synchronized boolean tryConsume(int tokens, long nowMillis) {
+            for (Bandwidth b : bandwidths) {
+                if (!b.tryConsume(tokens, nowMillis)) return false;
+            }
+            return true;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException, ExecutionException {
+        long now = System.currentTimeMillis();
+        // Level 1 &amp; 2: burst bandwidth (5 tokens / 1000ms) + sustained bandwidth (8 tokens / 5000ms)
+        Bandwidth burst = new Bandwidth(5, 5, 1000, now);
+        Bandwidth sustained = new Bandwidth(8, 8, 5000, now);
+        Bucket bucket = new Bucket(List.of(burst, sustained));
+
+        // Level 3: 10 concurrent requests from 4 threads, same bucket - result must still respect BOTH limits.
+        ExecutorService pool = Executors.newFixedThreadPool(4);
+        AtomicInteger allowed = new AtomicInteger(0);
+        List&lt;Future&lt;?&gt;&gt; futures = new ArrayList&lt;&gt;();
+        for (int i = 0; i &lt; 10; i++) {
+            futures.add(pool.submit(() -&gt; {
+                if (bucket.tryConsume(1, System.currentTimeMillis())) allowed.incrementAndGet();
+            }));
+        }
+        for (Future&lt;?&gt; f : futures) f.get();
+        pool.shutdown();
+
+        System.out.println(&quot;allowed out of 10 concurrent requests: &quot; + allowed.get() + &quot; (burst bandwidth capped it at 5)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>Bucket4jDemo.java</code>, then run <code>java Bucket4jDemo.java</code>. (Real Bucket4j: add the <code>com.bucket4j:bucket4j-core</code> dependency, then <code>Bucket bucket = Bucket.builder().addLimit(Bandwidth.classic(5, Refill.intervally(5, Duration.ofSeconds(1)))).addLimit(Bandwidth.classic(8, Refill.intervally(8, Duration.ofSeconds(5)))).build();</code> and call <code>bucket.tryConsume(1)</code> per request.)</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The <code>Bucket</code> is built with two <code>Bandwidth</code> rules: a <code>burst</code> bandwidth (5 tokens, refilling over 1000ms) and a <code>sustained</code> bandwidth (8 tokens, refilling over 5000ms) — both start full.</li><li>10 requests are submitted concurrently across 4 threads; each calls <code>bucket.tryConsume(1, ...)</code>, which is <code>synchronized</code>, so only one thread&#x27;s check-and-decrement runs at a time against both bandwidths — the same atomicity real Bucket4j guarantees internally.</li><li>Inside <code>Bucket.tryConsume</code>, the loop checks <code>burst.tryConsume(1, ...)</code> first; since almost no time passes during the test, <code>burst</code>&#x27;s <code>available</code> drops from 5 straight to 0 across the first 5 successful calls.</li><li>The 6th call finds <code>burst.available &lt; 1</code> (its refill is negligible in this short a time), so <code>burst.tryConsume</code> returns <code>false</code>, and <code>Bucket.tryConsume</code> returns <code>false</code> immediately — it never even checks <code>sustained</code>, because Bucket4j-style bandwidths are evaluated in order and any failing bandwidth rejects the whole request.</li><li>The final count confirms exactly 5 of the 10 concurrent requests were allowed — bound by the tighter <code>burst</code> bandwidth, not the looser <code>sustained</code> one — demonstrating that a request must satisfy every configured bandwidth, and that the result stays correct even under real concurrent access from multiple threads.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: adding bandwidths that do not actually make sense together (e.g. a sustained limit numerically smaller than the burst limit&#x27;s own capacity) means the sustained bandwidth becomes the *de facto* only limit, since it will always exhaust first — check that your bandwidths are ordered from tightest-and-shortest to loosest-and-longest, matching their intended purpose (burst control vs. sustained-abuse control).</blockquote>
+<ul><li>Bucket4j gives you the token bucket algorithm with production-grade thread safety, instead of a hand-rolled implementation that is easy to get subtly wrong under concurrency.</li><li>Combining multiple bandwidths on one bucket lets you enforce a burst limit and a sustained limit simultaneously, with a single <code>tryConsume</code> call.</li><li>Its distributed mode (Redis/Hazelcast-backed) extends the same correctness guarantee across a fleet of servers.</li><li>Related concepts: <a href="0143-token-bucket.md">Token bucket</a> (the algorithm Bucket4j implements), <a href="0147-centralized-counter-redis-rate-limiting.md">Centralized counter (Redis) rate limiting</a> (the same fleet-wide correctness goal, achieved with raw Redis commands), <a href="0151-spring-cloud-gateway-requestratelimiter-redis.md">Spring Cloud Gateway RequestRateLimiter (Redis)</a> (rate limiting applied at the API gateway layer instead of inside each service).</li></ul>
+  <div class="nav"><a class="prv" href="0149-rate-limit-response-headers-429-handling.html"><span class="mini">← Previous</span>Rate-limit response headers & 429 handling</a><a class="nxt" href="0151-spring-cloud-gateway-requestratelimiter-redis.html"><span class="mini">Next →</span>Spring Cloud Gateway RequestRateLimiter (Redis)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t150";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

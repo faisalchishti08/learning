@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Per-user vs global quotas — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 12. Rate Limiting & Throttling</div>
+  <div class="htitle">
+    <h1>Per-user vs global quotas</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>per-user quota</strong> limits how many requests one individual client (a user ID, an API key, or an IP address) can make. A <strong>global quota</strong> limits the total number of requests the whole service accepts, summed across every client. Both use the same underlying algorithms — <a href="0143-token-bucket.md">token bucket</a>, <a href="0145-fixed-window-counter.md">fixed window</a>, and so on — but they differ in what the counter is keyed by: one key per client, versus one single key for everyone.</p>
+<h2>2. Why &amp; when</h2>
+<p>These two quota types protect against different problems. A per-user quota stops one client from monopolizing the service or abusing an API, while letting every other client operate normally. A global quota protects the service itself (or a shared downstream dependency, such as a third-party API with a total account-wide limit) from being overwhelmed, no matter which clients the load comes from. Most production systems need both at once: a per-user quota for fairness and abuse prevention, and a global quota as a hard ceiling that protects the system even if many different users, none individually abusive, happen to spike traffic together.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Per-user key:</strong> the rate-limit counter&#x27;s key includes the client identity, e.g. <code>ratelimit:user-42:window-X</code>; each client gets an independent bucket or counter.</li><li><strong>Global key:</strong> a single fixed key, e.g. <code>ratelimit:global:window-X</code>, shared by every request regardless of who sent it.</li><li><strong>Layered quotas:</strong> many systems check the per-user quota first, then the global quota, and reject the request if either one is exceeded — a request must pass both checks to proceed.</li><li><strong>Different limits, different purposes:</strong> a per-user limit is usually about fairness (&quot;no single user gets more than their fair share&quot;); a global limit is usually about capacity (&quot;the system as a whole cannot exceed what it can safely handle&quot;).</li><li><strong>Tiered per-user quotas:</strong> many APIs vary the per-user limit itself by plan or tier (e.g. free tier gets 100 requests/hour, paid tier gets 10,000/hour), still checked against the same global ceiling underneath.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   request from user-A  ---&gt; check per-user quota (user-A&#x27;s own bucket)
+                                     |
+                                allowed? --- no --&gt; REJECT (429, user-A over their limit)
+                                     |
+                                    yes
+                                     |
+                                     v
+                        check global quota (one shared bucket, ALL users)
+                                     |
+                                allowed? --- no --&gt; REJECT (429, system-wide capacity reached)
+                                     |
+                                    yes
+                                     v
+                              request proceeds</code></pre>
+<p>*Caption: a request must pass the per-user check and the global check, in order, before it is allowed through.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Independent per-user counters, one bucket per client.</p>
+<p><strong>Level 2 — Add a global counter.</strong> A single shared bucket that every request also has to pass, on top of its own per-user bucket.</p>
+<p><strong>Level 3 — Layered check.</strong> Combine both checks in the correct order, and show one user being blocked by their own limit while another is blocked by the global ceiling.</p>
+<pre><code class="lang-java">// QuotaDemo.java
+import java.util.*;
+
+public class QuotaDemo {
+
+    // A simple fixed counter with a limit - reused for both per-user and global quotas.
+    static class SimpleCounter {
+        final int limit;
+        int count = 0;
+        SimpleCounter(int limit) { this.limit = limit; }
+        boolean tryConsume() {
+            if (count &gt;= limit) return false;
+            count++;
+            return true;
+        }
+    }
+
+    static class QuotaChecker {
+        final Map&lt;String, SimpleCounter&gt; perUserCounters = new HashMap&lt;&gt;();
+        final int perUserLimit;
+        final SimpleCounter globalCounter; // Level 2: one shared counter for everyone
+
+        QuotaChecker(int perUserLimit, int globalLimit) {
+            this.perUserLimit = perUserLimit;
+            this.globalCounter = new SimpleCounter(globalLimit);
+        }
+
+        // Level 3: check per-user first, then global, in that order.
+        String checkRequest(String userId) {
+            SimpleCounter userCounter = perUserCounters.computeIfAbsent(userId, k -&gt; new SimpleCounter(perUserLimit));
+            if (!userCounter.tryConsume()) {
+                return &quot;REJECTED (429: &quot; + userId + &quot; exceeded their per-user quota of &quot; + perUserLimit + &quot;)&quot;;
+            }
+            if (!globalCounter.tryConsume()) {
+                return &quot;REJECTED (429: global quota of &quot; + globalCounter.limit + &quot; reached)&quot;;
+            }
+            return &quot;ALLOWED&quot;;
+        }
+    }
+
+    public static void main(String[] args) {
+        // per-user limit 3, global limit 5 (deliberately tighter than 2 users * 3 each = 6)
+        QuotaChecker checker = new QuotaChecker(3, 5);
+
+        // user-A sends 4 requests - the 4th should hit their OWN per-user limit.
+        for (int i = 1; i &lt;= 4; i++) {
+            System.out.println(&quot;user-A request &quot; + i + &quot;: &quot; + checker.checkRequest(&quot;user-A&quot;));
+        }
+        // user-B sends 3 requests - within their own limit, but the global bucket is nearly empty by now.
+        for (int i = 1; i &lt;= 3; i++) {
+            System.out.println(&quot;user-B request &quot; + i + &quot;: &quot; + checker.checkRequest(&quot;user-B&quot;));
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>QuotaDemo.java</code>, then run <code>java QuotaDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>user-A</code>&#x27;s first 3 requests each call <code>checkRequest</code>, which finds (or creates) <code>user-A</code>&#x27;s own <code>SimpleCounter(3)</code>; each passes the per-user check, then the shared <code>globalCounter.tryConsume()</code>, bringing the global count from 0 to 3.</li><li><code>user-A</code>&#x27;s 4th request calls <code>userCounter.tryConsume()</code> on their own counter, which is already at <code>count = 3 == limit</code>, so it returns <code>false</code> immediately — the method returns the per-user rejection message without ever touching <code>globalCounter</code>.</li><li><code>user-B</code>&#x27;s first request creates their own separate <code>SimpleCounter(3)</code> (starting at 0, independent of <code>user-A</code>&#x27;s counter), passes their per-user check, then calls <code>globalCounter.tryConsume()</code>, which brings the global count from 3 to 4 — still under the global limit of 5, so it is allowed.</li><li><code>user-B</code>&#x27;s second request passes their own per-user check (now at 2 of 3) and pushes the global counter to 5, exactly at its limit — still allowed, since the check is <code>count &gt;= limit</code>, not <code>count &gt; limit</code>.</li><li><code>user-B</code>&#x27;s third request passes their own per-user check easily (they are only at 2 of 3), but <code>globalCounter.tryConsume()</code> now finds <code>count = 5 &gt;= limit = 5</code> and returns <code>false</code> — this request is rejected by the *global* quota, not <code>user-B</code>&#x27;s own quota, showing the two limits are independent failure modes that a client-facing error message should distinguish.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: checking the global quota *before* the per-user quota lets one heavy user&#x27;s requests consume shared global capacity even while being rejected for their own separate violation somewhere else in the check order — always check the cheaper, more specific (per-user) limit first, so a request that is going to be rejected anyway does not also waste global capacity.</blockquote>
+<ul><li>Per-user and global quotas answer different questions: &quot;is this one client being fair?&quot; versus &quot;can the system handle the combined load right now?&quot;</li><li>A request commonly must pass both checks, per-user first, to avoid wasting shared capacity on requests that were going to be rejected anyway.</li><li>Tiered per-user limits (by plan or role) sit on top of this same mechanism — only the per-user limit value changes, not the underlying algorithm.</li><li>Related concepts: <a href="0147-centralized-counter-redis-rate-limiting.md">Centralized counter (Redis) rate limiting</a> (where these counters live across a fleet of servers), <a href="0149-rate-limit-response-headers-429-handling.md">Rate-limit response headers &amp; 429 handling</a> (telling the caller which quota they hit), <a href="0143-token-bucket.md">Token bucket</a> (a richer algorithm either quota type can be built on).</li></ul>
+  <div class="nav"><a class="prv" href="0147-centralized-counter-redis-rate-limiting.html"><span class="mini">← Previous</span>Centralized counter (Redis) rate limiting</a><a class="nxt" href="0149-rate-limit-response-headers-429-handling.html"><span class="mini">Next →</span>Rate-limit response headers & 429 handling</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t148";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

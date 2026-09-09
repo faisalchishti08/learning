@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sliding-window log & sliding-window counter — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 12. Rate Limiting & Throttling</div>
+  <div class="htitle">
+    <h1>Sliding-window log & sliding-window counter</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>sliding-window log</strong> rate limiter stores the exact timestamp of every request a client made, and counts how many of those timestamps fall within the last window duration (e.g. the last 60 seconds), measured from right now, not from a fixed clock boundary. A <strong>sliding-window counter</strong> is a cheaper approximation: it keeps two fixed-window counters (the current one and the previous one) and blends them, weighted by how far into the current window &quot;now&quot; is. Both fix the boundary-burst problem of the plain <a href="0145-fixed-window-counter.md">fixed-window counter</a>.</p>
+<h2>2. Why &amp; when</h2>
+<p>The fixed-window counter can let a client send up to double its limit by timing requests around a window edge, because the window boundary is fixed by the clock, not by the client&#x27;s actual request history. A sliding window instead always looks back exactly one window duration from the current moment, so there is no fixed edge to exploit. Use the exact log when you need precise enforcement and can afford to store per-request timestamps (or use it for a low-traffic, high-value limiter); use the counter approximation when you need something cheap and close enough, especially at high request volume where storing every timestamp would be wasteful.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Sliding-window log — store timestamps:</strong> on each request, append the current timestamp to a per-client list (or sorted structure), then remove any timestamps older than <code>now - windowSize</code>.</li><li><strong>Sliding-window log — count and compare:</strong> if the remaining count of timestamps is at or above the limit, reject the request; otherwise allow it and keep the new timestamp.</li><li><strong>Sliding-window log — cost:</strong> this is exact, but memory grows with the number of requests within a window, and every check must prune old entries.</li><li><strong>Sliding-window counter — two buckets:</strong> keep a counter for the current fixed window and the immediately previous one.</li><li><strong>Sliding-window counter — weighted estimate:</strong> estimate the count in the trailing window as <code>previousWindowCount * (1 - elapsedFractionOfCurrentWindow) + currentWindowCount</code>, which approximates how many of the previous window&#x27;s requests would still count if you slid the window back exactly one duration.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   now = 90s, window = 60s -&gt; sliding window covers [30s, 90s]
+
+   fixed windows:     [0s -------- 60s][60s -------- 120s]
+                             prev              current
+                          count = 80          count = 20
+                                  ^
+                      &quot;now&quot; is 30s into the current window (30/60 = 50%)
+
+   sliding estimate = prev * (1 - 0.5) + current
+                     = 80 * 0.5 + 20
+                     = 60   &lt;- close to the true count of requests in [30s, 90s]</code></pre>
+<p>*Caption: the counter version blends a fraction of the previous fixed window with all of the current one, approximating the exact log without storing every timestamp.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Sliding-window log: store timestamps, prune old ones, and compare against the limit.</p>
+<p><strong>Level 2 — Sliding-window counter.</strong> Approximate the same behavior using only two integer counters instead of a growing list.</p>
+<p><strong>Level 3 — Compare both against the fixed-window boundary-burst scenario.</strong> Show that both correctly reject the burst that a fixed window would have allowed.</p>
+<pre><code class="lang-java">// SlidingWindowDemo.java
+import java.util.*;
+
+public class SlidingWindowDemo {
+
+    // Level 1: exact sliding-window log.
+    static class SlidingWindowLog {
+        final int limit;
+        final long windowMillis;
+        final Deque&lt;Long&gt; timestamps = new ArrayDeque&lt;&gt;();
+
+        SlidingWindowLog(int limit, long windowMillis) {
+            this.limit = limit;
+            this.windowMillis = windowMillis;
+        }
+
+        boolean allow(long now) {
+            while (!timestamps.isEmpty() &amp;&amp; timestamps.peekFirst() &lt;= now - windowMillis) {
+                timestamps.removeFirst(); // prune anything outside the trailing window
+            }
+            if (timestamps.size() &gt;= limit) {
+                return false;
+            }
+            timestamps.addLast(now);
+            return true;
+        }
+    }
+
+    // Level 2: approximate sliding-window counter using two fixed windows.
+    static class SlidingWindowCounter {
+        final int limit;
+        final long windowMillis;
+        long previousWindowStart = -1, currentWindowStart = -1;
+        int previousCount = 0, currentCount = 0;
+
+        SlidingWindowCounter(int limit, long windowMillis) {
+            this.limit = limit;
+            this.windowMillis = windowMillis;
+        }
+
+        boolean allow(long now) {
+            long windowStart = (now / windowMillis) * windowMillis;
+            if (windowStart != currentWindowStart) {
+                previousWindowStart = currentWindowStart;
+                previousCount = (windowStart - currentWindowStart == windowMillis) ? currentCount : 0;
+                currentWindowStart = windowStart;
+                currentCount = 0;
+            }
+            double elapsedFraction = (now - currentWindowStart) / (double) windowMillis;
+            double estimate = previousCount * (1 - elapsedFraction) + currentCount;
+            if (estimate &gt;= limit) {
+                return false;
+            }
+            currentCount++;
+            return true;
+        }
+    }
+
+    public static void main(String[] args) {
+        // Level 3: reproduce the fixed-window boundary-burst scenario (limit 3 per 1000ms).
+        System.out.println(&quot;-- sliding-window log --&quot;);
+        SlidingWindowLog log = new SlidingWindowLog(3, 1000);
+        long[] burst = {900, 950, 990, 1005, 1020, 1050};
+        for (long t : burst) System.out.println(&quot;t=&quot; + t + &quot;ms: &quot; + (log.allow(t) ? &quot;ALLOWED&quot; : &quot;REJECTED&quot;));
+
+        System.out.println(&quot;-- sliding-window counter --&quot;);
+        SlidingWindowCounter counter = new SlidingWindowCounter(3, 1000);
+        for (long t : burst) System.out.println(&quot;t=&quot; + t + &quot;ms: &quot; + (counter.allow(t) ? &quot;ALLOWED&quot; : &quot;REJECTED&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>SlidingWindowDemo.java</code>, then run <code>java SlidingWindowDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>In <code>SlidingWindowLog</code>, requests at <code>t=900</code>, <code>950</code>, <code>990</code> each call <code>allow</code>; the pruning <code>while</code> loop finds nothing older than <code>now - 1000</code> yet, so all three are added to <code>timestamps</code>, growing it to size 3, and all are allowed.</li><li>At <code>t=1005</code>, <code>allow</code> prunes any timestamp <code>&lt;= 1005 - 1000 = 5</code>; none qualify (900, 950, 990 are all greater than 5), so <code>timestamps.size()</code> is still 3, which is <code>&gt;= limit</code>, and the request is correctly rejected — unlike the fixed-window version, the log looks back a full 1000ms from <code>now</code>, not from a fixed clock boundary, so it still &quot;sees&quot; the earlier burst.</li><li><code>t=1020</code> and <code>t=1050</code> are rejected the same way, since the earlier timestamps still fall within their respective trailing windows.</li><li>In <code>SlidingWindowCounter</code>, the first window change happens at <code>t=1005</code> (crossing from <code>windowStart=0</code> to <code>windowStart=1000</code>); <code>previousCount</code> is set to the prior <code>currentCount</code> (3, since all of 900/950/990 landed in window <code>[0,1000)</code>), and <code>currentCount</code> resets to 0.</li><li>At <code>t=1005</code>, <code>elapsedFraction = (1005 - 1000) / 1000 = 0.005</code>, so <code>estimate = 3 * (1 - 0.005) + 0 ≈ 2.985</code>, which is just under the limit of 3 — this one request is actually allowed by the approximation, showing it is a close but not perfectly exact match to the log; by <code>t=1020</code> and <code>t=1050</code>, <code>currentCount</code> has risen enough that <code>estimate</code> clears the limit and both are rejected, matching the exact log&#x27;s outcome for those two.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a sliding-window log&#x27;s memory use grows with request volume inside the window — a client sending thousands of requests per second needs thousands of stored timestamps per window, per client, which does not scale cheaply. The sliding-window counter avoids this by using only two integers, at the cost of being an approximation rather than an exact count.</blockquote>
+<ul><li>Both sliding-window approaches fix the fixed window&#x27;s boundary-burst weakness by always looking back exactly one window duration from now, not from a fixed clock edge.</li><li>The log is exact but memory-heavy; the counter is an approximation but needs only two integers per client.</li><li>The counter&#x27;s estimate can very slightly over- or under-count near a window boundary, which is an acceptable tradeoff for most rate-limiting use cases.</li><li>Related concepts: <a href="0145-fixed-window-counter.md">Fixed-window counter</a> (the simpler, boundary-vulnerable baseline), <a href="0147-centralized-counter-redis-rate-limiting.md">Centralized counter (Redis) rate limiting</a> (where these counters actually live in a distributed system), <a href="0143-token-bucket.md">Token bucket</a> (an alternative that allows bursts by design).</li></ul>
+  <div class="nav"><a class="prv" href="0145-fixed-window-counter.html"><span class="mini">← Previous</span>Fixed-window counter</a><a class="nxt" href="0147-centralized-counter-redis-rate-limiting.html"><span class="mini">Next →</span>Centralized counter (Redis) rate limiting</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t146";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
