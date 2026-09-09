@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Distributed file systems (HDFS/GFS) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 13. Storage Systems</div>
+  <div class="htitle">
+    <h1>Distributed file systems (HDFS/GFS)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>distributed file system</strong>, such as the Hadoop Distributed File System (HDFS) or Google&#x27;s original GFS design it was based on, stores enormous files by splitting each one into large fixed-size chunks (e.g. 128 MB blocks in HDFS) and spreading those chunks across many machines. A single <strong>NameNode</strong> (metadata server) tracks which machines hold which chunks of which file, while the actual chunk data lives on many <strong>DataNodes</strong>. This lets one logical file be far larger than any single disk, and lets many machines read different parts of it in parallel.</p>
+<h2>2. Why &amp; when</h2>
+<p>A file too large to fit on one machine — think many terabytes of log data or a huge dataset for batch analytics — must be split across many machines&#x27; disks, and something must track where every piece went. A distributed file system solves exactly this, and adds automatic replication of each chunk (typically 3 copies, on different machines) so a single disk or server failure does not lose any data. Use it for very large files that need to be processed by many worker machines in parallel, such as the input to a big-data batch job — this is a very different problem from a <a href="0154-file-network-file-systems.md">network file system</a> sharing modest-sized files among a handful of servers.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>NameNode (metadata server):</strong> holds the mapping from file paths to the list of chunk IDs that make up each file, and which DataNodes currently hold each chunk — this is the single source of truth for &quot;where is my data.&quot;</li><li><strong>DataNodes:</strong> the many machines that actually store chunk data on their local disks, and serve read/write requests for the chunks they hold.</li><li><strong>Large, fixed-size chunks:</strong> files are split into large blocks (128 MB is HDFS&#x27;s classic default) — large enough that the overhead of tracking each chunk&#x27;s metadata stays small relative to the data it represents.</li><li><strong>Replication for durability:</strong> each chunk is stored on multiple DataNodes (commonly 3); if one DataNode fails, the NameNode still knows two other machines hold that same chunk, and a new copy is made elsewhere to restore the replication factor.</li><li><strong>Write-once, append-friendly:</strong> many distributed file systems (HDFS included) are optimized for writing a file once (or appending to it) and reading it many times, rather than for frequent random modification of existing bytes.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>                       NameNode (metadata only)
+                       file &quot;bigdata.log&quot; -&gt; chunks [c1, c2, c3]
+                       c1 -&gt; DataNode-A, DataNode-B, DataNode-C
+                       c2 -&gt; DataNode-B, DataNode-C, DataNode-D
+                       c3 -&gt; DataNode-A, DataNode-C, DataNode-D
+                              |
+              client asks NameNode: &quot;where is bigdata.log?&quot;
+                              |
+              NameNode replies: chunk locations (above)
+                              |
+              client reads/writes chunks DIRECTLY from/to the DataNodes
+   DataNode-A   DataNode-B   DataNode-C   DataNode-D
+     [c1,c3]      [c1,c2]     [c1,c2,c3]    [c2,c3]</code></pre>
+<p>*Caption: the NameNode only tracks metadata; the actual chunk data transfer happens directly between the client and the DataNodes, and every chunk lives on several DataNodes for durability.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Split a file into fixed-size chunks and record which chunks make it up.</p>
+<p><strong>Level 2 — Replicate each chunk across multiple DataNodes.</strong> Track multiple copies per chunk, the way real HDFS does.</p>
+<p><strong>Level 3 — Handle a DataNode failure.</strong> Detect that a DataNode went down and re-replicate its chunks elsewhere to restore the replication factor.</p>
+<pre><code class="lang-java">// DistributedFileSystemDemo.java
+import java.util.*;
+
+public class DistributedFileSystemDemo {
+
+    // Level 1: the NameNode - metadata only, no actual chunk data.
+    static class NameNode {
+        final Map&lt;String, List&lt;String&gt;&gt; fileToChunkIds = new HashMap&lt;&gt;();
+        final Map&lt;String, List&lt;String&gt;&gt; chunkToDataNodes = new HashMap&lt;&gt;(); // Level 2: replication
+
+        void registerFile(String path, List&lt;String&gt; chunkIds, List&lt;List&lt;String&gt;&gt; replicaSets) {
+            fileToChunkIds.put(path, chunkIds);
+            for (int i = 0; i &lt; chunkIds.size(); i++) {
+                chunkToDataNodes.put(chunkIds.get(i), new ArrayList&lt;&gt;(replicaSets.get(i)));
+            }
+        }
+
+        List&lt;String&gt; chunksFor(String path) { return fileToChunkIds.get(path); }
+        List&lt;String&gt; dataNodesFor(String chunkId) { return chunkToDataNodes.get(chunkId); }
+
+        // Level 3: replace a failed DataNode with a new replica location for every chunk it held.
+        void handleDataNodeFailure(String failedNode, String replacementNode) {
+            for (Map.Entry&lt;String, List&lt;String&gt;&gt; entry : chunkToDataNodes.entrySet()) {
+                List&lt;String&gt; nodes = entry.getValue();
+                if (nodes.remove(failedNode)) {
+                    nodes.add(replacementNode);
+                    System.out.println(&quot;  re-replicated chunk &quot; + entry.getKey() + &quot;: &quot; + failedNode + &quot; -&gt; &quot; + replacementNode);
+                }
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        NameNode nameNode = new NameNode();
+
+        // Level 1 &amp; 2: &quot;bigdata.log&quot; split into 3 chunks, each replicated onto 3 DataNodes.
+        nameNode.registerFile(&quot;bigdata.log&quot;,
+            List.of(&quot;c1&quot;, &quot;c2&quot;, &quot;c3&quot;),
+            List.of(
+                List.of(&quot;DataNode-A&quot;, &quot;DataNode-B&quot;, &quot;DataNode-C&quot;),
+                List.of(&quot;DataNode-B&quot;, &quot;DataNode-C&quot;, &quot;DataNode-D&quot;),
+                List.of(&quot;DataNode-A&quot;, &quot;DataNode-C&quot;, &quot;DataNode-D&quot;)
+            ));
+
+        System.out.println(&quot;chunks for bigdata.log: &quot; + nameNode.chunksFor(&quot;bigdata.log&quot;));
+        for (String chunkId : nameNode.chunksFor(&quot;bigdata.log&quot;)) {
+            System.out.println(&quot;  &quot; + chunkId + &quot; -&gt; &quot; + nameNode.dataNodesFor(chunkId));
+        }
+
+        // Level 3: DataNode-C fails - it held a replica of EVERY chunk in this example.
+        System.out.println(&quot;DataNode-C failed! Re-replicating its chunks onto DataNode-E...&quot;);
+        nameNode.handleDataNodeFailure(&quot;DataNode-C&quot;, &quot;DataNode-E&quot;);
+
+        System.out.println(&quot;chunk locations after recovery:&quot;);
+        for (String chunkId : nameNode.chunksFor(&quot;bigdata.log&quot;)) {
+            System.out.println(&quot;  &quot; + chunkId + &quot; -&gt; &quot; + nameNode.dataNodesFor(chunkId));
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>DistributedFileSystemDemo.java</code>, then run <code>java DistributedFileSystemDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>nameNode.registerFile</code> records that <code>bigdata.log</code> consists of chunks <code>c1</code>, <code>c2</code>, <code>c3</code>, and separately records which three DataNodes hold a replica of each chunk — this is the entirety of what the NameNode stores; no actual file bytes ever touch it.</li><li>The first loop prints each chunk&#x27;s DataNode list, showing <code>c1</code> on <code>A/B/C</code>, <code>c2</code> on <code>B/C/D</code>, and <code>c3</code> on <code>A/C/D</code> — notice <code>DataNode-C</code> happens to hold a replica of every single chunk in this small example.</li><li><code>nameNode.handleDataNodeFailure(&quot;DataNode-C&quot;, &quot;DataNode-E&quot;)</code> iterates every chunk&#x27;s replica list; <code>nodes.remove(&quot;DataNode-C&quot;)</code> succeeds for all three chunks (since it held a replica of each), so all three trigger the re-replication branch, adding <code>DataNode-E</code> in its place and printing a message per chunk.</li><li>The final loop re-prints each chunk&#x27;s DataNode list; every occurrence of <code>DataNode-C</code> has been replaced with <code>DataNode-E</code>, while the other original DataNodes for each chunk (e.g. <code>A</code> and <code>B</code> for <code>c1</code>) are untouched.</li><li>At no point did any chunk drop below its intended replication factor of three — the NameNode detected the loss of one replica per chunk and immediately restored it, which is exactly the automated durability guarantee a real HDFS cluster provides when a DataNode actually fails.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: the NameNode is a single, central point holding all the file-to-chunk metadata; if it goes down (or its metadata is lost) with no backup, the cluster has no way to find any chunk anywhere, even though the chunk data itself is still sitting untouched on all the DataNodes. Production HDFS deployments run a standby NameNode with synchronized metadata specifically to avoid this single point of failure.</blockquote>
+<ul><li>A distributed file system splits huge files into large chunks, spread and replicated across many machines, so one logical file can exceed any single disk&#x27;s capacity.</li><li>The metadata server (NameNode) only tracks *where* chunks are; the actual chunk data transfer happens directly between clients and DataNodes.</li><li>Replication (typically a factor of three) means a lost DataNode triggers automatic re-replication elsewhere, not data loss.</li><li>Related concepts: <a href="0154-file-network-file-systems.md">File / network file systems</a> (a much smaller-scale, single-server-metadata alternative), <a href="0130-redundancy-replication.md">Redundancy &amp; replication</a> (the general pattern this durability model is built on), <a href="0158-erasure-coding-vs-replication-for-durability.md">Erasure coding vs replication for durability</a> (a storage-efficient alternative to full replica copies).</li></ul>
+  <div class="nav"><a class="prv" href="0154-file-network-file-systems.html"><span class="mini">← Previous</span>File / network file systems</a><a class="nxt" href="0156-data-lake-vs-data-warehouse.html"><span class="mini">Next →</span>Data lake vs data warehouse</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t155";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

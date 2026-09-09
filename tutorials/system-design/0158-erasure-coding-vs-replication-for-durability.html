@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Erasure coding vs replication for durability — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 13. Storage Systems</div>
+  <div class="htitle">
+    <h1>Erasure coding vs replication for durability</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Replication</strong> protects data by keeping several full copies on different machines — if one fails, another complete copy is still available. <strong>Erasure coding</strong> protects data by splitting it into data fragments plus extra parity (redundancy) fragments, spread across different machines, such that the original data can be fully reconstructed even if some fragments are lost — without needing a full extra copy of everything. Both survive hardware failure; they differ in how much extra storage that safety costs.</p>
+<h2>2. Why &amp; when</h2>
+<p>Storing three full replicas of every byte (a common replication factor) means using three times the raw storage of the actual data — a real cost at scale. Erasure coding can provide similar (or better) durability while using far less extra storage — for example, splitting data into 6 data fragments plus 3 parity fragments needs only 1.5x the storage instead of 3x, while still surviving the loss of any 3 fragments. The tradeoff is that reconstructing data from surviving fragments takes computation (recomputing missing pieces), which replication does not require — you just read a whole, undamaged copy. Use replication when you need the fastest possible recovery and read latency (a hot, actively-used database); use erasure coding for large, less frequently accessed data where storage cost matters more than instant read speed, such as archival or cold-tier object storage.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Replication factor:</strong> the number of full copies kept (commonly 3); storage overhead is <code>(replication factor) x (data size)</code>.</li><li><strong>Erasure coding scheme, &quot;k data + m parity&quot;:</strong> data is split into <code>k</code> fragments, and <code>m</code> additional parity fragments are computed from them; the original data can be reconstructed from any <code>k</code> of the total <code>k+m</code> fragments — surviving the loss of up to <code>m</code> fragments.</li><li><strong>Storage overhead comparison:</strong> a 6-data + 3-parity scheme needs <code>9/6 = 1.5x</code> storage for the same durability profile that 3x replication needs 3x storage for — a substantial saving at scale.</li><li><strong>Reconstruction cost:</strong> rebuilding a lost fragment (or the original data) from parity requires a computation (similar to how RAID parity works), which takes CPU time and is slower than simply reading an intact replica.</li><li><strong>Where each fits:</strong> replication favors read speed and simple recovery; erasure coding favors storage efficiency at the cost of reconstruction complexity and (usually) higher latency on the reconstruction path.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   REPLICATION (factor 3):                 ERASURE CODING (4 data + 2 parity):
+   [ full copy A ]                          [d1][d2][d3][d4][p1][p2]
+   [ full copy B ]   3x storage              6 fragments total, 4x data size
+   [ full copy C ]                           2.0x storage: any 4 of 6 rebuild the data
+
+   lose copy A:                              lose d2 and p1:
+   read from B or C directly                 reconstruct d2 from d1,d3,d4,p2
+   (instant, no computation)                 (needs a parity computation first)</code></pre>
+<p>*Caption: replication keeps whole extra copies for instant recovery; erasure coding keeps cheaper parity fragments that need a computation to rebuild lost data.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Model plain replication: multiple full copies, instant recovery from any surviving one.</p>
+<p><strong>Level 2 — Erasure coding with simple parity.</strong> Split data into fragments plus one XOR-based parity fragment, and reconstruct a lost fragment from the survivors.</p>
+<p><strong>Level 3 — Compare storage overhead directly.</strong> Compute and print the actual storage multiplier for each approach on the same data size.</p>
+<pre><code class="lang-java">// DurabilityDemo.java
+import java.util.*;
+
+public class DurabilityDemo {
+
+    // Level 1: replication - N full copies; losing any (N-1) of them still leaves one intact copy.
+    static void demonstrateReplication(byte[] data) {
+        byte[][] replicas = { data.clone(), data.clone(), data.clone() }; // replication factor 3
+        replicas[0] = null; // simulate losing copy A
+        byte[] recovered = replicas[1] != null ? replicas[1] : replicas[2]; // instant - just read a survivor
+        System.out.println(&quot;replication: lost 1 of 3 copies, recovered instantly from a surviving copy: &quot; + new String(recovered));
+    }
+
+    // Level 2: erasure coding - split into fragments + one XOR parity fragment; rebuild a lost fragment.
+    static void demonstrateErasureCoding(byte[] data) {
+        int fragmentSize = data.length / 2;
+        byte[] d1 = Arrays.copyOfRange(data, 0, fragmentSize);
+        byte[] d2 = Arrays.copyOfRange(data, fragmentSize, data.length);
+        byte[] parity = new byte[fragmentSize];
+        for (int i = 0; i &lt; fragmentSize; i++) parity[i] = (byte) (d1[i] ^ d2[i]); // parity = d1 XOR d2
+
+        System.out.println(&quot;erasure coding: 2 data fragments + 1 parity fragment computed.&quot;);
+
+        // Simulate losing fragment d2 - reconstruct it from d1 and parity (a real computation, not a plain read).
+        byte[] reconstructedD2 = new byte[fragmentSize];
+        for (int i = 0; i &lt; fragmentSize; i++) reconstructedD2[i] = (byte) (d1[i] ^ parity[i]); // d2 = d1 XOR parity
+        boolean matches = Arrays.equals(reconstructedD2, d2);
+        System.out.println(&quot;lost fragment d2, reconstructed from d1+parity via XOR: matches original = &quot; + matches);
+        System.out.println(&quot;reconstructed d2 contents: &quot; + new String(reconstructedD2));
+    }
+
+    // Level 3: compare the real storage overhead of each approach.
+    static void compareStorageOverhead(int dataBytes) {
+        int replicationTotal = dataBytes * 3; // factor of 3
+        int erasureTotalFor6Plus3 = (dataBytes / 6) * 9; // 6 data + 3 parity fragments
+        System.out.println(&quot;for &quot; + dataBytes + &quot; bytes of data:&quot;);
+        System.out.println(&quot;  replication (factor 3): &quot; + replicationTotal + &quot; bytes stored (3.0x overhead)&quot;);
+        System.out.println(&quot;  erasure coding (6+3):    &quot; + erasureTotalFor6Plus3 + &quot; bytes stored (1.5x overhead)&quot;);
+    }
+
+    public static void main(String[] args) {
+        byte[] data = &quot;IMPORTANT-FILE-DATA&quot;.getBytes(); // 20 bytes, even length for simplicity
+        demonstrateReplication(data);
+        demonstrateErasureCoding(data);
+        compareStorageOverhead(600_000);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>DurabilityDemo.java</code>, then run <code>java DurabilityDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>demonstrateReplication</code> creates three identical clones of <code>data</code>, then sets <code>replicas[0] = null</code> to simulate a lost copy; recovery is simply <code>replicas[1] != null ? replicas[1] : replicas[2]</code> — a plain read of whichever surviving copy comes first, with no computation involved at all.</li><li><code>demonstrateErasureCoding</code> splits <code>data</code> into two equal halves, <code>d1</code> and <code>d2</code>, then computes <code>parity[i] = d1[i] ^ d2[i]</code> for every byte — this is the simplest possible erasure code, using the XOR operation&#x27;s property that <code>a ^ b ^ a = b</code>.</li><li>The demo simulates losing <code>d2</code> entirely and reconstructs it using only <code>d1</code> and <code>parity</code>: <code>reconstructedD2[i] = d1[i] ^ parity[i]</code>, which algebraically recovers the original <code>d2[i]</code> because <code>d1[i] ^ (d1[i] ^ d2[i]) = d2[i]</code>.</li><li><code>Arrays.equals(reconstructedD2, d2)</code> confirms the reconstruction is byte-for-byte correct, and printing its contents as a string shows the original text was fully recovered — even though <code>d2</code> itself was never directly stored anywhere after being &quot;lost.&quot;</li><li><code>compareStorageOverhead</code> then makes the cost tradeoff concrete with real numbers: for 600,000 bytes of source data, replication needs 1,800,000 bytes stored (3.0x), while a 6-data + 3-parity erasure scheme needs only 900,000 bytes (1.5x) — half the storage cost, for a comparable (in this simplified example) ability to survive lost fragments.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: the simple XOR parity shown here can only reconstruct data if exactly one fragment among the group is missing — real erasure-coding schemes (like Reed-Solomon) generalize this so that any <code>m</code> fragments can be lost and reconstructed from any <code>k</code> survivors, but that generalization requires real matrix-based math, not a single XOR; never assume single-parity XOR is enough durability for a scheme meant to survive multiple simultaneous failures.</blockquote>
+<ul><li>Replication gives instant, computation-free recovery at the cost of storing full extra copies; erasure coding gives cheaper storage at the cost of a real reconstruction computation.</li><li>The &quot;k data + m parity&quot; notation describes exactly how many fragment losses a scheme survives, and directly determines its storage overhead multiplier.</li><li>Erasure coding suits large, less latency-sensitive data (archives, cold storage); replication suits actively-read, latency-sensitive data.</li><li>Related concepts: <a href="0130-redundancy-replication.md">Redundancy &amp; replication</a> (the general durability pattern replication implements), <a href="0155-distributed-file-systems-hdfs-gfs.md">Distributed file systems (HDFS/GFS)</a> (systems that choose between these two strategies for chunk durability), <a href="0157-hot-warm-cold-storage-tiers.md">Hot / warm / cold storage tiers</a> (cold-tier storage is where erasure coding is most commonly applied, for its storage savings).</li></ul>
+  <div class="nav"><a class="prv" href="0157-hot-warm-cold-storage-tiers.html"><span class="mini">← Previous</span>Hot / warm / cold storage tiers</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t158";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

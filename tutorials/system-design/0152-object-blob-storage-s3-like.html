@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Object / blob storage (S3-like) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 13. Storage Systems</div>
+  <div class="htitle">
+    <h1>Object / blob storage (S3-like)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Object storage</strong> (also called blob storage), like Amazon S3, stores data as whole, opaque objects — a file&#x27;s full bytes plus a unique key and some metadata — inside flat containers called buckets. There is no folder tree the storage system itself understands; a key like <code>photos/2024/vacation.jpg</code> just looks like a path, but it is really one flat string. You read or write an entire object at once, by its key, over a simple HTTP-style API (<code>PUT</code>, <code>GET</code>, <code>DELETE</code>).</p>
+<h2>2. Why &amp; when</h2>
+<p>A traditional file system organizes data in nested directories and lets you open a file and modify just a few bytes in the middle of it — but that model does not scale well to billions of files spread across thousands of machines. Object storage gives up in-place partial edits and a real directory tree, and in exchange gets something that scales almost without limit: keys are distributed across many servers by hashing, so there is no single directory node that becomes a bottleneck. Use object storage for anything you write once and read many times as a whole unit — images, videos, backups, log archives, and static website assets — rather than as a shared, actively-edited disk.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Bucket:</strong> a flat, top-level container with a globally unique name; every object lives inside exactly one bucket.</li><li><strong>Key:</strong> the unique string identifying an object inside its bucket; the &quot;/&quot; characters in a key are purely cosmetic — the store has no real nested folders.</li><li><strong>Object:</strong> the actual data (bytes) plus metadata (content type, custom tags, last-modified time) and a version ID if versioning is enabled.</li><li><strong>Whole-object operations:</strong> you <code>PUT</code> an entire object to write it, and <code>GET</code> the entire object to read it — there is no API to modify just a few bytes inside an existing object; you must rewrite the whole thing.</li><li><strong>Eventual vs. strong consistency:</strong> many object stores now offer strong read-after-write consistency (a <code>GET</code> right after a <code>PUT</code> always sees the new data), but older or distributed designs historically offered only eventual consistency, so it is worth confirming which your store provides.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   bucket: &quot;user-photos&quot;
+   +----------------------------------------------------+
+   | key: &quot;alice/2024/beach.jpg&quot;   -&gt; object (bytes + metadata)
+   | key: &quot;alice/2024/hike.jpg&quot;    -&gt; object (bytes + metadata)
+   | key: &quot;bob/profile.png&quot;        -&gt; object (bytes + metadata)
+   +----------------------------------------------------+
+          ^                                    ^
+          |                                    |
+     PUT (write whole object)          GET (read whole object)
+          |                                    |
+      client uploads                     client downloads
+      the full file                      the full file</code></pre>
+<p>*Caption: a bucket is a flat namespace of keys; there is no real folder hierarchy, only key strings that look like paths.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A whole-object <code>put</code>/<code>get</code> store, keyed by a flat string.</p>
+<p><strong>Level 2 — Metadata and content type.</strong> Store metadata alongside the object, and let a <code>GET</code> return both.</p>
+<p><strong>Level 3 — Versioning.</strong> Keep every version of an object ever written to a key, and let a caller retrieve an older version, not just the latest.</p>
+<pre><code class="lang-java">// ObjectStoreDemo.java
+import java.util.*;
+
+public class ObjectStoreDemo {
+
+    static class StoredObject {
+        final byte[] data;
+        final Map&lt;String, String&gt; metadata;
+        final int version;
+        StoredObject(byte[] data, Map&lt;String, String&gt; metadata, int version) {
+            this.data = data;
+            this.metadata = metadata;
+            this.version = version;
+        }
+    }
+
+    static class ObjectStore {
+        // key -&gt; list of versions, oldest first; the LAST entry is always the current version.
+        final Map&lt;String, List&lt;StoredObject&gt;&gt; bucket = new HashMap&lt;&gt;();
+
+        // Level 1 &amp; 2: write a whole new object (with metadata) under a flat key.
+        void put(String key, byte[] data, Map&lt;String, String&gt; metadata) {
+            List&lt;StoredObject&gt; versions = bucket.computeIfAbsent(key, k -&gt; new ArrayList&lt;&gt;());
+            int nextVersion = versions.size() + 1;
+            versions.add(new StoredObject(data, metadata, nextVersion));
+        }
+
+        // Level 1: read the CURRENT (latest) version of the whole object.
+        StoredObject get(String key) {
+            List&lt;StoredObject&gt; versions = bucket.get(key);
+            if (versions == null || versions.isEmpty()) return null;
+            return versions.get(versions.size() - 1);
+        }
+
+        // Level 3: read a SPECIFIC older version, not just the latest.
+        StoredObject getVersion(String key, int version) {
+            List&lt;StoredObject&gt; versions = bucket.get(key);
+            if (versions == null) return null;
+            for (StoredObject o : versions) if (o.version == version) return o;
+            return null;
+        }
+    }
+
+    public static void main(String[] args) {
+        ObjectStore store = new ObjectStore();
+        String key = &quot;alice/2024/beach.jpg&quot;;
+
+        // Level 1 &amp; 2: first upload, with content-type metadata.
+        store.put(key, &quot;photo-bytes-v1&quot;.getBytes(), Map.of(&quot;Content-Type&quot;, &quot;image/jpeg&quot;));
+        StoredObject current = store.get(key);
+        System.out.println(&quot;after v1 upload -&gt; current version=&quot; + current.version + &quot;, data=&quot; + new String(current.data));
+
+        // Level 3: overwrite the SAME key with a new version - the old version is NOT deleted.
+        store.put(key, &quot;photo-bytes-v2-edited&quot;.getBytes(), Map.of(&quot;Content-Type&quot;, &quot;image/jpeg&quot;));
+        current = store.get(key);
+        System.out.println(&quot;after v2 upload -&gt; current version=&quot; + current.version + &quot;, data=&quot; + new String(current.data));
+
+        StoredObject oldVersion = store.getVersion(key, 1);
+        System.out.println(&quot;fetching version 1 explicitly -&gt; data=&quot; + new String(oldVersion.data));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ObjectStoreDemo.java</code>, then run <code>java ObjectStoreDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The first <code>store.put(key, ...)</code> call finds no existing versions for the key, creates a new list, and adds a <code>StoredObject</code> with <code>version = 1</code> — this models a plain <code>PUT</code> to a fresh key.</li><li><code>store.get(key)</code> returns <code>versions.get(versions.size() - 1)</code>, which is the single entry just added, so the demo prints &quot;current version=1&quot; with the original bytes.</li><li>The second <code>store.put(key, ...)</code> call reuses the *same* key; it appends a *new* <code>StoredObject</code> with <code>version = 2</code> to the same list, rather than overwriting the first entry — this models how object storage with versioning enabled never truly deletes an old version on overwrite.</li><li><code>store.get(key)</code> now returns the last entry in the list (<code>version = 2</code>), so the demo prints the newly-edited bytes as the current version, matching how a plain <code>GET</code> (without a version ID) always returns the latest object.</li><li><code>store.getVersion(key, 1)</code> explicitly scans for <code>version == 1</code> and finds the original <code>StoredObject</code> still intact in the list, proving the &quot;old&quot; data was never lost — only the store&#x27;s notion of &quot;current&quot; moved forward, exactly the guarantee object-store versioning provides.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: because there is no API to edit part of an object in place, a workload that needs to append to or tweak a large object repeatedly (a growing log file, a database) will end up re-uploading the entire object every time — a costly and slow pattern. Object storage suits write-once/read-many data; for frequently-mutated data, use <a href="0153-block-storage.md">block storage</a> or a real database instead.</blockquote>
+<ul><li>Object storage trades a real directory hierarchy and in-place edits for near-limitless scale, achieved by treating every key as an independent, whole unit.</li><li>Keys only *look* like file paths; the store itself has no folder concept, which is exactly what lets it distribute keys evenly across many servers.</li><li>Versioning keeps every past version of an object under a key, letting you recover an overwritten or deleted object.</li><li>Related concepts: <a href="0153-block-storage.md">Block storage</a> (the alternative for data that needs in-place, byte-level edits), <a href="0155-distributed-file-systems-hdfs-gfs.md">Distributed file systems (HDFS/GFS)</a> (a different distributed-storage model built for large sequential files), <a href="0157-hot-warm-cold-storage-tiers.md">Hot / warm / cold storage tiers</a> (how object stores price and place data by access frequency).</li></ul>
+  <div class="nav"><a class="prv" href="0151-spring-cloud-gateway-requestratelimiter-redis.html"><span class="mini">← Previous</span>Spring Cloud Gateway RequestRateLimiter (Redis)</a><a class="nxt" href="0153-block-storage.html"><span class="mini">Next →</span>Block storage</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t152";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
