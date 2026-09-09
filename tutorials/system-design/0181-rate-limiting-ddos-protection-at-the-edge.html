@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rate limiting & DDoS protection at the edge — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 16. Security & Auth at Scale</div>
+  <div class="htitle">
+    <h1>Rate limiting & DDoS protection at the edge</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Rate limiting at the edge</strong> applies request-rate limits (like a <a href="0143-token-bucket.md">token bucket</a>) at the outermost layer of the infrastructure — a CDN, a load balancer, or a dedicated edge security service — before traffic ever reaches the application servers at all. <strong>DDoS (Distributed Denial-of-Service) protection</strong> defends against attacks where traffic is deliberately generated from many sources at once specifically to overwhelm a service&#x27;s capacity, using techniques like traffic filtering, absorbing massive volume across a distributed network, and challenging suspicious clients before they reach real application logic.</p>
+<h2>2. Why &amp; when</h2>
+<p>Applying rate limiting only inside the application (as covered under <a href="0143-token-bucket.md">rate limiting &amp; throttling</a>) means malicious or excessive traffic still has to travel all the way to your servers, consuming network bandwidth and connection capacity, before being rejected — for a real DDoS attack, the sheer volume can exhaust that capacity long before any individual request is even evaluated. Edge-layer protection rejects or absorbs malicious traffic much earlier, often at infrastructure specifically built to handle massive volume (a CDN&#x27;s globally distributed network), so it never reaches your actual application servers at all. Use edge-layer defenses for any public-facing service, as a first line of defense layered in front of application-level rate limiting, not as a replacement for it.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Layered defense — edge first, application second:</strong> the edge layer handles high-volume, obviously abusive traffic cheaply and at scale; the application layer still applies its own finer-grained, business-aware limits (like <a href="0148-per-user-vs-global-quotas.md">per-user quotas</a>) for legitimate-looking traffic that gets through.</li><li><strong>IP-based and pattern-based filtering:</strong> the edge can block or challenge traffic from known-malicious IP ranges, or traffic matching known attack signatures (an unusually high request rate from a single source, malformed requests).</li><li><strong>Challenge-response (e.g. CAPTCHA, JavaScript challenges):</strong> suspicious clients are given a small computational or interactive challenge before being allowed through — real browsers pass easily, while simple attack scripts often cannot.</li><li><strong>Absorbing volume via a distributed network:</strong> a CDN&#x27;s globally distributed points of presence can absorb an enormous volume of traffic across many locations simultaneously, which no single origin server (or even a single data center) could handle alone.</li><li><strong>Anycast routing:</strong> many DDoS-mitigation networks route traffic to the nearest healthy point of presence, spreading an attack&#x27;s traffic across many geographically distributed servers instead of concentrating it on one target.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   attacker traffic (millions of requests/sec from many sources)
+                    |
+                    v
+   +--------------------------------------------------+
+   | EDGE LAYER (CDN / DDoS protection service)         |
+   |   - IP reputation filtering                        |
+   |   - pattern-based anomaly detection                 |
+   |   - challenge-response for suspicious clients       |
+   |   - absorbs volume across a distributed network     |
+   +--------------------------------------------------+
+                    |  (only a tiny fraction of legitimate-looking traffic gets through)
+                    v
+   +--------------------------------------------------+
+   | APPLICATION LAYER                                   |
+   |   - per-user / per-API-key rate limiting             |
+   |   - business logic                                   |
+   +--------------------------------------------------+</code></pre>
+<p>*Caption: the edge layer absorbs and filters the vast majority of malicious volume before it ever reaches the application, which still applies its own finer-grained limits to what remains.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> An edge-layer IP-reputation filter, rejecting known-bad sources before any application logic runs.</p>
+<p><strong>Level 2 — Pattern-based anomaly detection.</strong> Flag and block a source sending an abnormally high request rate, even if not previously known-bad.</p>
+<p><strong>Level 3 — Layered defense.</strong> Show traffic passing the edge layer still being checked by a separate, finer-grained application-level limit.</p>
+<pre><code class="lang-java">// EdgeDdosProtectionDemo.java
+import java.util.*;
+
+public class EdgeDdosProtectionDemo {
+
+    static Set&lt;String&gt; knownMaliciousIps = Set.of(&quot;10.0.0.66&quot;, &quot;10.0.0.77&quot;);
+    static Map&lt;String, Integer&gt; requestCountLastSecond = new HashMap&lt;&gt;();
+    static final int ANOMALY_THRESHOLD = 50; // requests/sec from a single IP - suspiciously high
+
+    // Level 1: reject known-malicious IPs immediately, before touching anything else.
+    static boolean edgeIpReputationCheck(String sourceIp) {
+        if (knownMaliciousIps.contains(sourceIp)) {
+            System.out.println(&quot;  EDGE REJECT (known malicious IP): &quot; + sourceIp);
+            return false;
+        }
+        return true;
+    }
+
+    // Level 2: flag a source sending an abnormally high rate, even if it wasn&#x27;t previously known-bad.
+    static boolean edgeAnomalyCheck(String sourceIp) {
+        int count = requestCountLastSecond.merge(sourceIp, 1, Integer::sum);
+        if (count &gt; ANOMALY_THRESHOLD) {
+            System.out.println(&quot;  EDGE REJECT (anomalous rate: &quot; + count + &quot; req/sec from &quot; + sourceIp + &quot;)&quot;);
+            return false;
+        }
+        return true;
+    }
+
+    // Level 3: application-level per-user limit, applied only to traffic that already passed the edge.
+    static Map&lt;String, Integer&gt; appLevelRequestCount = new HashMap&lt;&gt;();
+    static final int APP_LEVEL_LIMIT = 10;
+
+    static boolean applicationLevelRateLimit(String userId) {
+        int count = appLevelRequestCount.merge(userId, 1, Integer::sum);
+        if (count &gt; APP_LEVEL_LIMIT) {
+            System.out.println(&quot;  APPLICATION REJECT (per-user limit exceeded): &quot; + userId);
+            return false;
+        }
+        return true;
+    }
+
+    static void handleIncomingRequest(String sourceIp, String userId) {
+        if (!edgeIpReputationCheck(sourceIp)) return;
+        if (!edgeAnomalyCheck(sourceIp)) return;
+        if (!applicationLevelRateLimit(userId)) return;
+        System.out.println(&quot;  ALLOWED: request from &quot; + sourceIp + &quot; (user &quot; + userId + &quot;) reached the application&quot;);
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;legitimate traffic from a normal IP:&quot;);
+        for (int i = 0; i &lt; 3; i++) handleIncomingRequest(&quot;203.0.113.5&quot;, &quot;user-17&quot;);
+
+        System.out.println(&quot;traffic from a KNOWN MALICIOUS IP:&quot;);
+        handleIncomingRequest(&quot;10.0.0.66&quot;, &quot;attacker&quot;);
+
+        System.out.println(&quot;a flood of 55 requests/sec from ONE IP (not previously known-bad):&quot;);
+        String floodingIp = &quot;198.51.100.9&quot;;
+        for (int i = 0; i &lt; 55; i++) {
+            boolean lastIteration = (i == 54);
+            if (lastIteration) handleIncomingRequest(floodingIp, &quot;user-99&quot;); // only print the one that trips the threshold
+            else { edgeIpReputationCheck(floodingIp); edgeAnomalyCheck(floodingIp); }
+        }
+
+        System.out.println(&quot;a legitimate-looking user exceeding the APPLICATION-level limit (passed the edge fine):&quot;);
+        for (int i = 0; i &lt; 12; i++) handleIncomingRequest(&quot;203.0.113.5&quot;, &quot;user-17&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>EdgeDdosProtectionDemo.java</code>, then run <code>java EdgeDdosProtectionDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>The three requests from <code>&quot;203.0.113.5&quot;</code> each pass <code>edgeIpReputationCheck</code> (not in <code>knownMaliciousIps</code>) and <code>edgeAnomalyCheck</code> (well under the 50 req/sec threshold), then reach <code>applicationLevelRateLimit</code>, which accumulates a per-user count that stays under <code>APP_LEVEL_LIMIT</code> — all three are printed as &quot;ALLOWED&quot;.</li><li>The request from <code>&quot;10.0.0.66&quot;</code> fails immediately at <code>edgeIpReputationCheck</code>, since it is present in <code>knownMaliciousIps</code> — the method returns <code>false</code> right there, and <code>handleIncomingRequest</code> returns without ever calling <code>edgeAnomalyCheck</code> or the application-level check at all.</li><li>The flood of 55 requests from <code>floodingIp</code> each increment <code>requestCountLastSecond</code> for that IP via <code>edgeAnomalyCheck</code>; once the count exceeds <code>ANOMALY_THRESHOLD</code> (50), the 51st and later calls to <code>edgeAnomalyCheck</code> for this IP return <code>false</code> — the final printed request (the 55th) shows the &quot;EDGE REJECT (anomalous rate...)&quot; message, demonstrating detection based purely on request volume, with no prior knowledge that this specific IP was malicious.</li><li>The final batch of 12 requests, all from the already-known-good <code>&quot;203.0.113.5&quot;</code> and <code>&quot;user-17&quot;</code>, easily pass both edge checks each time (the anomaly count is per-IP, and this IP is not flooding) — but <code>applicationLevelRateLimit</code> accumulates <code>user-17</code>&#x27;s count across *all* their earlier requests too (from step 1 and this batch combined), and once it exceeds <code>APP_LEVEL_LIMIT</code> (10), the later requests in this batch are rejected specifically at the application layer, with the &quot;APPLICATION REJECT&quot; message.</li><li>This final scenario is the point of layered defense: <code>user-17</code>&#x27;s traffic never looked suspicious to the edge layer at all (a normal IP, no abnormal rate), yet the application layer&#x27;s own finer-grained, business-aware limit (specific to this one user, not a blanket IP-level rule) still caught and rejected the excess — something the edge layer alone was never designed to do.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: relying solely on edge-layer IP and rate-based filtering, with no application-level checks at all, misses attacks that stay under any single-IP rate threshold by spreading requests across many different source IPs (a real distributed denial-of-service, using genuinely many machines) — the edge layer reduces the *volume* problem significantly, but application-level, identity-aware limits (per user, per API key) remain necessary to catch abuse that does not depend on overwhelming volume from one source.</blockquote>
+<ul><li>Edge-layer defenses absorb and filter the bulk of malicious traffic before it ever reaches application servers, which is essential for surviving genuine high-volume attacks.</li><li>Application-level rate limiting still matters even with strong edge protection, since it catches identity-specific abuse that never looks anomalous at the network level.</li><li>Layering both is the real defense — neither alone covers every case the other catches.</li><li>Related concepts: <a href="0143-token-bucket.md">Token bucket</a> and <a href="0148-per-user-vs-global-quotas.md">Per-user vs global quotas</a> (the application-level mechanisms this edge layer complements, not replaces), <a href="0037-round-robin-weighted-round-robin.md">Round robin &amp; weighted round robin</a> (a related edge-layer concern: distributing legitimate traffic once it passes filtering), <a href="0182-owasp-top-10-awareness.md">OWASP Top 10 awareness</a> (broader application-security concerns beyond just traffic volume).</li></ul>
+  <div class="nav"><a class="prv" href="0180-secrets-management-rotation.html"><span class="mini">← Previous</span>Secrets management & rotation</a><a class="nxt" href="0182-owasp-top-10-awareness.html"><span class="mini">Next →</span>OWASP Top 10 awareness</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t181";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

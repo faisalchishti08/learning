@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API keys & mutual TLS (mTLS) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 16. Security & Auth at Scale</div>
+  <div class="htitle">
+    <h1>API keys & mutual TLS (mTLS)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>An <strong>API key</strong> is a simple, long-lived secret string a client includes with every request to identify itself to a service — much simpler than <a href="0176-oauth2-openid-connect.md">OAuth2</a>, but with no built-in expiry, scoping, or user context by default. <strong>Mutual TLS (mTLS)</strong> goes further: both the client and the server present X.509 certificates during the TLS handshake itself, so each side cryptographically proves its identity to the other before any application data is exchanged at all — unlike normal TLS, where only the server proves its identity to the client.</p>
+<h2>2. Why &amp; when</h2>
+<p>API keys are the simplest possible way to identify a calling service or application — easy to generate, easy to check — and are well suited for service-to-service calls where a full OAuth2 flow would be unnecessary overhead. But a leaked API key is fully usable by whoever has it, with no additional proof of possession required. mTLS solves a different, stronger problem: verifying that the caller is not just *someone who has a valid credential*, but a specific, certificate-holding party the server was configured to trust — this matters most for high-security service-to-service communication (internal microservices, payment networks, sensitive B2B integrations) where you want cryptographic proof of identity baked into the connection itself, not a string that could be copied from a log file.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>API key transmission:</strong> commonly sent as a header (<code>X-API-Key: abc123</code>) or a query parameter (avoid query parameters — they end up logged in server access logs and browser history); the server simply checks it against a stored list of valid keys.</li><li><strong>API key scoping:</strong> a well-designed API-key system associates each key with specific permissions and rate limits, not just &quot;valid or not,&quot; so a leaked key&#x27;s blast radius is limited.</li><li><strong>Normal TLS is one-directional trust:</strong> in standard HTTPS, the client verifies the server&#x27;s certificate, but the server has no cryptographic proof of who the client is — that is handled separately, typically by an API key or a token in the request.</li><li><strong>mTLS adds client certificate verification:</strong> during the TLS handshake, the server also requests and verifies a certificate from the client, checking it was issued by a certificate authority (CA) the server trusts — this happens before the connection is even established, at the transport layer, not the application layer.</li><li><strong>Certificate rotation:</strong> both API keys and client certificates need a rotation plan — issuing new credentials periodically and revoking old ones — since a credential that never changes only grows riskier the longer it exists.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   API KEY:                                    mTLS:
+   client -&gt; header: X-API-Key: abc123         client                        server
+                |                              (presents cert)    &lt;-------&gt; (presents cert)
+                v                                   |    TLS handshake verifies BOTH certs  |
+   server: is &quot;abc123&quot; a known, valid key?          |    against a trusted CA               |
+           -&gt; yes: proceed, apply that key&#x27;s        v
+              scopes/rate limits                connection established ONLY if both
+           -&gt; no: reject                        certificates are valid and trusted
+                                                      |
+                                              application data flows only after this</code></pre>
+<p>*Caption: an API key is checked at the application layer on every request; mTLS verifies both parties&#x27; identity at the transport layer, before any application data is sent.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Validate an API key against a stored, scoped list.</p>
+<p><strong>Level 2 — Per-key scopes and rate limits.</strong> A leaked key&#x27;s damage is limited by what it was actually issued to do.</p>
+<p><strong>Level 3 — Model mTLS: both sides present and verify a certificate before any data flows.</strong> Contrast with the one-directional trust of an API key alone.</p>
+<pre><code class="lang-java">// ApiKeyMtlsDemo.java
+import java.util.*;
+
+public class ApiKeyMtlsDemo {
+
+    static class ApiKeyRecord {
+        final Set&lt;String&gt; scopes;
+        final int rateLimitPerMinute;
+        ApiKeyRecord(Set&lt;String&gt; scopes, int rateLimitPerMinute) { this.scopes = scopes; this.rateLimitPerMinute = rateLimitPerMinute; }
+    }
+
+    // Level 1 &amp; 2: each key maps to specific scopes and a rate limit - not just &quot;valid/invalid&quot;.
+    static Map&lt;String, ApiKeyRecord&gt; validKeys = Map.of(
+        &quot;key-readonly-abc&quot;, new ApiKeyRecord(Set.of(&quot;read&quot;), 100),
+        &quot;key-fullaccess-xyz&quot;, new ApiKeyRecord(Set.of(&quot;read&quot;, &quot;write&quot;, &quot;delete&quot;), 1000)
+    );
+
+    static boolean callApiWithKey(String apiKey, String requiredScope) {
+        ApiKeyRecord record = validKeys.get(apiKey);
+        if (record == null) {
+            System.out.println(&quot;  REJECTED: unknown API key&quot;);
+            return false;
+        }
+        if (!record.scopes.contains(requiredScope)) {
+            System.out.println(&quot;  REJECTED: key lacks scope \&quot;&quot; + requiredScope + &quot;\&quot; (has &quot; + record.scopes + &quot;)&quot;);
+            return false;
+        }
+        System.out.println(&quot;  ACCEPTED: key has scope \&quot;&quot; + requiredScope + &quot;\&quot;, proceeding (rate limit: &quot; + record.rateLimitPerMinute + &quot;/min)&quot;);
+        return true;
+    }
+
+    // Level 3: models mTLS - a certificate on EACH side, both verified against a trusted CA, before any data flows.
+    static class Certificate {
+        final String subject, issuedByCA;
+        Certificate(String subject, String issuedByCA) { this.subject = subject; this.issuedByCA = issuedByCA; }
+    }
+
+    static final String TRUSTED_CA = &quot;internal-ca&quot;;
+
+    static boolean establishMutualTlsConnection(Certificate clientCert, Certificate serverCert) {
+        System.out.println(&quot;  TLS handshake: verifying server cert (subject=&quot; + serverCert.subject + &quot;)...&quot;);
+        if (!TRUSTED_CA.equals(serverCert.issuedByCA)) {
+            System.out.println(&quot;  REJECTED: server certificate not issued by a trusted CA&quot;);
+            return false;
+        }
+        System.out.println(&quot;  TLS handshake: verifying CLIENT cert too (subject=&quot; + clientCert.subject + &quot;)...&quot;);
+        if (!TRUSTED_CA.equals(clientCert.issuedByCA)) {
+            System.out.println(&quot;  REJECTED: client certificate not issued by a trusted CA - connection refused BEFORE any data flows&quot;);
+            return false;
+        }
+        System.out.println(&quot;  CONNECTION ESTABLISHED: both parties cryptographically verified&quot;);
+        return true;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;-- API key scenarios --&quot;);
+        System.out.println(&quot;read-only key requesting read access:&quot;);
+        callApiWithKey(&quot;key-readonly-abc&quot;, &quot;read&quot;);
+        System.out.println(&quot;read-only key requesting write access:&quot;);
+        callApiWithKey(&quot;key-readonly-abc&quot;, &quot;write&quot;);
+        System.out.println(&quot;unknown key:&quot;);
+        callApiWithKey(&quot;key-stolen-999&quot;, &quot;read&quot;);
+
+        System.out.println(&quot;-- mTLS scenarios --&quot;);
+        Certificate trustedServerCert = new Certificate(&quot;api.internal.example.com&quot;, &quot;internal-ca&quot;);
+        Certificate trustedClientCert = new Certificate(&quot;service-orders&quot;, &quot;internal-ca&quot;);
+        Certificate untrustedClientCert = new Certificate(&quot;service-unknown&quot;, &quot;some-other-ca&quot;);
+
+        System.out.println(&quot;legitimate service connecting:&quot;);
+        establishMutualTlsConnection(trustedClientCert, trustedServerCert);
+        System.out.println(&quot;an attacker with a self-signed cert (no valid API key equivalent needed to even TRY) trying to connect:&quot;);
+        establishMutualTlsConnection(untrustedClientCert, trustedServerCert);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ApiKeyMtlsDemo.java</code>, then run <code>java ApiKeyMtlsDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>callApiWithKey(&quot;key-readonly-abc&quot;, &quot;read&quot;)</code> finds <code>validKeys.get(&quot;key-readonly-abc&quot;)</code> returns a record with <code>scopes = {&quot;read&quot;}</code>; since <code>record.scopes.contains(&quot;read&quot;)</code> is true, the call is accepted.</li><li><code>callApiWithKey(&quot;key-readonly-abc&quot;, &quot;write&quot;)</code> finds the same key record, but <code>record.scopes.contains(&quot;write&quot;)</code> is false — the key is valid, but scoped too narrowly for this action, so the call is rejected specifically for lacking scope, not for being an invalid key.</li><li><code>callApiWithKey(&quot;key-stolen-999&quot;, &quot;read&quot;)</code> finds no entry at all in <code>validKeys</code>, so <code>record</code> is <code>null</code>, and the method rejects it immediately as an unknown key — before scope is even considered.</li><li><code>establishMutualTlsConnection(trustedClientCert, trustedServerCert)</code> first checks the server certificate&#x27;s <code>issuedByCA</code> against <code>TRUSTED_CA</code> (matches), then checks the client certificate&#x27;s <code>issuedByCA</code> the same way (also matches) — both checks pass, so the method prints &quot;CONNECTION ESTABLISHED,&quot; modeling a successful mTLS handshake where both sides proved their identity.</li><li><code>establishMutualTlsConnection(untrustedClientCert, trustedServerCert)</code> passes the server-certificate check (still <code>&quot;internal-ca&quot;</code>), but fails on the client-certificate check, since <code>untrustedClientCert.issuedByCA</code> is <code>&quot;some-other-ca&quot;</code>, not the trusted CA — the connection is refused entirely, at the handshake stage, before any application-level check (like an API key) would even get the chance to run.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: an API key sent as a URL query parameter (rather than a header) commonly ends up recorded in server access logs, browser history, and even shared inadvertently when a URL is copy-pasted — always send API keys as a header, never as part of the URL itself.</blockquote>
+<ul><li>API keys are simple to implement and use, but a leaked key is fully usable by anyone who has it, unless scoped and rate-limited per key.</li><li>mTLS verifies both parties&#x27; identity cryptographically at the connection level, before any application data (including an API key) is even sent.</li><li>Both mechanisms need a real rotation and revocation plan — a credential that is never rotated only becomes riskier the longer it has existed.</li><li>Related concepts: <a href="0176-oauth2-openid-connect.md">OAuth2 &amp; OpenID Connect</a> (a richer, scoped, revocable alternative to a plain long-lived API key), <a href="0179-encryption-in-transit-tls-at-rest.md">Encryption in transit (TLS) &amp; at rest</a> (the underlying TLS mechanism mTLS extends), <a href="0180-secrets-management-rotation.md">Secrets management &amp; rotation</a> (how API keys and certificates should actually be stored and rotated in practice).</li></ul>
+  <div class="nav"><a class="prv" href="0177-jwt-structure-validation.html"><span class="mini">← Previous</span>JWT structure & validation</a><a class="nxt" href="0179-encryption-in-transit-tls-at-rest.html"><span class="mini">Next →</span>Encryption in transit (TLS) & at rest</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t178";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
