@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Saga as an alternative to distributed transactions — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 15. Concurrency & Coordination</div>
+  <div class="htitle">
+    <h1>Saga as an alternative to distributed transactions</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>saga</strong> breaks a multi-step business operation that spans several services into a sequence of small, independent local transactions, each committed immediately in its own service. If a later step fails, the saga runs <strong>compensating transactions</strong> — explicit undo steps — for every earlier step that already committed, to unwind the work already done. This avoids <a href="0172-distributed-transactions-2pc-3pc-their-cost.md">2PC&#x27;s blocking problem</a> entirely, at the cost of giving up strict atomicity: for a window of time, the system genuinely is in a partially-completed state.</p>
+<h2>2. Why &amp; when</h2>
+<p>2PC guarantees atomicity but requires every participant to hold locks until a coordinator&#x27;s final decision, which can block indefinitely if the coordinator fails. A saga instead commits each step&#x27;s own local transaction immediately and independently — no cross-service locks are ever held — and instead prepares an explicit compensating action for every step, to be run only if a later step fails. Use a saga for any multi-step business process spanning multiple services (an order that debits payment, reserves inventory, and schedules shipping) where you would rather accept a temporary, self-correcting inconsistency than pay 2PC&#x27;s blocking cost.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Local transactions, not a global one:</strong> each step commits to its own service&#x27;s database immediately, using that service&#x27;s own normal transaction — no cross-service lock is ever held.</li><li><strong>Compensating transaction per step:</strong> for every forward step (e.g. &quot;reserve inventory&quot;), a corresponding undo step is defined (e.g. &quot;release the inventory reservation&quot;) to run if the saga needs to roll back.</li><li><strong>Forward recovery vs. backward recovery:</strong> on failure, a saga can either retry the failed step until it succeeds (forward recovery) or run compensations for every already-completed step, in reverse order (backward recovery) — most designs use backward recovery for a failure that cannot simply be retried.</li><li><strong>Orchestration vs. choreography:</strong> an *orchestrated* saga has one central coordinator explicitly calling each step and deciding when to compensate; a *choreographed* saga instead has each service react to events from the previous step and publish its own event when done, with no central coordinator.</li><li><strong>Idempotent steps are essential:</strong> because a step (or its compensation) might be retried after a timeout, every step and compensation must be safe to run more than once — the same principle as <a href="0168-idempotency-keys-for-safe-retries.md">idempotency keys</a>.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   orchestrated saga: &quot;place order&quot;
+
+   step 1: reserve inventory     -&gt; OK (committed locally)
+   step 2: charge payment        -&gt; OK (committed locally)
+   step 3: schedule shipping     -&gt; FAILS
+
+   saga now runs COMPENSATIONS, in reverse order:
+   compensate step 2: refund payment       -&gt; OK
+   compensate step 1: release inventory    -&gt; OK
+
+   final state: order marked FAILED, all prior steps&#x27; effects undone</code></pre>
+<p>*Caption: each forward step commits immediately in its own service; a later failure triggers compensations for every already-completed step, undoing them one by one.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Run a sequence of local steps, each committing independently.</p>
+<p><strong>Level 2 — Compensation on failure.</strong> When a step fails, run compensating actions for every already-completed step, in reverse order.</p>
+<p><strong>Level 3 — An orchestrator tracking saga state.</strong> Show the saga&#x27;s overall status (in progress, compensating, failed) as it executes.</p>
+<pre><code class="lang-java">// SagaDemo.java
+import java.util.*;
+import java.util.function.*;
+
+public class SagaDemo {
+
+    static class SagaStep {
+        final String name;
+        final Supplier&lt;Boolean&gt; action;       // Level 1: the forward step - returns false on failure
+        final Runnable compensation;          // Level 2: the undo action for this step
+        SagaStep(String name, Supplier&lt;Boolean&gt; action, Runnable compensation) {
+            this.name = name; this.action = action; this.compensation = compensation;
+        }
+    }
+
+    enum SagaStatus { IN_PROGRESS, COMPLETED, COMPENSATING, FAILED }
+
+    // Level 3: the orchestrator runs each step in order, tracking overall status, compensating on failure.
+    static SagaStatus runSaga(List&lt;SagaStep&gt; steps) {
+        SagaStatus status = SagaStatus.IN_PROGRESS;
+        List&lt;SagaStep&gt; completedSteps = new ArrayList&lt;&gt;();
+
+        for (SagaStep step : steps) {
+            System.out.println(&quot;running step: &quot; + step.name);
+            boolean ok = step.action.get();
+            if (!ok) {
+                System.out.println(&quot;step FAILED: &quot; + step.name + &quot; - starting compensation&quot;);
+                status = SagaStatus.COMPENSATING;
+                // Level 2: compensate every already-completed step, in REVERSE order.
+                Collections.reverse(completedSteps);
+                for (SagaStep completed : completedSteps) {
+                    System.out.println(&quot;  compensating: &quot; + completed.name);
+                    completed.compensation.run();
+                }
+                return SagaStatus.FAILED;
+            }
+            completedSteps.add(step);
+        }
+        return SagaStatus.COMPLETED;
+    }
+
+    public static void main(String[] args) {
+        // Level 1 &amp; 2: define the forward steps AND their compensations up front.
+        SagaStep reserveInventory = new SagaStep(
+            &quot;reserve inventory&quot;,
+            () -&gt; { System.out.println(&quot;  inventory reserved&quot;); return true; },
+            () -&gt; System.out.println(&quot;  inventory reservation RELEASED&quot;));
+
+        SagaStep chargePayment = new SagaStep(
+            &quot;charge payment&quot;,
+            () -&gt; { System.out.println(&quot;  payment charged&quot;); return true; },
+            () -&gt; System.out.println(&quot;  payment REFUNDED&quot;));
+
+        SagaStep scheduleShipping = new SagaStep(
+            &quot;schedule shipping&quot;,
+            () -&gt; { System.out.println(&quot;  shipping service UNAVAILABLE - step failed&quot;); return false; }, // simulate failure
+            () -&gt; System.out.println(&quot;  (no compensation needed - this step never succeeded)&quot;));
+
+        SagaStatus result = runSaga(List.of(reserveInventory, chargePayment, scheduleShipping));
+        System.out.println(&quot;final saga status: &quot; + result);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>SagaDemo.java</code>, then run <code>java SagaDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>runSaga</code> iterates the steps in order; <code>reserveInventory.action.get()</code> runs, prints &quot;inventory reserved&quot;, and returns <code>true</code>, so the step is added to <code>completedSteps</code> and the loop moves on — this local transaction has already committed, independently, with no cross-service lock held.</li><li><code>chargePayment.action.get()</code> similarly succeeds, printing &quot;payment charged&quot; and returning <code>true</code>; it too is added to <code>completedSteps</code>, which now holds <code>[reserveInventory, chargePayment]</code> in that order.</li><li><code>scheduleShipping.action.get()</code> runs and returns <code>false</code> (simulating the shipping service being unavailable); the <code>if (!ok)</code> branch triggers, setting <code>status = COMPENSATING</code> and printing the failure message.</li><li><code>Collections.reverse(completedSteps)</code> flips the list to <code>[chargePayment, reserveInventory]</code>, and the loop calls each one&#x27;s <code>compensation.run()</code> in that reversed order — <code>chargePayment</code>&#x27;s compensation runs first, printing &quot;payment REFUNDED&quot;, followed by <code>reserveInventory</code>&#x27;s compensation, printing &quot;inventory reservation RELEASED&quot;.</li><li>The method returns <code>SagaStatus.FAILED</code>, and critically, <code>scheduleShipping</code>&#x27;s own compensation is never run at all — since that step&#x27;s forward action never actually succeeded, there is nothing for it to undo, which is exactly why the compensation loop only ever processes <code>completedSteps</code>, not the step that failed itself.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a compensation is not always a perfect mirror of its forward action — &quot;refund payment&quot; does not un-happen the original charge in the way a database rollback would; the customer may have already seen the charge, and the refund is itself a new, separate operation with its own delay and failure modes. Designing compensations that are genuinely safe and semantically correct for your specific business process is real design work, not a mechanical inversion of the forward steps.</blockquote>
+<ul><li>A saga trades strict cross-service atomicity for independently-committing local transactions plus explicit compensation on failure, avoiding the blocking cost of <a href="0172-distributed-transactions-2pc-3pc-their-cost.md">2PC</a> entirely.</li><li>Compensations must be defined for every step that can actually succeed, and are only run for steps that already completed — never for the step that failed itself.</li><li>Every step and compensation must be idempotent, since retries (of the step, or of a compensation) are a normal part of running a saga reliably.</li><li>Related concepts: <a href="0172-distributed-transactions-2pc-3pc-their-cost.md">Distributed transactions (2PC / 3PC) &amp; their cost</a> (the stricter alternative a saga avoids), <a href="0168-idempotency-keys-for-safe-retries.md">Idempotency keys for safe retries</a> (the mechanism that makes retrying a saga step safe), <a href="0111-publish-subscribe.md">Publish-Subscribe</a> (the common foundation for a choreographed saga&#x27;s step-to-step communication).</li></ul>
+  <div class="nav"><a class="prv" href="0172-distributed-transactions-2pc-3pc-their-cost.html"><span class="mini">← Previous</span>Distributed transactions (2PC / 3PC) & their cost</a><span class="spacer"></span></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t173";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Optimistic vs pessimistic concurrency — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 15. Concurrency & Coordination</div>
+  <div class="htitle">
+    <h1>Optimistic vs pessimistic concurrency</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Pessimistic concurrency control</strong> locks a piece of data before touching it, blocking every other thread or process from reading or modifying it until the lock is released — it assumes conflicts are likely, so it prevents them up front. <strong>Optimistic concurrency control</strong> does not lock anything; it lets multiple writers proceed freely, but checks at write time whether the data changed since it was read, and rejects (or retries) the write if it did — it assumes conflicts are rare, so it only handles them when they actually happen.</p>
+<h2>2. Why &amp; when</h2>
+<p>Locking every read is safe but costs throughput: other threads must wait even when no conflict would actually have occurred. Optimistic concurrency avoids that waiting cost entirely for the common case, at the price of occasionally having to detect and retry a real conflict after the fact. Use pessimistic locking when conflicts are frequent and retries would be expensive or complex (e.g. transferring money between two accounts); use optimistic concurrency when conflicts are rare and most operations would otherwise wait needlessly for a lock they never actually needed (e.g. many users editing different fields of a large, shared record).</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Pessimistic — acquire a lock before reading/writing:</strong> a <code>SELECT ... FOR UPDATE</code> in SQL, or an explicit mutex, blocks other transactions from touching the same row until the lock-holder commits or releases.</li><li><strong>Optimistic — a version number (or timestamp) per record:</strong> every read captures the current version; the write includes a check, <code>UPDATE ... WHERE id = ? AND version = ?</code>, which only succeeds if the version has not changed since the read.</li><li><strong>Conflict detection, not conflict prevention:</strong> optimistic concurrency lets the conflict happen (two writers both read version 5), then detects it at write time — only one write can match <code>version = 5</code> after the first writer&#x27;s update bumps it to 6.</li><li><strong>Retry on conflict:</strong> when an optimistic write fails its version check, the usual response is to re-read the current data, reapply the intended change, and try the write again — not to give up outright.</li><li><strong>Throughput vs. contention tradeoff:</strong> pessimistic locking guarantees no wasted work but costs waiting time even without real contention; optimistic concurrency costs nothing when there is no real contention, but wastes the work of a failed write (and a retry) when contention actually occurs.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   PESSIMISTIC:                              OPTIMISTIC:
+   writer A: LOCK row -----.                 writer A: read row (version=5)
+                            |                 writer B: read row (version=5)
+   writer B: BLOCKED,       |                 writer A: write (WHERE version=5) -&gt; OK, version becomes 6
+             waiting...     |                 writer B: write (WHERE version=5) -&gt; FAILS (version is now 6)
+                            |                              |
+   writer A: commit, UNLOCK-+                              v
+                            |                 writer B: re-read (version=6), reapply change, retry write
+   writer B: now proceeds</code></pre>
+<p>*Caption: pessimistic locking makes the second writer wait; optimistic concurrency lets both proceed and only makes the loser redo its work after the fact.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Pessimistic locking: a mutex blocks a second thread until the first finishes.</p>
+<p><strong>Level 2 — Optimistic concurrency with a version check.</strong> A write only succeeds if the version has not changed since the read.</p>
+<p><strong>Level 3 — Retry loop on optimistic conflict.</strong> A failed write re-reads, reapplies the change, and tries again.</p>
+<pre><code class="lang-java">// ConcurrencyControlDemo.java
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class ConcurrencyControlDemo {
+
+    // A shared record with an optimistic-concurrency version number.
+    static class Record {
+        volatile int value;
+        volatile int version;
+        Record(int value) { this.value = value; this.version = 1; }
+    }
+
+    // Level 2: an optimistic write - only succeeds if the version matches what was read.
+    static synchronized boolean optimisticWrite(Record record, int expectedVersion, int newValue) {
+        if (record.version != expectedVersion) {
+            return false; // someone else updated it since we read - conflict detected
+        }
+        record.value = newValue;
+        record.version++;
+        return true;
+    }
+
+    // Level 3: retry the optimistic write until it succeeds, reapplying the intended change each time.
+    static void optimisticIncrementWithRetry(Record record, int amount) {
+        while (true) {
+            int readVersion = record.version;
+            int readValue = record.value;
+            boolean ok = optimisticWrite(record, readVersion, readValue + amount);
+            if (ok) {
+                System.out.println(Thread.currentThread().getName() + &quot;: succeeded, new value=&quot; + record.value + &quot;, new version=&quot; + record.version);
+                return;
+            }
+            System.out.println(Thread.currentThread().getName() + &quot;: conflict detected (version changed), retrying...&quot;);
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        // Level 1: pessimistic locking - a plain mutex, second thread waits.
+        Object lock = new Object();
+        AtomicInteger pessimisticCounter = new AtomicInteger(0);
+        Runnable pessimisticTask = () -&gt; {
+            synchronized (lock) { // blocks any other thread trying to enter this block
+                int before = pessimisticCounter.get();
+                pessimisticCounter.set(before + 1);
+            }
+        };
+        Thread p1 = new Thread(pessimisticTask, &quot;pess-A&quot;);
+        Thread p2 = new Thread(pessimisticTask, &quot;pess-B&quot;);
+        p1.start(); p2.start(); p1.join(); p2.join();
+        System.out.println(&quot;pessimistic result (no lost updates, thanks to the lock): &quot; + pessimisticCounter.get());
+
+        // Level 2 &amp; 3: optimistic concurrency - two threads increment the SAME record concurrently.
+        Record record = new Record(0);
+        Thread o1 = new Thread(() -&gt; optimisticIncrementWithRetry(record, 1), &quot;opt-A&quot;);
+        Thread o2 = new Thread(() -&gt; optimisticIncrementWithRetry(record, 1), &quot;opt-B&quot;);
+        o1.start(); o2.start(); o1.join(); o2.join();
+        System.out.println(&quot;optimistic result (no lost updates, thanks to retry-on-conflict): &quot; + record.value);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ConcurrencyControlDemo.java</code>, then run <code>java ConcurrencyControlDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>p1</code> and <code>p2</code> both run <code>pessimisticTask</code>; whichever thread enters the <code>synchronized (lock)</code> block first holds it exclusively, and the other blocks at that same line until the first thread&#x27;s block finishes — so <code>pessimisticCounter</code> is always read and updated by exactly one thread at a time, guaranteeing the final value is 2 with no lost update.</li><li><code>optimisticIncrementWithRetry</code> first reads <code>record.version</code> and <code>record.value</code> into local variables, *outside* any lock — both <code>o1</code> and <code>o2</code> can do this concurrently, and may both read the same starting <code>version</code>.</li><li>Each thread then calls <code>optimisticWrite</code> with the version it read; this method is <code>synchronized</code>, so only one thread&#x27;s check-and-update runs at a time, but the *read* that happened earlier was not protected — this is the essential difference from pessimistic locking.</li><li>Whichever thread&#x27;s <code>optimisticWrite</code> call runs first finds <code>record.version == expectedVersion</code> still true, so it updates <code>record.value</code> and increments <code>record.version</code>, returning <code>true</code>.</li><li>The second thread&#x27;s call to <code>optimisticWrite</code> now finds <code>record.version != expectedVersion</code> (it changed under it), so it returns <code>false</code>; <code>optimisticIncrementWithRetry</code>&#x27;s <code>while</code> loop catches this, prints the conflict message, and loops back to re-read the *current* value and version, then retries the write — this time succeeding, since no one else is changing the record concurrently anymore, giving a final <code>record.value</code> of 2, matching the pessimistic result but achieved via detect-and-retry rather than blocking.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: optimistic concurrency&#x27;s retry loop can spin indefinitely under very high contention (many writers repeatedly colliding on the same record), potentially doing more wasted work than a plain lock would have — if a specific record is a genuine hotspot with frequent conflicts, pessimistic locking (or a queue serializing writes to it) is often the better choice, not optimistic retries.</blockquote>
+<ul><li>Pessimistic locking prevents conflicts by blocking; optimistic concurrency allows them to happen and detects them afterward via a version check.</li><li>The version-check-then-retry pattern is the core mechanism of optimistic concurrency, and it only works correctly if every writer actually checks the version before committing.</li><li>Choose based on contention: frequent conflicts favor locking; rare conflicts favor the lower-overhead optimistic approach.</li><li>Related concepts: <a href="0167-distributed-locks-redis-redlock-zookeeper.md">Distributed locks (Redis Redlock / ZooKeeper)</a> (pessimistic locking extended across multiple machines), <a href="0168-idempotency-keys-for-safe-retries.md">Idempotency keys for safe retries</a> (a related but distinct mechanism for safely retrying operations), <a href="0103-strong-consistency.md">Strong consistency</a> (the guarantee a correctly-implemented version check relies on).</li></ul>
+  <div class="nav"><a class="prv" href="0165-elasticsearch-cluster-basics-shards-replicas.html"><span class="mini">← Previous</span>Elasticsearch cluster basics (shards & replicas)</a><a class="nxt" href="0167-distributed-locks-redis-redlock-zookeeper.html"><span class="mini">Next →</span>Distributed locks (Redis Redlock / ZooKeeper)</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t166";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

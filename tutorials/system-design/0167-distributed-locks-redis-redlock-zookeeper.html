@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Distributed locks (Redis Redlock / ZooKeeper) — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 15. Concurrency & Coordination</div>
+  <div class="htitle">
+    <h1>Distributed locks (Redis Redlock / ZooKeeper)</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>distributed lock</strong> lets multiple separate processes, running on different machines, coordinate so that only one of them at a time can perform some action — the same idea as an in-process mutex, but working across a network instead of inside one process&#x27;s memory. <strong>Redlock</strong> is an algorithm for implementing this using Redis; <strong>ZooKeeper</strong> (and similarly, etcd) provides distributed locks as a built-in feature of a purpose-built coordination service.</p>
+<h2>2. Why &amp; when</h2>
+<p>When several application instances could otherwise all try to do the same exclusive job at once — running a scheduled cleanup task, processing the same queue item, or updating a shared resource — an in-process lock does nothing, since each instance has its own separate memory. A distributed lock, held in a shared external system, is what actually enforces &quot;only one instance does this right now,&quot; across the whole fleet. Use it whenever exactly-one-at-a-time execution matters across multiple servers, such as a leader-only scheduled job, or protecting a critical section of a shared external resource that itself provides no locking of its own.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Acquire with a unique token and an expiry (TTL):</strong> a client sets a lock key in Redis (e.g. <code>SET lock:job1 clientId NX EX 30</code>) only if it does not already exist, with a time-to-live so the lock is automatically released if the holder crashes without releasing it.</li><li><strong>Release by checking ownership first:</strong> releasing the lock must verify the caller still owns it (matching its unique token) before deleting the key — otherwise a client could accidentally release a lock another client now holds, after its own lock expired.</li><li><strong>TTL is a safety net, not a substitute for finishing work in time:</strong> if the work takes longer than the TTL, the lock can expire while the original holder is still working, letting a second client acquire it — a real risk that must be accounted for (e.g. by extending the TTL while still working, or by making the protected work itself idempotent).</li><li><strong>Redlock&#x27;s added robustness:</strong> Redlock acquires the lock across multiple independent Redis instances, requiring a majority to succeed, so a single Redis instance failing does not silently break the locking guarantee.</li><li><strong>ZooKeeper/etcd&#x27;s approach:</strong> these are purpose-built coordination services using ephemeral nodes tied to a client&#x27;s active session — if the client&#x27;s session dies (e.g. it crashes), the coordination service itself detects this and removes the lock automatically, without relying on a fixed TTL guess.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   client A                    client B                 Redis (or ZooKeeper/etcd)
+      |                            |                            |
+      |-- SET lock:job1 A NX EX 30 ----------------------------&gt;|
+      |&lt;----------------------------------------- OK (acquired) |
+      | (doing exclusive work)     |                            |
+      |                            |-- SET lock:job1 B NX EX 30-&gt;|
+      |                            |&lt;---------- FAIL (exists) ---|
+      |                            |  (client B waits / retries) |
+      |-- DEL lock:job1 (if owner==A) -------------------------&gt;|
+      |&lt;---------------------------------------------- released |
+      |                            |-- SET lock:job1 B NX EX 30-&gt;|
+      |                            |&lt;--------------- OK (acquired)|</code></pre>
+<p>*Caption: only one client&#x27;s <code>SET ... NX</code> succeeds at a time; the loser must wait until the lock is released (or its TTL expires) before it can acquire it.*</p>
+<h2>5. Runnable example</h2>
+<p>This models the Redis-based lock in-process; the &quot;How to run&quot; note shows the real Redis commands.</p>
+<p><strong>Level 1 — Basic.</strong> Acquire a lock only if it is not already held, modeling <code>SET ... NX</code>.</p>
+<p><strong>Level 2 — TTL-based automatic expiry.</strong> A lock releases itself automatically if its holder never releases it in time.</p>
+<p><strong>Level 3 — Safe release, checking ownership first.</strong> Prevent a client from releasing a lock it no longer actually owns.</p>
+<pre><code class="lang-java">// DistributedLockDemo.java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class DistributedLockDemo {
+
+    // Models the Redis key used as the lock: holder&#x27;s token + an expiry time.
+    static class FakeRedisLock {
+        String currentHolderToken = null;
+        long expiresAtMillis = 0;
+
+        // Level 1 &amp; 2: acquire only if unheld OR the previous holder&#x27;s TTL has expired.
+        synchronized boolean tryAcquire(String token, long ttlMillis, long nowMillis) {
+            if (currentHolderToken == null || nowMillis &gt;= expiresAtMillis) {
+                currentHolderToken = token;
+                expiresAtMillis = nowMillis + ttlMillis;
+                return true;
+            }
+            return false;
+        }
+
+        // Level 3: release ONLY if the caller still owns the lock (matching token) - never blindly delete.
+        synchronized boolean release(String token) {
+            if (token.equals(currentHolderToken)) {
+                currentHolderToken = null;
+                return true;
+            }
+            return false; // this caller&#x27;s lock already expired and someone else may hold it now
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        FakeRedisLock lock = new FakeRedisLock();
+        long ttl = 30_000; // 30 second TTL
+
+        // Level 1: client A acquires the lock first.
+        boolean aAcquired = lock.tryAcquire(&quot;client-A&quot;, ttl, 0);
+        System.out.println(&quot;client-A tryAcquire: &quot; + aAcquired);
+
+        // client B tries immediately after - fails, since A still holds it and its TTL has not expired.
+        boolean bAcquired = lock.tryAcquire(&quot;client-B&quot;, ttl, 1000);
+        System.out.println(&quot;client-B tryAcquire (1s later): &quot; + bAcquired);
+
+        // Level 2: client B tries again after A&#x27;s TTL has expired (simulate A crashing without releasing).
+        boolean bAcquiredAfterExpiry = lock.tryAcquire(&quot;client-B&quot;, ttl, 31_000);
+        System.out.println(&quot;client-B tryAcquire (31s later, A&#x27;s TTL expired): &quot; + bAcquiredAfterExpiry);
+
+        // Level 3: client A (which crashed and never actually finished) now tries to release its OLD lock.
+        boolean aReleaseAttempt = lock.release(&quot;client-A&quot;);
+        System.out.println(&quot;client-A release attempt (lock now held by B): &quot; + aReleaseAttempt + &quot; (correctly refused - A no longer owns it)&quot;);
+
+        // client B correctly releases its own, still-valid lock.
+        boolean bRelease = lock.release(&quot;client-B&quot;);
+        System.out.println(&quot;client-B release: &quot; + bRelease);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>DistributedLockDemo.java</code>, then run <code>java DistributedLockDemo.java</code>. (Real Redis: <code>SET lock:job1 &lt;uniqueToken&gt; NX EX 30</code> to acquire; release with a Lua script that checks <code>GET lock:job1 == &lt;uniqueToken&gt;</code> before <code>DEL</code>, so the check-and-delete is atomic.)</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>lock.tryAcquire(&quot;client-A&quot;, ttl, 0)</code> finds <code>currentHolderToken == null</code>, so it succeeds, setting the holder to <code>&quot;client-A&quot;</code> and <code>expiresAtMillis = 0 + 30000 = 30000</code>.</li><li><code>lock.tryAcquire(&quot;client-B&quot;, ttl, 1000)</code> finds <code>currentHolderToken</code> is not <code>null</code> and <code>nowMillis (1000) &lt; expiresAtMillis (30000)</code>, so the condition fails and the method returns <code>false</code> — client B correctly cannot acquire a lock client A still legitimately holds.</li><li><code>lock.tryAcquire(&quot;client-B&quot;, ttl, 31_000)</code> now finds <code>nowMillis (31000) &gt;= expiresAtMillis (30000)</code> is true, meaning client A&#x27;s TTL has expired (modeling client A having crashed without ever releasing it); the lock is granted to <code>&quot;client-B&quot;</code>, and a new <code>expiresAtMillis</code> is set from this later time.</li><li><code>lock.release(&quot;client-A&quot;)</code> checks whether <code>&quot;client-A&quot;.equals(currentHolderToken)</code>, but <code>currentHolderToken</code> is now <code>&quot;client-B&quot;</code>, so the check fails and <code>release</code> correctly returns <code>false</code> — if this check were skipped, client A would have deleted client B&#x27;s active, legitimate lock, letting a third client acquire it too, with two clients now believing they exclusively hold it.</li><li><code>lock.release(&quot;client-B&quot;)</code> checks the same condition, finds it matches, sets <code>currentHolderToken = null</code>, and returns <code>true</code> — the lock is now genuinely free for the next acquirer.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: this demo&#x27;s <code>release</code> check-then-delete is only safe because it runs inside one <code>synchronized</code> method (atomic by construction); implementing the same check and delete as two separate Redis calls (<code>GET</code> then <code>DEL</code>) reintroduces a race condition where another client could acquire the lock in between — always use a single atomic operation (a Lua script in real Redis) for check-then-release, exactly as for <a href="0147-centralized-counter-redis-rate-limiting.md">centralized Redis counters</a>.</blockquote>
+<ul><li>A distributed lock coordinates exclusive access across separate machines, which no in-process lock can do.</li><li>A TTL prevents a crashed holder from locking a resource forever, but introduces its own risk if the protected work outlives the TTL.</li><li>Releasing a lock must verify current ownership first — an unconditional delete can release someone else&#x27;s now-valid lock.</li><li>Related concepts: <a href="0171-zookeeper-etcd-as-coordination-services.md">ZooKeeper / etcd as coordination services</a> (a session-based alternative avoiding the fixed-TTL guess entirely), <a href="0169-leader-election.md">Leader election</a> (a common use case built directly on top of distributed locking), <a href="0166-optimistic-vs-pessimistic-concurrency.md">Optimistic vs pessimistic concurrency</a> (a distributed lock is the multi-machine form of pessimistic locking).</li></ul>
+  <div class="nav"><a class="prv" href="0166-optimistic-vs-pessimistic-concurrency.html"><span class="mini">← Previous</span>Optimistic vs pessimistic concurrency</a><a class="nxt" href="0168-idempotency-keys-for-safe-retries.html"><span class="mini">Next →</span>Idempotency keys for safe retries</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t167";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Distributed transactions (2PC / 3PC) & their cost — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 15. Concurrency & Coordination</div>
+  <div class="htitle">
+    <h1>Distributed transactions (2PC / 3PC) & their cost</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A <strong>distributed transaction</strong> commits or rolls back a change across multiple independent systems (e.g. two different databases, or two microservices) as a single atomic unit — either all of them apply the change, or none of them do. <strong>Two-Phase Commit (2PC)</strong> is the classic protocol for this: a coordinator first asks every participant to *prepare* the change (phase 1), and only if every participant confirms readiness does it tell them all to actually *commit* (phase 2). <strong>Three-Phase Commit (3PC)</strong> adds an extra phase to reduce (but not eliminate) 2PC&#x27;s biggest weakness: participants getting stuck, blocked, if the coordinator fails at the wrong moment.</p>
+<h2>2. Why &amp; when</h2>
+<p>A single-database transaction is atomic for free, using the database&#x27;s own commit log. But updating two *separate* systems atomically — say, debiting an account in one database and crediting a different system in another — cannot rely on either system&#x27;s own transaction alone, since each only knows about its own state. 2PC provides an all-or-nothing guarantee across multiple systems by having every participant explicitly agree it *can* commit before any of them actually does. Use it only when you truly need strict atomicity across systems and can accept its cost — real production systems increasingly avoid 2PC in favor of a <a href="0173-saga-as-an-alternative-to-distributed-transactions.md">saga</a>, specifically because of the blocking problem covered below.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Phase 1 — Prepare:</strong> the coordinator asks every participant &quot;can you commit this change?&quot;; each participant does whatever work is needed to guarantee it *can* commit later (e.g. writing to its own durable log) and replies yes or no, without yet making the change visible.</li><li><strong>Phase 2 — Commit (or abort):</strong> if every participant said yes, the coordinator tells them all to commit for real; if even one said no (or timed out), the coordinator tells them all to abort instead.</li><li><strong>The blocking problem:</strong> if the coordinator crashes *after* participants have all said &quot;yes&quot; but *before* it sends the final commit/abort decision, every participant is stuck holding its prepared-but-undecided change, unable to safely commit or abort on its own, until the coordinator recovers.</li><li><strong>3PC&#x27;s added phase:</strong> 3PC inserts a &quot;pre-commit&quot; acknowledgment step between prepare and commit, so participants can independently decide to commit if the coordinator disappears after this point — reducing, though not fully eliminating, the blocking window.</li><li><strong>Cost:</strong> every participant must hold locks (or reserved resources) from the prepare phase until the final decision arrives, which can be a long time under failure — this is real, ongoing resource contention across every involved system, for the whole duration of the transaction.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   coordinator                 participant-A (DB1)      participant-B (DB2)
+        |-- PREPARE -------------------&gt;|                        |
+        |-- PREPARE ----------------------------------------------&gt;|
+        |&lt;---------- YES (can commit) --|                        |
+        |&lt;---------- YES (can commit) ----------------------------|
+        |
+        |   (BOTH said yes - safe to commit)
+        |
+        |-- COMMIT ---------------------&gt;|                        |
+        |-- COMMIT ---------------------------------------------&gt;|
+        |&lt;---------- ACK ---------------|                        |
+        |&lt;---------- ACK -----------------------------------------|
+
+   FAILURE CASE: coordinator crashes HERE, after both said &quot;yes&quot;, before sending COMMIT
+        -&gt; participant-A and participant-B are BOTH stuck, holding locks, awaiting a decision</code></pre>
+<p>*Caption: every participant must agree before any commit happens, but if the coordinator fails right after that agreement, participants are left blocked, unable to decide on their own.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A coordinator runs the prepare phase across participants and collects their votes.</p>
+<p><strong>Level 2 — Commit only if every participant voted yes.</strong> Model the all-or-nothing decision.</p>
+<p><strong>Level 3 — Simulate the coordinator crashing between phases.</strong> Show participants left in a blocked, undecided state.</p>
+<pre><code class="lang-java">// TwoPhaseCommitDemo.java
+import java.util.*;
+
+public class TwoPhaseCommitDemo {
+
+    enum ParticipantState { IDLE, PREPARED, COMMITTED, ABORTED, BLOCKED }
+
+    static class Participant {
+        final String name;
+        ParticipantState state = ParticipantState.IDLE;
+        boolean willVoteYes;
+        Participant(String name, boolean willVoteYes) { this.name = name; this.willVoteYes = willVoteYes; }
+
+        // Level 1: phase 1 - can this participant commit? It locks resources in preparation.
+        boolean prepare() {
+            if (willVoteYes) {
+                state = ParticipantState.PREPARED;
+                System.out.println(&quot;  &quot; + name + &quot;: PREPARED (voted yes, resources locked)&quot;);
+                return true;
+            }
+            state = ParticipantState.ABORTED;
+            System.out.println(&quot;  &quot; + name + &quot;: voted NO&quot;);
+            return false;
+        }
+
+        void commit() { state = ParticipantState.COMMITTED; System.out.println(&quot;  &quot; + name + &quot;: COMMITTED&quot;); }
+        void abort() { state = ParticipantState.ABORTED; System.out.println(&quot;  &quot; + name + &quot;: ABORTED&quot;); }
+    }
+
+    // Level 2: run the full 2PC protocol - prepare everyone, then commit or abort based on the votes.
+    static void runTwoPhaseCommit(List&lt;Participant&gt; participants, boolean coordinatorCrashesBeforeDecision) {
+        System.out.println(&quot;PHASE 1: prepare&quot;);
+        boolean allVotedYes = true;
+        for (Participant p : participants) {
+            if (!p.prepare()) allVotedYes = false;
+        }
+
+        if (!allVotedYes) {
+            System.out.println(&quot;PHASE 2: at least one NO vote - aborting everyone&quot;);
+            for (Participant p : participants) if (p.state == ParticipantState.PREPARED) p.abort();
+            return;
+        }
+
+        // Level 3: simulate the coordinator crashing right after collecting all &quot;yes&quot; votes.
+        if (coordinatorCrashesBeforeDecision) {
+            System.out.println(&quot;COORDINATOR CRASHES before sending the commit decision!&quot;);
+            for (Participant p : participants) p.state = ParticipantState.BLOCKED;
+            return;
+        }
+
+        System.out.println(&quot;PHASE 2: everyone voted yes - committing everyone&quot;);
+        for (Participant p : participants) p.commit();
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;=== scenario 1: normal successful commit ===&quot;);
+        List&lt;Participant&gt; normalRun = List.of(new Participant(&quot;DB1&quot;, true), new Participant(&quot;DB2&quot;, true));
+        runTwoPhaseCommit(normalRun, false);
+        for (Participant p : normalRun) System.out.println(p.name + &quot; final state: &quot; + p.state);
+
+        System.out.println(&quot;=== scenario 2: coordinator crashes between phases ===&quot;);
+        List&lt;Participant&gt; crashRun = List.of(new Participant(&quot;DB1&quot;, true), new Participant(&quot;DB2&quot;, true));
+        runTwoPhaseCommit(crashRun, true);
+        for (Participant p : crashRun) System.out.println(p.name + &quot; final state: &quot; + p.state + &quot; (stuck holding locked resources, awaiting the coordinator&#x27;s decision)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>TwoPhaseCommitDemo.java</code>, then run <code>java TwoPhaseCommitDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li>In scenario 1, <code>runTwoPhaseCommit</code> calls <code>p.prepare()</code> on both <code>DB1</code> and <code>DB2</code>; since both were constructed with <code>willVoteYes = true</code>, both transition to <code>PREPARED</code> and the loop&#x27;s <code>allVotedYes</code> flag stays <code>true</code>.</li><li>With <code>allVotedYes</code> true and <code>coordinatorCrashesBeforeDecision</code> false, execution reaches the final &quot;PHASE 2: everyone voted yes&quot; branch, calling <code>commit()</code> on both participants, transitioning them to <code>COMMITTED</code> — the final printed states confirm a clean, successful distributed commit.</li><li>In scenario 2, both participants again vote yes during phase 1, reaching <code>PREPARED</code> exactly as before — from the participants&#x27; point of view, nothing about this scenario looks any different yet.</li><li>This time <code>coordinatorCrashesBeforeDecision</code> is <code>true</code>, so instead of reaching the commit branch, the method hits the crash-simulation branch, setting both participants&#x27; state to <code>BLOCKED</code> and returning immediately — no <code>commit()</code> or <code>abort()</code> is ever called on either participant.</li><li>The final printed states show both <code>DB1</code> and <code>DB2</code> stuck at <code>BLOCKED</code>, still holding whatever resources they locked during their own <code>prepare()</code> call, with no way to know on their own whether they should actually commit or abort — this is exactly the blocking problem: each participant did its part correctly, but the *coordinator&#x27;s* failure at the critical moment leaves the whole transaction, and every lock it holds, in limbo until the coordinator recovers and tells them what happened.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: the &quot;blocked&quot; participants in scenario 2 are not merely delayed — they typically must hold their locked resources (rows locked, connections reserved) for as long as the coordinator remains unavailable, which can stall unrelated work in the same database that needs those same resources; this real, cascading cost across multiple systems is the central reason many modern architectures avoid 2PC in favor of <a href="0173-saga-as-an-alternative-to-distributed-transactions.md">sagas</a>, even though a saga gives up strict atomicity in exchange.</blockquote>
+<ul><li>2PC gives strict all-or-nothing atomicity across multiple independent systems, at the cost of every participant locking resources for the full duration of the protocol.</li><li>The blocking problem — participants stuck holding locks if the coordinator crashes between phases — is 2PC&#x27;s fundamental weakness, and 3PC only partially mitigates it.</li><li>This cost is why 2PC has fallen out of favor for many real distributed systems, despite the theoretical appeal of true atomicity.</li><li>Related concepts: <a href="0173-saga-as-an-alternative-to-distributed-transactions.md">Saga as an alternative to distributed transactions</a> (the more commonly used alternative), <a href="0170-consensus-paxos-raft-overview.md">Consensus (Paxos / Raft) overview</a> (a related but distinct coordination problem: agreeing on one ordered log, not atomically committing a single cross-system transaction), <a href="0167-distributed-locks-redis-redlock-zookeeper.md">Distributed locks (Redis Redlock / ZooKeeper)</a> (the kind of resource a blocked participant is often still holding).</li></ul>
+  <div class="nav"><a class="prv" href="0171-zookeeper-etcd-as-coordination-services.html"><span class="mini">← Previous</span>ZooKeeper / etcd as coordination services</a><a class="nxt" href="0173-saga-as-an-alternative-to-distributed-transactions.html"><span class="mini">Next →</span>Saga as an alternative to distributed transactions</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t172";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

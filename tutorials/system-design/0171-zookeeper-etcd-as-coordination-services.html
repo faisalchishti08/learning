@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZooKeeper / etcd as coordination services — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 15. Concurrency & Coordination</div>
+  <div class="htitle">
+    <h1>ZooKeeper / etcd as coordination services</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>ZooKeeper</strong> and <strong>etcd</strong> are purpose-built services that give distributed applications a small, strongly-consistent, highly-available store for coordination data — configuration values, <a href="0167-distributed-locks-redis-redlock-zookeeper.md">distributed locks</a>, <a href="0169-leader-election.md">leader election</a>, and service discovery — all backed internally by a <a href="0170-consensus-paxos-raft-overview.md">consensus protocol</a> (ZooKeeper uses its own ZAB protocol; etcd uses Raft). Rather than every application team implementing its own consensus logic, these services provide it as a ready-made, reusable building block.</p>
+<h2>2. Why &amp; when</h2>
+<p>Correctly implementing consensus, leader election, and distributed locking from scratch is genuinely hard to get right — subtle timing bugs can silently break the very guarantees these mechanisms exist to provide. ZooKeeper and etcd exist so that application teams can build coordination features (a leader-only scheduled job, a shared lock, dynamic configuration all instances must agree on) on top of a battle-tested, already-correct implementation, instead of building their own. Use one of these whenever your system needs multiple instances to agree on shared state or elect a leader, and you would rather depend on a well-tested coordination service than reimplement that logic yourself.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>A small, hierarchical key-value store:</strong> ZooKeeper organizes data as a tree of &quot;znodes&quot; (like a mini file system); etcd is a flatter key-value store — both are meant for small amounts of coordination data, not general application data storage.</li><li><strong>Ephemeral nodes / leases:</strong> ZooKeeper&#x27;s ephemeral znodes (and etcd&#x27;s leases) are automatically deleted when the client&#x27;s session ends (e.g. the client crashes or its connection drops) — this is what makes locks and leader-election markers self-cleaning, without relying on a fixed TTL guess.</li><li><strong>Watches:</strong> clients can register a watch on a key or znode and be notified immediately when it changes — this is how followers detect a leader disappearing, or how a service discovers a configuration change, without polling.</li><li><strong>Sequential znodes / leader election recipes:</strong> ZooKeeper&#x27;s sequential znodes (each new node gets an auto-incrementing suffix) provide a simple, race-free way to implement leader election: whichever client created the znode with the lowest sequence number is the leader.</li><li><strong>Strong consistency backed by consensus:</strong> because both services use a real consensus protocol internally, reads and writes across the cluster are strongly consistent — this is precisely why they are trusted for coordination, where an inconsistent view could cause two nodes to both think they are the leader.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   3 application instances, all trying to become leader via etcd/ZooKeeper
+
+   instance-A ---- create ephemeral lock node &quot;/leader&quot; ----&gt; etcd/ZooKeeper
+   instance-B ---- create ephemeral lock node &quot;/leader&quot; ----&gt; (already exists - FAILS)
+   instance-C ---- create ephemeral lock node &quot;/leader&quot; ----&gt; (already exists - FAILS)
+
+   instance-A is now leader; instance-B and instance-C register a WATCH on &quot;/leader&quot;
+
+   instance-A CRASHES -&gt; its session ends -&gt; &quot;/leader&quot; ephemeral node is AUTOMATICALLY deleted
+                                    |
+                     watch fires on instance-B and instance-C
+                                    |
+                     both race to create &quot;/leader&quot; again -&gt; instance-B wins this time</code></pre>
+<p>*Caption: the ephemeral node ties the lock directly to the holder&#x27;s session, so a crash cleans it up automatically, and watches let the other instances react immediately.*</p>
+<h2>5. Runnable example</h2>
+<p>This models the ZooKeeper/etcd ephemeral-node + watch mechanism in-process; the &quot;How to run&quot; note shows the real client API calls.</p>
+<p><strong>Level 1 — Basic.</strong> Create a lock node only if it does not already exist, modeling <code>create</code> on a ZooKeeper znode.</p>
+<p><strong>Level 2 — Ephemeral cleanup on session end.</strong> The lock node is automatically removed when its owning client&#x27;s session ends.</p>
+<p><strong>Level 3 — Watches notify the other clients immediately.</strong> Register a watch that fires as soon as the lock node is deleted, without polling.</p>
+<pre><code class="lang-java">// CoordinationServiceDemo.java
+import java.util.*;
+import java.util.function.*;
+
+public class CoordinationServiceDemo {
+
+    // Models a tiny ZooKeeper/etcd-like coordination store.
+    static class CoordinationStore {
+        String lockOwnerSessionId = null;
+        List&lt;Consumer&lt;String&gt;&gt; watchesOnLockNode = new ArrayList&lt;&gt;(); // Level 3: registered callbacks
+
+        // Level 1: create the ephemeral lock node only if it does not already exist.
+        boolean tryCreateLock(String sessionId) {
+            if (lockOwnerSessionId != null) return false;
+            lockOwnerSessionId = sessionId;
+            return true;
+        }
+
+        // Level 3: register a watch, fired when the lock node is deleted.
+        void watchLockNode(Consumer&lt;String&gt; onDeleted) {
+            watchesOnLockNode.add(onDeleted);
+        }
+
+        // Level 2: a client session ending automatically deletes its ephemeral node, then fires watches.
+        void endSession(String sessionId) {
+            if (sessionId.equals(lockOwnerSessionId)) {
+                System.out.println(&quot;session &quot; + sessionId + &quot; ended - its ephemeral lock node is automatically removed.&quot;);
+                lockOwnerSessionId = null;
+                for (Consumer&lt;String&gt; watch : watchesOnLockNode) {
+                    watch.accept(sessionId); // notify every watcher immediately, no polling needed
+                }
+                watchesOnLockNode.clear();
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        CoordinationStore store = new CoordinationStore();
+
+        // Level 1: instance-A wins the race to create the lock node - becomes leader.
+        boolean aWon = store.tryCreateLock(&quot;session-A&quot;);
+        boolean bWon = store.tryCreateLock(&quot;session-B&quot;);
+        boolean cWon = store.tryCreateLock(&quot;session-C&quot;);
+        System.out.println(&quot;instance-A became leader: &quot; + aWon);
+        System.out.println(&quot;instance-B became leader: &quot; + bWon + &quot; (lock already held)&quot;);
+        System.out.println(&quot;instance-C became leader: &quot; + cWon + &quot; (lock already held)&quot;);
+
+        // Level 3: instance-B and instance-C register watches instead of polling.
+        store.watchLockNode(deadSessionId -&gt; System.out.println(&quot;  instance-B&#x27;s watch fired: session &quot; + deadSessionId + &quot; is gone, attempting to become leader...&quot;));
+        store.watchLockNode(deadSessionId -&gt; System.out.println(&quot;  instance-C&#x27;s watch fired: session &quot; + deadSessionId + &quot; is gone, attempting to become leader...&quot;));
+
+        // Level 2: instance-A crashes - its session ends.
+        System.out.println(&quot;instance-A crashes (session-A ends)...&quot;);
+        store.endSession(&quot;session-A&quot;);
+
+        // Now instance-B and instance-C race again for the freed lock.
+        boolean bWonNow = store.tryCreateLock(&quot;session-B&quot;);
+        System.out.println(&quot;instance-B becomes leader now: &quot; + bWonNow);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>CoordinationServiceDemo.java</code>, then run <code>java CoordinationServiceDemo.java</code>. (Real etcd: acquire a lease with <code>client.lease().grant(ttl)</code>, then <code>client.getKVClient().put(key, value, PutOption.newBuilder().withLeaseId(leaseId).build())</code>; the key is automatically removed when the lease expires or its holder&#x27;s connection drops, and <code>client.getWatchClient().watch(key, ...)</code> delivers change notifications.)</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>store.tryCreateLock(&quot;session-A&quot;)</code> finds <code>lockOwnerSessionId == null</code>, so it sets it to <code>&quot;session-A&quot;</code> and returns <code>true</code> — instance-A becomes leader; the subsequent calls for <code>&quot;session-B&quot;</code> and <code>&quot;session-C&quot;</code> both find <code>lockOwnerSessionId</code> already set and return <code>false</code>.</li><li>Both instance-B and instance-C register watch callbacks via <code>watchLockNode</code>, storing their <code>Consumer&lt;String&gt;</code> lambdas in <code>watchesOnLockNode</code> — this models registering an interest in changes to the lock node, instead of repeatedly polling to check if it still exists.</li><li><code>store.endSession(&quot;session-A&quot;)</code> checks whether <code>&quot;session-A&quot;</code> matches <code>lockOwnerSessionId</code>, which it does; this models instance-A&#x27;s connection or process ending, so its ephemeral lock node is automatically removed by setting <code>lockOwnerSessionId = null</code>.</li><li>Immediately after removing the lock, the method iterates every registered watch and calls it with the dead session&#x27;s ID — both instance-B&#x27;s and instance-C&#x27;s watch callbacks fire right away, printing their &quot;attempting to become leader&quot; messages, with no polling delay at all.</li><li><code>store.tryCreateLock(&quot;session-B&quot;)</code> is then called (modeling instance-B&#x27;s watch callback reacting by immediately trying to become the new leader); since <code>lockOwnerSessionId</code> was just cleared, this call succeeds, and instance-B becomes the new leader — completing an automatic, crash-triggered leadership handoff.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: a watch typically fires only once per registration in real ZooKeeper (you must re-register it after it fires to keep watching); forgetting to re-register after handling a watch event means you silently stop receiving future notifications on that node, which can look like the coordination service &quot;stopped working&quot; when really your own client just stopped listening.</blockquote>
+<ul><li>ZooKeeper and etcd give applications ready-made, battle-tested primitives (locks, leader election, watches) built on a real consensus protocol underneath.</li><li>Ephemeral nodes/leases tie coordination state directly to a client&#x27;s live session, so a crash cleans up automatically — no fixed TTL has to be guessed.</li><li>Watches let other clients react to a change immediately, without the delay and overhead of polling.</li><li>Related concepts: <a href="0167-distributed-locks-redis-redlock-zookeeper.md">Distributed locks (Redis Redlock / ZooKeeper)</a> (the specific pattern this session-based approach improves on), <a href="0169-leader-election.md">Leader election</a> (the classic use case these services provide a recipe for), <a href="0170-consensus-paxos-raft-overview.md">Consensus (Paxos / Raft) overview</a> (the underlying protocol making these services strongly consistent).</li></ul>
+  <div class="nav"><a class="prv" href="0170-consensus-paxos-raft-overview.html"><span class="mini">← Previous</span>Consensus (Paxos / Raft) overview</a><a class="nxt" href="0172-distributed-transactions-2pc-3pc-their-cost.html"><span class="mini">Next →</span>Distributed transactions (2PC / 3PC) & their cost</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t171";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

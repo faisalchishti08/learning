@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Consensus (Paxos / Raft) overview — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 15. Concurrency & Coordination</div>
+  <div class="htitle">
+    <h1>Consensus (Paxos / Raft) overview</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Consensus</strong> algorithms let a group of nodes agree on a single value (or a single, ordered sequence of values) even when some nodes fail or messages are delayed, and even when nodes disagree about who the current leader is for a while. <strong>Paxos</strong> is the foundational, famously hard-to-understand algorithm proving this is possible; <strong>Raft</strong> is a later algorithm designed explicitly to be easier to understand and implement while providing the same guarantee, and is what most modern systems (etcd, many replicated databases) actually use.</p>
+<h2>2. Why &amp; when</h2>
+<p>A system with multiple copies of the same data (for durability) needs every copy to agree on the exact same sequence of changes, in the exact same order, even if some copies are temporarily unreachable or a leader crashes mid-decision. Without a rigorous consensus protocol, ad-hoc coordination easily produces two nodes disagreeing about what happened, or a &quot;split brain&quot; where two nodes both believe they are in charge. Consensus algorithms formally guarantee this cannot happen, at the cost of requiring a majority of nodes to agree before any decision is considered final. Use (or rely on a library implementing) consensus whenever building a system that must keep multiple nodes&#x27; state provably consistent despite failures — most people use it indirectly, via etcd, ZooKeeper, or a replicated database&#x27;s internals, rather than implementing Paxos or Raft from scratch.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>A single elected leader per term:</strong> Raft simplifies coordination by having one leader per term responsible for proposing the order of all changes; only the leader accepts new writes, and it replicates them to followers.</li><li><strong>Majority (quorum) commit:</strong> a change is only considered permanently committed once a majority of nodes have durably stored it — this is what lets the system survive a minority of nodes failing without losing any committed data.</li><li><strong>Log replication:</strong> the leader appends every change to its own log and sends it to followers, who append it to their own logs in the same order; once a majority have acknowledged, the leader tells everyone the entry is committed.</li><li><strong>Handling leader failure:</strong> if the leader disappears, a new <a href="0169-leader-election.md">leader election</a> happens, and a critical safety rule ensures the new leader has every entry the previous leader had already committed — it cannot &quot;lose&quot; committed data even across a leadership change.</li><li><strong>Split-brain prevention:</strong> because both leader election and commits require an actual majority, at most one leader can ever get a majority to agree with it at the same time — this is the core safety property consensus provides.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   leader (term 5)
+        |
+        |-- AppendEntry(&quot;x=1&quot;) --&gt;  follower-B
+        |-- AppendEntry(&quot;x=1&quot;) --&gt;  follower-C
+        |
+        |&lt;---------- ACK -----------follower-B
+        |&lt;---------- ACK -----------follower-C
+        |
+   2 of 3 nodes (a majority) acknowledged -&gt; &quot;x=1&quot; is now COMMITTED
+        |
+        |-- commit notification --&gt; follower-B, follower-C
+
+   if leader crashes AFTER commit: new leader (elected from a majority) still has &quot;x=1&quot; in its log
+                                     -&gt; no committed data is lost</code></pre>
+<p>*Caption: an entry is only committed once a majority of nodes have it in their log, which is exactly what guarantees it survives any future leader change.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A leader appends an entry to its own log and replicates it to followers.</p>
+<p><strong>Level 2 — Majority-based commit.</strong> An entry is only marked committed once a majority of nodes have acknowledged it.</p>
+<p><strong>Level 3 — Leader failure and safe re-election.</strong> A new leader is elected from the nodes that already have the committed entry, so nothing committed is ever lost.</p>
+<pre><code class="lang-java">// ConsensusDemo.java
+import java.util.*;
+
+public class ConsensusDemo {
+
+    static class Node {
+        final String id;
+        List&lt;String&gt; log = new ArrayList&lt;&gt;();
+        boolean alive = true;
+        Node(String id) { this.id = id; }
+    }
+
+    static int totalNodes;
+
+    // Level 1 &amp; 2: leader appends to its own log, replicates to followers, and commits on majority ack.
+    static boolean appendAndCommit(Node leader, List&lt;Node&gt; followers, String entry) {
+        leader.log.add(entry); // leader appends to its own log first
+        int acks = 1; // leader counts as having it
+        for (Node follower : followers) {
+            if (follower.alive) {
+                follower.log.add(entry); // replicate to this follower
+                acks++;
+            }
+        }
+        int majorityNeeded = totalNodes / 2 + 1;
+        boolean committed = acks &gt;= majorityNeeded;
+        System.out.println(&quot;appending \&quot;&quot; + entry + &quot;\&quot;: &quot; + acks + &quot;/&quot; + totalNodes + &quot; acks, majority needed=&quot; + majorityNeeded + &quot; -&gt; &quot; + (committed ? &quot;COMMITTED&quot; : &quot;NOT committed&quot;));
+        return committed;
+    }
+
+    // Level 3: elect a new leader ONLY from nodes that already have every committed entry - safety guarantee.
+    static Node electNewLeader(List&lt;Node&gt; nodes, List&lt;String&gt; committedLog) {
+        for (Node n : nodes) {
+            if (n.alive &amp;&amp; n.log.size() &gt;= committedLog.size() &amp;&amp; n.log.subList(0, committedLog.size()).equals(committedLog)) {
+                return n;
+            }
+        }
+        throw new IllegalStateException(&quot;no alive node has the full committed log - should never happen with a correct majority commit&quot;);
+    }
+
+    public static void main(String[] args) {
+        Node leader = new Node(&quot;node-A&quot;);
+        Node followerB = new Node(&quot;node-B&quot;);
+        Node followerC = new Node(&quot;node-C&quot;);
+        List&lt;Node&gt; allNodes = List.of(leader, followerB, followerC);
+        totalNodes = allNodes.size();
+        List&lt;Node&gt; followers = List.of(followerB, followerC);
+
+        List&lt;String&gt; committedEntries = new ArrayList&lt;&gt;();
+        if (appendAndCommit(leader, followers, &quot;x=1&quot;)) committedEntries.add(&quot;x=1&quot;);
+        if (appendAndCommit(leader, followers, &quot;y=2&quot;)) committedEntries.add(&quot;y=2&quot;);
+
+        System.out.println(&quot;committed log so far: &quot; + committedEntries);
+
+        // Level 3: the leader crashes right after &quot;y=2&quot; was committed.
+        leader.alive = false;
+        System.out.println(&quot;leader (node-A) crashed. electing a new leader...&quot;);
+        Node newLeader = electNewLeader(allNodes, committedEntries);
+        System.out.println(&quot;new leader elected: &quot; + newLeader.id + &quot;, with log: &quot; + newLeader.log + &quot; (has every committed entry - none lost)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> save as <code>ConsensusDemo.java</code>, then run <code>java ConsensusDemo.java</code>.</p>
+<h2>6. Walkthrough</h2>
+<ol><li><code>appendAndCommit(leader, followers, &quot;x=1&quot;)</code> first appends <code>&quot;x=1&quot;</code> to <code>leader.log</code>, then loops through <code>followers</code>, appending it to each alive follower&#x27;s log and counting acknowledgments — with both <code>followerB</code> and <code>followerC</code> alive, <code>acks</code> reaches 3 (leader plus both followers).</li><li><code>majorityNeeded = totalNodes / 2 + 1 = 3 / 2 + 1 = 2</code>; since <code>acks (3) &gt;= majorityNeeded (2)</code>, the method prints &quot;COMMITTED&quot; and returns <code>true</code>, so <code>&quot;x=1&quot;</code> is added to <code>committedEntries</code>.</li><li>The same happens for <code>&quot;y=2&quot;</code>, so <code>committedEntries</code> becomes <code>[&quot;x=1&quot;, &quot;y=2&quot;]</code>, and at this point every one of the three nodes&#x27; logs contains both entries, in the same order.</li><li><code>leader.alive = false</code> simulates the leader crashing right after committing <code>&quot;y=2&quot;</code>; <code>electNewLeader</code> then scans <code>allNodes</code> for one that is alive and whose log&#x27;s first <code>committedLog.size()</code> entries exactly match <code>committedEntries</code> — both <code>followerB</code> and <code>followerC</code> qualify, since they each replicated both entries before the crash.</li><li>The method returns the first qualifying node, <code>followerB</code>, as the new leader; its printed log shows <code>[&quot;x=1&quot;, &quot;y=2&quot;]</code> still fully intact — demonstrating the core safety guarantee: because the earlier commits required a majority (which necessarily includes at least one surviving node after a single-node failure), no committed data was lost when the original leader disappeared.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote>Gotcha: this simplified demo elects a new leader from *any* node holding the full committed log, but real Raft&#x27;s election rule is more precise — it also compares log term numbers and lengths to ensure the new leader has the most up-to-date log among the *voting majority*, not just any node that happens to be alive; a naive &quot;any node with the committed prefix&quot; rule can go wrong once uncommitted, divergent entries are involved, which real Raft&#x27;s full election and log-matching rules are specifically designed to resolve correctly.</blockquote>
+<ul><li>Consensus guarantees that a majority of nodes agree on both the current leader and the exact, ordered sequence of committed changes, even across failures.</li><li>An entry is only safely committed once a majority of nodes have durably stored it — this majority requirement is the entire basis of the safety guarantee.</li><li>Raft is designed to be more understandable and implementable than Paxos, while providing the same fundamental guarantees, which is why most modern systems build on Raft (or a Raft-like protocol) rather than classic Paxos.</li><li>Related concepts: <a href="0169-leader-election.md">Leader election</a> (a component consensus protocols formalize and make safe), <a href="0171-zookeeper-etcd-as-coordination-services.md">ZooKeeper / etcd as coordination services</a> (production systems built on top of a consensus protocol like this), <a href="0172-distributed-transactions-2pc-3pc-their-cost.md">Distributed transactions (2PC / 3PC) &amp; their cost</a> (a related but distinct coordination problem: atomic multi-node commits, not agreeing on one ordered log).</li></ul>
+  <div class="nav"><a class="prv" href="0169-leader-election.html"><span class="mini">← Previous</span>Leader election</a><a class="nxt" href="0171-zookeeper-etcd-as-coordination-services.html"><span class="mini">Next →</span>ZooKeeper / etcd as coordination services</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t170";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
