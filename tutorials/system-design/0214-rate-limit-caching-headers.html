@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rate-limit & caching headers — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 19. API Design</div>
+  <div class="htitle">
+    <h1>Rate-limit & caching headers</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p><strong>Rate-limit headers</strong> (<code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, <code>X-RateLimit-Reset</code>, <code>Retry-After</code>) tell a client how many requests it is allowed, how many it has left, and when the limit resets — communicated as HTTP headers on every response, not just when the limit is hit. <strong>Caching headers</strong> (<code>Cache-Control</code>, <code>ETag</code>, <code>Last-Modified</code>) tell a client and any intermediate cache (a browser, a CDN, a proxy) whether a response can be reused without asking the server again, and how to check if a cached copy is still valid.</p>
+<h2>2. Why &amp; when</h2>
+<p>Without rate-limit headers, a client only discovers it hit a limit when a request is rejected — it has no way to pace itself proactively, so its natural behavior is to keep hammering the API until it gets blocked. Publishing the current limit and remaining count on every response, not just the rejection, lets well-behaved clients back off before they are throttled.</p>
+<p>Without caching headers, a client re-fetches data it already has and that has not changed, wasting bandwidth and server capacity on both sides. <code>ETag</code> and <code>Cache-Control</code> let a client (or an intermediate cache) know precisely when it is safe to reuse a stored response and when it must ask the server again. Add rate-limit headers to any API with usage limits (which should be nearly all public APIs, to protect against abuse and runaway clients). Add caching headers to any endpoint whose data does not change on every single request — which includes most <code>GET</code> endpoints.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong><code>X-RateLimit-Limit</code> / <code>X-RateLimit-Remaining</code> / <code>X-RateLimit-Reset</code>.</strong> Sent on *every* response, these tell the client the total allowance for the current window, how many requests remain, and when (as a Unix timestamp or seconds) the window resets — this is not a standardized header name across all APIs, but this pattern is the de facto convention.</li><li><strong><code>429 Too Many Requests</code> + <code>Retry-After</code>.</strong> When the limit is exceeded, the server returns status <code>429</code> and a <code>Retry-After</code> header telling the client exactly how long to wait before retrying — the client should not guess or retry immediately.</li><li><strong><code>Cache-Control</code>.</strong> Directives like <code>max-age=60</code> (cacheable for 60 seconds), <code>no-store</code> (never cache — for sensitive data), or <code>private</code> (cacheable only by the end client, not a shared proxy/CDN) control caching behavior declaratively.</li><li><strong><code>ETag</code> + conditional requests.</strong> An <code>ETag</code> is an opaque identifier (often a hash) for the current version of a resource. A client that already has a cached copy sends <code>If-None-Match: &lt;etag&gt;</code> on its next request; if the resource has not changed, the server returns <code>304 Not Modified</code> with an empty body instead of re-sending the full response.</li><li><strong><code>Last-Modified</code> + <code>If-Modified-Since</code>.</strong> A timestamp-based alternative to <code>ETag</code>, working the same way — the client sends back the last-known modification time, and the server replies <code>304</code> if nothing has changed since.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>  RATE LIMITING                              CONDITIONAL CACHING (ETag)
+
+  GET /orders                                GET /orders/5
+  &lt;- 200 OK                                  &lt;- 200 OK
+     X-RateLimit-Limit: 100                     ETag: &quot;v3-a1b2c3&quot;
+     X-RateLimit-Remaining: 63                   Cache-Control: max-age=60
+     X-RateLimit-Reset: 1699999999                (client stores response + ETag)
+
+  ... 63 more requests later ...             ... 60s later, client re-checks ...
+
+  GET /orders                                GET /orders/5
+  &lt;- 429 Too Many Requests                    If-None-Match: &quot;v3-a1b2c3&quot;
+     Retry-After: 42                          &lt;- 304 Not Modified  (no body sent -
+     (client MUST wait 42s                       resource unchanged, client&#x27;s
+      before retrying)                            cached copy is still valid)</code></pre>
+<p>*Caption: rate-limit headers make throttling predictable rather than a surprise; <code>ETag</code> plus a conditional request lets the server confirm &quot;nothing changed&quot; cheaply, without resending the full payload.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A rate limiter that tracks remaining requests per client and exposes the standard headers, rejecting with <code>429</code> once exhausted.</p>
+<p><strong>Level 2 — Intermediate.</strong> An <code>ETag</code>-based cache: the server computes a hash of the resource, and a conditional request with a matching <code>If-None-Match</code> gets a cheap <code>304</code> instead of the full body.</p>
+<p><strong>Level 3 — Advanced.</strong> Combine both: a client makes repeated conditional requests, consuming rate-limit budget only on real fetches, and the resource changing invalidates the cached <code>ETag</code>.</p>
+<pre><code class="lang-java">// RateLimitCachingDemo.java
+import java.util.*;
+
+public class RateLimitCachingDemo {
+
+    // ---------- Level 1: rate limiting with standard headers ----------
+    static class RateLimiter {
+        int limit;
+        Map&lt;String, Integer&gt; remainingByClient = new HashMap&lt;&gt;();
+        RateLimiter(int limit) { this.limit = limit; }
+
+        String handleRequest(String clientId) {
+            int remaining = remainingByClient.getOrDefault(clientId, limit);
+            if (remaining &lt;= 0) {
+                return &quot;429 Too Many Requests, Retry-After: 42&quot;;
+            }
+            remaining--;
+            remainingByClient.put(clientId, remaining);
+            return &quot;200 OK, X-RateLimit-Limit: &quot; + limit + &quot;, X-RateLimit-Remaining: &quot; + remaining;
+        }
+    }
+
+    // ---------- Level 2: ETag-based conditional caching ----------
+    record Order(String id, double amount, String status) {}
+
+    static class OrderResource {
+        Order order;
+        OrderResource(Order order) { this.order = order; }
+
+        String etag() { return &quot;\&quot;&quot; + Objects.hash(order) + &quot;\&quot;&quot;; } // hash of current content = ETag
+
+        String handleGet(String ifNoneMatch) {
+            String currentEtag = etag();
+            if (currentEtag.equals(ifNoneMatch)) {
+                return &quot;304 Not Modified (ETag: &quot; + currentEtag + &quot;, no body sent)&quot;;
+            }
+            return &quot;200 OK, ETag: &quot; + currentEtag + &quot;, body: &quot; + order;
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Level 1 - rate limiting, 3-request limit:&quot;);
+        RateLimiter limiter = new RateLimiter(3);
+        for (int i = 1; i &lt;= 4; i++) {
+            System.out.println(&quot;  request &quot; + i + &quot;: &quot; + limiter.handleRequest(&quot;client-A&quot;));
+        }
+
+        System.out.println(&quot;\nLevel 2 - ETag conditional caching:&quot;);
+        OrderResource resource = new OrderResource(new Order(&quot;5&quot;, 42.00, &quot;PENDING&quot;));
+        String firstResponse = resource.handleGet(null); // no cached ETag yet
+        System.out.println(&quot;  first GET (no If-None-Match): &quot; + firstResponse);
+        String cachedEtag = resource.etag();
+        System.out.println(&quot;  client stores ETag: &quot; + cachedEtag);
+        System.out.println(&quot;  second GET (If-None-Match: &quot; + cachedEtag + &quot;): &quot; + resource.handleGet(cachedEtag));
+
+        System.out.println(&quot;\nLevel 3 - resource changes, cached ETag becomes stale, THEN combine with rate limiting:&quot;);
+        resource.order = new Order(&quot;5&quot;, 42.00, &quot;SHIPPED&quot;); // status changed - content changed
+        System.out.println(&quot;  resource updated server-side (status: PENDING -&gt; SHIPPED)&quot;);
+        System.out.println(&quot;  GET with STALE If-None-Match: &quot; + resource.handleGet(cachedEtag) +
+            &quot;  &lt;- ETag no longer matches, full body returned&quot;);
+
+        RateLimiter limiter2 = new RateLimiter(2);
+        OrderResource resource2 = new OrderResource(new Order(&quot;6&quot;, 10.00, &quot;PENDING&quot;));
+        String etag2 = null;
+        for (int i = 1; i &lt;= 3; i++) {
+            String rateResult = limiter2.handleRequest(&quot;client-B&quot;);
+            if (rateResult.startsWith(&quot;429&quot;)) {
+                System.out.println(&quot;  request &quot; + i + &quot;: &quot; + rateResult + &quot; (never reached the cache check)&quot;);
+                continue;
+            }
+            String cacheResult = resource2.handleGet(etag2);
+            System.out.println(&quot;  request &quot; + i + &quot;: &quot; + rateResult + &quot; | &quot; + cacheResult);
+            etag2 = resource2.etag();
+        }
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java RateLimitCachingDemo.java</code> (JDK 17+, single file, no dependencies).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1:</strong> <code>limiter.handleRequest(&quot;client-A&quot;)</code> is called four times in a row. The first three calls find <code>remaining &gt; 0</code>, decrement it, and return a <code>200 OK</code> with the current <code>X-RateLimit-Remaining</code> value counting down from 2 to 0. The <strong>fourth</strong> call finds <code>remaining &lt;= 0</code> and returns <code>&quot;429 Too Many Requests, Retry-After: 42&quot;</code> — the client now knows exactly how long to wait, rather than guessing.</li><li><strong>Level 2:</strong> <code>resource.handleGet(null)</code> is the client&#x27;s first request, with no <code>If-None-Match</code> header (it has nothing cached yet). Since <code>null</code> never equals <code>currentEtag</code>, the method returns the full <code>200 OK</code> body along with the resource&#x27;s current <code>ETag</code>.</li><li>The client stores that <code>ETag</code> (<code>cachedEtag</code>) and, on its next request, sends it back as <code>If-None-Match</code>. <code>resource.handleGet(cachedEtag)</code> now finds <code>currentEtag.equals(ifNoneMatch)</code> true — the resource has not changed since the client last fetched it — and returns <code>&quot;304 Not Modified&quot;</code> with no body at all.</li><li><strong>Level 3:</strong> <code>resource.order</code> is reassigned to a new <code>Order</code> with <code>status: &quot;SHIPPED&quot;</code> instead of <code>&quot;PENDING&quot;</code> — the underlying data changed. Calling <code>resource.handleGet(cachedEtag)</code> again with the client&#x27;s now-stale <code>ETag</code> finds <code>currentEtag</code> (recomputed from the new order) no longer equals <code>cachedEtag</code>, so it returns a full <code>200 OK</code> with the updated body — the change in content is exactly what invalidated the cache.</li><li>The final loop combines both mechanisms with a 2-request limit: requests 1 and 2 pass the rate check and proceed to the cache check (request 1 gets a full body since <code>etag2</code> starts <code>null</code>; request 2 sends back the <code>ETag</code> captured after request 1 and gets <code>304</code>). Request 3 is rejected by <code>limiter2</code> with <code>429</code> before the cache logic ever runs — the printed note makes explicit that a rate-limited request never reaches the cache check at all, since the server should reject cheaply, before doing any resource-specific work.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> rate-limit counters must be safe under concurrent requests from the same client — a naive read-then-write (as shown here for clarity) has a race condition under real concurrency. Production rate limiters use atomic operations (e.g. Redis <code>INCR</code>) specifically to avoid two simultaneous requests both reading the same &quot;remaining&quot; value before either decrements it.</blockquote>
+<ul><li>Send rate-limit headers on every response, not just on the <code>429</code> — this lets well-behaved clients self-throttle before they are ever blocked.</li><li>Always send <code>Retry-After</code> on a <code>429</code> (or a <code>503</code>) — a specific wait time is far more useful to a client than a bare rejection it must guess how to handle.</li><li>Use <code>ETag</code> (content-based) when the resource&#x27;s exact byte content matters for equality; use <code>Last-Modified</code> (time-based) when a coarser, timestamp-based check is good enough and cheaper to compute.</li><li>These headers are what make <a href="0210-idempotency-safe-methods.md">idempotency</a>-safe retries and <a href="0209-pagination-filtering-sorting.md">pagination</a> efficient in practice — a client that respects <code>Retry-After</code> and caches with <code>ETag</code> puts far less load on the server than one that blindly polls.</li></ul>
+  <div class="nav"><a class="prv" href="0213-grpc-streaming-apis.html"><span class="mini">← Previous</span>gRPC & streaming APIs</a><a class="nxt" href="0215-api-gateway-bff-composition.html"><span class="mini">Next →</span>API gateway & BFF composition</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t214";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

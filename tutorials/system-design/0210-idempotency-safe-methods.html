@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Idempotency & safe methods — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 19. API Design</div>
+  <div class="htitle">
+    <h1>Idempotency & safe methods</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>A method is <strong>safe</strong> if calling it never changes server state — only reads (<code>GET</code>, <code>HEAD</code>). A method is <strong>idempotent</strong> if calling it multiple times with the same input produces the same end state as calling it once — repeating it is not harmful, even though it may still change state on the first call (<code>PUT</code>, <code>DELETE</code>, <code>GET</code>). <code>POST</code> is neither safe nor idempotent by default: calling it twice can create two resources instead of one.</p>
+<h2>2. Why &amp; when</h2>
+<p>Networks fail in ways that leave the client unsure whether a request succeeded — a timeout might mean the server never got the request, or it might mean the server processed it and the response was lost on the way back. If the client&#x27;s only safe response to &quot;I don&#x27;t know if that worked&quot; is to retry, the method&#x27;s idempotency determines whether that retry is safe.</p>
+<p>This matters for every API you build, because clients — and the retry logic inside HTTP libraries, proxies, and load balancers — will retry ambiguous failures whether you plan for it or not. <code>PUT</code>, <code>DELETE</code>, and <code>GET</code> are automatically safe to retry because of their semantics. <code>POST</code>, most often used for &quot;create a resource,&quot; is not automatically safe — retrying a timed-out <code>POST /orders</code> risks creating a second order for the same purchase. Design an idempotency strategy for <code>POST</code> wherever a duplicate side effect (a duplicate charge, a duplicate order) would be a real problem.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Safe methods change nothing.</strong> <code>GET /orders/5</code> can be called any number of times with zero side effects — this is what lets browsers, proxies, and caches retry or prefetch <code>GET</code> requests freely.</li><li><strong>Idempotent methods are safe to retry, but may still write.</strong> <code>PUT /orders/5</code> with the same body, called once or five times, leaves the resource in the same final state — it just overwrites it repeatedly with the same value. <code>DELETE /orders/5</code> called a second time still leaves the order deleted (the second call may return <code>404</code> instead of <code>200</code>, but the *state* — &quot;order 5 does not exist&quot; — did not change further).</li><li><strong><code>POST</code> is neither, by default.</strong> <code>POST /orders</code> typically creates a new resource with a server-generated ID on every call — calling it twice creates two resources, not one confirmed resource.</li><li><strong>Client-generated idempotency keys make <code>POST</code> idempotent.</strong> The client generates a unique key (a UUID) per logical operation and sends it in a header (<code>Idempotency-Key: &lt;uuid&gt;</code>). The server stores the key alongside the result of the first request; if the same key arrives again, the server returns the stored result instead of creating a second resource.</li><li><strong>Idempotency key storage needs a expiry.</strong> Keys are usually kept for a bounded window (e.g. 24 hours) — long enough to cover realistic retry scenarios, short enough not to grow the storage unboundedly.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>  WITHOUT an idempotency key                 WITH an idempotency key
+
+  Client -- POST /orders ------&gt; Server      Client -- POST /orders --------&gt; Server
+            (timeout, no response received)            Idempotency-Key: abc-123
+  Client -- POST /orders ------&gt; Server                (timeout, no response received)
+            (retries, unsure if first        Client -- POST /orders --------&gt; Server
+             one succeeded)                             Idempotency-Key: abc-123
+                                                          (server sees key &quot;abc-123&quot;
+  Result: possibly TWO orders                             already has a stored result -
+          created for one purchase                        returns THAT result, creates
+                                                            nothing new)
+
+                                             Result: exactly ONE order created,
+                                                     regardless of how many retries</code></pre>
+<p>*Caption: the idempotency key turns a naturally unsafe <code>POST</code> into a request the client can retry as many times as needed, with a guaranteed single effect.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Show <code>PUT</code> and <code>DELETE</code> behaving idempotently under repeated calls, and plain <code>POST</code> not.</p>
+<p><strong>Level 2 — Intermediate.</strong> Add an idempotency-key store so repeated <code>POST</code> calls with the same key return the original result instead of creating a duplicate.</p>
+<p><strong>Level 3 — Advanced.</strong> Simulate a network retry scenario end to end: client sends, &quot;loses&quot; the response, retries with the same key, and still ends up with exactly one created resource.</p>
+<pre><code class="lang-java">// IdempotencyDemo.java
+import java.util.*;
+
+public class IdempotencyDemo {
+
+    record Order(String id, double amount) {}
+
+    static Map&lt;String, Order&gt; orders = new HashMap&lt;&gt;();
+    static int nextOrderId = 1;
+
+    // ---------- Level 1: PUT and DELETE are naturally idempotent; plain POST is not ----------
+    static String put(String id, double amount) {
+        orders.put(id, new Order(id, amount));
+        return &quot;PUT /orders/&quot; + id + &quot; -&gt; 200 OK, state: &quot; + orders.get(id);
+    }
+    static String delete(String id) {
+        boolean existed = orders.remove(id) != null;
+        return &quot;DELETE /orders/&quot; + id + &quot; -&gt; &quot; + (existed ? &quot;200 OK, deleted&quot; : &quot;404 Not Found&quot;) +
+            &quot; (either way, order &quot; + id + &quot; does not exist afterward)&quot;;
+    }
+    static String plainPost(double amount) {
+        String id = &quot;ORD-&quot; + (nextOrderId++);
+        orders.put(id, new Order(id, amount));
+        return &quot;POST /orders -&gt; 201 Created, NEW resource: &quot; + orders.get(id);
+    }
+
+    // ---------- Level 2: idempotency-key store makes POST safe to retry ----------
+    static Map&lt;String, String&gt; idempotencyStore = new HashMap&lt;&gt;(); // key -&gt; response already given
+
+    static String postWithIdempotencyKey(String idempotencyKey, double amount) {
+        if (idempotencyStore.containsKey(idempotencyKey)) {
+            return idempotencyStore.get(idempotencyKey) + &quot;  (returned from idempotency store, nothing new created)&quot;;
+        }
+        String id = &quot;ORD-&quot; + (nextOrderId++);
+        orders.put(id, new Order(id, amount));
+        String response = &quot;201 Created, order: &quot; + orders.get(id);
+        idempotencyStore.put(idempotencyKey, response);
+        return response;
+    }
+
+    // ---------- Level 3: simulate a client retry after a &quot;lost&quot; response ----------
+    static void simulateRetryScenario() {
+        String key = UUID.randomUUID().toString();
+        System.out.println(&quot;  client sends POST /orders with Idempotency-Key: &quot; + key);
+        String firstAttemptResponse = postWithIdempotencyKey(key, 99.99);
+        System.out.println(&quot;  server processed it and created a resource, but the response is LOST in transit&quot;);
+        System.out.println(&quot;  (client never saw: &quot; + firstAttemptResponse + &quot;)&quot;);
+        System.out.println(&quot;  client times out, assumes failure, retries with the SAME key:&quot;);
+        String retryResponse = postWithIdempotencyKey(key, 99.99);
+        System.out.println(&quot;  &quot; + retryResponse);
+        long totalOrdersWithThisAmount = orders.values().stream().filter(o -&gt; o.amount() == 99.99).count();
+        System.out.println(&quot;  total orders actually created for this purchase: &quot; + totalOrdersWithThisAmount);
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Level 1 - PUT/DELETE idempotent, plain POST is not:&quot;);
+        System.out.println(&quot;  &quot; + put(&quot;5&quot;, 20.0));
+        System.out.println(&quot;  &quot; + put(&quot;5&quot;, 20.0)); // same call again - same end state
+        System.out.println(&quot;  &quot; + delete(&quot;5&quot;));
+        System.out.println(&quot;  &quot; + delete(&quot;5&quot;)); // repeat delete - still &quot;does not exist&quot;, no further change
+        System.out.println(&quot;  &quot; + plainPost(15.0));
+        System.out.println(&quot;  &quot; + plainPost(15.0) + &quot;  &lt;- SAME logical request, but a SECOND resource was created&quot;);
+
+        System.out.println(&quot;\nLevel 2 - POST with an idempotency key, called twice with the same key:&quot;);
+        String key = &quot;key-abc-123&quot;;
+        System.out.println(&quot;  &quot; + postWithIdempotencyKey(key, 50.0));
+        System.out.println(&quot;  &quot; + postWithIdempotencyKey(key, 50.0));
+
+        System.out.println(&quot;\nLevel 3 - full retry scenario, end to end:&quot;);
+        simulateRetryScenario();
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java IdempotencyDemo.java</code> (JDK 17+, single file, no dependencies).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1:</strong> <code>put(&quot;5&quot;, 20.0)</code> is called twice in a row with identical arguments. Both calls leave <code>orders.get(&quot;5&quot;)</code> equal to <code>Order(&quot;5&quot;, 20.0)</code> — the second call did real work (it overwrote the entry) but the *end state* is unchanged from after the first call, which is exactly what idempotent means.</li><li><code>delete(&quot;5&quot;)</code> is also called twice. The first call finds and removes the order, returning <code>&quot;200 OK, deleted&quot;</code>. The second call finds nothing to remove and returns <code>&quot;404 Not Found&quot;</code> — the HTTP status code differs, but the state both times afterward is identical: order 5 does not exist.</li><li><code>plainPost(15.0)</code> is called twice with the same amount. Each call generates a fresh ID (<code>nextOrderId++</code>) and creates a <strong>new</strong> <code>Order</code> — the output explicitly notes that a second resource was created for what was meant to be one logical request. This is the exact problem idempotency keys solve.</li><li><strong>Level 2:</strong> <code>postWithIdempotencyKey(key, 50.0)</code> is called twice with the same <code>key</code>. The first call finds no entry in <code>idempotencyStore</code>, so it creates a new order and stores the response under that key. The second call finds <code>idempotencyStore.containsKey(key)</code> true and returns the <strong>stored</strong> response immediately — no new order is created, which the printed output confirms.</li><li><strong>Level 3</strong> walks through the realistic failure mode this protects against: the server actually processes the first request and creates an order, but the response is lost before the client sees it — the client cannot tell success from failure. When it retries with the same key, <code>postWithIdempotencyKey</code> finds the key already stored and returns the original result. The final count — <code>totalOrdersWithThisAmount</code> — confirms exactly one order exists for the $99.99 purchase, despite the client having effectively sent the request twice.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> an idempotency key only protects against retries of the *same* logical request. If a client generates a fresh key on every retry (instead of reusing the key from the original attempt), the protection is completely defeated — the key must be generated once, client-side, before the first attempt, and reused on every retry of that same attempt.</blockquote>
+<ul><li><code>GET</code>, <code>HEAD</code>, <code>PUT</code>, and <code>DELETE</code> get idempotency (or safety) for free from their HTTP semantics — design your handlers to actually honor that, since nothing stops a <code>PUT</code> handler from behaving non-idempotently if it, say, appends to a list instead of replacing it.</li><li>Add an <code>Idempotency-Key</code> header requirement to any <code>POST</code> endpoint where a duplicate side effect (a duplicate charge, a duplicate shipment) is a real business risk.</li><li>Store idempotency keys with a bounded expiry window, and document that window to API consumers, so they know how long a retry with the original key remains safe.</li><li>This concern connects directly to <a href="0203-saga-orchestration-vs-choreography.md">saga</a> compensations and the <a href="0204-transactional-outbox.md">transactional outbox</a> relay — both patterns rely on at-least-once delivery, which only works correctly if the operations being retried are idempotent.</li></ul>
+  <div class="nav"><a class="prv" href="0209-pagination-filtering-sorting.html"><span class="mini">← Previous</span>Pagination, filtering & sorting</a><a class="nxt" href="0211-error-contracts-problem-json.html"><span class="mini">Next →</span>Error contracts & problem+json</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t210";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
