@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>URL Shortener — scaling & tradeoffs — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>URL Shortener — scaling & tradeoffs</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>scaling &amp; tradeoffs</strong> facet of the <strong>URL Shortener</strong> case study — what breaks first in the <a href="0228-url-shortener-high-level-architecture.md">high-level architecture</a> as real traffic grows past the <a href="0226-url-shortener-capacity-estimation.md">capacity estimation</a>&#x27;s numbers, and the specific fix for each bottleneck, along with the new tradeoff each fix introduces.</p>
+<h2>2. Why &amp; when</h2>
+<p>An architecture sized for today&#x27;s estimate eventually meets tomorrow&#x27;s actual traffic, which is often larger, lumpier, and differently distributed than the back-of-envelope numbers assumed. This facet walks through the architecture&#x27;s bottlenecks in the order they would actually bite as scale increases, and the standard fix for each — because every fix has a real cost, not just a benefit, worth naming explicitly rather than presenting scaling as a free upgrade.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Bottleneck 1: single database instance under write load.</strong> Even though writes are a small fraction of total traffic (per the 100:1 ratio), a single database instance has a ceiling on writes/sec it can sustain, and creation traffic could plausibly exceed it during a viral spike in link creation (a marketing campaign, a bot attack).</li><li><strong>Fix: shard the database by <code>short_code</code>.</strong> Route each write (and cache-miss read) to a specific shard based on a hash of <code>short_code</code>, spreading load across many database instances.</li><li><strong>New tradeoff introduced:</strong> cross-shard operations (like &quot;list my URLs&quot; for FR-7, which spans codes on every shard if <code>creator_id</code> is not the shard key) become significantly more complex, since no single shard has the full answer.</li><li><strong>Bottleneck 2: a single-region cache and database under global traffic.</strong> Users far from the system&#x27;s one deployed region see high redirect latency, violating the strict redirect-latency NFR for those users.</li><li><strong>Fix: <a href="0221-multi-az-multi-region-deployment.md">multi-region deployment</a></strong>, with a cache (and read replica) in each region, serving redirects locally.</li><li><strong>New tradeoff introduced:</strong> cross-region replication is asynchronous (per multi-region&#x27;s own core concept), so a URL created in one region may take a short time to become resolvable from another region — the <a href="0225-url-shortener-non-functional-requirements.md">non-functional requirements</a>&#x27;s eventual-consistency NFR already anticipated this, but it becomes an operationally real concern, not just a theoretical allowance, at this scale.</li><li><strong>Bottleneck 3: cache capacity, as the total number of hot URLs grows.</strong> A cache sized for today&#x27;s hot set eventually cannot hold tomorrow&#x27;s larger hot set, causing cache eviction of genuinely popular codes and a rising cache-miss rate.</li><li><strong>Fix: a distributed cache cluster</strong> (many cache nodes, each holding a portion of the keyspace, coordinated by consistent hashing) instead of a single cache instance.</li><li><strong>New tradeoff introduced:</strong> the cache cluster itself now needs operational management — node failures, rebalancing when nodes are added or removed — complexity that did not exist with a single cache instance.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   BEFORE (single region, single DB, single cache)
+
+   Client --&gt; LB --&gt; App Servers --&gt; Cache (1 node) --&gt; DB (1 instance)
+
+
+   AFTER (sharded DB, multi-region, distributed cache)
+
+   Region: us-east                              Region: eu-west
+   Client --&gt; LB --&gt; App Servers                Client --&gt; LB --&gt; App Servers
+                        |                                            |
+                 Cache Cluster (N nodes,                      Cache Cluster (N nodes,
+                 consistent hashing)                            consistent hashing)
+                        |                                            |
+              DB Shard 1 | DB Shard 2 | ... &lt;---async replication---&gt; DB Shard 1 | DB Shard 2 | ...
+              (hash(short_code) determines shard)</code></pre>
+<p>*Caption: each fix on the right addresses one specific bottleneck from the left — sharding fixes write throughput, multi-region fixes global latency, a cache cluster fixes hot-set capacity — but none of them is free, as the walkthrough details.*</p>
+<h2>5. Runnable example</h2>
+<h3>Bottleneck-to-fix-to-tradeoff summary</h3>
+<pre><code class="lang-text">BOTTLENECK 1: single DB instance, write throughput ceiling
+  Symptom:  creation requests queue up or time out during a traffic spike
+            (e.g. a viral campaign driving a surge in new short URLs).
+  Fix:      shard the database by hash(short_code) across N instances.
+  New tradeoff:
+    - FR-7 (&quot;list my URLs&quot;) now requires querying every shard and merging
+      results, since a user&#x27;s URLs are scattered by short_code hash, not
+      grouped by creator_id.
+    - Re-sharding (adding more shards later) requires a data migration.
+
+BOTTLENECK 2: single-region deployment, global latency
+  Symptom:  redirect-latency NFR (p99 &lt; 100ms) is violated for users far
+            from the single deployed region.
+  Fix:      multi-region deployment - cache + read replica per region.
+  New tradeoff:
+    - Cross-region replication is asynchronous: a URL created in region A
+      may not resolve in region B for a short window after creation.
+    - Running infrastructure in multiple regions multiplies operational
+      cost and complexity (see multi-AZ &amp; multi-region deployment).
+
+BOTTLENECK 3: single cache instance, hot-set capacity
+  Symptom:  cache-miss rate rises as the number of genuinely popular URLs
+            grows past what one cache instance can hold, pushing more
+            traffic to the database than the architecture was designed for.
+  Fix:      distributed cache cluster (consistent hashing across nodes).
+  New tradeoff:
+    - The cache cluster itself needs monitoring, node-failure handling,
+      and rebalancing logic that a single cache instance never needed.
+    - A cache node failure now affects only a portion of the keyspace
+      (better than losing the whole cache) but requires the app servers
+      to know how to route around a failed node.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Bottleneck 1 is a write-side problem, even though writes are the minority of traffic</strong> (per the 100:1 ratio established in <a href="0225-url-shortener-non-functional-requirements.md">non-functional requirements</a>) — because a single database instance&#x27;s absolute write ceiling can still be exceeded during a sudden spike in creation traffic, regardless of how small writes are relative to reads. Sharding by <code>short_code</code> hash spreads that write load across many instances, each handling a fraction of it.</li><li><strong>The sharding fix directly conflicts with FR-7 from <a href="0224-url-shortener-functional-requirements.md">functional requirements</a>.</strong> Because the shard key is <code>short_code</code> (chosen to spread write load evenly), a single user&#x27;s URLs end up scattered across every shard rather than grouped together — &quot;list my URLs&quot; now requires a fan-out query to every shard and a merge of the results, a real added complexity that did not exist with one database instance. This tradeoff is a direct, traceable cost of the sharding fix, not a separate, unrelated problem.</li><li><strong>Bottleneck 2 is a latency problem invisible in the original single-region design</strong>, because <a href="0226-url-shortener-capacity-estimation.md">capacity estimation</a>&#x27;s QPS numbers say nothing about *where* traffic originates geographically — a system correctly sized for total QPS can still fail its latency NFR for specific users simply due to physical distance from the one deployed region.</li><li><strong>The multi-region fix reintroduces the eventual-consistency behavior <a href="0225-url-shortener-non-functional-requirements.md">non-functional requirements</a> already flagged as acceptable (NFR-7)</strong> — but at this scale, &quot;a newly created URL may take a few seconds to resolve elsewhere&quot; becomes an operationally real, frequently-observed behavior rather than a theoretical allowance, since cross-region creation-then-immediate-click-from-another-region becomes a real, if infrequent, occurrence.</li><li><strong>Bottleneck 3 is the cache&#x27;s own success outgrowing its capacity</strong> — the <a href="0228-url-shortener-high-level-architecture.md">high-level architecture</a>&#x27;s cache-aside design works precisely because a small hot set captures most traffic, but as total URL volume and popularity spread grow, that hot set itself grows past a single cache instance&#x27;s memory. Moving to a distributed cache cluster fixes the capacity ceiling, but the new tradeoff — operational complexity of a multi-node cache, including how app servers route to the correct node and how a node failure is handled — is a genuinely new category of operational work the single-cache design never had.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> applying a scaling fix &quot;because it sounds like best practice&quot; without first identifying which specific bottleneck it addresses is how systems end up with unnecessary complexity — a distributed cache cluster is pure operational overhead for a system whose single cache instance was never actually running out of capacity. Match each fix to an observed or projected bottleneck, not to a generic scaling checklist.</blockquote>
+<ul><li>Every fix in this facet solves exactly one specific, named bottleneck — trace any proposed scaling change back to the bottleneck it addresses before adopting it, the same discipline used throughout this case study.</li><li>No scaling fix is free — each one introduced here trades away something (cross-shard query complexity, consistency freshness, operational overhead) in exchange for removing the bottleneck, and stating that tradeoff explicitly is what separates a real design discussion from a checklist.</li><li>These three bottlenecks tend to appear roughly in this order as real traffic grows — write throughput and cache capacity are usually felt well before global latency becomes the binding constraint, though the exact order depends on a given system&#x27;s actual user distribution.</li><li>See <a href="0232-url-shortener-spring-java-implementation-approach.md">URL Shortener — Spring/Java implementation approach</a> next for how this whole design, including the scaling considerations here, translates into an actual Spring Boot service.</li></ul>
+  <div class="nav"><a class="prv" href="0230-url-shortener-deep-dive-unique-key-generation-collisions.html"><span class="mini">← Previous</span>URL Shortener — deep-dive: unique key generation & collisions</a><a class="nxt" href="0232-url-shortener-spring-java-implementation-approach.html"><span class="mini">Next →</span>URL Shortener — Spring/Java implementation approach</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t231";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

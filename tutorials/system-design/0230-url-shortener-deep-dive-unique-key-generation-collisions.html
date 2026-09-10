@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"URL Shortener — deep-dive: unique key generation & collisions" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>"URL Shortener — deep-dive: unique key generation & collisions"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>deep-dive</strong> facet of the <strong>URL Shortener</strong> case study, focused on the one genuinely hard sub-problem: how the key-generation service (named in <a href="0228-url-shortener-high-level-architecture.md">high-level architecture</a>, storing into the schema from <a href="0229-url-shortener-data-model-schema.md">data model &amp; schema</a>) produces a <code>short_code</code> that is guaranteed unique, efficiently, at the scale established in <a href="0226-url-shortener-capacity-estimation.md">capacity estimation</a> (~39 creations/sec average, ~117 peak).</p>
+<h2>2. Why &amp; when</h2>
+<p>Generating a short code sounds trivial — &quot;just create a random string&quot; — until you consider what happens when two concurrent requests generate the same code, or when the encoding scheme itself makes collisions likely as the total number of stored URLs grows. This is the one part of the whole case study that is a genuine algorithm problem, not a component-selection problem, which is why it gets its own deep-dive facet instead of being folded into the architecture page.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Base62 encoding.</strong> Short codes use the 62 characters <code>[a-zA-Z0-9]</code>. A 7-character Base62 code has <code>62^7</code> ≈ 3.5 trillion possible values — comfortably larger than the ~6 billion total URLs the <a href="0226-url-shortener-capacity-estimation.md">capacity estimation</a> projects over 5 years, with enormous headroom.</li><li><strong>Approach A: random generation + collision check.</strong> Generate a random 7-character Base62 string, check if it already exists in the database, and retry with a new random string if it does. Simple, but every creation requires a database read before the write, and collision probability (while low per attempt) is not zero.</li><li><strong>Approach B: counter-based generation.</strong> Maintain a globally unique, monotonically increasing counter (e.g. from a distributed ID generator, or a database sequence); encode each new counter value directly into Base62. This guarantees uniqueness by construction — no collision check needed at all — because no two counter values are ever the same.</li><li><strong>The counter approach&#x27;s real challenge is generating the counter itself, safely, under concurrent requests</strong> — a naive shared counter (a single in-memory integer) is not safe if multiple app server instances are creating URLs simultaneously, which is the normal case in the <a href="0228-url-shortener-high-level-architecture.md">high-level architecture</a>&#x27;s horizontally scaled app servers.</li><li><strong>Trading a range of counter values to each server (or thread) at once</strong> — each server requests and reserves a block of, say, 1,000 consecutive counter values from a central counter source, then hands out codes from its own local block without needing to coordinate again until the block is exhausted. This removes per-request coordination overhead entirely, at the cost of some values from a crashed server&#x27;s unused block being &quot;wasted&quot; (skipped, never reused) — an acceptable tradeoff given how much headroom the keyspace has.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   RANDOM + COLLISION CHECK              COUNTER-BASED (with block allocation)
+
+   generate random 7-char code            App Server A requests a block:
+        |                                   central counter: 1,000,000 -&gt; 1,000,999
+        v                                   (reserved for server A, 1,000 codes)
+   check DB: does it exist?
+        |                                 App Server B requests a block:
+     yes|  no                              central counter: 1,001,000 -&gt; 1,001,999
+        |   \                              (reserved for server B, 1,000 codes)
+        v    v
+     retry   use it,                     Server A encodes 1,000,000 -&gt; Base62 -&gt; &quot;1LY7VK&quot;
+     with     write to DB                Server B encodes 1,001,000 -&gt; Base62 -&gt; &quot;1LY7Vk&quot;
+     new                                 (different values, GUARANTEED no collision,
+     random                                no DB check needed at all)
+     code</code></pre>
+<p>*Caption: random generation needs a collision check on every single creation; counter-based generation with block allocation removes that check entirely, at the cost of a small, acceptable amount of wasted keyspace if a server crashes mid-block.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Base62 encoding of a counter value into a short code.</p>
+<p><strong>Level 2 — Intermediate.</strong> Random generation with a collision check against a simulated existing-codes set, including a retry on collision.</p>
+<p><strong>Level 3 — Advanced.</strong> Counter-based generation with block allocation across multiple simulated app server instances, proving no two instances ever produce the same code.</p>
+<pre><code class="lang-java">// UrlShortenerKeyGenDemo.java
+import java.util.*;
+
+public class UrlShortenerKeyGenDemo {
+
+    static final String BASE62_ALPHABET = &quot;0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ&quot;;
+
+    // ---------- Level 1: Base62 encoding ----------
+    static String toBase62(long value) {
+        if (value == 0) return String.valueOf(BASE62_ALPHABET.charAt(0));
+        StringBuilder sb = new StringBuilder();
+        while (value &gt; 0) {
+            sb.append(BASE62_ALPHABET.charAt((int) (value % 62)));
+            value /= 62;
+        }
+        return sb.reverse().toString();
+    }
+
+    // ---------- Level 2: random generation + collision check ----------
+    static class RandomKeyGenerator {
+        Set&lt;String&gt; existingCodes = new HashSet&lt;&gt;(); // stands in for a DB existence check
+        Random rnd = new Random(1);
+        int collisionRetries = 0;
+
+        String generate() {
+            String code;
+            do {
+                StringBuilder sb = new StringBuilder(7);
+                for (int i = 0; i &lt; 7; i++) sb.append(BASE62_ALPHABET.charAt(rnd.nextInt(62)));
+                code = sb.toString();
+                if (existingCodes.contains(code)) {
+                    collisionRetries++;
+                    System.out.println(&quot;    collision on \&quot;&quot; + code + &quot;\&quot; - retrying with a new random code&quot;);
+                }
+            } while (existingCodes.contains(code));
+            existingCodes.add(code);
+            return code;
+        }
+    }
+
+    // ---------- Level 3: counter-based generation with block allocation ----------
+    static class CentralCounter {
+        long nextCounter = 1_000_000L;
+        synchronized long reserveBlock(int blockSize) {
+            long start = nextCounter;
+            nextCounter += blockSize;
+            return start;
+        }
+    }
+
+    static class AppServerKeyGenerator {
+        String serverName;
+        CentralCounter central;
+        long blockStart, blockEnd, blockCursor;
+        int blockSize;
+
+        AppServerKeyGenerator(String serverName, CentralCounter central, int blockSize) {
+            this.serverName = serverName; this.central = central; this.blockSize = blockSize;
+            requestNewBlock();
+        }
+
+        void requestNewBlock() {
+            blockStart = central.reserveBlock(blockSize);
+            blockEnd = blockStart + blockSize;
+            blockCursor = blockStart;
+            System.out.println(&quot;    &quot; + serverName + &quot; reserved block [&quot; + blockStart + &quot;, &quot; + blockEnd + &quot;)&quot;);
+        }
+
+        String generate() {
+            if (blockCursor &gt;= blockEnd) requestNewBlock(); // block exhausted, get a new one
+            long counterValue = blockCursor++;
+            return toBase62(counterValue);
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Level 1 - Base62 encoding of counter values:&quot;);
+        for (long v : new long[]{0, 61, 62, 1_000_000, 3_521_614_606_207L}) {
+            System.out.println(&quot;  &quot; + v + &quot; -&gt; \&quot;&quot; + toBase62(v) + &quot;\&quot;&quot;);
+        }
+
+        System.out.println(&quot;\nLevel 2 - random generation with collision check:&quot;);
+        RandomKeyGenerator randomGen = new RandomKeyGenerator();
+        for (int i = 0; i &lt; 5; i++) System.out.println(&quot;  generated: &quot; + randomGen.generate());
+        // Force a collision deliberately to show the retry path:
+        randomGen.rnd = new Random(1); // reset seed so the very next value repeats a prior one
+        System.out.println(&quot;  &quot; + randomGen.generate() + &quot;  &lt;- forced collision + retry happened above&quot;);
+
+        System.out.println(&quot;\nLevel 3 - counter-based generation, two app servers, block size 5:&quot;);
+        CentralCounter central = new CentralCounter();
+        AppServerKeyGenerator serverA = new AppServerKeyGenerator(&quot;server-A&quot;, central, 5);
+        AppServerKeyGenerator serverB = new AppServerKeyGenerator(&quot;server-B&quot;, central, 5);
+
+        Set&lt;String&gt; allGenerated = new HashSet&lt;&gt;();
+        for (int i = 0; i &lt; 5; i++) {
+            String codeA = serverA.generate();
+            String codeB = serverB.generate();
+            System.out.println(&quot;  server-A: \&quot;&quot; + codeA + &quot;\&quot;   server-B: \&quot;&quot; + codeB + &quot;\&quot;&quot;);
+            allGenerated.add(codeA);
+            allGenerated.add(codeB);
+        }
+        System.out.println(&quot;  total codes generated: &quot; + (allGenerated.size()) +
+            &quot; (10 requested, 10 unique -&gt; ZERO collisions, no DB check was ever needed)&quot;);
+
+        System.out.println(&quot;\n  server-A&#x27;s block exhausted after 5 - requests a new one automatically:&quot;);
+        System.out.println(&quot;  server-A: \&quot;&quot; + serverA.generate() + &quot;\&quot;&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java UrlShortenerKeyGenDemo.java</code> (JDK 17+, single file, no dependencies).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1:</strong> <code>toBase62(0)</code> returns <code>&quot;0&quot;</code> directly (the loop never runs, and the leading zero-value case is handled first). <code>toBase62(61)</code> returns <code>&quot;Z&quot;</code> — the last character in the 62-character alphabet. <code>toBase62(62)</code> returns <code>&quot;10&quot;</code> — the encoding rolls over exactly like any positional number system once the value exceeds the base, the same way decimal <code>10</code> follows <code>9</code>. <code>toBase62(3_521_614_606_207L)</code> — close to <code>62^7 - 1</code>, the largest 7-character Base62 value — demonstrates the encoding still produces a compact 7-character code even near the top of the keyspace this system was sized for.</li><li><strong>Level 2:</strong> <code>randomGen.generate()</code> is called five times, each generating a random 7-character code and checking <code>existingCodes.contains(code)</code> before accepting it — with a 7-character Base62 keyspace of ~3.5 trillion values, none of the first five calls collide. Resetting <code>randomGen.rnd</code> to the same seed used originally and calling <code>generate()</code> again forces the *exact same* first random draw as before — since that code is now in <code>existingCodes</code>, the <code>do...while</code> loop&#x27;s condition catches it, prints the collision message, and draws again until it finds an unused code.</li><li>This demonstrates the real mechanism: collision checking works correctly, but it requires an existence check (a database read, in a real system) on every single creation, and — while rare in practice given the keyspace size — the check-and-retry loop has no upper bound on how many attempts it might take under bad luck.</li><li><strong>Level 3:</strong> <code>serverA</code> and <code>serverB</code> are each constructed with their own <code>AppServerKeyGenerator</code>, and each constructor call immediately calls <code>requestNewBlock()</code>, which calls the shared <code>central.reserveBlock(5)</code>. Because <code>reserveBlock</code> is <code>synchronized</code>, <code>serverA</code> gets <code>[1000000, 1000005)</code> and <code>serverB</code> gets <code>[1000005, 1000010)</code> — two genuinely disjoint ranges, reserved through one coordination point.</li><li>The loop calls <code>serverA.generate()</code> and <code>serverB.generate()</code> five times each, and each call simply reads and increments its own <strong>local</strong> <code>blockCursor</code> — no further coordination with <code>central</code> happens during this loop, and no code from <code>serverA</code>&#x27;s block can ever equal a code from <code>serverB</code>&#x27;s block, because the underlying counter ranges never overlap. <code>allGenerated.size()</code> prints <code>10</code> for 10 requests, confirming zero collisions occurred, and critically, no existence check against a database was ever needed to guarantee it. The final call shows <code>serverA</code>&#x27;s block running out after exactly 5 codes, triggering an automatic <code>requestNewBlock()</code> call that reserves the next available range from <code>central</code> — <code>[1000010, 1000015)</code>, since <code>serverB</code> already claimed the block in between.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> if an app server crashes mid-block, the unused portion of its reserved counter range is permanently skipped — nobody will ever generate those specific codes. This is an intentional, acceptable tradeoff (the keyspace has trillions of values to spare), but it is worth stating explicitly rather than discovering it as a surprise: block allocation trades a small amount of wasted keyspace for the elimination of per-request coordination.</blockquote>
+<ul><li>Counter-based generation with block allocation is generally the stronger choice for a system creating many URLs concurrently across many servers, because it removes the database existence-check from the creation path&#x27;s critical work entirely — a direct efficiency win at the scale this system targets.</li><li>Random generation with a collision check is simpler to reason about and implement, and remains a reasonable choice for lower-scale systems where the extra database read per creation is not a meaningful cost.</li><li>Base62&#x27;s 7-character keyspace (~3.5 trillion values) has enormous headroom over the ~6 billion URLs projected in <a href="0226-url-shortener-capacity-estimation.md">capacity estimation</a> — there is no pressure to shorten codes further at the cost of a smaller keyspace.</li><li>See <a href="0231-url-shortener-scaling-tradeoffs.md">URL Shortener — scaling &amp; tradeoffs</a> next for how this key-generation approach, and the rest of the architecture, evolves under even larger scale than originally estimated.</li></ul>
+  <div class="nav"><a class="prv" href="0229-url-shortener-data-model-schema.html"><span class="mini">← Previous</span>URL Shortener — data model & schema</a><a class="nxt" href="0231-url-shortener-scaling-tradeoffs.html"><span class="mini">Next →</span>URL Shortener — scaling & tradeoffs</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t230";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rate Limiter — non-functional requirements — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>Rate Limiter — non-functional requirements</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>non-functional requirements (NFRs)</strong> facet of the <strong>Rate Limiter</strong> case study — the quality targets (scale, latency, accuracy, availability) the system must hit, as opposed to what it must do functionally (see <a href="0233-rate-limiter-functional-requirements.md">functional requirements</a>, a separate facet).</p>
+<h2>2. Why &amp; when</h2>
+<p>A rate limiter sits directly in the request path of every protected service — if it is slow, it makes every request slower; if it is wrong, it either lets too much traffic through (defeating its purpose) or rejects legitimate traffic (breaking the service for real users). Define these targets right after functional requirements, since they determine whether the rate limiter can even be a synchronous, in-path component, or whether it needs to be architected differently.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Latency.</strong> The rate-limiting check itself must add negligible overhead to every request it gates — since it sits in front of potentially every request to a protected service, even a small added latency multiplies across the system&#x27;s entire traffic.</li><li><strong>Accuracy vs. performance tradeoff.</strong> A perfectly accurate count of a client&#x27;s requests (never allowing one request over the limit, never rejecting one request under it) generally requires strong consistency on the counter — which is expensive under high concurrency. Most real rate limiters accept a small, bounded amount of inaccuracy (allowing slightly more or fewer requests than the exact limit) in exchange for much better performance — a deliberate, stated tradeoff, not an oversight.</li><li><strong>Scale.</strong> The rate limiter must handle checking limits for a very large number of distinct clients simultaneously, at the same request rate as the service it protects — its own throughput ceiling must exceed the protected service&#x27;s expected peak traffic, or it becomes the new bottleneck.</li><li><strong>Availability.</strong> The rate limiter should fail in a way that does not take down the protected service. A common, deliberate choice: if the rate limiter itself becomes unavailable, <strong>fail open</strong> (let requests through unchecked) rather than <strong>fail closed</strong> (reject everything) — because an unprotected service temporarily is usually less damaging than a fully unavailable one, though this is a real tradeoff a given system might choose differently.</li><li><strong>Distributed consistency.</strong> When the rate limiter itself runs as multiple instances (for its own scale and availability), those instances must agree closely enough on a given client&#x27;s current usage that FR-1 (&quot;enforce the limit&quot;) holds even though no single instance sees every request for that client.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>                    STRICT &lt;-----------------------------&gt; RELAXED
+
+   LATENCY      |  overhead per request must be tiny  |
+                |  (strict: sub-millisecond added        |
+                |   latency on every gated request)         |
+
+   AVAILABILITY |                                    | if the limiter itself
+                |                                    | fails, prefer FAILING
+                |                                    | OPEN over taking the
+                |                                    | whole service down
+                |                                    | (relaxed toward the
+                |                                    | protected service&#x27;s
+                |                                    | own availability)
+
+   ACCURACY     |                                    | small, bounded over/
+                |                                    | under-counting is
+                |                                    | acceptable in exchange
+                |                                    | for throughput (relaxed:
+                |                                    | approximate counting
+                |                                    | under high concurrency
+                |                                    | is a deliberate choice)</code></pre>
+<p>*Caption: latency sits on the strict end, since the limiter is on every gated request&#x27;s critical path; accuracy and availability both deliberately relax in favor of not becoming the system&#x27;s own point of failure.*</p>
+<h2>5. Runnable example</h2>
+<h3>Measurable NFR targets</h3>
+<pre><code class="lang-text">LATENCY
+  NFR-1: Rate-limit check overhead: p99 &lt; 5 ms added to the gated request
+         (ideally sub-millisecond for an in-memory or local check).
+
+SCALE
+  NFR-2: Support 1 million distinct active clients being tracked
+         simultaneously.
+  NFR-3: Sustain at least the protected service&#x27;s own peak QPS - if the
+         protected service peaks at 50,000 QPS, the rate limiter must
+         sustain checks at that same rate without becoming the bottleneck.
+
+ACCURACY
+  NFR-4: Under normal (non-adversarial) load, enforce the configured limit
+         within a small bounded margin (e.g. +/- 1-2% of the configured N)
+         - not necessarily exact, especially under high concurrency across
+         distributed limiter instances.
+
+AVAILABILITY
+  NFR-5: If the rate limiter&#x27;s own backing store (e.g. a shared cache)
+         becomes unavailable, the system fails OPEN by default (requests
+         pass through unchecked) rather than failing closed - a
+         configurable choice per deployment, but this is the default.
+
+DISTRIBUTED CONSISTENCY
+  NFR-6: When the rate limiter runs as multiple instances, per-client
+         usage counts converge across instances within a bounded delay
+         (e.g. within one window&#x27;s worth of time), rather than requiring
+         instant, strongly consistent agreement on every single request.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>NFR-1 (sub-5ms overhead) is the number that most directly shapes the algorithm choice in later facets of this case study.</strong> A rate-limiting algorithm that requires a network round-trip to a remote, strongly-consistent store on every single request risks violating this target under real network latency — this pushes the design toward algorithms that can be checked with a fast, local (or low-latency) operation, even if that means accepting some imprecision under distributed operation.</li><li><strong>NFR-2 and NFR-3 (scale) establish that the rate limiter is not a small side component</strong> — supporting a million distinct clients and matching the protected service&#x27;s own peak throughput means the rate limiter&#x27;s own storage and computation must scale independently, which is exactly the kind of number that justifies choosing a purpose-built, in-memory data structure over, say, a full relational database query per check.</li><li><strong>NFR-4 (bounded accuracy, not perfect accuracy) is a deliberate, stated relaxation, directly following from NFR-1&#x27;s latency target.</strong> A perfectly accurate distributed counter generally requires coordination (a lock, or a consensus round) that conflicts with sub-5ms latency at NFR-3&#x27;s scale — accepting a small margin of error is what makes both targets simultaneously achievable, and this tradeoff must be named explicitly so nobody later assumes the rate limiter enforces limits with mathematical precision under concurrent load.</li><li><strong>NFR-5 (fail open) is a direct consequence of thinking about the rate limiter&#x27;s own availability relative to the protected service&#x27;s availability.</strong> If the rate limiter were to fail closed (reject everything when its own backing store is unreachable), a rate-limiter outage would take down every service it protects — a single component becoming a much larger single point of failure than it was meant to guard against. Failing open trades away enforcement during that outage window in exchange for keeping the protected service itself available.</li><li><strong>NFR-6 (bounded convergence, not instant agreement) directly anticipates the <a href="0236-rate-limiter-high-level-architecture.md">rate limiter&#x27;s own architecture</a> running as multiple instances for its own scale and availability</strong> — those instances checking a shared or partially-shared view of each client&#x27;s usage is only tractable if instant, perfect agreement is not required, which is exactly what this NFR states up front.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> choosing &quot;fail open&quot; (NFR-5) as a blanket default is not correct for every use case — a rate limiter protecting against a genuine denial-of-service attack, where letting requests through unchecked during an outage could be actively dangerous, might deliberately choose &quot;fail closed&quot; instead. State which choice a given deployment makes explicitly, rather than assuming fail-open is universally correct.</blockquote>
+<ul><li>Sub-5ms latency (NFR-1) is the target that most constrains later algorithm and architecture choices — any later facet page proposing a slow, remote, strongly-consistent check should be checked against this number directly.</li><li>Bounded accuracy (NFR-4) and bounded consistency convergence (NFR-6) are the same underlying tradeoff — approximate correctness in exchange for throughput and low latency — applied at two different layers (a single instance&#x27;s counting, and multiple instances&#x27; agreement).</li><li>Fail-open vs. fail-closed (NFR-5) is a real design decision with real consequences either way; state it explicitly rather than leaving it as an implicit default nobody actually chose.</li><li>See <a href="0235-rate-limiter-capacity-estimation.md">Rate Limiter — capacity estimation</a> next, where NFR-2 and NFR-3&#x27;s scale numbers get turned into concrete memory and throughput figures.</li></ul>
+  <div class="nav"><a class="prv" href="0233-rate-limiter-functional-requirements.html"><span class="mini">← Previous</span>Rate Limiter — functional requirements</a><a class="nxt" href="0235-rate-limiter-capacity-estimation.html"><span class="mini">Next →</span>Rate Limiter — capacity estimation</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t234";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
