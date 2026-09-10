@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web Crawler — scaling & tradeoffs — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>Web Crawler — scaling & tradeoffs</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>scaling &amp; tradeoffs</strong> facet of the <strong>Web Crawler</strong> case study — what breaks first in the <a href="0255-web-crawler-high-level-architecture.md">high-level architecture</a>&#x27;s single-machine Frontier and Bloom filter (from the <a href="0257-web-crawler-deep-dive-url-frontier-dedup-politeness.md">deep-dive facet</a>) as the crawl grows toward the <a href="0253-web-crawler-capacity-estimation.md">capacity estimation</a>&#x27;s full ~7.8 billion page, ~2,000+ concurrent-fetch scale, and the fix and new tradeoff for each.</p>
+<h2>2. Why &amp; when</h2>
+<p>The deep-dive facet&#x27;s Bloom filter and domain-aware priority frontier were shown running as single, in-process structures. At web-crawler scale, neither fits comfortably on one machine — this facet is where that gap becomes a concrete distributed design, following the same bottleneck-fix-tradeoff discipline as every earlier case study&#x27;s scaling facet.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Bottleneck 1: a single-machine Bloom filter cannot hold billions of URLs&#x27; worth of bits, and a single-machine Frontier cannot handle 2,000+ concurrent workers querying and updating it.</strong></li><li><strong>Fix: partition both the Bloom filter and the Frontier by domain hash</strong>, so each shard owns a subset of domains completely — every worker fetching a URL for <code>example.com</code> always talks to the same shard, which holds both that domain&#x27;s Frontier queue and the relevant portion of the dedup structure.</li><li><strong>New tradeoff introduced:</strong> a worker must now route to the correct shard based on a URL&#x27;s domain before it can even check eligibility or dedup status, adding a routing/lookup step that a single in-process structure never needed — directly analogous to the <a href="0231-url-shortener-scaling-tradeoffs.md">URL Shortener</a>&#x27;s sharding tradeoff, but partitioned by domain here rather than by record ID.</li><li><strong>Bottleneck 2: a single content storage system under ~778 TB (for a 90-day crawl) and growing.</strong> Even a well-provisioned object store benefits from deliberate partitioning strategy at this volume, echoing <a href="0249-pastebin-scaling-tradeoffs.md">Pastebin&#x27;s own Bottleneck 1</a>.</li><li><strong>Fix: partition content storage by crawl date and/or domain</strong>, the same principle as Pastebin&#x27;s fix, applied here at a much larger scale.</li><li><strong>New tradeoff introduced:</strong> downstream consumers (like a search indexer, FR-6) that want &quot;all pages from domain X&quot; or &quot;all pages crawled this week&quot; must query across the correct partition scheme rather than a flat namespace — a real integration cost for whatever system consumes this crawler&#x27;s output.</li><li><strong>Bottleneck 3: the fetcher worker pool itself becoming the bottleneck under network and DNS resolution overhead</strong>, not raw compute — at thousands of concurrent connections, DNS lookups and TCP/TLS handshake overhead per new domain can dominate, especially early in a crawl when many domains are being contacted for the first time.</li><li><strong>Fix: a shared, caching DNS resolver layer in front of the fetcher pool</strong>, plus connection pooling/reuse for domains fetched repeatedly within a short window.</li><li><strong>New tradeoff introduced:</strong> a cached DNS entry can go stale if a target domain&#x27;s IP address changes during a long-running crawl, risking fetches against a now-incorrect address until the cache entry expires and refreshes — a small, generally low-impact staleness window, but worth stating explicitly rather than assuming DNS caching is free of any downside.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   BEFORE (single-machine Frontier, single Bloom filter, single content store)
+
+   All Fetcher Workers --&gt; one Frontier + one Bloom filter --&gt; one Content Storage
+
+
+   AFTER (sharded by domain, partitioned storage, shared DNS cache)
+
+   Fetcher Workers --&gt; Domain Router --&gt; Frontier Shard 1 (domains A-M) + its own Bloom filter portion
+                                     --&gt; Frontier Shard 2 (domains N-Z) + its own Bloom filter portion
+                            |
+                            v
+                     Shared DNS Cache (across all workers)
+                            |
+                            v
+                     Content Storage (partitioned by crawl date / domain)</code></pre>
+<p>*Caption: domain-hash partitioning is the load-bearing fix for both the Frontier and the Bloom filter simultaneously, since both structures are naturally organized around the same domain key — a convenient alignment this system&#x27;s design already leaned toward in the deep-dive facet.*</p>
+<h2>5. Runnable example</h2>
+<h3>Bottleneck-to-fix-to-tradeoff summary</h3>
+<pre><code class="lang-text">BOTTLENECK 1: single-machine Frontier + Bloom filter, cannot hold/serve
+  billions of URLs and thousands of concurrent worker queries
+  Symptom:  memory exhaustion (Bloom filter sized for billions of URLs
+            does not fit one machine&#x27;s RAM) and query contention (2,000+
+            workers hitting one in-process structure serially).
+  Fix:      partition BOTH the Frontier and the Bloom filter by domain
+            hash - a natural alignment, since both structures already
+            organize their internal state around domain.
+  New tradeoff:
+    - Workers need a routing step (hash the URL&#x27;s domain, find the
+      owning shard) before every Frontier/dedup operation - a new,
+      small but real per-operation cost that a single in-process
+      structure never had.
+
+BOTTLENECK 2: single content storage system under ~778 TB and growing
+  Symptom:  similar operational friction to Pastebin&#x27;s Bottleneck 1, at
+            a much larger absolute scale.
+  Fix:      partition content storage by crawl date and/or domain.
+  New tradeoff:
+    - Downstream consumers (a search indexer, per FR-6) must query
+      across the partition scheme rather than a flat namespace - an
+      integration cost passed to whatever system consumes crawler output.
+
+BOTTLENECK 3: DNS/connection overhead dominating at thousands of
+  concurrent connections, especially against many first-contact domains
+  Symptom:  fetcher workers spend a disproportionate amount of time on
+            DNS resolution and connection setup rather than actual
+            content transfer, especially early in a broad crawl.
+  Fix:      a shared, caching DNS resolver layer; connection reuse for
+            domains fetched repeatedly within a short window.
+  New tradeoff:
+    - A cached DNS entry can go stale if a target domain&#x27;s IP changes
+      mid-crawl, causing fetches against an outdated address until the
+      cache entry&#x27;s own TTL expires and refreshes.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Bottleneck 1 is the direct consequence of the <a href="0257-web-crawler-deep-dive-url-frontier-dedup-politeness.md">deep-dive facet</a>&#x27;s structures being demonstrated as single, in-process data structures</strong> — entirely appropriate for explaining the algorithm, but genuinely insufficient at the <a href="0253-web-crawler-capacity-estimation.md">capacity estimation</a>&#x27;s actual scale of billions of URLs and thousands of concurrent workers.</li><li><strong>The domain-hash partitioning fix is a particularly clean one in this case study, worth noting explicitly</strong>: because both the Frontier and the Bloom filter&#x27;s core logic already organize themselves around <code>domain</code> (the Frontier for politeness tracking, and — in a sharded deployment — the Bloom filter partitioned the same way so a domain&#x27;s dedup checks stay co-located with its queue), partitioning both by the same key means a single routing decision (which shard owns this domain) serves both structures at once, rather than needing two separate, potentially inconsistent partitioning schemes.</li><li><strong>Bottleneck 2 directly parallels <a href="0249-pastebin-scaling-tradeoffs.md">Pastebin&#x27;s Bottleneck 1</a></strong>, and recognizing that parallel is itself useful — the same underlying problem (a flat storage namespace strained by object count and volume) and the same class of fix (partition by a natural key) recur across multiple case studies in this series, reinforcing that this is a broadly reusable pattern, not a coincidence specific to either system.</li><li><strong>Bottleneck 3 introduces a genuinely new category of bottleneck this case study needed that none of the earlier three did</strong>: DNS and connection-setup overhead. This is a direct consequence of the crawler&#x27;s unique position of actively initiating outbound connections to a huge number of independent, often first-time-contacted servers — the earlier case studies&#x27; bottlenecks were all about the system&#x27;s own infrastructure (databases, caches) straining under load, never about the overhead of *initiating* connections to external parties at this volume.</li><li><strong>The DNS-staleness tradeoff for Bottleneck 3&#x27;s fix is a small, easy-to-overlook risk worth stating explicitly</strong> — much like the <a href="0240-rate-limiter-scaling-tradeoffs.md">Rate Limiter</a> case study&#x27;s regional-store tradeoff or <a href="0249-pastebin-scaling-tradeoffs.md">Pastebin</a>&#x27;s CDN-invalidation tradeoff, this is a case where a scaling fix (DNS caching) trades a small amount of correctness risk for a real, necessary performance gain, and naming that tradeoff explicitly is what separates a considered engineering decision from an unexamined default.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> partitioning the Frontier and Bloom filter by domain hash assumes a roughly even distribution of crawl activity across domains — but real-world link structure is famously uneven (a small number of domains receive a disproportionate share of links and crawl activity). A naive hash-based partition can leave some shards far busier than others; a production system typically needs some form of load-aware rebalancing or a deliberately coarser partition scheme for known high-traffic domains, rather than assuming uniform hash distribution alone solves the problem.</blockquote>
+<ul><li>The domain-hash partitioning fix serving both the Frontier and Bloom filter simultaneously is a direct payoff of the deep-dive facet&#x27;s deliberate choice to organize both structures around <code>domain</code> from the start — a design decision made early paying off cleanly at scaling time.</li><li>Recognize the parallel between this system&#x27;s Bottleneck 2 and Pastebin&#x27;s own storage-partitioning bottleneck — the same fix pattern (partition by a natural key) applies, reinforcing it as a transferable technique rather than a one-off solution.</li><li>DNS/connection overhead (Bottleneck 3) is a bottleneck category unique to this case study among the four covered in this series, directly reflecting the crawler&#x27;s distinctive role as an active outbound connector to a huge number of independent external servers.</li><li>See <a href="0259-web-crawler-spring-java-implementation-approach.md">Web Crawler — Spring/Java implementation approach</a> next for how this whole design — the self-feeding loop, politeness-aware Frontier, and Bloom filter dedup — translates into an actual Spring Boot service, closing out this case study.</li></ul>
+  <div class="nav"><a class="prv" href="0257-web-crawler-deep-dive-url-frontier-dedup-politeness.html"><span class="mini">← Previous</span>Web Crawler — deep-dive: URL frontier, dedup & politeness</a><a class="nxt" href="0259-web-crawler-spring-java-implementation-approach.html"><span class="mini">Next →</span>Web Crawler — Spring/Java implementation approach</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t258";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

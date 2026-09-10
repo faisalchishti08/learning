@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Web Crawler — deep-dive: URL frontier, dedup & politeness" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>"Web Crawler — deep-dive: URL frontier, dedup & politeness"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>deep-dive</strong> facet of the <strong>Web Crawler</strong> case study, focused on the two genuinely hard sub-problems flagged repeatedly by earlier facets: how the Dedup Store tests &quot;have I seen this URL before&quot; at a ~7.8 billion URL scale without a conventional table (<a href="0256-web-crawler-data-model-schema.md">data model &amp; schema</a>&#x27;s explicit gap), and how the URL Frontier serves &quot;the next eligible URL&quot; while honoring both priority (FR-7) and per-domain politeness (NFR-2) simultaneously.</p>
+<h2>2. Why &amp; when</h2>
+<p>Both problems were explicitly deferred by earlier facets specifically because they are algorithmically substantial enough to deserve focused treatment — this is the same pattern as the URL Shortener&#x27;s key-generation deep-dive and the Rate Limiter&#x27;s algorithm-choice deep-dive, applied here to the two hardest parts of this case study.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Bloom filter for dedup.</strong> A Bloom filter is a space-efficient probabilistic set: it can definitively say &quot;this URL has <strong>never</strong> been seen&quot; (no false negatives) but can occasionally, rarely, say &quot;seen&quot; for a URL that was actually never added (a false positive) — an acceptable tradeoff, since a false positive only costs skipping a URL that would have been crawled anyway (a missed page, not a correctness violation), while a full hash set at billions of entries would cost far more memory than a Bloom filter for the same accuracy budget.</li><li><strong>How a Bloom filter works.</strong> A bit array of size <code>m</code>, plus <code>k</code> independent hash functions. Adding an item sets the bits at each of the <code>k</code> hash positions. Checking membership reads those same <code>k</code> positions — if any bit is 0, the item was definitely never added; if all <code>k</code> bits are 1, the item was probably added (with a small, tunable false-positive rate depending on <code>m</code>, <code>k</code>, and the number of items actually inserted).</li><li><strong>Domain-aware priority queue for the Frontier.</strong> Rather than one global priority queue (which cannot express &quot;respect this domain&#x27;s politeness delay&quot;), the Frontier maintains one queue per domain (or a bucketed structure grouping domains), plus a mechanism to only consider domains whose <code>domain_state.last_fetched_at</code> shows their delay has elapsed.</li><li><strong>Combining priority and politeness: a &quot;ready&quot; set, refreshed continuously.</strong> A background process (or the pull operation itself) maintains the set of domains currently eligible (politeness window elapsed) with at least one queued URL; a Fetcher Worker&#x27;s &quot;give me the next URL&quot; pulls the highest-priority URL from *that* eligible set, not from the full Frontier — this is what prevents workers from either violating politeness or starving on domains that happen to be temporarily ineligible.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   BLOOM FILTER (dedup)                        DOMAIN-AWARE FRONTIER (priority + politeness)
+
+   bit array, size m                            domain A (eligible now):  [HIGH url1, NORMAL url2]
+   [0,1,0,1,1,0,0,1,0,1,...]                     domain B (elapsed in 1.2s): [NORMAL url3]
+                                                  domain C (eligible now):  [LOW url4]
+   add(&quot;http://x.com/a&quot;):
+     hash1 -&gt; bit 3 = 1
+     hash2 -&gt; bit 7 = 1                          worker asks: &quot;give me the next URL&quot;
+     hash3 -&gt; bit 1 = 1                                |
+                                                        v
+   check(&quot;http://x.com/a&quot;):                     scan ELIGIBLE domains only (A, C - not B, its
+     hash1 -&gt; bit 3? 1                            politeness window hasn&#x27;t elapsed yet)
+     hash2 -&gt; bit 7? 1                            pick highest priority among those: url1 (HIGH, domain A)
+     hash3 -&gt; bit 1? 1
+     -&gt; &quot;probably seen&quot; (all bits set)            after fetching url1: domain A&#x27;s last_fetched_at
+                                                    updates, its NEXT eligible time resets
+   check(&quot;http://y.com/z&quot;) (never added):
+     hash1 -&gt; bit 5? 0
+     -&gt; &quot;definitely NOT seen&quot; (short-circuits
+        as soon as any bit is 0)</code></pre>
+<p>*Caption: the Bloom filter trades a small, tunable false-positive rate for massive space savings over a full URL set; the Frontier trades a single global ordering for a domain-partitioned structure that never surfaces a URL before its domain&#x27;s politeness window has elapsed.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A minimal Bloom filter: add, check, and demonstrate a deliberately-provoked false positive.</p>
+<p><strong>Level 2 — Intermediate.</strong> A domain-aware priority frontier: eligible-domain tracking, priority ordering within eligible domains.</p>
+<p><strong>Level 3 — Advanced.</strong> Combine both: a worker loop that pulls URLs respecting priority and politeness, using the Bloom filter to skip already-seen URLs before they are ever added to the frontier.</p>
+<pre><code class="lang-java">// WebCrawlerFrontierDedupDemo.java
+import java.util.*;
+
+public class WebCrawlerFrontierDedupDemo {
+
+    // ---------- Level 1: a minimal Bloom filter ----------
+    static class BloomFilter {
+        boolean[] bits;
+        int size, numHashes;
+        BloomFilter(int size, int numHashes) { this.size = size; this.numHashes = numHashes; this.bits = new boolean[size]; }
+
+        int[] hashPositions(String item) {
+            int[] positions = new int[numHashes];
+            for (int i = 0; i &lt; numHashes; i++) {
+                int h = Objects.hash(item, i); // i acts as a salt, simulating k independent hash functions
+                positions[i] = Math.floorMod(h, size);
+            }
+            return positions;
+        }
+
+        void add(String item) {
+            for (int pos : hashPositions(item)) bits[pos] = true;
+        }
+
+        boolean mightContain(String item) {
+            for (int pos : hashPositions(item)) if (!bits[pos]) return false; // any 0 bit -&gt; definitely not present
+            return true; // all bits set -&gt; probably present (could be a false positive)
+        }
+    }
+
+    // ---------- Level 2: domain-aware priority frontier ----------
+    enum Priority { HIGH, NORMAL, LOW }
+    record UrlEntry(String url, String domain, Priority priority) {}
+
+    static class Frontier {
+        Map&lt;String, Deque&lt;UrlEntry&gt;&gt; byDomain = new HashMap&lt;&gt;();
+        Map&lt;String, Long&gt; lastFetchedAtMs = new HashMap&lt;&gt;();
+        Map&lt;String, Long&gt; crawlDelayMs = new HashMap&lt;&gt;();
+
+        void enqueue(UrlEntry entry) {
+            byDomain.computeIfAbsent(entry.domain(), d -&gt; new ArrayDeque&lt;&gt;()).addLast(entry);
+        }
+
+        void setPoliteness(String domain, long delayMs) { crawlDelayMs.put(domain, delayMs); }
+
+        boolean isEligible(String domain, long nowMs) {
+            long lastFetch = lastFetchedAtMs.getOrDefault(domain, 0L);
+            long delay = crawlDelayMs.getOrDefault(domain, 2000L);
+            return nowMs - lastFetch &gt;= delay;
+        }
+
+        Optional&lt;UrlEntry&gt; pullNext(long nowMs) {
+            UrlEntry best = null;
+            for (var entry : byDomain.entrySet()) {
+                String domain = entry.getKey();
+                Deque&lt;UrlEntry&gt; queue = entry.getValue();
+                if (queue.isEmpty() || !isEligible(domain, nowMs)) continue; // skip ineligible/empty domains
+                UrlEntry candidate = queue.peekFirst();
+                if (best == null || candidate.priority().ordinal() &lt; best.priority().ordinal()) best = candidate;
+            }
+            if (best == null) return Optional.empty();
+            byDomain.get(best.domain()).pollFirst();
+            lastFetchedAtMs.put(best.domain(), nowMs); // politeness timer resets on fetch
+            return Optional.of(best);
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Level 1 - Bloom filter dedup:&quot;);
+        BloomFilter bloom = new BloomFilter(1000, 3);
+        bloom.add(&quot;https://example.com/a&quot;);
+        bloom.add(&quot;https://example.com/b&quot;);
+        System.out.println(&quot;  mightContain(\&quot;https://example.com/a\&quot;): &quot; + bloom.mightContain(&quot;https://example.com/a&quot;) + &quot;  (added, correctly TRUE)&quot;);
+        System.out.println(&quot;  mightContain(\&quot;https://never-added.com/x\&quot;): &quot; + bloom.mightContain(&quot;https://never-added.com/x&quot;) + &quot;  (not added)&quot;);
+        // Provoke a false positive with a tiny filter to demonstrate the tradeoff directly.
+        BloomFilter tinyBloom = new BloomFilter(8, 2);
+        tinyBloom.add(&quot;A&quot;); tinyBloom.add(&quot;B&quot;); tinyBloom.add(&quot;C&quot;); tinyBloom.add(&quot;D&quot;);
+        int falsePositives = 0;
+        for (char c = &#x27;E&#x27;; c &lt;= &#x27;Z&#x27;; c++) if (tinyBloom.mightContain(String.valueOf(c))) falsePositives++;
+        System.out.println(&quot;  tiny filter (size=8): &quot; + falsePositives + &quot; false positive(s) out of 22 never-added items&quot; +
+            &quot; - the space/accuracy tradeoff, made deliberately visible with a small filter&quot;);
+
+        System.out.println(&quot;\nLevel 2 - domain-aware priority frontier:&quot;);
+        Frontier frontier = new Frontier();
+        frontier.setPoliteness(&quot;a.com&quot;, 2000);
+        frontier.setPoliteness(&quot;b.com&quot;, 2000);
+        frontier.enqueue(new UrlEntry(&quot;https://a.com/1&quot;, &quot;a.com&quot;, Priority.NORMAL));
+        frontier.enqueue(new UrlEntry(&quot;https://a.com/2&quot;, &quot;a.com&quot;, Priority.HIGH));
+        frontier.enqueue(new UrlEntry(&quot;https://b.com/1&quot;, &quot;b.com&quot;, Priority.LOW));
+        long t0 = 0;
+        System.out.println(&quot;  pull at t=0: &quot; + frontier.pullNext(t0).map(UrlEntry::url).orElse(&quot;none&quot;));
+
+        System.out.println(&quot;\nLevel 3 - combined: politeness makes a.com temporarily ineligible after being fetched:&quot;);
+        System.out.println(&quot;  pull at t=0 (right after a.com/2 was just fetched, a.com in its 2s cooldown): &quot; +
+            frontier.pullNext(t0).map(UrlEntry::url).orElse(&quot;none - a.com not eligible, only b.com&#x27;s LOW item exists but it IS eligible&quot;));
+        long t3000 = 3000; // 3 seconds later - a.com&#x27;s cooldown has elapsed
+        frontier.enqueue(new UrlEntry(&quot;https://a.com/3&quot;, &quot;a.com&quot;, Priority.NORMAL));
+        System.out.println(&quot;  pull at t=3000 (a.com cooldown elapsed): &quot; + frontier.pullNext(t3000).map(UrlEntry::url).orElse(&quot;none&quot;));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java WebCrawlerFrontierDedupDemo.java</code> (JDK 17+, single file, no dependencies).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1:</strong> <code>bloom.add(&quot;https://example.com/a&quot;)</code> and <code>bloom.add(&quot;https://example.com/b&quot;)</code> each set <code>numHashes = 3</code> bits in the shared <code>bits</code> array, computed from three salted hashes of the URL string. <code>bloom.mightContain(&quot;https://example.com/a&quot;)</code> recomputes the same three positions and finds all three bits set — correctly reporting <code>true</code>, since this exact URL was added.</li><li><strong><code>bloom.mightContain(&quot;https://never-added.com/x&quot;)</code> checks three different positions</strong> (different hash input), and at least one of them is very likely still <code>false</code> in a reasonably-sized, lightly-populated filter — correctly reporting <code>false</code>, meaning this URL is <strong>definitely</strong> new and safe to crawl.</li><li><strong>The <code>tinyBloom</code> example deliberately uses a tiny 8-bit array with only 4 items added</strong>, to make the false-positive tradeoff visible without needing billions of real items — checking 22 never-added single-character strings against this severely undersized filter produces some number of false positives (bits that happen to already be set by the 4 real entries&#x27; hash positions, purely by coincidence in such a small array). This is the concrete, directly observable version of the tradeoff described in Part 3: a Bloom filter occasionally says &quot;probably seen&quot; for something never actually added, and undersizing the filter (relative to the number of items it holds) makes this happen more often — exactly the size/accuracy tuning real deployments must account for at the actual ~7.8 billion URL scale.</li><li><strong>Level 2:</strong> <code>frontier.pullNext(t0)</code> at <code>t=0</code> scans every domain with a non-empty queue. Both <code>&quot;a.com&quot;</code> and <code>&quot;b.com&quot;</code> have never been fetched (<code>lastFetchedAtMs</code> empty for both), so <code>isEligible</code> returns <code>true</code> for both — among the eligible candidates, <code>&quot;https://a.com/2&quot;</code> (priority <code>HIGH</code>) beats <code>&quot;https://a.com/1&quot;</code> (priority <code>NORMAL</code>, but the same domain&#x27;s queue only offers its *first* item, <code>peekFirst()</code>, so <code>NORMAL</code> from <code>a.com</code> isn&#x27;t even compared here) and <code>&quot;https://b.com/1&quot;</code> (priority <code>LOW</code>) — <code>HIGH</code> wins, and the method returns it, while also updating <code>lastFetchedAtMs.put(&quot;a.com&quot;, t0)</code>.</li><li><strong>Level 3</strong> calls <code>pullNext(t0)</code> again, immediately at the same timestamp. Now <code>isEligible(&quot;a.com&quot;, t0)</code> checks <code>t0 - lastFetchedAtMs.get(&quot;a.com&quot;) (which is also t0) &gt;= 2000</code> — <code>0 &gt;= 2000</code> is <code>false</code>, so <code>&quot;a.com&quot;</code> is skipped entirely this round, even though it still has a queued <code>NORMAL</code> item. Only <code>&quot;b.com&quot;</code>&#x27;s <code>LOW</code> item is eligible, so it is returned — correctly demonstrating that politeness (a domain&#x27;s own cooldown) takes precedence over priority when a higher-priority domain simply is not currently allowed to be fetched from. <strong>At <code>t=3000</code></strong>, three seconds having passed, <code>isEligible(&quot;a.com&quot;, 3000)</code> now evaluates <code>3000 - 0 &gt;= 2000</code> as <code>true</code> — <code>&quot;a.com&quot;</code> is eligible again, and its newly enqueued <code>NORMAL</code> item is returned, confirming the domain&#x27;s politeness window correctly reopened after the configured delay elapsed.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a Bloom filter has no way to remove an item once added (a standard Bloom filter, at least — variants exist but add complexity) — if a use case ever needs &quot;forget this URL was crawled&quot; (for instance, to deliberately allow a recrawl per FR-9), the Bloom filter alone cannot support that directly. A real implementation typically tracks &quot;already fetched, eligible for recrawl after N days&quot; using the <code>CrawledPage.fetchedAt</code> timestamp from <a href="0256-web-crawler-data-model-schema.md">data model &amp; schema</a> as a separate mechanism, using the Bloom filter purely to prevent *duplicate initial discovery* within the same crawl pass, not to gate recrawl eligibility.</blockquote>
+<ul><li>Size a Bloom filter deliberately for its expected item count and acceptable false-positive rate — Level 1&#x27;s tiny, deliberately-undersized filter makes the tradeoff visible; a real deployment at billions of URLs sizes the bit array and hash count mathematically to hit a target false-positive rate (commonly under 1%).</li><li>The Frontier&#x27;s domain-partitioned structure, not a single global priority queue, is what makes politeness and priority coexist correctly — Level 3 demonstrates this directly: a higher-priority item on a currently-ineligible domain is correctly passed over in favor of a lower-priority item on an eligible one.</li><li>A Bloom filter&#x27;s &quot;probably seen&quot; false positives cost only a missed crawl of that one URL — an acceptable, bounded cost given the alternative (a full hash set at billions of entries) is far more expensive, and this is exactly the kind of accuracy-for-efficiency tradeoff this whole series has repeatedly surfaced as a deliberate, stated design choice, not a shortcut.</li><li>See <a href="0258-web-crawler-scaling-tradeoffs.md">Web Crawler — scaling &amp; tradeoffs</a> next for how this Frontier and Dedup design holds up as the crawl grows well past a single machine&#x27;s capacity for either structure.</li></ul>
+  <div class="nav"><a class="prv" href="0256-web-crawler-data-model-schema.html"><span class="mini">← Previous</span>Web Crawler — data model & schema</a><a class="nxt" href="0258-web-crawler-scaling-tradeoffs.html"><span class="mini">Next →</span>Web Crawler — scaling & tradeoffs</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t257";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

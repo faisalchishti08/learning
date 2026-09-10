@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pastebin — scaling & tradeoffs — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>Pastebin — scaling & tradeoffs</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>scaling &amp; tradeoffs</strong> facet of the <strong>Pastebin</strong> case study — what breaks first in the <a href="0246-pastebin-high-level-architecture.md">high-level architecture</a> as total content volume and traffic grow past the <a href="0244-pastebin-capacity-estimation.md">capacity estimation</a>&#x27;s ~7.3 TB / 2-year projection, and the fix and new tradeoff for each bottleneck.</p>
+<h2>2. Why &amp; when</h2>
+<p>The capacity estimation identified storage volume, not QPS, as Pastebin&#x27;s dominant constraint — a genuinely different profile from the URL Shortener&#x27;s QPS-driven scaling story. This facet walks through the bottlenecks that specifically follow from a storage-bound system, in the order they would actually appear.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Bottleneck 1: a single blob storage bucket/namespace under object-count and volume growth.</strong> Even a highly scalable object store can face practical limits on listing performance or per-prefix throughput within a single flat namespace as object count grows into the hundreds of millions.</li><li><strong>Fix: partition blob keys by a prefix derived from <code>paste_id</code> or creation date</strong> (e.g. <code>pastes/2026/09/10/xK9pLm2</code>), spreading objects across many effective partitions within the store, which most object stores handle far better than one enormous flat namespace.</li><li><strong>New tradeoff introduced:</strong> the expiration sweeper&#x27;s query pattern (from the <a href="0248-pastebin-deep-dive-blob-storage-ttl-based-expiration-cleanup.md">deep-dive facet</a>) must now account for the date-based prefix if it wants to efficiently target older content, adding a small amount of complexity to what was a flat &quot;any expired row&quot; scan.</li><li><strong>Bottleneck 2: metadata database write throughput, as creation volume grows.</strong> Even though Pastebin&#x27;s writes are far less frequent than the URL Shortener&#x27;s read traffic, the metadata database still has a write ceiling, and very high paste-creation volume (e.g. a public API being used programmatically at scale) can approach it.</li><li><strong>Fix: shard the metadata database by <code>paste_id</code> hash</strong>, the same principle as the URL Shortener&#x27;s Bottleneck 1 fix.</li><li><strong>New tradeoff introduced:</strong> the expiration sweeper (and FR-7&#x27;s &quot;list my pastes,&quot; if in scope) must now query every shard rather than one database instance — the same fan-out complexity the URL Shortener&#x27;s sharding fix introduced for its own creator-listing feature.</li><li><strong>Bottleneck 3: the cache&#x27;s hit rate degrading as total unique content grows.</strong> Given Pastebin&#x27;s more modest 10:1 read:write ratio (from <a href="0243-pastebin-non-functional-requirements.md">non-functional requirements</a>), a large fraction of pastes may only ever be viewed a handful of times by a specific small audience — meaning the &quot;hot set&quot; that makes caching effective is proportionally smaller and less concentrated than the URL Shortener&#x27;s, and a growing total content volume can dilute cache effectiveness further over time.</li><li><strong>Fix: rely more heavily on blob storage&#x27;s own read performance and a CDN for publicly shared, non-burn pastes</strong>, rather than trying to grow the cache to compensate — since blob storage and CDNs are built to serve large content volumes with a long tail directly, more cost-effectively than scaling a cache to match.</li><li><strong>New tradeoff introduced:</strong> a CDN-fronted paste is cached at edge locations with its own TTL, separate from the origin&#x27;s cache — meaning updates to a paste&#x27;s expiration or burn status (if either changes after initial caching) must be reflected via CDN invalidation, an operational step the origin-only cache never needed.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   BEFORE (single blob namespace, single metadata DB, cache-reliant)
+
+   App Servers --&gt; Cache --&gt; Metadata DB (1 instance) --&gt; Blob Storage (flat namespace)
+
+
+   AFTER (partitioned blobs, sharded metadata, CDN for public content)
+
+   App Servers --&gt; CDN (public, non-burn pastes) --&gt; Blob Storage
+                       |                              (partitioned by date/id prefix)
+                       v
+                    Cache (smaller, hot-set only) --&gt; Metadata DB Shard 1 | Shard 2 | ...
+                                                        (hash(paste_id) determines shard)</code></pre>
+<p>*Caption: each fix targets the specific bottleneck the capacity estimation&#x27;s storage-volume finding predicted would matter most for this system — a different emphasis from the URL Shortener&#x27;s QPS-driven scaling story.*</p>
+<h2>5. Runnable example</h2>
+<h3>Bottleneck-to-fix-to-tradeoff summary</h3>
+<pre><code class="lang-text">BOTTLENECK 1: single flat blob storage namespace, object-count growth
+  Symptom:  listing/prefix-scan performance in blob storage degrades as
+            object count grows into the hundreds of millions (a direct
+            consequence of the ~7.3 TB / large-object-count trajectory
+            from capacity estimation).
+  Fix:      partition blob keys by date/id prefix (e.g. pastes/2026/09/10/id).
+  New tradeoff:
+    - The expiration sweeper&#x27;s targeting logic must account for the
+      prefix structure to efficiently find old content, rather than a
+      flat scan across every object.
+
+BOTTLENECK 2: metadata DB write throughput under high creation volume
+  Symptom:  paste creation requests queue up under sustained high-volume
+            programmatic use (e.g. an API integration creating many
+            pastes automatically).
+  Fix:      shard the metadata database by hash(paste_id).
+  New tradeoff:
+    - The expiration sweeper (and FR-7&#x27;s &quot;list my pastes,&quot; if in scope)
+      must fan out across every shard rather than querying one instance -
+      the same tradeoff the URL Shortener&#x27;s equivalent fix introduced.
+
+BOTTLENECK 3: cache hit rate dilutes as total unique content grows
+  Symptom:  Pastebin&#x27;s smaller, less concentrated &quot;hot set&quot; (per the
+            10:1 read:write ratio) means cache effectiveness degrades
+            faster, per unit of total content, than the URL Shortener&#x27;s
+            experienced.
+  Fix:      shift reliance toward blob storage&#x27;s native read performance
+            and a CDN for public, non-burn pastes, rather than scaling
+            the cache to compensate.
+  New tradeoff:
+    - CDN-cached content has its own edge TTL, independent of the
+      origin - a paste&#x27;s expiration or burn-status change now requires
+      an explicit CDN invalidation step to take effect everywhere
+      promptly, an operational step a cache-only design never needed.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Bottleneck 1 follows directly from the <a href="0244-pastebin-capacity-estimation.md">capacity estimation</a>&#x27;s conclusion that storage volume, not QPS, is this system&#x27;s defining number</strong> — a flat object namespace that comfortably handles the URL Shortener&#x27;s much smaller total record count can face real operational friction at Pastebin&#x27;s much larger object count and total size, even without a corresponding QPS increase.</li><li><strong>The date/ID-prefix partitioning fix directly complicates the <a href="0248-pastebin-deep-dive-blob-storage-ttl-based-expiration-cleanup.md">deep-dive facet</a>&#x27;s expiration sweeper.</strong> That facet&#x27;s sweeper queried the metadata database (not blob storage) for expired rows, so this specific tradeoff is more about efficient targeting when the sweeper needs to reason about *where* content physically lives (for operational or cost-management purposes) than about the correctness logic itself — worth noting that not every scaling tradeoff touches the same downstream facet equally.</li><li><strong>Bottleneck 2 mirrors the <a href="0231-url-shortener-scaling-tradeoffs.md">URL Shortener&#x27;s own Bottleneck 1</a> almost exactly</strong>, including its tradeoff (fan-out queries across shards) — this is a deliberate, useful pattern to recognize: sharding a database by its primary access key is a broadly reusable fix whose tradeoff (loss of easy cross-shard aggregation) recurs across many different systems, not just this one.</li><li><strong>Bottleneck 3 is the tradeoff most specific to Pastebin&#x27;s own capacity profile</strong>, and it is worth contrasting directly with the URL Shortener&#x27;s Bottleneck 3 (distributed cache cluster) — that system&#x27;s fix scaled the cache itself, because its 100:1 ratio and highly concentrated hot set made caching the right lever to keep pulling. Pastebin&#x27;s more modest 10:1 ratio and more evenly-spread access pattern make blob storage&#x27;s own native scalability, plus a CDN, the more cost-effective lever instead — the same underlying principle (match the fix to the actual bottleneck) produces a genuinely different specific fix here.</li><li><strong>The CDN tradeoff (edge TTL independent of origin) is a new category of complexity this case study had not needed before</strong> — it directly interacts with FR-4 (expiration) and FR-6 (burn after reading): if a paste is CDN-cached and then burns or expires at the origin, the CDN edge might still serve the old, cached content until its own TTL passes or an explicit invalidation is issued. This is exactly the kind of interaction between a scaling fix and an existing functional requirement that must be surfaced explicitly, the same discipline the <a href="0240-rate-limiter-scaling-tradeoffs.md">Rate Limiter</a> case study&#x27;s regional-store tradeoff demanded.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> introducing a CDN for public pastes without explicitly reconciling it against FR-6 (burn after reading) is a real correctness risk, not just a performance detail — a CDN edge node could keep serving a &quot;burned&quot; paste&#x27;s content to new requesters for as long as its own cache TTL lasts, directly violating the &quot;shown exactly once&quot; guarantee that feature promises. Either exclude burn-after-reading pastes from CDN caching entirely, or set an aggressively short edge TTL specifically for them, and state this exclusion explicitly in the design.</blockquote>
+<ul><li>Pastebin&#x27;s scaling story follows directly from its own capacity estimation&#x27;s specific finding (storage volume dominant, not QPS) — contrast this deliberately with the URL Shortener&#x27;s QPS-driven story to reinforce that scaling fixes should always trace back to a system&#x27;s own measured bottleneck, never a generic checklist applied uniformly.</li><li>Database sharding&#x27;s fan-out tradeoff (Bottleneck 2) is a broadly reusable pattern recognizable across multiple case studies in this series — once learned once, it transfers directly.</li><li>A CDN interacting badly with a &quot;shown exactly once&quot; feature (FR-6) is exactly the kind of subtle correctness bug a scaling fix can silently introduce — always re-check every functional requirement against a proposed scaling fix, not just its performance characteristics.</li><li>See <a href="0250-pastebin-spring-java-implementation-approach.md">Pastebin — Spring/Java implementation approach</a> next for how this whole design, including the metadata/blob split and expiration handling, translates into an actual Spring Boot service.</li></ul>
+  <div class="nav"><a class="prv" href="0248-pastebin-deep-dive-blob-storage-ttl-based-expiration-cleanup.html"><span class="mini">← Previous</span>Pastebin — deep-dive: blob storage & TTL-based expiration cleanup</a><a class="nxt" href="0250-pastebin-spring-java-implementation-approach.html"><span class="mini">Next →</span>Pastebin — Spring/Java implementation approach</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t249";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

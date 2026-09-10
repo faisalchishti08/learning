@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web Crawler — capacity estimation — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>Web Crawler — capacity estimation</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>capacity estimation</strong> facet of the <strong>Web Crawler</strong> case study — turning the <a href="0252-web-crawler-non-functional-requirements.md">non-functional requirements</a>&#x27;s throughput target (1,000 pages/sec) and storage implication into concrete numbers: total pages crawled over time, storage volume, bandwidth, and — a genuinely new kind of calculation this case study needs — the number of parallel fetcher workers required, given the per-domain politeness constraint.</p>
+<h2>2. Why &amp; when</h2>
+<p>Earlier case studies estimated QPS and storage from monthly usage figures. This system&#x27;s estimation works differently: NFR-1&#x27;s throughput target is a direct input, not something derived from a usage projection, and the politeness constraint (NFR-2) introduces a calculation none of the earlier case studies needed — how many parallel workers are required to sustain a given throughput while respecting a strict per-domain delay.</p>
+<h2>3. Core concept</h2>
+<p>The estimation chain here has a genuinely different shape from the read-heavy case studies:</p>
+<ol><li>Start from the <strong>target throughput</strong> (NFR-1: 1,000 pages/sec) directly, rather than deriving it from a usage projection.</li><li>Estimate <strong>average page size</strong> to compute bandwidth and storage.</li><li>Compute <strong>storage growth</strong> over the crawl&#x27;s intended duration.</li><li>Compute <strong>required worker parallelism</strong>, using the per-domain politeness constraint (NFR-2) and an assumption about how many distinct domains are being crawled concurrently — this is the calculation unique to this case study.</li></ol>
+<h2>4. Diagram</h2>
+<pre><code>   target throughput (1,000 pages/sec)   --&gt; bandwidth = throughput x avg page size
+        |
+        v
+   pages/sec x seconds in crawl duration --&gt; total pages crawled
+        |
+        v
+   total pages x avg page size            --&gt; total storage
+        |
+        v
+   PER-DOMAIN POLITENESS (1 req / 2 sec)  --&gt; how many domains must be
+   + assumed concurrent distinct domains      &quot;in flight&quot; simultaneously
+        being crawled                          to sustain 1,000 pages/sec
+        |                                       without violating politeness
+        v                                       for any single one
+   required worker parallelism (workers,
+   not just raw threads - see walkthrough)</code></pre>
+<p>*Caption: the last step, deriving required parallelism from a politeness constraint, is a calculation this case study needs that none of the earlier three did — a direct consequence of NFR-2&#x27;s per-domain rate limit.*</p>
+<h2>5. Runnable example</h2>
+<h3>Worked calculation</h3>
+<pre><code class="lang-text">ASSUMPTIONS
+  - Target throughput: 1,000 pages/sec (NFR-1).
+  - Average page size (HTML content, after stripping large embedded
+    media which a real crawler would often skip or fetch separately):
+    ~100 KB.
+  - Politeness: at most 1 request per domain every 2 seconds (NFR-2).
+  - Crawl duration for a concrete storage projection: 90 days
+    (continuous operation).
+  - Assumed number of distinct domains actively being crawled at any
+    given moment: 50,000 (a broad crawl touches a very large number of
+    domains; this is a reasonable planning assumption, clearly flagged
+    as such since the real number depends heavily on the crawl&#x27;s scope).
+
+STEP 1: bandwidth
+  1,000 pages/sec x 100 KB/page = 100,000 KB/sec = ~100 MB/sec = ~800 Mbps
+
+STEP 2: total pages crawled over 90 days
+  90 days x 86,400 sec/day x 1,000 pages/sec = 7,776,000,000 pages
+  ~= ~7.8 billion pages
+
+STEP 3: total storage over 90 days
+  7,776,000,000 pages x 100 KB/page = 777,600,000,000 KB
+  ~= ~778 TB over 90 days
+
+  (for comparison: this single 90-day crawl accumulates roughly 100x the
+  URL Shortener&#x27;s ENTIRE 5-year storage total - a direct consequence of
+  fetching and storing full page content, at web scale, continuously)
+
+STEP 4: required worker parallelism (the politeness-driven calculation)
+  Per-domain politeness allows 1 request every 2 seconds PER DOMAIN, so
+  a single domain can sustain at most 0.5 pages/sec from this crawler.
+
+  To sustain 1,000 pages/sec in AGGREGATE while respecting that per-domain
+  limit, the crawler must be actively fetching from MANY DIFFERENT domains
+  simultaneously - specifically, at least:
+    1,000 pages/sec / 0.5 pages/sec/domain = 2,000 domains &quot;in flight&quot;
+    simultaneously, at minimum (assuming perfectly even distribution
+    across the 50,000 assumed active domains - in practice, real traffic
+    is unevenly distributed, so the actual number of in-flight domains
+    needed is HIGHER than this theoretical minimum).
+
+  Each in-flight domain fetch, accounting for network latency (assume
+  ~200ms average page fetch time), needs its own worker &quot;slot&quot; for that
+  duration - so required concurrent worker slots:
+    2,000 domains-in-flight x (1 request in flight per domain, per the
+    politeness limit itself) = at least 2,000 concurrent fetch operations
+    in flight at any given instant, just to hit the 1,000 pages/sec target
+    while respecting politeness.
+
+SUMMARY
+  - Bandwidth: ~800 Mbps sustained.
+  - Total pages over 90 days: ~7.8 billion.
+  - Total storage over 90 days: ~778 TB.
+  - Minimum concurrent fetch operations needed: ~2,000+ (this is the
+    number that most directly drives the worker-pool sizing decision in
+    high-level architecture).</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Step 1 is a direct multiplication of the target throughput by average page size</strong>, unlike the earlier case studies&#x27; QPS-from-monthly-usage derivation — this reflects NFR-1 being stated as a direct throughput target rather than something to derive from a usage projection.</li><li><strong>Step 2 and Step 3 follow the familiar pattern from the <a href="0244-pastebin-capacity-estimation.md">Pastebin</a> estimation</strong> (rate × time → total volume), but the resulting number, ~778 TB over just 90 days, dwarfs anything in the earlier case studies — this single number is the clearest illustration in this whole series of how &quot;crawl and store the open web&quot; operates at a fundamentally different scale than &quot;serve a bounded set of user-submitted content.&quot;</li><li><strong>Step 4 is the calculation genuinely unique to this case study.</strong> Politeness (NFR-2) caps any single domain at 0.5 pages/sec from this crawler. To reach 1,000 pages/sec in aggregate without violating that cap for any individual domain, the crawler cannot simply run 1,000 sequential single-domain fetchers — it must be actively working across at least 2,000 different domains simultaneously, since no domain alone can contribute more than 0.5 pages/sec to the total.</li><li>**This 2,000+ figure is explicitly a *minimum*, and the walkthrough&#x27;s own assumption notes why**: real-world URL discovery is not evenly distributed across domains — a crawl following links naturally encounters some domains far more often than others (a popular site with many internal pages), meaning some domains will be &quot;ready to crawl again&quot; faster than others by simple chance, and the crawler needs enough domain diversity and queue depth to always have *some* eligible domain to fetch from at any given instant, or throughput drops below target even with 2,000 nominal slots.</li><li><strong>This number, not storage or bandwidth, is what most directly shapes the <a href="0255-web-crawler-high-level-architecture.md">high-level architecture</a>&#x27;s worker-pool design</strong> — a system needing 778 TB of storage is a solvable, if substantial, infrastructure problem using well-understood distributed storage; a system needing thousands of concurrent, domain-aware fetch operations, each respecting an independent per-domain rate limit, is a genuinely different kind of coordination problem, addressed directly in the <a href="0257-web-crawler-deep-dive-url-frontier-dedup-politeness.md">deep-dive facet</a>.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> it is tempting to treat &quot;2,000 concurrent fetch operations&quot; as simply &quot;run 2,000 threads&quot; — but each of those operations must also respect that specific domain&#x27;s own politeness timer independently, meaning the actual coordination problem is not just achieving 2,000-way concurrency, but achieving it while a large, dynamic set of independent per-domain rate limits are all being tracked and honored simultaneously. This distinction is exactly why the URL frontier deep-dive gets its own dedicated facet in this case study.</blockquote>
+<ul><li>The 778 TB storage figure and the 2,000+ concurrent-fetch figure are the two numbers that most directly shape <a href="0255-web-crawler-high-level-architecture.md">high-level architecture</a> — cite both when explaining why this system&#x27;s design differs so substantially from the earlier three case studies&#x27;.</li><li>Deriving required parallelism from a politeness constraint (Step 4) is a calculation pattern specific to systems that must rate-limit themselves against many independent external targets, not something the earlier case studies&#x27; estimation methods needed — recognize when a system&#x27;s own NFRs (not just its usage volume) demand this kind of derived-parallelism calculation.</li><li>The &quot;2,000+ domains in flight&quot; figure is explicitly a lower bound under an idealized even-distribution assumption — real designs should provision meaningfully above this minimum to absorb the natural unevenness of real link-discovery patterns.</li><li>See <a href="0254-web-crawler-api-design.md">Web Crawler — API design</a> next for how an operator actually configures and monitors a crawl of this scale, since — as <a href="0251-web-crawler-functional-requirements.md">functional requirements</a> noted — this system has no traditional end-user-facing API.</li></ul>
+  <div class="nav"><a class="prv" href="0252-web-crawler-non-functional-requirements.html"><span class="mini">← Previous</span>Web Crawler — non-functional requirements</a><a class="nxt" href="0254-web-crawler-api-design.html"><span class="mini">Next →</span>Web Crawler — API design</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t253";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

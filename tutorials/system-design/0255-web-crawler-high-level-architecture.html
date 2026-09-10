@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web Crawler — high-level architecture — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>Web Crawler — high-level architecture</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>high-level architecture</strong> facet of the <strong>Web Crawler</strong> case study — the components (URL frontier, fetcher workers, content storage, link extractor) that implement the self-feeding crawl loop from <a href="0251-web-crawler-functional-requirements.md">functional requirements</a>, sized to the <a href="0253-web-crawler-capacity-estimation.md">capacity estimation</a>&#x27;s ~2,000+ concurrent fetch operations and ~778 TB storage figures.</p>
+<h2>2. Why &amp; when</h2>
+<p>Every earlier facet built toward this one: the throughput and politeness-driven parallelism numbers from capacity estimation are what this architecture must actually deliver, and the <a href="0254-web-crawler-api-design.md">API design</a>&#x27;s control endpoints are what start, pause, and observe the components described here.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>URL Frontier.</strong> The crawl queue — but not a plain FIFO queue. It must support prioritization (FR-7), politeness (only surface a URL from a domain whose per-domain delay has elapsed, per NFR-2), and deduplication (FR-3) — substantial enough to warrant its own <a href="0257-web-crawler-deep-dive-url-frontier-dedup-politeness.md">deep-dive facet</a>.</li><li><strong>Fetcher workers (a large, horizontally scaled pool).</strong> Each worker pulls a URL from the frontier, checks <code>robots.txt</code> for that domain (FR-4, likely via a cached, periodically-refreshed robots.txt cache to avoid re-fetching it on every single page), fetches the page, and hands the result to the link extractor — sized directly from capacity estimation&#x27;s ~2,000+ concurrent operations figure.</li><li><strong>Link extractor.</strong> Parses fetched HTML, extracts hyperlinks, normalizes them (resolving relative URLs, stripping fragments), and feeds newly discovered URLs back into the URL Frontier — this is the step that closes FR-1/FR-2&#x27;s self-feeding loop.</li><li><strong>Content storage.</strong> Stores fetched page content, analogous to <a href="0246-pastebin-high-level-architecture.md">Pastebin</a>&#x27;s blob storage, but at a much larger scale — satisfying FR-6 (content available to downstream consumers like a search indexer).</li><li><strong>Dedup store.</strong> A separate, fast-lookup store (a large-scale set/filter structure) tracking every URL already crawled or already queued, checked by the link extractor before a newly discovered URL is added to the frontier — implementing FR-3, and covered in detail in the <a href="0257-web-crawler-deep-dive-url-frontier-dedup-politeness.md">deep-dive facet</a>.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>                          +------------------+
+                          |   URL Frontier     |
+                          |  (priority +         |
+                          |   politeness-aware)   |
+                          +--------+---------+
+                                   | pull next eligible URL
+                                   v
+                     +---------------------------+
+                     |   Fetcher Worker Pool         |
+                     |  (~2,000+ concurrent, per       |
+                     |   capacity estimation)            |
+                     +-------------+---------------+
+                                   |
+                    +--------------+---------------+
+                    v                                v
+           +----------------+                +-----------------+
+           | robots.txt Cache|                |  Content Storage  |
+           | (per domain)    |                |  (fetched pages)   |
+           +----------------+                +-----------------+
+                    ^                                   |
+                    | checked before fetch                |
+                    |                                       v
+           +---------------------------+          +-----------------+
+           |      Link Extractor           |&lt;---------|  (parses fetched  |
+           |  - normalize URLs               |          |   HTML)            |
+           |  - check Dedup Store             |          +-----------------+
+           |  - feed new URLs back to           |
+           |    URL Frontier                      |
+           +---------------------------+
+                    ^
+                    | check/record seen URLs
+                    v
+           +---------------------------+
+           |        Dedup Store            |
+           +---------------------------+</code></pre>
+<p>*Caption: the loop closes at the Link Extractor, which feeds newly discovered, deduplicated URLs back into the same Frontier the Fetcher Workers pull from — this is the architectural expression of FR-1/FR-2&#x27;s self-feeding crawl loop.*</p>
+<h2>5. Runnable example</h2>
+<h3>Component list and key configuration</h3>
+<pre><code class="lang-text">URL FRONTIER
+  - Not a plain FIFO queue - internally organizes URLs by domain, with a
+    per-domain &quot;next eligible time&quot; respecting NFR-2&#x27;s politeness delay.
+  - Supports priority tiers (FR-7): higher-priority URLs surface first
+    among all currently-eligible (politeness-window-open) URLs.
+  - See the deep-dive facet for the concrete data structure.
+
+FETCHER WORKER POOL (horizontally scaled, ~2,000+ concurrent per capacity estimation)
+  - Pulls one eligible URL from the Frontier at a time.
+  - Checks robots.txt Cache for that domain BEFORE fetching (FR-4);
+    fetches and caches robots.txt itself if not already cached.
+  - Fetches the page with a strict timeout (per NFR-3&#x27;s fault-isolation
+    target) - a slow/hanging server affects only this one fetch, never
+    blocks other workers.
+  - On success: hands content to the Link Extractor and writes to
+    Content Storage. On failure: logs the failure, does NOT block or
+    retry indefinitely (a bounded retry policy, then give up on this URL).
+
+ROBOTS.TXT CACHE
+  - Key: domain. Value: parsed disallow rules + any crawl-delay directive.
+  - TTL: hours to a day - robots.txt changes rarely, so aggressive caching
+    avoids fetching it on every single page from the same domain.
+
+LINK EXTRACTOR
+  - Parses HTML, extracts &lt;a href&gt; links, normalizes (resolve relative
+    paths, strip URL fragments/tracking parameters where sensible).
+  - Checks Dedup Store per extracted URL; only NEW URLs are added to the
+    Frontier.
+
+CONTENT STORAGE
+  - Analogous to Pastebin&#x27;s blob storage, at much larger scale (~778 TB
+    per capacity estimation for a 90-day crawl).
+
+DEDUP STORE
+  - A large-scale set-membership structure (see deep-dive facet for why
+    a plain hash set does not scale to billions of URLs cheaply).</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>A Fetcher Worker pulls the next eligible URL from the URL Frontier</strong> — &quot;eligible&quot; meaning both its domain&#x27;s politeness timer has elapsed (NFR-2) and it is the highest-priority URL currently available (FR-7) — this single pull operation is where the Frontier&#x27;s internal complexity (detailed in the <a href="0257-web-crawler-deep-dive-url-frontier-dedup-politeness.md">deep-dive facet</a>) is fully hidden from the worker, which just asks for &quot;the next thing I should fetch&quot; and trusts the Frontier to answer correctly.</li><li><strong>The worker checks the robots.txt Cache for that URL&#x27;s domain before fetching anything.</strong> If this domain&#x27;s rules are not yet cached, the worker fetches and parses <code>robots.txt</code> itself first, caching the result for every other worker that later pulls a URL from the same domain — this single-fetch-then-cache pattern is what keeps FR-4 compliance cheap even under heavy traffic to a popular domain, avoiding a redundant <code>robots.txt</code> fetch on every single page.</li><li><strong>If the URL is disallowed by robots.txt, the worker discards it without fetching the actual page</strong> — FR-4 enforced directly at this decision point, before any content is ever requested from the target server, which also means a disallowed URL never even touches NFR-2&#x27;s per-domain rate budget for real content fetches.</li><li><strong>On a successful fetch, the worker hands the raw HTML to the Link Extractor and writes the content itself to Content Storage</strong> — these two actions happening from the same successful fetch mirrors the URL Shortener and Pastebin architectures&#x27; pattern of a single write path feeding multiple downstream concerns from one successful operation.</li><li><strong>The Link Extractor parses the HTML, normalizes every discovered link, and checks each one against the Dedup Store.</strong> Only links that are genuinely new (never before seen by this crawl) are added back to the URL Frontier — this final step is what closes FR-1/FR-2&#x27;s loop: a URL discovered on this page becomes a URL some future Fetcher Worker will pull and process, continuing the crawl outward from the original seed URLs, while the Dedup Store&#x27;s check (detailed further in the deep-dive facet) is what stops the same URL from being queued and crawled over and over.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> it is tempting to design the Fetcher Worker pool as simply &quot;N threads pulling from one shared queue,&quot; treating the URL Frontier as an implementation detail rather than a first-class component — but given NFR-2&#x27;s per-domain politeness constraint, a naive shared queue without domain-aware eligibility tracking would let many workers simultaneously pull and fetch URLs from the same popular domain, violating politeness the moment real traffic (not a toy example) hits the system. The Frontier&#x27;s domain-awareness is not optional polish; it is the mechanism that makes the whole architecture NFR-2-compliant at all.</blockquote>
+<ul><li>The self-feeding loop from functional requirements maps directly onto this architecture&#x27;s component boundary between the Link Extractor (which discovers new work) and the URL Frontier (which the Fetcher Workers consume from) — understanding this one connection is the key to understanding the whole system&#x27;s dynamics.</li><li>Robots.txt caching per domain is what keeps FR-4 compliance cheap at scale — without it, every single page fetch would need its own separate robots.txt fetch, doubling the effective request rate against every target domain and directly working against NFR-2&#x27;s politeness goal.</li><li>Content storage here follows the same metadata/blob-style separation principle as <a href="0246-pastebin-high-level-architecture.md">Pastebin&#x27;s architecture</a>, just operating at a scale roughly 100x larger, per the capacity estimation comparison.</li><li>See <a href="0256-web-crawler-data-model-schema.md">Web Crawler — data model &amp; schema</a> next for the concrete schema behind the Frontier, Dedup Store, and crawled-page metadata this architecture&#x27;s components actually read and write.</li></ul>
+  <div class="nav"><a class="prv" href="0254-web-crawler-api-design.html"><span class="mini">← Previous</span>Web Crawler — API design</a><a class="nxt" href="0256-web-crawler-data-model-schema.html"><span class="mini">Next →</span>Web Crawler — data model & schema</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t255";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

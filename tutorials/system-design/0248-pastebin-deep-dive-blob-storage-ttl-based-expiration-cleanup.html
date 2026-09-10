@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Pastebin — deep-dive: blob storage & TTL-based expiration cleanup" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>"Pastebin — deep-dive: blob storage & TTL-based expiration cleanup"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>deep-dive</strong> facet of the <strong>Pastebin</strong> case study, focused on the one genuinely hard sub-problem: reliably cleaning up expired pastes&#x27; blob storage and metadata (FR-4), at the scale established in <a href="0244-pastebin-capacity-estimation.md">capacity estimation</a> (~7.3 TB accumulated over 2 years), without the two-step delete (blob, then metadata, per <a href="0246-pastebin-high-level-architecture.md">high-level architecture</a>) ever leaving the system in an inconsistent state under real-world crashes and retries.</p>
+<h2>2. Why &amp; when</h2>
+<p>&quot;Delete expired pastes&quot; sounds like a simple scheduled job until you consider what happens when that job crashes mid-batch, or runs concurrently with itself (two sweeper instances processing the same expired paste simultaneously), or when a paste expires exactly while someone is retrieving it. This is the one part of the Pastebin case study that is a genuine correctness problem under failure, worth its own deep-dive, the same way the URL Shortener and Rate Limiter case studies each had one hard algorithmic sub-problem.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Naive approach: a scheduled job deletes rows past <code>expires_at</code>, one at a time, synchronously.</strong> Simple to reason about in the happy path, but if the job crashes after deleting the blob but before deleting the metadata row, the metadata row becomes a &quot;dangling reference&quot; — pointing at a blob that no longer exists.</li><li><strong>Idempotent deletion, using state transitions.</strong> Rather than deleting the metadata row directly, mark it (<code>deletion_status: PENDING → BLOB_DELETED → DONE</code>) and only fully remove it once every step is confirmed — a crash at any point leaves a resumable, well-defined state rather than an ambiguous one, the same idempotency principle from <a href="0210-idempotency-safe-methods.md">idempotency &amp; safe methods</a> applied to a batch cleanup process instead of an API call.</li><li><strong>Batching with a claim mechanism, to avoid two sweeper instances double-processing the same paste.</strong> A sweeper instance atomically claims a batch of expired rows (e.g. <code>UPDATE ... SET claimed_by = &#x27;sweeper-A&#x27;, claimed_at = now() WHERE expires_at &lt; now() AND claimed_by IS NULL LIMIT 1000</code>), so a second concurrently-running sweeper instance&#x27;s identical query does not see rows the first has already claimed.</li><li><strong>Native TTL support, where the storage layer offers it.</strong> Many blob storage services and some databases support native, storage-layer TTL/lifecycle policies (automatically deleting an object after a configured time) — where available, this removes the need for a custom sweeper for the blob-deletion half of the work entirely, though the metadata row still needs its own cleanup since the metadata store&#x27;s TTL and the blob store&#x27;s TTL are two independent mechanisms that must be kept in sync (or the metadata row&#x27;s own expiration check, from <a href="0247-pastebin-data-model-schema.md">data model &amp; schema</a>, is used to treat an already-blob-deleted paste as <code>410 Gone</code> even before its metadata row is swept).</li><li><strong>A retrieval racing an in-progress expiration is handled by checking <code>expires_at</code> at read time regardless of sweeper state</strong> — the <a href="0246-pastebin-high-level-architecture.md">high-level architecture</a>&#x27;s retrieval path already checks <code>expires_at</code> on every read, so even if the sweeper has not yet run for a paste that expired one second ago, the retrieval path itself correctly refuses to serve it, independent of the sweeper&#x27;s own progress.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   NAIVE (single delete, no state tracking)      IDEMPOTENT (state machine, crash-resumable)
+
+   1. delete blob                                 1. UPDATE paste SET deletion_status=&#x27;PENDING&#x27;
+   2. delete metadata row                              WHERE expires_at &lt; now()
+   [CRASH between 1 and 2]                         2. for each PENDING row:
+        |                                               delete blob
+        v                                               UPDATE deletion_status=&#x27;BLOB_DELETED&#x27;
+   metadata row survives,                          [CRASH after this point is SAFE - blob is
+   pointing at a DELETED blob -                      already gone, row correctly shows it]
+   a dangling reference, silently                  3. for each BLOB_DELETED row:
+   broken for any retrieval                              DELETE the metadata row itself
+   that reaches it                                  [CRASH before this point is SAFE - a resumed
+                                                       sweep finds BLOB_DELETED rows and just
+                                                       finishes step 3 for them]</code></pre>
+<p>*Caption: the naive approach has exactly one crash window that leaves an inconsistent, undetectable state. The state-machine approach has no such window — every possible crash point leaves the row in a state the next sweeper run can correctly resume from.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> The naive single-pass delete, showing the crash window that leaves a dangling metadata reference.</p>
+<p><strong>Level 2 — Intermediate.</strong> The idempotent, state-machine-based delete, resuming correctly after a simulated crash.</p>
+<p><strong>Level 3 — Advanced.</strong> Two concurrent sweeper instances using an atomic claim mechanism, proving neither double-processes the same expired paste.</p>
+<pre><code class="lang-java">// PastebinExpirationDemo.java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class PastebinExpirationDemo {
+
+    enum DeletionStatus { NONE, PENDING, BLOB_DELETED, DONE }
+
+    static class PasteRow {
+        String pasteId;
+        boolean blobExists = true;
+        DeletionStatus status = DeletionStatus.NONE;
+        String claimedBy = null;
+        PasteRow(String pasteId) { this.pasteId = pasteId; }
+    }
+
+    static class MetadataStore {
+        Map&lt;String, PasteRow&gt; rows = new ConcurrentHashMap&lt;&gt;();
+        void addExpired(String pasteId) { rows.put(pasteId, new PasteRow(pasteId)); }
+    }
+
+    // ---------- Level 1: naive delete, no crash safety ----------
+    static void naiveDelete(PasteRow row, boolean simulateCrashAfterBlobDelete) {
+        row.blobExists = false; // step 1: delete blob
+        System.out.println(&quot;    blob for &quot; + row.pasteId + &quot; deleted&quot;);
+        if (simulateCrashAfterBlobDelete) {
+            System.out.println(&quot;    CRASH before metadata row was deleted!&quot;);
+            return; // metadata row survives, still pointing at a now-deleted blob
+        }
+        // step 2 would delete the metadata row here, but we never reach it on crash
+    }
+
+    // ---------- Level 2: idempotent, state-machine-based delete ----------
+    static void idempotentSweep(MetadataStore store, boolean simulateCrashMidway) {
+        for (PasteRow row : store.rows.values()) {
+            if (row.status == DeletionStatus.DONE) continue;
+
+            if (row.status == DeletionStatus.NONE) {
+                row.status = DeletionStatus.PENDING;
+            }
+            if (row.status == DeletionStatus.PENDING) {
+                row.blobExists = false;
+                row.status = DeletionStatus.BLOB_DELETED;
+                System.out.println(&quot;    &quot; + row.pasteId + &quot;: blob deleted, status -&gt; BLOB_DELETED&quot;);
+                if (simulateCrashMidway) {
+                    System.out.println(&quot;    CRASH after blob delete, before final cleanup - SAFE, row is resumable&quot;);
+                    return;
+                }
+            }
+            if (row.status == DeletionStatus.BLOB_DELETED) {
+                store.rows.remove(row.pasteId); // final metadata cleanup
+                System.out.println(&quot;    &quot; + row.pasteId + &quot;: metadata row removed, status -&gt; DONE&quot;);
+            }
+        }
+    }
+
+    // ---------- Level 3: concurrent sweepers with atomic claim ----------
+    static synchronized boolean tryClaim(PasteRow row, String sweeperName) {
+        if (row.claimedBy != null) return false; // already claimed by another sweeper
+        row.claimedBy = sweeperName;
+        return true;
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(&quot;Level 1 - naive delete, crash leaves a dangling metadata reference:&quot;);
+        PasteRow naiveRow = new PasteRow(&quot;p-naive-1&quot;);
+        naiveDelete(naiveRow, true);
+        System.out.println(&quot;  result: blobExists=&quot; + naiveRow.blobExists +
+            &quot;, but metadata row STILL EXISTS - a dangling reference, silently broken&quot;);
+
+        System.out.println(&quot;\nLevel 2 - idempotent sweep, crash mid-way, then resumed:&quot;);
+        MetadataStore store = new MetadataStore();
+        store.addExpired(&quot;p-idempotent-1&quot;);
+        System.out.println(&quot;  first sweep run (simulated crash after blob delete):&quot;);
+        idempotentSweep(store, true);
+        PasteRow afterCrash = store.rows.get(&quot;p-idempotent-1&quot;);
+        System.out.println(&quot;  row state after crash: status=&quot; + afterCrash.status + &quot;, blobExists=&quot; + afterCrash.blobExists);
+        System.out.println(&quot;  second sweep run (resumes from BLOB_DELETED, no crash this time):&quot;);
+        idempotentSweep(store, false);
+        System.out.println(&quot;  row still in store? &quot; + store.rows.containsKey(&quot;p-idempotent-1&quot;));
+
+        System.out.println(&quot;\nLevel 3 - two concurrent sweepers, atomic claim prevents double-processing:&quot;);
+        PasteRow sharedRow = new PasteRow(&quot;p-concurrent-1&quot;);
+        AtomicClaimResult[] results = new AtomicClaimResult[2];
+        Thread sweeperA = new Thread(() -&gt; results[0] = new AtomicClaimResult(&quot;sweeper-A&quot;, tryClaim(sharedRow, &quot;sweeper-A&quot;)));
+        Thread sweeperB = new Thread(() -&gt; results[1] = new AtomicClaimResult(&quot;sweeper-B&quot;, tryClaim(sharedRow, &quot;sweeper-B&quot;)));
+        sweeperA.start(); sweeperB.start();
+        sweeperA.join(); sweeperB.join();
+        for (AtomicClaimResult r : results) System.out.println(&quot;  &quot; + r.sweeperName + &quot; claimed: &quot; + r.claimed);
+        System.out.println(&quot;  final claimedBy: &quot; + sharedRow.claimedBy + &quot;  &lt;- exactly ONE sweeper processes this row&quot;);
+    }
+
+    record AtomicClaimResult(String sweeperName, boolean claimed) {}
+}</code></pre>
+<p><strong>How to run:</strong> <code>java PastebinExpirationDemo.java</code> (JDK 17+, single file, no dependencies).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1:</strong> <code>naiveDelete(naiveRow, true)</code> deletes the blob (<code>row.blobExists = false</code>) and then, because <code>simulateCrashAfterBlobDelete</code> is <code>true</code>, returns immediately without ever removing the metadata row. The printed result confirms the exact failure mode from Part 3: the blob is gone, but the metadata row survives, now pointing at nothing — any retrieval reaching this row (before the <a href="0247-pastebin-data-model-schema.md">data model</a>&#x27;s own <code>expires_at</code> check would catch it, in a real system, or in an edge case that check misses) would encounter a broken reference.</li><li><strong>Level 2:</strong> the first call to <code>idempotentSweep(store, true)</code> processes <code>&quot;p-idempotent-1&quot;</code> starting from <code>DeletionStatus.NONE</code>, transitions it to <code>PENDING</code>, then immediately to <code>BLOB_DELETED</code> (deleting the blob), and because <code>simulateCrashMidway</code> is <code>true</code>, returns right after — but critically, <strong>the row&#x27;s status was already updated to <code>BLOB_DELETED</code> before the simulated crash</strong>, not left at <code>PENDING</code> or <code>NONE</code>.</li><li><strong>Printing the row&#x27;s state after the crash confirms <code>status=BLOB_DELETED, blobExists=false</code></strong> — a well-defined, resumable state, in sharp contrast to Level 1&#x27;s dangling reference. The <strong>second</strong> call to <code>idempotentSweep(store, false)</code> iterates again, finds this same row, sees its status is <code>BLOB_DELETED</code> (skipping the already-completed blob deletion step entirely), and proceeds directly to removing the metadata row — completing the cleanup that the &quot;crashed&quot; first run left unfinished, with no risk of re-deleting an already-deleted blob or losing track of the row.</li><li><strong>The final check, <code>store.rows.containsKey(&quot;p-idempotent-1&quot;)</code>, prints <code>false</code></strong>, confirming the two-run sequence (crash, then resume) correctly reached the same end state a single, uninterrupted run would have — this is exactly what &quot;idempotent, crash-resumable&quot; means in practice: any number of partial runs, interrupted at any point, eventually converge on the correct final state.</li><li><strong>Level 3:</strong> <code>sweeperA</code> and <code>sweeperB</code> are separate threads, both calling <code>tryClaim(sharedRow, ...)</code> on the exact same <code>PasteRow</code> at nearly the same instant. Because <code>tryClaim</code> is <code>synchronized</code>, only one thread&#x27;s call can execute the check-and-set (<code>if (row.claimedBy != null) return false; row.claimedBy = sweeperName;</code>) at a time — whichever thread&#x27;s call runs first claims the row and returns <code>true</code>; the other finds <code>row.claimedBy</code> already set and returns <code>false</code>. The final printed <code>claimedBy</code> value confirms exactly one of the two sweepers won the claim, preventing the double-processing that would occur if both sweepers proceeded to delete the same blob concurrently, unaware of each other&#x27;s work.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a claim mechanism without an expiry on the claim itself creates a new failure mode — if <code>sweeper-A</code> claims a row and then crashes before finishing, that row is permanently stuck, claimed forever by a sweeper instance that no longer exists, and no other sweeper will ever pick it up. A real claim mechanism needs its own timeout (e.g. &quot;a claim older than 5 minutes is considered abandoned and can be re-claimed&quot;), turning this into the same kind of idempotent, resumable design as Level 2, layered on top of Level 3&#x27;s atomicity.</blockquote>
+<ul><li>Design cleanup and deletion processes around explicit, resumable states (as Level 2 does), not a single &quot;just delete it&quot; step — this is the general fix for the entire category of &quot;crashed halfway through a multi-step operation&quot; bugs, applicable well beyond Pastebin specifically.</li><li>A claim mechanism (Level 3) is necessary the moment more than one instance of a background job might run concurrently — which is the normal case for any horizontally scaled, fault-tolerant deployment, not an edge case to defer.</li><li>Combine claim atomicity (Level 3) with claim expiry (the gotcha above) for a genuinely production-ready cleanup process — either one alone leaves a real gap.</li><li>See <a href="0249-pastebin-scaling-tradeoffs.md">Pastebin — scaling &amp; tradeoffs</a> next for how this cleanup process and the rest of the architecture hold up as total storage volume grows well past the original ~7.3 TB estimate.</li></ul>
+  <div class="nav"><a class="prv" href="0247-pastebin-data-model-schema.html"><span class="mini">← Previous</span>Pastebin — data model & schema</a><a class="nxt" href="0249-pastebin-scaling-tradeoffs.html"><span class="mini">Next →</span>Pastebin — scaling & tradeoffs</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t248";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
