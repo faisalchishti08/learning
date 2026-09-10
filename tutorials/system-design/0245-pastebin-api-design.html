@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pastebin — API design — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>Pastebin — API design</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>API design</strong> facet of the <strong>Pastebin</strong> case study — the concrete endpoints implementing the <a href="0242-pastebin-functional-requirements.md">functional requirements</a>, with particular attention to FR-6&#x27;s &quot;burn after reading&quot; behavior, which — as flagged in that facet&#x27;s walkthrough — makes retrieval a non-<a href="0210-idempotency-safe-methods.md">idempotent</a> operation for that specific paste type, a wrinkle the <a href="0227-url-shortener-api-design.md">URL Shortener&#x27;s API</a> never had to handle.</p>
+<h2>2. Why &amp; when</h2>
+<p>Design the API directly from the functional requirements list, exactly as with the URL Shortener, applying the same <a href="0206-resource-modeling-naming.md">resource modeling</a> principles — but here, do it with special care around FR-6, since a naive design (treating every <code>GET</code> as automatically safe) would actively break that specific requirement the first time a browser prefetch or bot preview triggers it prematurely.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong><code>POST /api/pastes</code> creates a paste (FR-1), analogous to the URL Shortener&#x27;s creation endpoint.</strong> The request body includes the text content, an optional <code>language</code> hint (FR-5), an optional <code>expiresIn</code> setting (FR-4), and an optional <code>burnAfterReading</code> flag (FR-6).</li><li><strong><code>GET /api/pastes/{pasteId}</code> retrieves paste metadata and content (FR-2) — for a normal paste.</strong> For a <code>burnAfterReading</code> paste, this same endpoint&#x27;s semantics change: a successful call also deletes the paste, making the endpoint non-idempotent specifically for that paste type.</li><li><strong>A confirmation step for burn-after-reading retrieval.</strong> To avoid a prefetch or bot accidentally consuming a burn-after-reading paste, the recommended design separates &quot;preview that this is a burn-after-reading paste&quot; from &quot;actually confirm and reveal it&quot; — e.g. <code>GET</code> returns a warning/confirmation response, and a separate <code>POST /api/pastes/{pasteId}/reveal</code> performs the actual, one-time reveal-and-delete. This restores the property that <code>GET</code> stays safe, moving the unsafe, non-idempotent action to an explicit <code>POST</code>.</li><li><strong><code>413 Payload Too Large</code></strong> when submitted content exceeds FR-3&#x27;s configured maximum — a specific, distinguishable status code rather than a generic <code>400</code>.</li><li><strong><code>410 Gone</code></strong> for a paste that has expired (FR-4) or was already burned (FR-6) — distinct from <code>404 Not Found</code>, since <code>410</code> specifically communicates &quot;this did exist, but is now permanently unavailable,&quot; which is more precise than &quot;never existed&quot; for a client that might want to react differently (e.g. show &quot;this paste has expired&quot; rather than &quot;not found&quot;).</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>  NORMAL PASTE (idempotent GET)              BURN-AFTER-READING PASTE (separate reveal step)
+
+  Client                    Server            Client                       Server
+    |-- GET /api/pastes/x -&gt;|                   |-- GET /api/pastes/y ------&gt;|
+    |&lt;---- 200 OK, content -|                    |&lt;-- 200 OK, {burnAfterRead: |
+    |-- GET /api/pastes/x -&gt;|  (same every time)|      true, NOT yet revealed}|
+    |&lt;---- 200 OK, content -|                    |                             |
+                                                  | (client shows a confirm      |
+                                                  |  prompt to the user first)    |
+                                                  |                                 |
+                                                  |-- POST /api/pastes/y/reveal --&gt;|
+                                                  |&lt;-- 200 OK, content -------------|
+                                                  |    (paste now PERMANENTLY        |
+                                                  |     deleted server-side)          |
+                                                  |-- GET /api/pastes/y -----------&gt;|
+                                                  |&lt;-- 410 Gone ---------------------|</code></pre>
+<p>*Caption: a normal paste&#x27;s <code>GET</code> is safely repeatable forever. A burn-after-reading paste&#x27;s <code>GET</code> only previews; the actual, one-time reveal is a separate <code>POST</code> — keeping <code>GET</code>&#x27;s safety property intact for every paste type.*</p>
+<h2>5. Runnable example</h2>
+<h3>API specification</h3>
+<pre><code class="lang-http">### Create a paste
+POST /api/pastes HTTP/1.1
+Content-Type: application/json
+
+{
+  &quot;content&quot;: &quot;public class Main { public static void main(String[] a) {} }&quot;,
+  &quot;language&quot;: &quot;java&quot;,
+  &quot;expiresIn&quot;: &quot;1d&quot;,
+  &quot;burnAfterReading&quot;: false
+}
+
+### Success response
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /api/pastes/xK9pLm2
+
+{
+  &quot;pasteId&quot;: &quot;xK9pLm2&quot;,
+  &quot;url&quot;: &quot;https://pastebin.example/xK9pLm2&quot;,
+  &quot;language&quot;: &quot;java&quot;,
+  &quot;createdAt&quot;: &quot;2026-09-10T14:22:00Z&quot;,
+  &quot;expiresAt&quot;: &quot;2026-09-11T14:22:00Z&quot;,
+  &quot;burnAfterReading&quot;: false
+}
+
+### Content too large
+POST /api/pastes HTTP/1.1
+Content-Type: application/json
+
+{ &quot;content&quot;: &quot;&lt;11 MB of text&gt;&quot; }
+
+HTTP/1.1 413 Payload Too Large
+Content-Type: application/problem+json
+
+{
+  &quot;type&quot;: &quot;https://api.pastebin.example/errors/paste-too-large&quot;,
+  &quot;title&quot;: &quot;Paste Too Large&quot;,
+  &quot;status&quot;: 413,
+  &quot;detail&quot;: &quot;Paste content is 11534336 bytes; the maximum is 1048576 bytes (1 MB).&quot;,
+  &quot;instance&quot;: &quot;/errors/instances/e-3001&quot;
+}
+
+### Retrieve a NORMAL paste (safe, idempotent, repeatable)
+GET /api/pastes/xK9pLm2 HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  &quot;pasteId&quot;: &quot;xK9pLm2&quot;,
+  &quot;content&quot;: &quot;public class Main { ... }&quot;,
+  &quot;language&quot;: &quot;java&quot;,
+  &quot;expiresAt&quot;: &quot;2026-09-11T14:22:00Z&quot;
+}
+
+### Retrieve a BURN-AFTER-READING paste (preview only - does NOT consume it)
+GET /api/pastes/yZ3qRw8 HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  &quot;pasteId&quot;: &quot;yZ3qRw8&quot;,
+  &quot;burnAfterReading&quot;: true,
+  &quot;revealed&quot;: false,
+  &quot;message&quot;: &quot;This paste will be permanently deleted after viewing. Confirm to reveal.&quot;
+}
+
+### Confirm and reveal (the actual one-time, non-idempotent action)
+POST /api/pastes/yZ3qRw8/reveal HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  &quot;pasteId&quot;: &quot;yZ3qRw8&quot;,
+  &quot;content&quot;: &quot;the secret content, shown exactly once&quot;,
+  &quot;language&quot;: &quot;text&quot;
+}
+
+### A second reveal attempt, or GET, after burning
+GET /api/pastes/yZ3qRw8 HTTP/1.1
+
+HTTP/1.1 410 Gone
+Content-Type: application/problem+json
+
+{
+  &quot;type&quot;: &quot;https://api.pastebin.example/errors/paste-burned&quot;,
+  &quot;title&quot;: &quot;Paste Already Viewed&quot;,
+  &quot;status&quot;: 410,
+  &quot;detail&quot;: &quot;This paste was set to burn after reading and has already been viewed.&quot;,
+  &quot;instance&quot;: &quot;/errors/instances/e-3002&quot;
+}</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong><code>POST /api/pastes</code> with <code>content</code>, <code>language</code>, <code>expiresIn</code>, and <code>burnAfterReading</code> implements FR-1, FR-4, FR-5, and FR-6&#x27;s creation-time setup all in one call</strong> — a successful response returns <code>201 Created</code> with the new <code>pasteId</code> and its full metadata, letting the creator immediately share the returned <code>url</code>.</li><li><strong>A paste exceeding FR-3&#x27;s maximum returns <code>413 Payload Too Large</code></strong>, a status code specifically meant for exactly this situation, using the shared <a href="0211-error-contracts-problem-json.md"><code>problem+json</code></a> shape with the actual and maximum sizes stated in <code>detail</code> — precise enough for a client to show a meaningful &quot;your paste is too large by X bytes&quot; message.</li><li><strong><code>GET /api/pastes/xK9pLm2</code> for a normal (non-burn) paste behaves exactly like any safe, idempotent <code>GET</code></strong> — repeated calls return the identical content every time, with no side effects, satisfying both FR-2 and the general <a href="0210-idempotency-safe-methods.md">idempotency &amp; safe methods</a> principle that a <code>GET</code> should never change server state.</li><li><strong><code>GET /api/pastes/yZ3qRw8</code> for a burn-after-reading paste deliberately does NOT reveal the content.</strong> It returns a preview response with <code>revealed: false</code> and a warning message — this call is safe and repeatable, exactly like any other <code>GET</code>, because the actual content-revealing, paste-deleting action has been moved to a separate endpoint entirely. This is the direct fix for the wrinkle flagged in <a href="0242-pastebin-functional-requirements.md">functional requirements</a>&#x27;s walkthrough: a link-preview bot or browser prefetch hitting this <code>GET</code> causes no harm, since it never sees the real content or triggers the burn.</li><li><strong><code>POST /api/pastes/yZ3qRw8/reveal</code> is the one genuinely non-idempotent operation in this whole API</strong> — its first call returns the actual content and deletes the paste server-side; using <code>POST</code> (which carries no safety or idempotency expectation, per <a href="0210-idempotency-safe-methods.md">idempotency &amp; safe methods</a>) for this specific action is the correct, honest choice, rather than overloading <code>GET</code> with hidden side effects. Any subsequent call to either <code>GET</code> or <code>POST .../reveal</code> for the same <code>pasteId</code> returns <code>410 Gone</code>, communicating precisely &quot;this existed and was intentionally, permanently removed&quot; — a more informative signal to the client than a plain <code>404</code>.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> designing the burn-after-reading feature with a single <code>GET</code> that both returns the content and deletes it (the naive, obvious-seeming approach) silently violates one of HTTP&#x27;s most fundamental contracts — that <code>GET</code> requests are safe. Any browser, proxy, CDN, security scanner, or chat app that prefetches links for a preview could consume the paste before its intended recipient ever opens it. The two-step preview-then-reveal design in this facet exists specifically to prevent that failure mode.</blockquote>
+<ul><li>Model the burn-after-reading feature as two distinct operations — a safe <code>GET</code> preview and a non-idempotent <code>POST</code> reveal — rather than one endpoint with hidden, destructive side effects on a nominally safe HTTP method.</li><li>Use <code>410 Gone</code> (not <code>404 Not Found</code>) for content that existed and was deliberately removed (via expiration or burn) — this extra precision helps clients show an accurate, specific message to the user.</li><li><code>413 Payload Too Large</code> is the correct status for FR-3&#x27;s size limit — a more specific and more useful signal to API consumers than a generic <code>400 Bad Request</code>.</li><li>See <a href="0246-pastebin-high-level-architecture.md">Pastebin — high-level architecture</a> next for how this API&#x27;s creation and retrieval paths are actually served, given the <a href="0244-pastebin-capacity-estimation.md">capacity estimation</a>&#x27;s conclusion that storage volume, not QPS, is this system&#x27;s dominant constraint.</li></ul>
+  <div class="nav"><a class="prv" href="0244-pastebin-capacity-estimation.html"><span class="mini">← Previous</span>Pastebin — capacity estimation</a><a class="nxt" href="0246-pastebin-high-level-architecture.html"><span class="mini">Next →</span>Pastebin — high-level architecture</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t245";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

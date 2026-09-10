@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rate Limiter — scaling & tradeoffs — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>Rate Limiter — scaling & tradeoffs</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>scaling &amp; tradeoffs</strong> facet of the <strong>Rate Limiter</strong> case study — what breaks first in the <a href="0237-rate-limiter-high-level-architecture.md">high-level architecture</a>&#x27;s single shared counter store as real client count and request volume grow past the <a href="0235-rate-limiter-capacity-estimation.md">capacity estimation</a>&#x27;s numbers, and the fix and new tradeoff for each.</p>
+<h2>2. Why &amp; when</h2>
+<p>The original estimation sized a comfortable single-instance shared store (~80 MB, ~50,000 ops/sec). Real growth — more clients, higher traffic per protected service, new protected services sharing the same limiter — eventually exceeds those numbers. This facet walks through the bottlenecks in the order they would actually appear, and names the real cost of each fix.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Bottleneck 1: single store instance throughput ceiling.</strong> As total request volume across all protected services grows past what one store instance can sustain (even though memory is not the constraint, raw operations/sec eventually is), the store itself becomes the bottleneck every gated request waits on.</li><li><strong>Fix: shard the store by <code>clientId</code> hash</strong>, spreading the check-and-increment load across multiple store instances, the same sharding principle used in the <a href="0231-url-shortener-scaling-tradeoffs.md">URL Shortener</a>&#x27;s database scaling.</li><li><strong>New tradeoff introduced:</strong> a client whose multiple simultaneous rules (FR-6) happen to hash to different shards loses the ability to atomically check both rules together in one operation — each rule&#x27;s check becomes an independent call to its own shard, which is fine for independent rules but adds a small amount of complexity versus a single-store, single-round-trip check.</li><li><strong>Bottleneck 2: cross-region latency for a globally distributed protected service.</strong> If the protected service itself is deployed <a href="0221-multi-az-multi-region-deployment.md">multi-region</a>, but the rate limiter&#x27;s shared store lives in only one region, every app server outside that region pays a cross-region round-trip on every single gated request — directly violating NFR-1&#x27;s sub-5ms latency target for those instances.</li><li><strong>Fix: a regional store per deployment region</strong>, with each region&#x27;s app servers checking their own local store.</li><li><strong>New tradeoff introduced:</strong> a client whose requests are split across regions (a mobile client roaming, or a client behind a geographically distributed CDN/anycast setup) now has its usage tracked independently per region — the &quot;global&quot; limit becomes, in practice, N separate regional limits, each enforced locally. This is a real, stated relaxation of FR-1&#x27;s &quot;enforce N requests total&quot; in exchange for the latency NFR holding globally.</li><li><strong>Bottleneck 3: config lookups (FR-4/tier assignment) adding latency on every request.</strong> As the number of distinct clients and tiers grows, looking up &quot;what is this client&#x27;s limit&quot; on every single request (even from a fast config store) adds up.</li><li><strong>Fix: cache the client-to-tier and tier-to-limits mapping locally on each app server</strong>, refreshed periodically (e.g. every 30 seconds) rather than looked up per request.</li><li><strong>New tradeoff introduced:</strong> a change to a client&#x27;s tier (an admin upgrading them from free to paid) takes up to the cache refresh interval to actually take effect everywhere — a small, bounded staleness window, directly analogous to the eventual-consistency tradeoffs seen throughout this whole set of case studies.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   BEFORE (single store, single region)          AFTER (sharded, multi-region)
+
+   All app servers                                Region: us-east              Region: eu-west
+        |                                          App Servers                  App Servers
+        v                                               |                            |
+   +---------------+                                    v                            v
+   | Single Store   |                          +----------------+          +----------------+
+   | instance        |                          | Regional Store  |          | Regional Store  |
+   +---------------+                          | (sharded by       |          | (sharded by       |
+                                                |  clientId hash)    |          |  clientId hash)    |
+                                                +----------------+          +----------------+
+
+                                                each region enforces its OWN view of a client&#x27;s
+                                                usage - a client split across regions gets, in
+                                                effect, per-region limits rather than one true
+                                                global limit</code></pre>
+<p>*Caption: sharding within a region fixes throughput; a store per region fixes cross-region latency — but the second fix trades away a single, globally-accurate count for regional independence, a real and sometimes surprising consequence.*</p>
+<h2>5. Runnable example</h2>
+<h3>Bottleneck-to-fix-to-tradeoff summary</h3>
+<pre><code class="lang-text">BOTTLENECK 1: single store instance, throughput ceiling
+  Symptom:  check-and-increment operations queue up under very high total
+            request volume across all protected services sharing this
+            rate limiter, adding latency that risks violating NFR-1.
+  Fix:      shard the store by hash(clientId) across N instances.
+  New tradeoff:
+    - Multiple simultaneous rules for one client (FR-6) may land on
+      different shards, losing single-round-trip atomicity across rules
+      (each rule&#x27;s own atomicity within its shard is unaffected).
+
+BOTTLENECK 2: cross-region latency for a multi-region protected service
+  Symptom:  app servers outside the store&#x27;s one deployed region see
+            latency violating NFR-1, purely from network distance to the
+            shared store.
+  Fix:      a regional store per deployment region, each serving that
+            region&#x27;s local app servers.
+  New tradeoff:
+    - A client&#x27;s usage is now tracked per-region, not globally - a client
+      making requests from two regions effectively gets up to 2x its
+      nominal limit, split across regions. This must be explicitly stated
+      as an accepted relaxation of FR-1&#x27;s &quot;enforce N total,&quot; not a bug.
+
+BOTTLENECK 3: per-request config lookup latency (FR-4 tier assignment)
+  Symptom:  looking up a client&#x27;s current tier/limit on every single
+            gated request adds latency, even against a fast config store.
+  Fix:      cache client-to-tier and tier-to-limits mappings locally on
+            each app server, refreshed periodically (e.g. every 30s).
+  New tradeoff:
+    - A tier change takes up to the refresh interval to take effect -
+      a bounded staleness window, acceptable for infrequent admin changes,
+      but worth stating explicitly to anyone expecting instant effect.</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Bottleneck 1 arises purely from total throughput, not memory</strong> — this directly echoes the <a href="0235-rate-limiter-capacity-estimation.md">capacity estimation</a>&#x27;s conclusion that operations/sec, not memory footprint, was always the binding constraint for this system. Sharding by <code>clientId</code> hash distributes that throughput across multiple store instances, the same principle as the <a href="0231-url-shortener-scaling-tradeoffs.md">URL Shortener</a>&#x27;s database sharding, applied here to the counter store instead.</li><li><strong>The tradeoff for Bottleneck 1&#x27;s fix specifically affects FR-6 (multiple simultaneous rules).</strong> With a single store instance, checking both a client&#x27;s <code>per-minute</code> and <code>per-day</code> rules could, in principle, happen as related operations against the same instance; once sharded by <code>clientId</code> hash, both rules for the *same* client actually land on the *same* shard (since sharding is by <code>clientId</code>, not by <code>clientId+rule</code>), so this specific tradeoff is more subtle than it first appears — worth verifying the sharding key choice preserves the property you actually need, rather than assuming any sharding scheme is equivalent.</li><li><strong>Bottleneck 2 is a latency problem the original architecture never considered</strong>, because the <a href="0235-rate-limiter-capacity-estimation.md">capacity estimation</a> reasoned about total throughput, not geography — exactly the same category of gap the <a href="0231-url-shortener-scaling-tradeoffs.md">URL Shortener</a>&#x27;s Bottleneck 2 (single-region latency) exposed for that system.</li><li><strong>The regional-store fix&#x27;s tradeoff is the most consequential one on this page</strong>: it means FR-1 (&quot;enforce N requests per client&quot;) is no longer strictly true in a global sense once a client can be served from multiple regions — each region enforces its own local count. This must be surfaced explicitly to whoever owns the functional requirement, since &quot;each region enforces its own limit&quot; is a materially different guarantee than &quot;there is one true global limit,&quot; even though both are reasonable designs depending on the actual use case.</li><li><strong>Bottleneck 3&#x27;s fix (local config caching) is the lowest-risk of the three</strong>, since FR-4&#x27;s tier data changes far less often than request volume — caching it with a modest refresh interval (30 seconds) trades a small, bounded staleness window for removing a per-request lookup from the critical path entirely, a favorable tradeoff for almost any real deployment.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the regional-store fix for Bottleneck 2 is the one place in this whole case study where a scaling fix changes the actual *meaning* of a functional requirement (FR-1), not just its performance characteristics. Every other fix in this case study trades performance for operational complexity or a bounded staleness window; this one trades global accuracy for regional independence — a fundamentally different kind of tradeoff that deserves explicit sign-off from whoever owns the product requirement, not just an engineering decision made silently.</blockquote>
+<ul><li>Trace each fix back to the specific bottleneck it addresses, exactly as the <a href="0231-url-shortener-scaling-tradeoffs.md">URL Shortener</a> case study&#x27;s scaling facet modeled — a distributed rate limiter is genuinely more complex than a single-instance one, and that complexity should be justified by an actual measured or projected bottleneck.</li><li>Sharding by <code>clientId</code> (not <code>clientId+rule</code>) is a deliberate choice that keeps one client&#x27;s multiple rules together on one shard — verify a sharding key against every requirement it might affect (here, FR-6) before adopting it, rather than assuming any partitioning scheme is interchangeable.</li><li>The regional-store tradeoff (per-region rather than global enforcement) is a case where a scaling fix changes a functional guarantee, not just a performance number — flag this kind of tradeoff loudly, since it is easy for it to go unnoticed until a client&#x27;s actual behavior (making requests from multiple regions) exposes it in production.</li><li>See <a href="0241-rate-limiter-spring-java-implementation-approach.md">Rate Limiter — Spring/Java implementation approach</a> next for how the token-bucket algorithm and this architecture translate into an actual Spring Boot service, including a <code>@Component</code>-based <code>allow(...)</code> implementation.</li></ul>
+  <div class="nav"><a class="prv" href="0239-rate-limiter-deep-dive-distributed-counter-accuracy-algorith.html"><span class="mini">← Previous</span>Rate Limiter — deep-dive: distributed counter accuracy & algorithm choice</a><a class="nxt" href="0241-rate-limiter-spring-java-implementation-approach.html"><span class="mini">Next →</span>Rate Limiter — Spring/Java implementation approach</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t240";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

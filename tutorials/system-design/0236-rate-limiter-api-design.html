@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rate Limiter — API design — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>Rate Limiter — API design</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>API design</strong> facet of the <strong>Rate Limiter</strong> case study — how a protected service actually checks a request against the limiter, and what a rejected client sees. Unlike the <a href="0227-url-shortener-api-design.md">URL Shortener</a>&#x27;s public-facing API, this API is primarily an internal contract between application servers and the rate-limiting component, plus the external-facing response headers a client observes.</p>
+<h2>2. Why &amp; when</h2>
+<p>A rate limiter is nearly always a library call or a sidecar check embedded inside a request&#x27;s handling path, not a separately-called public endpoint — so its &quot;API&quot; is really two things: an internal check interface, and the external HTTP contract (status codes and headers) the client actually sees. Define both directly from the <a href="0233-rate-limiter-functional-requirements.md">functional requirements</a>, since FR-2&#x27;s &quot;clear rejection signal&quot; and FR-5&#x27;s &quot;usage headers&quot; are both API-shaped requirements.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Internal check interface: <code>boolean allow(clientId, ruleName)</code> (or richer, returning remaining quota).</strong> Called once per gated request, before the request reaches the protected business logic — this is the actual &quot;endpoint&quot; most of this system&#x27;s callers interact with, and it is an in-process or low-latency remote call, not a public HTTP route.</li><li><strong><code>429 Too Many Requests</code> on rejection (FR-2).</strong> The standard, distinguishable HTTP status for rate limiting — a client can programmatically distinguish &quot;you are rate limited&quot; from any other 4xx/5xx failure.</li><li><strong><code>Retry-After</code> header on rejection.</strong> Tells the client exactly how long to wait before the current window resets, reusing the pattern from <a href="0214-rate-limit-caching-headers.md">rate-limit &amp; caching headers</a>.</li><li><strong><code>X-RateLimit-*</code> headers on every response, not just rejections (FR-5).</strong> <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, <code>X-RateLimit-Reset</code> let a well-behaved client see it is approaching its limit before it is ever rejected.</li><li><strong>Per-rule reporting (FR-6).</strong> If a client has multiple simultaneous rules (a per-minute and a per-day limit), the response should indicate which specific rule caused a rejection, so a client integrating against the API can distinguish &quot;I burst too fast&quot; from &quot;I&#x27;ve used my whole day&#x27;s quota.&quot;</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>   App Server                    Rate Limiter (internal)         Client
+
+   incoming request
+        |
+        |-- allow(clientId=&quot;c-42&quot;, rule=&quot;per-minute&quot;) -------&gt;|
+        |&lt;---------------------- true, remaining=37 ----------|
+        |
+   request proceeds normally ------------------------------------&gt; 200 OK
+                                                                    X-RateLimit-Limit: 100
+                                                                    X-RateLimit-Remaining: 37
+                                                                    X-RateLimit-Reset: 1699999999
+
+   [later, client exceeds its limit]
+
+        |-- allow(clientId=&quot;c-42&quot;, rule=&quot;per-minute&quot;) -------&gt;|
+        |&lt;---------------------- false, remaining=0 ----------|
+        |
+   request rejected -------------------------------------------&gt; 429 Too Many Requests
+                                                                    Retry-After: 12
+                                                                    X-RateLimit-Limit: 100
+                                                                    X-RateLimit-Remaining: 0</code></pre>
+<p>*Caption: the internal <code>allow(...)</code> check happens once per request, before any business logic runs. Its boolean result maps directly to whether the app server proceeds normally or returns a <code>429</code>.*</p>
+<h2>5. Runnable example</h2>
+<h3>API specification</h3>
+<pre><code class="lang-http">### Internal check interface (conceptual - typically a library call, not HTTP)
+allow(clientId: &quot;c-42&quot;, rule: &quot;per-minute&quot;) -&gt; { allowed: true, remaining: 37, resetAt: 1699999999 }
+
+### A request that passes the check
+GET /api/orders HTTP/1.1
+Authorization: Bearer &lt;client-c-42-token&gt;
+
+HTTP/1.1 200 OK
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 37
+X-RateLimit-Reset: 1699999999
+Content-Type: application/json
+
+{ &quot;orders&quot;: [...] }
+
+### A request that exceeds the per-minute limit
+GET /api/orders HTTP/1.1
+Authorization: Bearer &lt;client-c-42-token&gt;
+
+HTTP/1.1 429 Too Many Requests
+Retry-After: 12
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1699999999
+Content-Type: application/problem+json
+
+{
+  &quot;type&quot;: &quot;https://api.example.com/errors/rate-limit-exceeded&quot;,
+  &quot;title&quot;: &quot;Rate Limit Exceeded&quot;,
+  &quot;status&quot;: 429,
+  &quot;detail&quot;: &quot;Client &#x27;c-42&#x27; exceeded the &#x27;per-minute&#x27; limit of 100 requests.&quot;,
+  &quot;instance&quot;: &quot;/errors/instances/e-2001&quot;
+}
+
+### A request that exceeds the per-day limit specifically (FR-6: distinguish which rule)
+HTTP/1.1 429 Too Many Requests
+Retry-After: 41230
+X-RateLimit-Limit: 5000
+X-RateLimit-Remaining: 0
+Content-Type: application/problem+json
+
+{
+  &quot;type&quot;: &quot;https://api.example.com/errors/rate-limit-exceeded&quot;,
+  &quot;title&quot;: &quot;Rate Limit Exceeded&quot;,
+  &quot;status&quot;: 429,
+  &quot;detail&quot;: &quot;Client &#x27;c-42&#x27; exceeded the &#x27;per-day&#x27; limit of 5000 requests. Resets in 11h27m.&quot;,
+  &quot;instance&quot;: &quot;/errors/instances/e-2002&quot;
+}</code></pre>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>The internal <code>allow(clientId, rule)</code> call is where FR-1 and FR-3 are actually enforced</strong> — it is called once, synchronously, before the app server does any real work for the request, and it returns whether this specific client, under this specific rule, is still within its limit.</li><li><strong>When <code>allow(...)</code> returns <code>true</code>, the app server proceeds normally</strong> and attaches the <code>X-RateLimit-*</code> headers to its normal <code>200 OK</code> response — this satisfies FR-5, letting the client observe its remaining quota on every successful request, not only when it gets rejected.</li><li><strong>When <code>allow(...)</code> returns <code>false</code>, the app server short-circuits and returns <code>429 Too Many Requests</code></strong> instead of running any business logic — this is the concrete implementation of FR-2&#x27;s &quot;clear, distinguishable rejection signal&quot;: <code>429</code> is a status code reserved specifically for this situation, distinguishable from a <code>500</code> (server error) or a <code>403</code> (authorization failure) by any client&#x27;s error-handling code.</li><li><strong><code>Retry-After</code> on the rejection tells the client precisely how long to wait</strong> — reusing the exact pattern established in <a href="0214-rate-limit-caching-headers.md">rate-limit &amp; caching headers</a>, so a client library already handling that header for other APIs works correctly here with no special-casing.</li><li><strong>The two <code>429</code> examples show FR-6 in the error body&#x27;s <code>detail</code> field</strong> — the first names the <code>per-minute</code> rule as the one that was exceeded, the second names <code>per-day</code> — even though both share the identical <code>type</code> and <code>status</code>. A client that only checks <code>status === 429</code> treats both the same (correctly retries later); a client that reads <code>detail</code> can distinguish a short burst-limit hit from a full daily-quota exhaustion, which call for very different retry strategies (seconds vs. hours).</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> forgetting to send <code>X-RateLimit-*</code> headers on <strong>successful</strong> responses (only sending them on <code>429</code>) is a common oversight that defeats FR-5&#x27;s actual purpose — a well-behaved client cannot proactively self-throttle if it only learns its remaining quota after already being rejected once.</blockquote>
+<ul><li>The internal <code>allow(...)</code> check and the external HTTP contract (<code>429</code>, headers) are two different layers of the same API — design both, since callers of this system exist at both layers (the app server calling the check, and the end client reading the response).</li><li>Always send usage headers on every response, success or failure — this is what actually enables proactive client-side throttling, not just reactive retry-after-rejection behavior.</li><li>Use the <code>detail</code> field to distinguish which specific rule was violated when multiple rules apply (FR-6) — this gives integrating clients enough information to choose an appropriate retry strategy per rule.</li><li>See <a href="0237-rate-limiter-high-level-architecture.md">Rate Limiter — high-level architecture</a> next for what backs the <code>allow(...)</code> check — the storage layer and algorithm that make it fast enough to sit on every request&#x27;s critical path.</li></ul>
+  <div class="nav"><a class="prv" href="0235-rate-limiter-capacity-estimation.html"><span class="mini">← Previous</span>Rate Limiter — capacity estimation</a><a class="nxt" href="0237-rate-limiter-high-level-architecture.html"><span class="mini">Next →</span>Rate Limiter — high-level architecture</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t236";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>

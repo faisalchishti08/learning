@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>"Rate Limiter — deep-dive: distributed counter accuracy & algorithm choice" — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 21. Use-Case Designs</div>
+  <div class="htitle">
+    <h1>"Rate Limiter — deep-dive: distributed counter accuracy & algorithm choice"</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>This page covers the <strong>deep-dive</strong> facet of the <strong>Rate Limiter</strong> case study, focused on the one genuinely hard sub-problem: which counting algorithm actually implements <code>allow(...)</code> (from <a href="0236-rate-limiter-api-design.md">API design</a>), writing into the <code>tokens</code>/<code>lastRefillAt</code> value shape (from <a href="0238-rate-limiter-data-model-schema.md">data model &amp; schema</a>), and what accuracy tradeoff each algorithm makes under the <a href="0234-rate-limiter-non-functional-requirements.md">non-functional requirements</a>&#x27;s NFR-4 (bounded accuracy is acceptable).</p>
+<h2>2. Why &amp; when</h2>
+<p>&quot;Count requests and reject over the limit&quot; sounds simple until you consider what happens at a window boundary — a naive fixed window lets a client burst up to 2x its limit right at the boundary between two windows, since each window&#x27;s count resets independently with no memory of the previous one. This is the one part of the whole case study that is a genuine algorithm problem with real, well-known tradeoffs between the options — worth its own facet, the same way the <a href="0230-url-shortener-deep-dive-unique-key-generation-collisions.md">URL Shortener</a> case study had a dedicated deep-dive for key generation.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>Fixed window counter.</strong> Divide time into fixed windows (e.g. every 00:00-00:59, 01:00-01:59). Count requests within the current window; reset to zero at each boundary. Simple and cheap (one counter per window), but allows a burst of up to 2x the limit spanning a boundary — a client could send N requests at 00:59 and another N at 01:00, getting 2N requests in under 2 seconds of real time.</li><li><strong>Sliding window log.</strong> Store the timestamp of every individual request; count how many fall within the last window-length of time, computed fresh on every check. Perfectly accurate (no boundary burst problem), but memory cost grows with the number of requests per client per window, which can be significant at high limits.</li><li><strong>Sliding window counter (a practical compromise).</strong> Combine two adjacent fixed windows with a weighted estimate: <code>estimated count = current window&#x27;s count + previous window&#x27;s count * (overlap fraction)</code>. Much cheaper than a full log, and eliminates most of the fixed window&#x27;s boundary-burst problem, at the cost of being an *approximation*, not an exact count — an acceptable tradeoff explicitly allowed by NFR-4.</li><li><strong>Token bucket.</strong> A bucket holds up to <code>capacity</code> tokens, refilling at a steady <code>rate</code> (tokens/second) up to that capacity. Each request consumes one token if available; if the bucket is empty, the request is rejected. This naturally supports FR-7&#x27;s &quot;allow short bursts&quot; — a client that has not made requests recently has a full bucket and can burst up to <code>capacity</code> requests immediately, then is limited to the steady refill rate.</li><li><strong>This case study chooses token bucket</strong>, because it is the only algorithm among these that directly satisfies FR-7 (bounded bursting) while still being cheap (small, fixed state per client — just <code>tokens</code> and <code>lastRefillAt</code>, matching the schema from <a href="0238-rate-limiter-data-model-schema.md">data model &amp; schema</a>) and avoiding the fixed window&#x27;s boundary problem entirely, since refill is continuous rather than reset-at-a-boundary.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>  FIXED WINDOW (boundary burst problem)         TOKEN BUCKET (this case study&#x27;s choice)
+
+  window: 00:00-00:59         01:00-01:59        capacity=10, refill rate=1 token/sec
+  count:  0 -&gt; 100 (limit)    0 -&gt; 100 (limit)
+                                                   t=0s:   bucket has 10 tokens (full, client idle)
+  |------- 100 reqs --------|-- 100 reqs --|      t=0s:   burst of 10 requests -&gt; bucket now EMPTY
+  00:00                    00:59  01:00           t=0s:   11th request -&gt; REJECTED (0 tokens)
+              ^                                    t=5s:   bucket has refilled to 5 tokens
+              |                                            (5 sec x 1 token/sec)
+    200 requests fit in under 2 seconds           t=5s:   5 more requests allowed, bucket now 0
+    of real time - the &quot;boundary burst&quot;           t=5s:   6th request -&gt; REJECTED
+
+                                                   (burst is bounded by CAPACITY, sustained rate
+                                                    is bounded by REFILL RATE - both explicit,
+                                                    tunable numbers, exactly matching FR-7)</code></pre>
+<p>*Caption: a fixed window&#x27;s reset-to-zero at each boundary is what allows the 2x burst; token bucket&#x27;s continuous refill and explicit capacity give the same &quot;allow some burst&quot; behavior deliberately and boundedly, rather than as an accidental flaw.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> Fixed window counter, showing the boundary-burst problem directly.</p>
+<p><strong>Level 2 — Intermediate.</strong> Token bucket algorithm: capacity, refill rate, consume-on-request.</p>
+<p><strong>Level 3 — Advanced.</strong> Token bucket under concurrent access, using the same atomic-check-then-consume discipline the <a href="0237-rate-limiter-high-level-architecture.md">high-level architecture</a> requires, and a comparison showing token bucket does not have the fixed window&#x27;s boundary problem.</p>
+<pre><code class="lang-java">// RateLimiterAlgorithmDemo.java
+import java.util.*;
+import java.util.concurrent.atomic.*;
+
+public class RateLimiterAlgorithmDemo {
+
+    // ---------- Level 1: fixed window counter - has the boundary-burst problem ----------
+    static class FixedWindowLimiter {
+        int limit;
+        long windowSeconds;
+        Map&lt;Long, Integer&gt; countsByWindow = new HashMap&lt;&gt;(); // windowStart -&gt; count
+
+        FixedWindowLimiter(int limit, long windowSeconds) { this.limit = limit; this.windowSeconds = windowSeconds; }
+
+        boolean allow(long nowSeconds) {
+            long windowStart = (nowSeconds / windowSeconds) * windowSeconds;
+            int count = countsByWindow.getOrDefault(windowStart, 0);
+            if (count &gt;= limit) return false;
+            countsByWindow.put(windowStart, count + 1);
+            return true;
+        }
+    }
+
+    // ---------- Level 2 &amp; 3: token bucket - this case study&#x27;s chosen algorithm ----------
+    static class TokenBucket {
+        double capacity, tokens, refillRatePerSecond;
+        long lastRefillAtMs;
+        final Object lock = new Object(); // Level 3: guards the check-then-consume as one atomic step
+
+        TokenBucket(double capacity, double refillRatePerSecond, long nowMs) {
+            this.capacity = capacity; this.tokens = capacity; // start full
+            this.refillRatePerSecond = refillRatePerSecond; this.lastRefillAtMs = nowMs;
+        }
+
+        void refill(long nowMs) {
+            double elapsedSeconds = (nowMs - lastRefillAtMs) / 1000.0;
+            double refillAmount = elapsedSeconds * refillRatePerSecond;
+            tokens = Math.min(capacity, tokens + refillAmount);
+            lastRefillAtMs = nowMs;
+        }
+
+        boolean allow(long nowMs) {
+            synchronized (lock) { // atomic check-then-consume, as the high-level architecture requires
+                refill(nowMs);
+                if (tokens &gt;= 1.0) {
+                    tokens -= 1.0;
+                    return true;
+                }
+                return false;
+            }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(&quot;Level 1 - fixed window: 100/min limit, boundary-burst demonstrated at small scale:&quot;);
+        FixedWindowLimiter fixedWindow = new FixedWindowLimiter(3, 60); // limit=3 for a readable demo
+        long windowABoundary = 60; // window A: [0,60), window B: [60,120)
+        int allowedInWindowA = 0, allowedInWindowB = 0;
+        for (int i = 0; i &lt; 3; i++) if (fixedWindow.allow(windowABoundary - 1)) allowedInWindowA++; // t=59s, still in window A
+        for (int i = 0; i &lt; 3; i++) if (fixedWindow.allow(windowABoundary)) allowedInWindowB++;     // t=60s, now window B
+        System.out.println(&quot;  3 requests at t=59s (window A): &quot; + allowedInWindowA + &quot; allowed&quot;);
+        System.out.println(&quot;  3 requests at t=60s (window B, 1 second later): &quot; + allowedInWindowB + &quot; allowed&quot;);
+        System.out.println(&quot;  total: &quot; + (allowedInWindowA + allowedInWindowB) +
+            &quot; requests allowed within 1 second of real time, for a limit of 3/window &lt;- the boundary burst&quot;);
+
+        System.out.println(&quot;\nLevel 2 - token bucket: capacity=5, refill=1 token/sec:&quot;);
+        long t0 = 0;
+        TokenBucket bucket = new TokenBucket(5, 1.0, t0);
+        for (int i = 1; i &lt;= 6; i++) {
+            System.out.println(&quot;  request &quot; + i + &quot; at t=0s: &quot; + (bucket.allow(t0) ? &quot;ALLOWED&quot; : &quot;REJECTED&quot;) +
+                &quot; (tokens now: &quot; + String.format(&quot;%.1f&quot;, bucket.tokens) + &quot;)&quot;);
+        }
+        long t5 = 5000; // 5 seconds later
+        System.out.println(&quot;  ...5 seconds pass, bucket refills...&quot;);
+        boolean allowedAfterRefill = bucket.allow(t5);
+        System.out.println(&quot;  request at t=5s: &quot; + (allowedAfterRefill ? &quot;ALLOWED&quot; : &quot;REJECTED&quot;) +
+            &quot; (tokens now: &quot; + String.format(&quot;%.1f&quot;, bucket.tokens) + &quot;)&quot;);
+
+        System.out.println(&quot;\nLevel 3 - token bucket under concurrent access, atomic check-then-consume:&quot;);
+        TokenBucket concurrentBucket = new TokenBucket(10, 1.0, 0);
+        AtomicInteger allowedCount = new AtomicInteger(0);
+        Thread[] threads = new Thread[20]; // 20 concurrent requests, capacity is only 10
+        for (int i = 0; i &lt; threads.length; i++) {
+            threads[i] = new Thread(() -&gt; { if (concurrentBucket.allow(0)) allowedCount.incrementAndGet(); });
+        }
+        for (Thread t : threads) t.start();
+        for (Thread t : threads) t.join();
+        System.out.println(&quot;  20 concurrent requests against a bucket with capacity=10: &quot; +
+            allowedCount.get() + &quot; allowed (exactly the capacity, thanks to atomic synchronized access)&quot;);
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java RateLimiterAlgorithmDemo.java</code> (JDK 17+, single file, no dependencies).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1:</strong> <code>FixedWindowLimiter</code> with <code>limit=3</code> is checked three times at <code>t=59</code> (still inside window <code>[0,60)</code>) — all three succeed, since the window&#x27;s count starts at 0. Then it is checked three more times at <code>t=60</code> (now inside window <code>[60,120)</code>, a fresh window with its own zeroed count) — all three succeed again, because the window boundary reset the count entirely.</li><li><strong>The total, 6 requests allowed within roughly 1 second of real time, for a nominal limit of &quot;3 per window,&quot; is exactly the boundary-burst problem</strong> described in Part 3 — a client that times its requests around a window boundary can get up to 2x its intended limit, a real flaw in this otherwise simple algorithm.</li><li><strong>Level 2:</strong> <code>TokenBucket</code> starts full (<code>tokens = capacity = 5</code>). The loop calls <code>bucket.allow(t0)</code> six times, all at the same timestamp <code>t0</code> (no time has passed, so no refill happens between calls). The first five succeed, each consuming one token and printing the decreasing token count; the sixth call finds <code>tokens &lt; 1.0</code> and is rejected — this is the capacity bound (FR-7&#x27;s &quot;short burst&quot;) working exactly as designed: up to 5 requests immediately, then rejection.</li><li><strong>After <code>t5 = 5000</code> (5 seconds later), <code>bucket.allow(t5)</code> is called again.</strong> Inside <code>allow</code>, <code>refill(t5)</code> computes <code>elapsedSeconds = 5.0</code> and <code>refillAmount = 5.0 * 1.0 = 5.0</code> tokens — but <code>Math.min(capacity, tokens + refillAmount)</code> caps this at <code>capacity = 5</code>, since the bucket was already at 0 and can refill at most back to full. The call succeeds, consuming one token, leaving <code>4.0</code> — proving the bucket genuinely refills over real elapsed time, at exactly the configured rate.</li><li><strong>Level 3</strong> runs 20 threads concurrently against one <code>TokenBucket</code> with <code>capacity=10</code>, all calling <code>allow(0)</code> at essentially the same instant. Because <code>allow</code> wraps its check-and-consume in a <code>synchronized (lock)</code> block, each thread&#x27;s check-then-decrement happens atomically with respect to every other thread — the final <code>allowedCount.get()</code> prints exactly <code>10</code>, matching the bucket&#x27;s capacity precisely, with no race condition letting more than 10 through despite 20 threads racing simultaneously. This is the same atomicity guarantee the <a href="0237-rate-limiter-high-level-architecture.md">high-level architecture</a> requires from the shared store in production — here demonstrated directly with a <code>synchronized</code> block as the in-process stand-in for Redis&#x27;s atomic <code>INCR</code>/Lua-script behavior.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> a token bucket implemented with a naive, non-atomic &quot;check tokens, then separately decrement&quot; sequence (instead of the single <code>synchronized</code> block shown in Level 3) reintroduces the exact race condition atomicity was meant to prevent — two concurrent requests can both read <code>tokens &gt;= 1.0</code> as true before either decrements, letting both through when only one token was actually available. The check and the consume must be one indivisible operation, whether implemented as a language-level lock (as here) or a single atomic store operation (a Redis Lua script, in production).</blockquote>
+<ul><li>Fixed window is the simplest algorithm but has a real, well-known boundary-burst flaw — understand this tradeoff explicitly rather than defaulting to fixed window purely for its simplicity.</li><li>Token bucket directly satisfies FR-7 (bounded bursting) as a first-class, tunable feature (via <code>capacity</code>) rather than as an accidental flaw (as the fixed window&#x27;s boundary burst is) — this distinction, &quot;designed-in burst tolerance&quot; vs. &quot;accidental burst bug,&quot; is the core reason this case study selects it.</li><li>Atomicity of the check-and-consume step is non-negotiable for correctness under concurrency, exactly as Level 3 demonstrates — this requirement is what the <a href="0237-rate-limiter-high-level-architecture.md">high-level architecture</a>&#x27;s shared, atomic-operation store exists to satisfy in a real, multi-instance deployment.</li><li>See <a href="0240-rate-limiter-scaling-tradeoffs.md">Rate Limiter — scaling &amp; tradeoffs</a> next for how this token-bucket approach holds up (and what changes) as the system scales well past the original capacity estimation&#x27;s numbers.</li></ul>
+  <div class="nav"><a class="prv" href="0238-rate-limiter-data-model-schema.html"><span class="mini">← Previous</span>Rate Limiter — data model & schema</a><a class="nxt" href="0240-rate-limiter-scaling-tradeoffs.html"><span class="mini">Next →</span>Rate Limiter — scaling & tradeoffs</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t239";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
