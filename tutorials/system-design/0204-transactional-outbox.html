@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transactional outbox — Tutorial</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--panel2:#1c2430;--border:#30363d;--text:#e6edf3;
+        --muted:#8b949e;--accent:#6db33f;--accent2:#34804f;--done:#3fb950;--code:#79c0ff;}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);line-height:1.65;
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:12px 20px}
+  .crumb{font-size:12.5px;color:var(--muted)}
+  .crumb a{color:var(--muted);text-decoration:none}
+  .crumb a:hover{color:var(--accent)}
+  .htitle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .htitle h1{font-size:21px;margin:0}
+  .back{font-size:13px;color:var(--muted);text-decoration:none;border:1px solid var(--border);
+        padding:5px 10px;border-radius:8px}
+  .back:hover{border-color:var(--accent);color:var(--text)}
+  .mc{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;
+      border:1px solid var(--border);padding:6px 12px;border-radius:8px}
+  .mc input{width:17px;height:17px;accent-color:var(--done);cursor:pointer}
+  main{max-width:880px;margin:0 auto;padding:26px 20px 60px}
+  h2{font-size:20px;margin:30px 0 10px;padding-top:14px;border-top:1px solid var(--border);color:var(--accent)}
+  main > h2:first-child{border-top:none;padding-top:0;margin-top:0}
+  h3{font-size:16px;margin:20px 0 8px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--code)}
+  code{background:var(--panel2);padding:1px 6px;border-radius:5px;font-size:13.5px;color:var(--code);
+       font-family:"SF Mono", Menlo,Consolas,monospace}
+  pre{position:relative;background:#0a0e14;border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;overflow:auto;margin:14px 0}
+  pre code{background:none;padding:0;color:#c9d1d9;display:block;line-height:1.55;font-size:13.5px}
+  pre .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--border);
+            color:var(--muted);font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer}
+  pre .copy:hover{border-color:var(--accent);color:var(--text)}
+  blockquote{margin:14px 0;padding:10px 16px;border-left:3px solid var(--accent);
+             background:var(--panel);border-radius:0 8px 8px 0;color:#d8e0e8}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:var(--panel2)}
+  svg{max-width:100%;height:auto;background:var(--panel);border:1px solid var(--border);
+      border-radius:10px;padding:10px;margin:12px 0;display:block}
+  .nav{display:flex;justify-content:space-between;gap:12px;margin-top:40px;
+       border-top:1px solid var(--border);padding-top:18px}
+  .nav a{flex:1;text-decoration:none;color:var(--text);border:1px solid var(--border);
+         border-radius:10px;padding:12px 14px;font-size:13px}
+  .nav a:hover{border-color:var(--accent)}
+  .nav .nxt{text-align:right}
+  .nav .mini{display:block;color:var(--muted);font-size:11px;margin-bottom:3px}
+  .nav .spacer{flex:1}
+  footer{text-align:center;color:var(--muted);font-size:12px;padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <div class="crumb"><a href="../../system-design.html">System Design</a> › 18. Architecture Patterns</div>
+  <div class="htitle">
+    <h1>Transactional outbox</h1>
+    <a class="back" href="../../system-design.html">← Back to checklist</a>
+    <label class="mc"><input type="checkbox" id="mc"> Mark complete</label>
+  </div>
+</header>
+<main>
+<h2>1. What it is</h2>
+<p>The <strong>transactional outbox</strong> pattern solves the problem of atomically updating a database *and* publishing an event about that update. Instead of writing to the database and then separately publishing to a message broker (two operations that can fail independently), a service writes the event into an <strong>outbox table</strong>, in the *same* local database transaction as the actual data change. A separate process then reads the outbox table and publishes each event to the broker.</p>
+<h2>2. Why &amp; when</h2>
+<p>A service that updates its database and then calls <code>broker.publish(event)</code> afterward has a real gap: if the process crashes, or the broker is unreachable, right between the database commit and the publish call, the database change succeeds but the event never goes out. Any other service that was supposed to react to that event — inventory reservation, an email, a saga&#x27;s next step — never runs, and nothing in the system even knows an event was missed.</p>
+<p>The transactional outbox closes that gap by writing the event as a row in a table, in the exact same local transaction as the business data change. Because both writes are in one transaction, either both commit or neither does — there is no window where one happened and the other did not. A separate relay process then reads unpublished outbox rows and sends them to the broker, retrying until it succeeds. Use this pattern any time a service must reliably publish an event as a result of updating its own data — which is most services in an <a href="0200-event-driven-architecture.md">event-driven architecture</a> or a <a href="0203-saga-orchestration-vs-choreography.md">saga</a>.</p>
+<h2>3. Core concept</h2>
+<ul><li><strong>The outbox table.</strong> A normal table in the same database as the business data, typically with columns like <code>id</code>, <code>event_type</code>, <code>payload</code>, <code>created_at</code>, <code>published_at</code> (null until sent).</li><li><strong>Single local transaction.</strong> The business data write (e.g. <code>INSERT INTO orders</code>) and the outbox row write (<code>INSERT INTO outbox</code>) happen in one <code>BEGIN ... COMMIT</code> block. The database&#x27;s own atomicity guarantee — not a distributed transaction — is what makes this safe.</li><li><strong>The relay (or &quot;message relay&quot;) process.</strong> A separate poller, or a database change-data-capture (CDC) tool reading the transaction log, picks up outbox rows where <code>published_at IS NULL</code>, sends each to the broker, and marks it published (or deletes it) only after the broker confirms receipt.</li><li><strong>At-least-once delivery, again.</strong> If the relay crashes after publishing but before marking the row published, it will publish the same row again on restart — this is the same at-least-once guarantee as <a href="0200-event-driven-architecture.md">event-driven architecture</a>, and subscribers must be idempotent for the same reason.</li><li><strong>No distributed transaction needed.</strong> The pattern&#x27;s whole value is avoiding a two-phase-commit-style distributed transaction between the database and the broker — the local database transaction is enough, because the event is just data until the relay sends it.</li></ul>
+<h2>4. Diagram</h2>
+<pre><code>  Service                                              Message Broker
+     |
+     |  BEGIN TRANSACTION
+     |    INSERT INTO orders (...)              &lt;- business data change
+     |    INSERT INTO outbox (event, payload)   &lt;- event, same transaction
+     |  COMMIT                                       (both succeed, or both roll back)
+     |
+     v
+  +----------------------+
+  |   orders table        |
+  |   outbox table         |
+  |   (published_at=NULL)  |
+  +-----------+-----------+
+              |
+              |   Relay process polls:
+              |   SELECT * FROM outbox WHERE published_at IS NULL
+              v
+       +--------------+
+       |    Relay      |----- publish event ------------------&gt; Broker
+       +--------------+
+              |
+              v
+   UPDATE outbox SET published_at = now()   (only after broker confirms)</code></pre>
+<p>*Caption: the business write and the outbox write are one atomic unit. The relay&#x27;s job — reading the outbox and publishing — happens entirely afterward, and can be retried safely if it fails.*</p>
+<h2>5. Runnable example</h2>
+<p><strong>Level 1 — Basic.</strong> A single local &quot;transaction&quot; (simulated) that writes both the order and the outbox event atomically.</p>
+<p><strong>Level 2 — Intermediate.</strong> A relay process that polls the outbox table and publishes unpublished rows, marking them published.</p>
+<p><strong>Level 3 — Advanced.</strong> Simulate the relay crashing after publishing but before marking the row published, and show the resulting duplicate delivery, handled by an idempotent subscriber.</p>
+<pre><code class="lang-java">// TransactionalOutboxDemo.java
+import java.util.*;
+
+public class TransactionalOutboxDemo {
+
+    record Order(String id, String customerId, double amount) {}
+    static class OutboxRow {
+        String id, eventType, payload;
+        boolean published = false;
+        OutboxRow(String id, String eventType, String payload) {
+            this.id = id; this.eventType = eventType; this.payload = payload;
+        }
+    }
+
+    // ---------- Level 1: one atomic local transaction covers both writes ----------
+    static class Database {
+        Map&lt;String, Order&gt; orders = new HashMap&lt;&gt;();
+        List&lt;OutboxRow&gt; outbox = new ArrayList&lt;&gt;();
+
+        // Simulates BEGIN ... COMMIT: both writes succeed together, or (if an exception
+        // is thrown before this method returns) neither is kept - a real DB enforces this
+        // automatically; here we just perform both writes with nothing in between that can fail.
+        void placeOrderTransactionally(Order order) {
+            orders.put(order.id(), order);
+            outbox.add(new OutboxRow(&quot;evt-&quot; + order.id(), &quot;OrderPlaced&quot;,
+                &quot;{orderId=&quot; + order.id() + &quot;, amount=&quot; + order.amount() + &quot;}&quot;));
+            System.out.println(&quot;  [DB txn] committed order &quot; + order.id() + &quot; AND its outbox row together&quot;);
+        }
+    }
+
+    // ---------- Level 2: relay polls the outbox and publishes ----------
+    interface Broker {
+        void publish(String eventType, String payload);
+    }
+    static class LoggingBroker implements Broker {
+        Set&lt;String&gt; receivedIds = new HashSet&lt;&gt;(); // subscriber-side idempotency tracking
+        public void publish(String eventType, String payload) {
+            System.out.println(&quot;    [broker] delivered &quot; + eventType + &quot; &quot; + payload);
+        }
+    }
+
+    static class Relay {
+        Database db;
+        Broker broker;
+        Relay(Database db, Broker broker) { this.db = db; this.broker = broker; }
+
+        void pollAndPublish() {
+            for (OutboxRow row : db.outbox) {
+                if (row.published) continue;
+                broker.publish(row.eventType, row.payload);
+                row.published = true; // marked only AFTER the broker call returns successfully
+                System.out.println(&quot;    [relay] marked &quot; + row.id + &quot; as published&quot;);
+            }
+        }
+    }
+
+    // ---------- Level 3: relay crashes AFTER publish, BEFORE marking published ----------
+    static class CrashProneRelay {
+        Database db;
+        Broker broker;
+        Set&lt;String&gt; subscriberProcessedIds = new HashSet&lt;&gt;(); // idempotent subscriber, keyed by outbox row id
+        CrashProneRelay(Database db, Broker broker) { this.db = db; this.broker = broker; }
+
+        void pollAndPublish(boolean simulateCrashBeforeMarking) {
+            for (OutboxRow row : db.outbox) {
+                if (row.published) continue;
+                broker.publish(row.eventType, row.payload);
+                if (simulateCrashBeforeMarking) {
+                    System.out.println(&quot;    [relay] CRASHED before marking &quot; + row.id + &quot; as published!&quot;);
+                    return; // row.published stays false - relay will re-send it next run
+                }
+                row.published = true;
+            }
+        }
+
+        void subscriberHandle(OutboxRow row) {
+            if (subscriberProcessedIds.contains(row.id)) {
+                System.out.println(&quot;    [subscriber] already processed &quot; + row.id + &quot; - skipping (idempotent)&quot;);
+                return;
+            }
+            System.out.println(&quot;    [subscriber] processing &quot; + row.id + &quot; for the first time&quot;);
+            subscriberProcessedIds.add(row.id);
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(&quot;Level 1 - atomic write of business data + outbox event:&quot;);
+        Database db1 = new Database();
+        db1.placeOrderTransactionally(new Order(&quot;ORD-1&quot;, &quot;cust-1&quot;, 42.00));
+
+        System.out.println(&quot;\nLevel 2 - relay polls outbox and publishes:&quot;);
+        Broker broker2 = new LoggingBroker();
+        Relay relay = new Relay(db1, broker2);
+        relay.pollAndPublish();
+        relay.pollAndPublish(); // second poll: nothing new, row already marked published
+
+        System.out.println(&quot;\nLevel 3 - relay crashes before marking published -&gt; duplicate delivery, handled idempotently:&quot;);
+        Database db3 = new Database();
+        db3.placeOrderTransactionally(new Order(&quot;ORD-2&quot;, &quot;cust-2&quot;, 15.00));
+        Broker broker3 = new LoggingBroker();
+        CrashProneRelay crashRelay = new CrashProneRelay(db3, broker3);
+        crashRelay.pollAndPublish(true);  // publishes, then &quot;crashes&quot; before marking
+        System.out.println(&quot;  ...relay restarts and polls again...&quot;);
+        crashRelay.pollAndPublish(false); // same row published AGAIN, since it was never marked
+        System.out.println(&quot;  now the subscriber, processing both deliveries of the same event:&quot;);
+        crashRelay.subscriberHandle(db3.outbox.get(0));
+        crashRelay.subscriberHandle(db3.outbox.get(0));
+    }
+}</code></pre>
+<p><strong>How to run:</strong> <code>java TransactionalOutboxDemo.java</code> (JDK 17+, single file, no dependencies).</p>
+<h2>6. Walkthrough</h2>
+<ol><li><strong>Level 1:</strong> <code>placeOrderTransactionally(...)</code> writes to <code>orders</code> and appends to <code>outbox</code> with nothing that can fail in between — this stands in for a real <code>BEGIN...COMMIT</code> block, where the database guarantees both writes land together or neither does.</li><li><strong>Level 2:</strong> <code>relay.pollAndPublish()</code> loops over <code>db1.outbox</code>, finds the one unpublished row, calls <code>broker.publish(...)</code>, and only then sets <code>row.published = true</code>. Calling <code>pollAndPublish()</code> a second time finds nothing to do — the row is already marked, so the relay does not resend it under normal operation.</li><li><strong>Level 3</strong> deliberately breaks the &quot;publish, then mark&quot; ordering. <code>crashRelay.pollAndPublish(true)</code> calls <code>broker.publish(...)</code> — so the broker genuinely receives the event — but then returns immediately without setting <code>row.published = true</code>, simulating a process crash at the worst possible moment.</li><li><strong>The relay &quot;restarts&quot;</strong> and polls again with <code>pollAndPublish(false)</code>. Because <code>row.published</code> is still <code>false</code>, the loop finds the same row and publishes it <strong>again</strong> — the broker output line for <code>evt-ORD-2</code> appears twice in total, proving the event was delivered twice from one business event.</li><li><strong><code>subscriberHandle(...)</code> is called twice</strong> with the same <code>OutboxRow</code>. The first call finds <code>row.id</code> absent from <code>subscriberProcessedIds</code>, processes it, and records the ID. The second call finds the ID already present and skips — this idempotency check on the subscriber side is what makes the relay&#x27;s at-least-once, occasionally-duplicate delivery safe to build on.</li></ol>
+<h2>7. Gotchas &amp; takeaways</h2>
+<blockquote><strong>Gotcha:</strong> the outbox table itself needs cleanup — published rows accumulate forever if nothing deletes or archives them. A background job that removes rows older than some retention window (after confirming they were published) is a required companion to this pattern, not an afterthought.</blockquote>
+<ul><li>The core guarantee is atomicity between the business write and the outbox write, using the database&#x27;s own transaction — never try to make the broker publish part of that same transaction (that is a distributed transaction, which this pattern exists to avoid).</li><li>The relay can and will occasionally deliver the same event twice — subscribers must be idempotent, exactly as in plain <a href="0200-event-driven-architecture.md">event-driven architecture</a>.</li><li>A change-data-capture (CDC) tool reading the database&#x27;s write-ahead log (e.g. Debezium) is a common production alternative to a polling relay — it reacts to new outbox rows without repeatedly querying the table.</li><li>This pattern is what makes each step of a <a href="0203-saga-orchestration-vs-choreography.md">saga</a> reliably publish its &quot;step completed&quot; event — without it, a crash between the local commit and the publish can silently stall the whole saga.</li></ul>
+  <div class="nav"><a class="prv" href="0203-saga-orchestration-vs-choreography.html"><span class="mini">← Previous</span>Saga (orchestration vs choreography)</a><a class="nxt" href="0205-strangler-fig-migration.html"><span class="mini">Next →</span>Strangler-fig migration</a></div>
+  <footer>Progress saved in your browser. Self-contained tutorial page — works offline.</footer>
+</main>
+<script>
+const KEY = "spring-checklist:system-design.html", ID = "t204";
+const box = document.getElementById("mc");
+function load(){ try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ return {}; } }
+box.checked = !!load()[ID];
+box.addEventListener("change", ()=>{
+  const st = load();
+  if (box.checked) st[ID] = 1; else delete st[ID];
+  localStorage.setItem(KEY, JSON.stringify(st));
+});
+document.querySelectorAll("pre").forEach(pre=>{
+  const code = pre.querySelector("code"); if(!code) return;
+  const b = document.createElement("button");
+  b.className = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ()=>{
+    const t = code.innerText;
+    const done = ()=>{ b.textContent = "Copied"; setTimeout(()=>b.textContent="Copy",1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, done);
+    else { const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select();
+           try{document.execCommand("copy");}catch(e){} ta.remove(); done(); }
+  });
+  pre.appendChild(b);
+});
+</script>
+</body>
+</html>
